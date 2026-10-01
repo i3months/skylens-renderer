@@ -72,6 +72,7 @@ export function processTreeMemory(tag, { procRoot = '/proc' } = {}) {
       const rss = Number(fields[1]) * page;
       if (!Number.isSafeInteger(rss)) continue; // 매우 큰 수면 안전하지 않아 건너뛴다
       bytes += rss; rssProcs++;
+      if (!Number.isSafeInteger(bytes)) return null; // 합산 뒤 unsafe 정수면 안전하지 않은 합이다
     } catch { /* 사라진 프로세스 */ }
   }
   if (pssProcs + rssProcs === 0) return null; // 하나도 읽지 못했으면 0 B 를 값으로 내지 않는다
