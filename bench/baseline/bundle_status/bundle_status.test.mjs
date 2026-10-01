@@ -29,7 +29,7 @@ const FILES = {
   'side-S.js': 'export const s=1;\n' + 'side-body;\n'.repeat(20), // 238 / 49
   'status-D.css': '.a{color:red}\n'.repeat(50), // 700 / 41
   'style-E.css': '.b{margin:0}\n'.repeat(80), // 1040 / 42
-  'control-G.js': 'import{n as e}from"./geo-B.js";import{t as r}from"./math-C.js";import("./drone-Z.js");\n' + 'control-body;\n'.repeat(70), // 1067 / 102
+  'control-G.js': 'import{n as e}from"./geo-B.js";import{t as r}from"./math-C.js";\n' + 'control-body;\n'.repeat(70) + 'const l=()=>import("./drone-Z.js");\n', // 1080 / 116
   'control-H.css': '.c{top:0}\n'.repeat(40), // 400 / 35
 };
 const html = (js, css) => `<!doctype html><html><head>
