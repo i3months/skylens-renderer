@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
 import {
   run, rasterize, cameraExtrinsics, intrinsics, worldToCamera, cameraToWorld, projectCamera, decodePly, loadViewpoints,
-  applySceneFrame, assertSceneFrame, assertCoverage, MIN_COVERAGE,
+  applySceneFrame, assertSceneFrame, assertCoverage, MIN_COVERAGE, computeSceneFrame, applyFrameTransform,
 } from './index.mjs';
 import { syntheticPoints, syntheticScene, encodeSplatPly } from './testing.mjs';
 
@@ -176,16 +176,15 @@ test('합성 점군: 앱 틀 없이 원좌표 그대로 그리면 점유율 5 % 
 });
 
 test('run 음성: 성긴 점군은 점유율 때문에 실패하고 출력 디렉터리를 만들지 않는다', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'ref-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const ply = join(dir, 'sparse.ply');
-  await writeFile(ply, encodeSplatPly(syntheticScene({ spacing: 2 })));
+  const sparse = encodeSplatPly(syntheticScene({ spacing: 2 }));
+  const { dir, ply } = await setup(t, sparse, sparse);
   const o = join(dir, 'o');
-  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { pointsPath: ply, anchor: FIXTURE.anchor } }), /시점 \d+ \S+: 점유율 [\d.]+ % 가 최소 5 %/);
+  await assert.rejects(run({ skylensDir: dir, outDir: o, commit: 'c', inputs: { pointsPath: ply, anchor: FIXTURE.anchor } }), /시점 \d+ \S+: 점유율 [\d.]+ % 가 최소 5 %/);
   assert.ok(!(await readdir(dir)).includes('o'));
 });
 
 // ---- 앱 틀 ----
+const X180 = { ...FIXTURE.sceneFrame, rotate: 'x180' }; // 인터넷 샘플 경로(x180)를 따로 시험한다.
 test('applySceneFrame: x180 회전, 분위 상자 최대 변 44, XZ 중심 원점, 바닥 y=0, 이상점 제거, 입력 불변', () => {
   // 원좌표(y 아래): x∈[0,100] 균일, y∈[−10,10], z∈[−20,20]. 100 점 + 이상점 1개.
   const P = [];
@@ -194,13 +193,13 @@ test('applySceneFrame: x180 회전, 분위 상자 최대 변 44, XZ 중심 원�
   const positions = Float32Array.from(P.flat());
   const colors = Uint8Array.from(P.flatMap((_, i) => [i, 1, 2]));
   const before = Float32Array.from(positions);
-  const out = applySceneFrame({ positions, colors, count: P.length }, FIXTURE.sceneFrame);
+  const out = applySceneFrame({ positions, colors, count: P.length }, X180);
   assert.deepEqual([...positions], [...before]);
   assert.equal(out.count, 100);
   const lo = [Infinity, Infinity, Infinity];
   const hi = [-Infinity, -Infinity, -Infinity];
   for (let i = 0; i < out.count; i++) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], out.positions[i * 3 + k]); hi[k] = Math.max(hi[k], out.positions[i * 3 + k]); }
-  // x 방향이 가장 길다: 5~95 % 분위(x=5..95, 폭 90)가 44 m 가 되도록 축척
+  // x 방향이 가장 길다: 5~95 % 분위(x=5..95, 폭 90)가 44 가 되도록 축척
   const s = 44 / 90;
   assert.ok(Math.abs(hi[0] - lo[0] - 99 * s) < 1e-3, `x 폭 ${hi[0] - lo[0]}`);
   assert.ok(Math.abs((hi[0] + lo[0]) / 2 - s * (99 / 2 - 50)) < 1e-3);
@@ -229,52 +228,186 @@ test('applySceneFrame 음성: 빈 점군, 크기 0 상자, 틀 필드 오류', (
   assert.throws(() => applySceneFrame(z, FIXTURE.sceneFrame, 'n.json'), /n\.json.*점이 없다/);
   const same = { positions: Float32Array.from([1, 1, 1, 1, 1, 1]), colors: new Uint8Array(6), count: 2 };
   assert.throws(() => applySceneFrame(same, FIXTURE.sceneFrame), /크기가 0/);
-  for (const patch of [{ rotate: 'none' }, { targetExtent: 0 }, { percentileLo: 0.96 }, { percentileHi: 1.5 }, { clipMargin: -1 }]) {
+  for (const patch of [{ rotate: 'z90' }, { rotate: undefined }, { rotate: 'toString' }, { targetExtent: 0 }, { percentileLo: 0.96 }, { percentileHi: 1.5 }, { clipMargin: -1 },
+    { sampleTarget: 0 }, { sampleTarget: 1.5 }, { framePly: '/abs/x.ply' }, { framePly: 'x.splat' }, { framePly: undefined }]) {
     assert.throws(() => assertSceneFrame({ ...FIXTURE.sceneFrame, ...patch }, 'f.json'), /f\.json.*sceneFrame/, JSON.stringify(patch));
   }
+  for (const rotate of ['none', 'x180']) assert.doesNotThrow(() => assertSceneFrame({ ...FIXTURE.sceneFrame, rotate }));
   assert.throws(() => assertSceneFrame(undefined), /sceneFrame/);
 });
 
-test('fixture 는 점군 틀을 coord 와 sceneFrame 에 명시한다 (44 m, x180)', () => {
+test('fixture 는 점군 틀을 coord 와 sceneFrame 에 명시한다 (44, 자체 촬영 none, demoPreview 틀 PLY)', () => {
   assert.match(FIXTURE.coord, /sceneFrame/);
-  assert.equal(FIXTURE.sceneFrame.rotate, 'x180');
+  assert.match(FIXTURE.coord, /GeoAnchor ENU 아님/);
+  assert.doesNotMatch(FIXTURE.coord, /1 unit = 1 m/);
+  assert.equal(FIXTURE.sceneFrame.rotate, 'none');
   assert.equal(FIXTURE.sceneFrame.targetExtent, 44);
+  assert.equal(FIXTURE.sceneFrame.sampleTarget, 60000);
+  assert.equal(FIXTURE.sceneFrame.framePly, 'res/static/demo/step00250_light.ply');
+});
+
+// 앱 sceneSource.ts deriveFromSplat(:329-391) 의 s·P·clip 계산을 줄 단위로 옮긴 독립 구현. index.mjs 와 코드를 공유하지 않는다.
+// 회전은 THREE.Euler 대신 none=항등, x180=(x,−y,−z) 로 쓴다(Euler(π,0,0) 의 쿼터니언 회전과 같다).
+function appDerive(raw, upright) {
+  const total = raw.count;
+  const sampleStride = Math.max(1, Math.floor(total / 60_000));
+  const samples = [];
+  for (let i = 0; i < total; i += sampleStride) samples.push([raw.positions[i * 3], raw.positions[i * 3 + 1], raw.positions[i * 3 + 2]]);
+  const apply = (c) => (upright === 'x180' ? [c[0], -c[1], -c[2]] : [c[0], c[1], c[2]]);
+  const xs = []; const ys = []; const zs = [];
+  for (const sv of samples) { const c = apply(sv); xs.push(c[0]); ys.push(c[1]); zs.push(c[2]); }
+  xs.sort((a, b) => a - b); ys.sort((a, b) => a - b); zs.sort((a, b) => a - b);
+  const pctA = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))))];
+  const rMin = [pctA(xs, 0.05), pctA(ys, 0.05), pctA(zs, 0.05)];
+  const rMax = [pctA(xs, 0.95), pctA(ys, 0.95), pctA(zs, 0.95)];
+  const size = [rMax[0] - rMin[0], rMax[1] - rMin[1], rMax[2] - rMin[2]];
+  const maxDim = Math.max(...size) || 1;
+  const s = 44 / maxDim;
+  const rCenter = [(rMin[0] + rMax[0]) * 0.5, (rMin[1] + rMax[1]) * 0.5, (rMin[2] + rMax[2]) * 0.5];
+  const P = [-s * rCenter[0], -s * rMin[1], -s * rCenter[2]];
+  const margin = maxDim * 0.15;
+  return { s, P, clipMin: rMin.map((v) => v - margin), clipMax: rMax.map((v) => v + margin), sampleStride };
+}
+const near = (a, b, tol = 1e-6) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
+
+test('computeSceneFrame 는 앱 알고리즘 이식 결과와 1e-6 안에서 같다 (none·x180, 표본 stride>1 포함)', () => {
+  // 70만 점: stride = floor(700000/60000) = 11 이 되도록 큰 합성 점군을 만든다.
+  const n = 700_000;
+  const positions = new Float32Array(n * 3);
+  let a = 9;
+  const rnd = () => ((a = (a * 1103515245 + 12345) >>> 0) / 4294967296);
+  for (let i = 0; i < n * 3; i++) positions[i] = (rnd() - 0.5) * (i % 3 === 0 ? 300 : i % 3 === 1 ? 14 : 40) + (i % 3 === 0 ? -20 : 3);
+  const big = { positions, colors: new Uint8Array(n * 3), count: n };
+  for (const rotate of ['none', 'x180']) {
+    const fr = computeSceneFrame(big, { ...FIXTURE.sceneFrame, rotate });
+    const ap = appDerive(big, rotate);
+    assert.equal(fr.sampleStride, 11);
+    assert.equal(fr.sampleStride, ap.sampleStride);
+    assert.ok(near(fr.s, ap.s), `${rotate} s ${fr.s} vs ${ap.s}`);
+    for (let k = 0; k < 3; k++) {
+      assert.ok(near(fr.P[k], ap.P[k]), `${rotate} P[${k}]`);
+      assert.ok(near(fr.clipMin[k], ap.clipMin[k]) && near(fr.clipMax[k], ap.clipMax[k]), `${rotate} clip[${k}]`);
+    }
+  }
+  const synth = decodePly(SCENE_PLY, 'scene.ply');
+  const fr = computeSceneFrame(synth, FIXTURE.sceneFrame);
+  const ap = appDerive(synth, 'none');
+  assert.ok(near(fr.s, ap.s));
+  for (let k = 0; k < 3; k++) assert.ok(near(fr.P[k], ap.P[k]));
+});
+
+test('틀은 틀 PLY 에서 한 번 구하고 다른 점군에는 적용만 한다 (그리는 점군의 분위로 다시 구하지 않는다)', () => {
+  const full = decodePly(SCENE_PLY, 'scene.ply');
+  const fr = computeSceneFrame(full, FIXTURE.sceneFrame);
+  // 앞쪽 1/4 만 자른 점군: 같은 변환을 적용하면 같은 점은 같은 자리에 놓인다.
+  const cutN = Math.floor(full.count / 4);
+  const cut = { positions: full.positions.slice(0, cutN * 3), colors: full.colors.slice(0, cutN * 3), count: cutN };
+  const a = applyFrameTransform(full, fr);
+  const b = applyFrameTransform(cut, fr);
+  for (let i = 0; i < 50; i++) for (let k = 0; k < 3; k++) assert.equal(b.positions[i * 3 + k], a.positions[i * 3 + k]);
+  // 잘린 점군 자신의 분위로 구하면 다르다 (그래서 run 은 그렇게 하지 않는다)
+  assert.notEqual(computeSceneFrame(cut, FIXTURE.sceneFrame).s, fr.s);
+});
+
+test('합성 장면(rotate none): 지면 점의 y 중앙값이 지붕보다 낮다', () => {
+  const raw = decodePly(SCENE_PLY, 'scene.ply');
+  const out = applySceneFrame(raw, FIXTURE.sceneFrame);
+  const ground = [];
+  const roof = [];
+  // 지면색 (90+…,120,90+…) 과 4번 건물 지붕(높이 38) 색 (140,185,150)
+  for (let i = 0; i < out.count; i++) {
+    const [r, g, b] = out.colors.subarray(i * 3, i * 3 + 3);
+    if (g === 120 && r >= 90 && b >= 90) ground.push(out.positions[i * 3 + 1]);
+    if (r === 140 && g === 185 && b === 150) roof.push(out.positions[i * 3 + 1]);
+  }
+  const med = (v) => v.sort((p, q) => p - q)[Math.floor(v.length / 2)];
+  assert.ok(ground.length > 1000 && roof.length > 1000);
+  assert.ok(med(ground) < med(roof), `지면 ${med(ground)} 지붕 ${med(roof)}`);
+  // x180 로 잘못 돌리면 뒤집힌다
+  const flipped = applySceneFrame(raw, X180);
+  let gy = 0;
+  let ry = 0;
+  for (let i = 0; i < flipped.count; i++) {
+    const [r, g, b] = flipped.colors.subarray(i * 3, i * 3 + 3);
+    if (g === 120 && r >= 90 && b >= 90) gy += flipped.positions[i * 3 + 1];
+    if (r === 140 && g === 185 && b === 150) ry += flipped.positions[i * 3 + 1];
+  }
+  assert.ok(gy / ground.length > ry / roof.length);
+});
+
+// ---- 비유한 값 ----
+test('decodePly: NaN·Inf 좌표나 f_dc 를 가진 레코드는 제외하고 수를 센다 (색을 조용히 바꾸지 않는다)', () => {
+  const buf = Buffer.from(encodeSplatPly([
+    { p: [1, 2, 3], rgb: [10, 20, 30] }, { p: [4, 5, 6], rgb: [40, 50, 60] }, { p: [7, 8, 9], rgb: [70, 80, 90] }, { p: [0, 0, 0], rgb: [1, 1, 1] },
+  ]));
+  const head = buf.length - 4 * 56;
+  buf.writeFloatLE(NaN, head + 56 * 1 + 4); // 2번 점 y = NaN
+  buf.writeFloatLE(Infinity, head + 56 * 2 + 12 + 4); // 3번 점 f_dc_1 = Inf
+  const d = decodePly(buf, 'nan.ply');
+  assert.equal(d.rawCount, 4);
+  assert.equal(d.nonFinite, 2);
+  assert.equal(d.count, 2);
+  assert.deepEqual([...d.positions], [1, 2, 3, 0, 0, 0]);
+  assert.deepEqual([...d.colors], [10, 20, 30, 1, 1, 1]);
+  const nanDc = Buffer.from(encodeSplatPly([{ p: [1, 1, 1], rgb: [9, 9, 9] }]));
+  nanDc.writeFloatLE(NaN, nanDc.length - 56 + 12);
+  assert.equal(decodePly(nanDc, 'dc.ply').count, 0);
+});
+
+test('applyFrameTransform: 비유한 좌표는 clip 을 통과하지 못한다', () => {
+  const fr = computeSceneFrame(decodePly(SCENE_PLY, 'scene.ply'), FIXTURE.sceneFrame);
+  const pts = { positions: Float32Array.from([NaN, 20, -30, 50, NaN, -30, 50, 20, Infinity, 50, 20, -30]), colors: new Uint8Array(12), count: 4 };
+  const out = applyFrameTransform(pts, fr);
+  assert.equal(out.count, 1);
+  assert.equal(out.clipped, 3);
+  assert.ok([...out.positions].every(Number.isFinite));
+});
+
+test('computeSceneFrame 음성: 틀 PLY 에 비유한 레코드가 있으면 throw', () => {
+  const ok = decodePly(SCENE_PLY, 'scene.ply');
+  assert.throws(() => computeSceneFrame({ ...ok, nonFinite: 1 }, FIXTURE.sceneFrame, 'frame.ply'), /frame\.ply.*비유한/);
+  const p = Float32Array.from(ok.positions);
+  p[4] = NaN;
+  assert.throws(() => computeSceneFrame({ positions: p, count: ok.count }, FIXTURE.sceneFrame, 'frame.ply'), /frame\.ply.*비유한/);
 });
 
 // ---- run ----
-// 앱 틀 밖 원좌표 합성 장면(y 아래, 축척 0.1). 틀을 적용해야 시점에서 보인다. 한 번만 만든다.
+// 앱 틀 밖 원좌표 합성 장면(y 위, 축척 0.1, 원점 이동). 틀을 적용해야 시점에서 보인다. 한 번만 만든다.
 const SCENE_PLY = encodeSplatPly(syntheticScene());
 const INPUT_ANCHOR = FIXTURE.anchor; // 실제 fixture 앵커. 덮어쓰지 않는다.
 
-async function setup(t, ply = SCENE_PLY) {
+// dir 는 가짜 skylens 트리이기도 하다: 틀 PLY(framePly) 자리에 frame 을 둔다(기본은 합성 장면 자체).
+async function setup(t, ply = SCENE_PLY, frame = SCENE_PLY) {
   const dir = await mkdtemp(join(tmpdir(), 'ref-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'syn.ply');
   await writeFile(file, ply);
+  await mkdir(dirname(join(dir, FIXTURE.sceneFrame.framePly)), { recursive: true });
+  await writeFile(join(dir, FIXTURE.sceneFrame.framePly), frame);
   return { dir, ply: file };
 }
 
 // 합성 장면(syntheticScene 기본값)·fixtures 시점 8곳의 PPM 전체 sha256 과 찍힌 픽셀 수.
 // 구현 확정 때 한 번 박은 숫자이며 입력에서 도출하지 않는다.
 const GOLDEN = {
-  1: '759bfcbdf765f1767c1ff186dd097c7df83930327cbddb0499a35d6fd2f2e690',
-  2: 'fbb9aca0160926f5f3eefab237e2ba627b44452006007437737b4467294342a2',
-  3: 'ed933f69656fe3d003cbae697beca8e8d2ee2ec7833020622649ff0edf3c1033',
-  4: 'abffdf86a331e2ddde0f3a05c5e63c057e0003a8ca80699f254adbdfc4e5ab71',
-  5: 'f13f76de64e7bff81816a666696615e65d1bfb6aadf0b9d5929011ffc893925a',
-  6: '4ba5b6c296fa47fda7756fe7d086d0b964e1b969627fde04ffd9090f50350ff3',
-  7: '641220513242f2619dbea33892f9463a1c2aa7bb4dd02433858c6ee1b485f94c',
-  8: '967b1c6c8def3d7980429093f4314b3c1473cb3a0851cb7ddb4f85db9f16c27c',
+  1: '858bc38ccf92f95bd9b43b65cb645710b40686c82ed4d95b95b173cc50827563',
+  2: '07ca2cc6d15fe82d07c1c4fb483f17ce1691d97f99f6d3fcb8ae21b4e8907436',
+  3: 'c7b6b154d7b1143a724305426f0319f41df697b4f4407f4e82d8336d7ac17b40',
+  4: '9341aaea6b764811d5644d5e12d49b72f8aea2d0b63728a7bbbe6ac9345e2e62',
+  5: '798bf99381dbbce522de86feb24f880d1ae086170bcb2f6b6c7d59ad30202b7b',
+  6: '974e7ef024666c3b54a00d08f2e4319afe9d62a2361ef5fefefd49fc91466e95',
+  7: '406c3980fdcebb2ccb4c80166b234f278faacca695864869898d19cdcca5eb18',
+  8: 'a4c03ca1220dd639d07ec44fdccdab0adb5a2fe9acf1af0bbfacf23e3a33da65',
 };
-const GOLDEN_DRAWN = { 1: 174495, 2: 222304, 3: 211859, 4: 121252, 5: 185153, 6: 177948, 7: 174398, 8: 76753 };
+const GOLDEN_DRAWN = { 1: 143285, 2: 105798, 3: 73141, 4: 115112, 5: 65050, 6: 59573, 7: 138797, 8: 79524 };
 
 test('(3) 시점 8곳 PPM 8장, 모두 점유율 5 % 이상, 시점별 sha256 골든, 재실행 시 바이트 동일', async (t) => {
   const { dir, ply } = await setup(t);
   const d1 = join(dir, 'o1');
   const d2 = join(dir, 'o2');
   const inputs = { pointsPath: ply, anchor: INPUT_ANCHOR };
-  const rec1 = await run({ skylensDir: '.', outDir: d1, commit: 'abcdef1', inputs });
-  const rec2 = await run({ skylensDir: '.', outDir: d2, commit: 'abcdef1', inputs });
+  const rec1 = await run({ skylensDir: dir, outDir: d1, commit: 'abcdef1', inputs });
+  const rec2 = await run({ skylensDir: dir, outDir: d2, commit: 'abcdef1', inputs });
   assertRecords(rec1);
   assert.deepEqual(rec1, rec2);
   assert.ok(rec1.every((r) => r.method.includes('f_dc') && r.method.includes('56B') && r.method.includes('앱 틀')));
@@ -299,33 +432,49 @@ test('(3) 시점 8곳 PPM 8장, 모두 점유율 5 % 이상, 시점별 sha256 �
 test('run 음성: pointsPath 없음 → throw (합성 대체 없음)', async (t) => {
   const { dir } = await setup(t, encodeSplatPly(syntheticPoints(1)));
   const o = join(dir, 'o');
-  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { anchor: INPUT_ANCHOR } }), /input missing: pointsPath/);
-  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c' }), /input missing: pointsPath/);
+  await assert.rejects(run({ skylensDir: dir, outDir: o, commit: 'c', inputs: { anchor: INPUT_ANCHOR } }), /input missing: pointsPath/);
+  await assert.rejects(run({ skylensDir: dir, outDir: o, commit: 'c' }), /input missing: pointsPath/);
   await assert.rejects(run({ skylensDir: '/nonexistent', outDir: o, commit: 'c', inputs: {} }), /input missing/);
   assert.ok(!(await readdir(dir)).includes('o'));
 });
 
 test('run 음성: 존재하지 않는 점군 파일은 실패', async (t) => {
   const { dir } = await setup(t, encodeSplatPly(syntheticPoints(1)));
-  await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs: { pointsPath: join(dir, 'nope.ply'), anchor: INPUT_ANCHOR } }), /ENOENT/);
+  await assert.rejects(run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs: { pointsPath: join(dir, 'nope.ply'), anchor: INPUT_ANCHOR } }), /ENOENT/);
 });
 
 // 앵커는 운영자가 선언한 값이다. fixture 의 값과 inputs.anchor 두 선언만 대조하고 점군 파일은 보지 않는다.
 test('run 음성: inputs.anchor 없음, fixture 앵커와 한 성분이라도 다르면 실패 (fixture 실제 값 기준)', async (t) => {
   const { dir, ply } = await setup(t, encodeSplatPly(syntheticPoints(1)));
   const o = join(dir, 'o');
-  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { pointsPath: ply } }), /input missing: anchor/);
+  await assert.rejects(run({ skylensDir: dir, outDir: o, commit: 'c', inputs: { pointsPath: ply } }), /input missing: anchor/);
   for (const k of ['lat', 'lon', 'alt']) {
     const bad = { ...INPUT_ANCHOR, [k]: INPUT_ANCHOR[k] + 0.001 };
-    await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { pointsPath: ply, anchor: bad } }), new RegExp(`anchor\\.${k}=${FIXTURE.anchor[k]} 가 inputs\\.anchor\\.${k}=${bad[k]}.*점군은 보지 않는다`));
+    await assert.rejects(run({ skylensDir: dir, outDir: o, commit: 'c', inputs: { pointsPath: ply, anchor: bad } }), new RegExp(`anchor\\.${k}=${FIXTURE.anchor[k]} 가 inputs\\.anchor\\.${k}=${bad[k]}.*점군은 보지 않는다`));
   }
   assert.ok(!(await readdir(dir)).includes('o'));
 });
 
 test('run: 앵커가 같으면 점군 내용과 상관없이 통과한다 (점군 쪽 앵커 대조는 없다)', async (t) => {
   const { dir, ply } = await setup(t);
-  const recs = await run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs: { pointsPath: ply, anchor: { ...FIXTURE.anchor } } });
-  assert.equal(recs.length, 16);
+  const recs = await run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs: { pointsPath: ply, anchor: { ...FIXTURE.anchor } } });
+  assert.equal(recs.length, 17);
+  assert.equal(recs.find((r) => r.metric === 'ref_images.nonfinite_excluded').value, 0);
+});
+
+test('run: 그릴 점군의 비유한 레코드는 제외 수를 지표와 method 로 보고하고, 틀 PLY 의 비유한 값은 throw', async (t) => {
+  const bad = Buffer.from(SCENE_PLY);
+  const n = decodePly(SCENE_PLY, 'scene.ply').count;
+  const body = bad.length - n * 56;
+  bad.writeFloatLE(NaN, body + 0); // 0번 점 x
+  bad.writeFloatLE(NaN, body + 56 * 7 + 12); // 7번 점 f_dc_0
+  const { dir, ply } = await setup(t, bad);
+  const recs = await run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs: { pointsPath: ply, anchor: INPUT_ANCHOR } });
+  assert.equal(recs.find((r) => r.metric === 'ref_images.nonfinite_excluded').value, 2);
+  assert.match(recs[0].method, /비유한 2점 제외/);
+  const s2 = await setup(t, SCENE_PLY, bad);
+  await assert.rejects(run({ skylensDir: s2.dir, outDir: join(s2.dir, 'o'), commit: 'c', inputs: { pointsPath: s2.ply, anchor: INPUT_ANCHOR } }), /step00250_light\.ply.*비유한 레코드 2개/);
+  assert.ok(!(await readdir(s2.dir)).includes('o'));
 });
 
 test('run 음성: viewpoints 에 anchor·sceneFrame 없음, coord 가 ENU 표기, 시점 fov 오류면 실패', async (t) => {
@@ -333,13 +482,13 @@ test('run 음성: viewpoints 에 anchor·sceneFrame 없음, coord 가 ENU 표기
   const noAnchor = join(dir, 'na.json');
   await writeFile(noAnchor, JSON.stringify({ coord: 'scene (x=east, y=up, z=-north)', sceneFrame: FIXTURE.sceneFrame, viewpoints: FIXTURE.viewpoints }));
   const inputs = { pointsPath: ply, anchor: INPUT_ANCHOR };
-  await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: noAnchor }), /na\.json.*anchor/);
+  await assert.rejects(run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: noAnchor }), /na\.json.*anchor/);
   const noFrame = join(dir, 'nf.json');
   await writeFile(noFrame, JSON.stringify({ ...FIXTURE, sceneFrame: undefined }));
-  await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: noFrame }), /nf\.json.*sceneFrame/);
+  await assert.rejects(run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: noFrame }), /nf\.json.*sceneFrame/);
   const badFov = join(dir, 'fov.json');
   await writeFile(badFov, JSON.stringify({ ...FIXTURE, viewpoints: [{ ...FIXTURE.viewpoints[0], fov_y_deg: 180 }] }));
-  await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: badFov }), /fov\.json.*fov_y_deg/);
+  await assert.rejects(run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: badFov }), /fov\.json.*fov_y_deg/);
   assert.throws(() => loadViewpoints({ ...FIXTURE, coord: 'ENU, x=east y=up z=-north' }, INPUT_ANCHOR, 'enu.json'), /enu\.json.*coord/);
   assert.throws(() => loadViewpoints({ ...FIXTURE, anchor: { lat: 1, lon: 'x', alt: 3 } }, INPUT_ANCHOR), /anchor/);
 });
@@ -354,27 +503,55 @@ test('run 음성: 아무것도 안 찍히는 시점, 퇴화 시점이 있으면 
   const inputs = { pointsPath: ply, anchor: INPUT_ANCHOR };
   const v0 = FIXTURE.viewpoints[0];
   const away = await mk('away.json', [{ ...v0, id: 9, name: 'away', eye: [0, 30, 500], target: [0, 30, 600] }]);
-  await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: away }), /시점 9.*0/);
+  await assert.rejects(run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: away }), /시점 9.*0/);
   const vertical = await mk('vert.json', [{ ...v0, id: 10, name: 'down', eye: [0, 300, 0], target: [0, 0, 0], up: [0, 1, 0] }]);
-  await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: vertical }), /퇴화/);
+  await assert.rejects(run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: vertical }), /퇴화/);
 });
 
-// ---- 실제 skylens 레벨4(step07000) PLY ----
+// ---- 실제 skylens 수준 3(step07000) PLY ----
 // 파일이 없으면 건너뛴다. 앱 틀 적용 뒤 점유율 5 % 미만인 시점이 있으면 run 이 실패하며, 그것이 정상 판정이다.
+// 그리는 점군은 틀 PLY(demoPreview step00250_light.ply)와 같은 원좌표 틀인 step07000_light.ply 다.
+// 구간 PLY(segments/*)는 align_scene.py 로 옮긴 다른 틀이라 demoPreview 틀에서는 전부 clip 된다(아래 시험).
 const SKYLENS = process.env.SKYLENS_DIR ?? '/tmp/skylens';
-const REAL = join(SKYLENS, 'res/static/demo/segments/seg0_step07000.ply');
-const hasReal = await access(REAL).then(() => true, () => false);
-test('실제 레벨4 PLY: 8장, 재실행 sha256 동일, 점유율 5 % 이상', { skip: !hasReal && '실제 skylens 트리 없음' }, async (t) => {
+const REAL = join(SKYLENS, 'res/static/demo/step07000_light.ply');
+const PREVIEW = join(SKYLENS, FIXTURE.sceneFrame.framePly);
+const SEG0 = join(SKYLENS, 'res/static/demo/segments/seg0_step07000.ply');
+const hasReal = await Promise.all([REAL, PREVIEW].map((f) => access(f).then(() => true, () => false))).then((v) => v.every(Boolean));
+const hasSeg = await access(SEG0).then(() => true, () => false);
+// develop 59edcf9 step00250_light.ply(8434점)에서 구한 값. 구현 확정 때 박은 숫자다.
+const PREVIEW_S = 5.442149081417863;
+const PREVIEW_P = [-8.851082038839118, 2.3253396724926905, -1.7505949670611007];
+
+test('실제 demoPreview: s·P 가 앱 알고리즘 이식 결과·고정값과 1e-6 안에서 같다', { skip: !hasReal && '실제 skylens 트리 없음' }, async () => {
+  const raw = decodePly(await readFile(PREVIEW), PREVIEW);
+  const fr = computeSceneFrame(raw, FIXTURE.sceneFrame, PREVIEW);
+  const ap = appDerive(raw, 'none');
+  assert.equal(fr.sampleStride, 1);
+  assert.ok(near(fr.s, ap.s) && near(fr.s, PREVIEW_S), `s ${fr.s}`);
+  for (let k = 0; k < 3; k++) assert.ok(near(fr.P[k], ap.P[k]) && near(fr.P[k], PREVIEW_P[k]), `P[${k}] ${fr.P[k]}`);
+});
+
+test('실제 수준 3 PLY: 8장, 재실행 sha256 동일, 점유율 5 % 이상, method 에 s·P 기록', { skip: !hasReal && '실제 skylens 트리 없음' }, async (t) => {
   const { dir } = await setup(t, encodeSplatPly(syntheticPoints(1)));
   const inputs = { pointsPath: REAL, anchor: INPUT_ANCHOR };
   const a = await run({ skylensDir: SKYLENS, outDir: join(dir, 'a'), commit: 'abcdef1', inputs });
   await run({ skylensDir: SKYLENS, outDir: join(dir, 'b'), commit: 'abcdef1', inputs });
   assertRecords(a);
   assert.ok(a[0].method.includes('f_dc'));
+  assert.ok(a[0].method.includes('rotate none') && a[0].method.includes(`s=${Number(PREVIEW_S.toPrecision(10))}`), a[0].method);
+  assert.equal(a.find((r) => r.metric === 'ref_images.nonfinite_excluded').value, 0);
   const files = (await readdir(join(dir, 'a'))).sort();
   assert.equal(files.length, 8);
   for (const f of files) assert.equal(sha(await readFile(join(dir, 'a', f))), sha(await readFile(join(dir, 'b', f))), f);
-  for (const r of a.filter((x) => x.metric.startsWith('ref_images.coverage'))) assert.ok(r.value >= MIN_COVERAGE, r.metric);
+  const cov = a.filter((x) => x.metric.startsWith('ref_images.coverage'));
+  assert.equal(cov.length, 8);
+  for (const r of cov) assert.ok(r.value >= MIN_COVERAGE, `${r.metric} ${r.value}`);
+});
+
+test('실제 구간 PLY 는 demoPreview 틀과 좌표 틀이 달라 전부 clip 된다 (구간 PLY 를 pointsPath 로 쓰면 run 이 실패)', { skip: !(hasReal && hasSeg) && '실제 skylens 트리 없음' }, async () => {
+  const fr = computeSceneFrame(decodePly(await readFile(PREVIEW), PREVIEW), FIXTURE.sceneFrame, PREVIEW);
+  const seg = decodePly(await readFile(SEG0), SEG0);
+  assert.equal(applyFrameTransform(seg, fr).count, 0);
 });
 
 test('(4) 역투영 X_w = Rᵀ(X_c − t) 왕복 오차 < 1e-6', () => {

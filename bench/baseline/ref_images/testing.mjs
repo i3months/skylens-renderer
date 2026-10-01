@@ -44,7 +44,7 @@ export function encodeSplatPly(points) {
 
 /**
  * 원좌표(PLY 틀) 합성 장면. 앱 틀에서 약 44 m 크기의 지면 + 건물 4채 + 떠다니는 이상점을 만든 뒤
- * 원좌표로 되돌린다: raw = (0.1·x + 5, −0.1·y + 2, −0.1·z − 3). y 가 아래, 축척·원점이 다른 SfM 식 틀이다.
+ * 원좌표로 되돌린다: raw = (0.1·x + 50, 0.1·y + 20, 0.1·z − 30). 자체 촬영처럼 y 가 위(rotate none)이고 축척·원점만 다른 틀이다.
  * 점 간격 spacing(앱 틀 m). 결정적이다. 테스트 전용.
  */
 export function syntheticScene({ spacing = 0.12, seed = 7 } = {}) {
@@ -56,7 +56,7 @@ export function syntheticScene({ spacing = 0.12, seed = 7 } = {}) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  const toRaw = (x, y, z) => [0.1 * x + 5, -0.1 * y + 2, -0.1 * z - 3];
+  const toRaw = (x, y, z) => [0.1 * x + 50, 0.1 * y + 20, 0.1 * z - 30];
   const pts = [];
   const put = (x, y, z, rgb) => pts.push({ p: toRaw(x, y, z), rgb });
   const grid = (lo, hi) => {
