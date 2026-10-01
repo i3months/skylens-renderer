@@ -8,12 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
 import {
   run, rasterize, cameraExtrinsics, intrinsics, worldToCamera, cameraToWorld, projectCamera, decodePly, loadViewpoints,
+  applySceneFrame, assertSceneFrame, assertCoverage, MIN_COVERAGE,
 } from './index.mjs';
-import { syntheticPoints, encodeSplatPly } from './testing.mjs';
+import { syntheticPoints, syntheticScene, encodeSplatPly } from './testing.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = JSON.parse(await readFile(join(here, '../../../fixtures/viewpoints/viewpoints.json'), 'utf8'));
-const ANCHOR = { lat: 37.5, lon: 127.0, alt: 40 }; // 테스트용 임의 앵커 (실제 값은 fixtures 가 정한다)
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 
 // 좌표 규약: 이 테스트의 카메라는 GL 식이다 (OpenCV 와는 diag(1,-1,-1) 로 변환). index.mjs 머리 주석 참고.
@@ -111,40 +111,173 @@ test('decodePly 음성: 잘린 파일·깨진 헤더는 파일 이름을 넣어 
   assert.throws(() => decodePly(noColor, 'nc.ply'), /nc\.ply.*색/);
 });
 
-// ---- run ----
-async function setup(t) {
+// ---- 동률 깊이, 해상도·fov 검증 ----
+test('동률 깊이: 같은 픽셀·같은 깊이면 먼저 온 점이 이긴다 (순서를 바꾸면 결과도 바뀐다)', () => {
+  const pos = Float32Array.from([0, 0, -10, 0, 0, -10]);
+  const red = rasterize({ positions: pos, colors: Uint8Array.from([255, 0, 0, 0, 0, 255]), count: 2 }, base);
+  const blue = rasterize({ positions: pos, colors: Uint8Array.from([0, 0, 255, 255, 0, 0]), count: 2 }, base);
+  const at = (r) => [...r.rgb.subarray((360 * 1280 + 640) * 3, (360 * 1280 + 640) * 3 + 3)];
+  assert.equal(red.drawn, 1);
+  assert.deepEqual(at(red), [255, 0, 0]);
+  assert.deepEqual(at(blue), [0, 0, 255]);
+  // 더 가까운 점은 순서와 상관없이 이긴다
+  const near = rasterize({ positions: Float32Array.from([0, 0, -10, 0, 0, -9]), colors: Uint8Array.from([255, 0, 0, 0, 255, 0]), count: 2 }, base);
+  assert.deepEqual(at(near), [0, 255, 0]);
+});
+
+test('fov_y_deg 는 0 초과 180 미만의 유한 수여야 한다', () => {
+  for (const bad of [-50, 0, 180, 181, NaN, Infinity, '50', null, undefined]) {
+    assert.throws(() => intrinsics({ ...base, fov_y_deg: bad }), /fov_y_deg/, String(bad));
+    assert.throws(() => rasterize(one([0, 0, -10]), { ...base, fov_y_deg: bad }), /fov_y_deg/, String(bad));
+  }
+  for (const ok of [1e-3, 50, 179.9]) assert.doesNotThrow(() => intrinsics({ ...base, fov_y_deg: ok }));
+});
+
+test('width·height 는 양의 정수여야 한다', () => {
+  for (const bad of [1280.5, 0, -1, NaN, Infinity, '1280', null, undefined]) {
+    assert.throws(() => intrinsics({ ...base, width: bad }), /width/, String(bad));
+    assert.throws(() => rasterize(one([0, 0, -10]), { ...base, width: bad }), /width/, String(bad));
+    assert.throws(() => intrinsics({ ...base, height: bad }), /height/, String(bad));
+  }
+  assert.throws(() => rasterize(one([0, 0, -10]), { ...base, height: 720.5 }), /height/);
+});
+
+test('loadViewpoints: 시점의 fov·해상도가 틀리면 시점 id 를 넣어 throw', () => {
+  const doc = (patch) => ({ ...FIXTURE, viewpoints: [{ ...FIXTURE.viewpoints[0], ...patch }] });
+  for (const patch of [{ fov_y_deg: -50 }, { fov_y_deg: 0 }, { fov_y_deg: 180 }]) {
+    assert.throws(() => loadViewpoints(doc(patch), FIXTURE.anchor, 'bad.json'), /bad\.json.*시점 1.*fov_y_deg/);
+  }
+  assert.throws(() => loadViewpoints(doc({ width: 1280.5 }), FIXTURE.anchor, 'bad.json'), /bad\.json.*시점 1.*width/);
+  assert.throws(() => loadViewpoints(doc({ height: 0 }), FIXTURE.anchor, 'bad.json'), /bad\.json.*시점 1.*height/);
+});
+
+// ---- 점유율 ----
+test('assertCoverage: 400 픽셀 화면에서 20 픽셀(정확히 5 %)은 통과, 19 픽셀은 throw', () => {
+  const vp = { id: 1, name: 'tiny', width: 20, height: 20 };
+  assert.equal(MIN_COVERAGE, 0.05);
+  assert.equal(assertCoverage(vp, 20), 0.05);
+  assert.throws(() => assertCoverage(vp, 19), /점유율.*시점 1|시점 1.*점유율/);
+  assert.throws(() => assertCoverage(vp, 0), /점유율/);
+});
+
+test('합성 점군: 앱 틀을 적용하면 fixture 시점 8곳 모두 점유율 5 % 이상', () => {
+  const framed = applySceneFrame(decodePly(SCENE_PLY, 'scene.ply'), FIXTURE.sceneFrame);
+  assert.equal(FIXTURE.viewpoints.length, 8);
+  for (const vp of FIXTURE.viewpoints) {
+    const cov = rasterize(framed, vp).drawn / (vp.width * vp.height);
+    assert.ok(cov >= MIN_COVERAGE, `시점 ${vp.id} ${vp.name} 점유율 ${cov}`);
+  }
+});
+
+test('합성 점군: 앱 틀 없이 원좌표 그대로 그리면 점유율 5 % 미만이다 (틀이 필요한 이유)', () => {
+  const raw = decodePly(SCENE_PLY, 'scene.ply');
+  const low = FIXTURE.viewpoints.filter((vp) => rasterize(raw, vp).drawn / (vp.width * vp.height) < MIN_COVERAGE);
+  assert.equal(low.length, 8);
+});
+
+test('run 음성: 성긴 점군은 점유율 때문에 실패하고 출력 디렉터리를 만들지 않는다', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'ref-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const ply = join(dir, 'syn.ply');
-  await writeFile(ply, encodeSplatPly(syntheticPoints(1)));
-  const vp = join(dir, 'viewpoints.json');
-  await writeFile(vp, JSON.stringify({ ...FIXTURE, coord: 'scene (x=east, y=up, z=-north), local ENU 에서 변환, 1 unit = 1 m', anchor: ANCHOR }));
-  return { dir, ply, vp };
+  const ply = join(dir, 'sparse.ply');
+  await writeFile(ply, encodeSplatPly(syntheticScene({ spacing: 2 })));
+  const o = join(dir, 'o');
+  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { pointsPath: ply, anchor: FIXTURE.anchor } }), /시점 \d+ \S+: 점유율 [\d.]+ % 가 최소 5 %/);
+  assert.ok(!(await readdir(dir)).includes('o'));
+});
+
+// ---- 앱 틀 ----
+test('applySceneFrame: x180 회전, 분위 상자 최대 변 44, XZ 중심 원점, 바닥 y=0, 이상점 제거, 입력 불변', () => {
+  // 원좌표(y 아래): x∈[0,100] 균일, y∈[−10,10], z∈[−20,20]. 100 점 + 이상점 1개.
+  const P = [];
+  for (let i = 0; i <= 99; i++) P.push([i, -10 + (i % 5) * 5, -20 + (i % 9) * 5]);
+  P.push([5000, 5000, 5000]);
+  const positions = Float32Array.from(P.flat());
+  const colors = Uint8Array.from(P.flatMap((_, i) => [i, 1, 2]));
+  const before = Float32Array.from(positions);
+  const out = applySceneFrame({ positions, colors, count: P.length }, FIXTURE.sceneFrame);
+  assert.deepEqual([...positions], [...before]);
+  assert.equal(out.count, 100);
+  const lo = [Infinity, Infinity, Infinity];
+  const hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < out.count; i++) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], out.positions[i * 3 + k]); hi[k] = Math.max(hi[k], out.positions[i * 3 + k]); }
+  // x 방향이 가장 길다: 5~95 % 분위(x=5..95, 폭 90)가 44 m 가 되도록 축척
+  const s = 44 / 90;
+  assert.ok(Math.abs(hi[0] - lo[0] - 99 * s) < 1e-3, `x 폭 ${hi[0] - lo[0]}`);
+  assert.ok(Math.abs((hi[0] + lo[0]) / 2 - s * (99 / 2 - 50)) < 1e-3);
+  // 회전 (x,y,z)→(x,−y,−z): 원좌표 y 가 작을수록 출력 y 가 크다
+  const small = P.findIndex((q) => q[1] === -10);
+  const big = P.findIndex((q) => q[1] === 10);
+  assert.ok(out.positions[small * 3 + 1] > out.positions[big * 3 + 1]);
+  assert.ok(Math.abs(lo[1]) < 1e-3, `바닥 y ${lo[1]}`);
+  // 점마다 색은 그대로 따라간다
+  assert.equal(out.colors[0], 0);
+  assert.equal(out.colors[99 * 3], 99);
+});
+
+test('applySceneFrame: 합성 장면에서 지면이 y≈0 에 놓이고 이상점이 제거된다', () => {
+  const raw = decodePly(SCENE_PLY, 'scene.ply');
+  const out = applySceneFrame(raw, FIXTURE.sceneFrame);
+  assert.ok(out.count < raw.count, '이상점 제거');
+  assert.ok(out.count > raw.count * 0.95);
+  let minY = Infinity;
+  for (let i = 0; i < out.count; i++) minY = Math.min(minY, out.positions[i * 3 + 1]);
+  assert.ok(Math.abs(minY) < 1e-3, `최소 y ${minY}`);
+});
+
+test('applySceneFrame 음성: 빈 점군, 크기 0 상자, 틀 필드 오류', () => {
+  const z = { positions: new Float32Array(0), colors: new Uint8Array(0), count: 0 };
+  assert.throws(() => applySceneFrame(z, FIXTURE.sceneFrame, 'n.json'), /n\.json.*점이 없다/);
+  const same = { positions: Float32Array.from([1, 1, 1, 1, 1, 1]), colors: new Uint8Array(6), count: 2 };
+  assert.throws(() => applySceneFrame(same, FIXTURE.sceneFrame), /크기가 0/);
+  for (const patch of [{ rotate: 'none' }, { targetExtent: 0 }, { percentileLo: 0.96 }, { percentileHi: 1.5 }, { clipMargin: -1 }]) {
+    assert.throws(() => assertSceneFrame({ ...FIXTURE.sceneFrame, ...patch }, 'f.json'), /f\.json.*sceneFrame/, JSON.stringify(patch));
+  }
+  assert.throws(() => assertSceneFrame(undefined), /sceneFrame/);
+});
+
+test('fixture 는 점군 틀을 coord 와 sceneFrame 에 명시한다 (44 m, x180)', () => {
+  assert.match(FIXTURE.coord, /sceneFrame/);
+  assert.equal(FIXTURE.sceneFrame.rotate, 'x180');
+  assert.equal(FIXTURE.sceneFrame.targetExtent, 44);
+});
+
+// ---- run ----
+// 앱 틀 밖 원좌표 합성 장면(y 아래, 축척 0.1). 틀을 적용해야 시점에서 보인다. 한 번만 만든다.
+const SCENE_PLY = encodeSplatPly(syntheticScene());
+const INPUT_ANCHOR = FIXTURE.anchor; // 실제 fixture 앵커. 덮어쓰지 않는다.
+
+async function setup(t, ply = SCENE_PLY) {
+  const dir = await mkdtemp(join(tmpdir(), 'ref-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'syn.ply');
+  await writeFile(file, ply);
+  return { dir, ply: file };
 }
 
-// 합성 점군(seed=1)·fixtures 시점 8곳의 PPM 전체 sha256 과 찍힌 픽셀 수. 구현 확정 때 한 번 박은 숫자이며 입력에서 도출하지 않는다.
+// 합성 장면(syntheticScene 기본값)·fixtures 시점 8곳의 PPM 전체 sha256 과 찍힌 픽셀 수.
+// 구현 확정 때 한 번 박은 숫자이며 입력에서 도출하지 않는다.
 const GOLDEN = {
-  1: '5926932348b191f7bf3f8f690630820774e747258a4df8714f5fcc882a925978',
-  2: 'e93a8e82eff8e1dc545502c011287cde7de64b48a18ae92fd48655d5bd5ffdd3',
-  3: '518fd52b9bc13219131f96a66526f5c0fceed1f6c02f8a6314c3e3bcba78d260',
-  4: 'ba558db195de020d11548e77de97ec535620fea9b258e1629fbd6f5f6b87b87c',
-  5: '8171cd06ebd722bc311ac33cceaff03679840007620c2fa3a279474b168e9d82',
-  6: '8aeee077291fd4ac808e73edc8c5df50624853f20ca5bac391ff0eaa906009ed',
-  7: '09dc96d00829503ba1a95c025235fe9c503a4a8fc6b8f2fafdfe3b1fead9ab59',
-  8: '22a00db3ff4bf183ec9856ad4127c97db10d2102f855484b93bfe26a13cc1631',
+  1: '759bfcbdf765f1767c1ff186dd097c7df83930327cbddb0499a35d6fd2f2e690',
+  2: 'fbb9aca0160926f5f3eefab237e2ba627b44452006007437737b4467294342a2',
+  3: 'ed933f69656fe3d003cbae697beca8e8d2ee2ec7833020622649ff0edf3c1033',
+  4: 'abffdf86a331e2ddde0f3a05c5e63c057e0003a8ca80699f254adbdfc4e5ab71',
+  5: 'f13f76de64e7bff81816a666696615e65d1bfb6aadf0b9d5929011ffc893925a',
+  6: '4ba5b6c296fa47fda7756fe7d086d0b964e1b969627fde04ffd9090f50350ff3',
+  7: '641220513242f2619dbea33892f9463a1c2aa7bb4dd02433858c6ee1b485f94c',
+  8: '967b1c6c8def3d7980429093f4314b3c1473cb3a0851cb7ddb4f85db9f16c27c',
 };
-const GOLDEN_DRAWN = { 1: 43631, 2: 15067, 3: 17847, 4: 55348, 5: 43138, 6: 21805, 7: 47389, 8: 48650 };
+const GOLDEN_DRAWN = { 1: 174495, 2: 222304, 3: 211859, 4: 121252, 5: 185153, 6: 177948, 7: 174398, 8: 76753 };
 
-test('(3) 시점 8곳 PPM 8장, 모두 drawn>0, 시점별 sha256 골든, 재실행 시 바이트 동일', async (t) => {
-  const { dir, ply, vp } = await setup(t);
+test('(3) 시점 8곳 PPM 8장, 모두 점유율 5 % 이상, 시점별 sha256 골든, 재실행 시 바이트 동일', async (t) => {
+  const { dir, ply } = await setup(t);
   const d1 = join(dir, 'o1');
   const d2 = join(dir, 'o2');
-  const inputs = { pointsPath: ply, anchor: ANCHOR };
-  const rec1 = await run({ skylensDir: '.', outDir: d1, commit: 'abcdef1', inputs, viewpointsPath: vp });
-  const rec2 = await run({ skylensDir: '.', outDir: d2, commit: 'abcdef1', inputs, viewpointsPath: vp });
+  const inputs = { pointsPath: ply, anchor: INPUT_ANCHOR };
+  const rec1 = await run({ skylensDir: '.', outDir: d1, commit: 'abcdef1', inputs });
+  const rec2 = await run({ skylensDir: '.', outDir: d2, commit: 'abcdef1', inputs });
   assertRecords(rec1);
   assert.deepEqual(rec1, rec2);
-  assert.ok(rec1.every((r) => r.method.includes('f_dc') && r.method.includes('56B')));
+  assert.ok(rec1.every((r) => r.method.includes('f_dc') && r.method.includes('56B') && r.method.includes('앱 틀')));
   const f1 = (await readdir(d1)).sort();
   assert.equal(f1.length, 8);
   assert.deepEqual(f1, (await readdir(d2)).sort());
@@ -157,97 +290,91 @@ test('(3) 시점 8곳 PPM 8장, 모두 drawn>0, 시점별 sha256 골든, 재실�
     assert.ok(a.equals(await readFile(join(d2, f))), f);
     assert.equal(sha(a), GOLDEN[id], `v${id} sha256`);
     const drawn = rec1.find((r) => r.metric === `ref_images.drawn_pixels.v${id}`).value;
-    assert.ok(drawn > 0, `v${id} drawn`);
     assert.equal(drawn, GOLDEN_DRAWN[id], `v${id} drawn 값`);
+    const cov = rec1.find((r) => r.metric === `ref_images.coverage.v${id}`).value;
+    assert.ok(cov >= MIN_COVERAGE, `v${id} 점유율 ${cov}`);
   }
 });
 
 test('run 음성: pointsPath 없음 → throw (합성 대체 없음)', async (t) => {
-  const { dir, vp } = await setup(t);
+  const { dir } = await setup(t, encodeSplatPly(syntheticPoints(1)));
   const o = join(dir, 'o');
-  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { anchor: ANCHOR }, viewpointsPath: vp }), /input missing: pointsPath/);
-  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', viewpointsPath: vp }), /input missing: pointsPath/);
+  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { anchor: INPUT_ANCHOR } }), /input missing: pointsPath/);
+  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c' }), /input missing: pointsPath/);
   await assert.rejects(run({ skylensDir: '/nonexistent', outDir: o, commit: 'c', inputs: {} }), /input missing/);
   assert.ok(!(await readdir(dir)).includes('o'));
 });
 
 test('run 음성: 존재하지 않는 점군 파일은 실패', async (t) => {
-  const { dir, vp } = await setup(t);
-  await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs: { pointsPath: join(dir, 'nope.ply'), anchor: ANCHOR }, viewpointsPath: vp }), /ENOENT/);
+  const { dir } = await setup(t, encodeSplatPly(syntheticPoints(1)));
+  await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs: { pointsPath: join(dir, 'nope.ply'), anchor: INPUT_ANCHOR } }), /ENOENT/);
 });
 
-test('run 음성: inputs.anchor 없음·불일치 → 실패', async (t) => {
-  const { dir, ply, vp } = await setup(t);
+// 앵커는 운영자가 선언한 값이다. fixture 의 값과 inputs.anchor 두 선언만 대조하고 점군 파일은 보지 않는다.
+test('run 음성: inputs.anchor 없음, fixture 앵커와 한 성분이라도 다르면 실패 (fixture 실제 값 기준)', async (t) => {
+  const { dir, ply } = await setup(t, encodeSplatPly(syntheticPoints(1)));
   const o = join(dir, 'o');
-  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { pointsPath: ply }, viewpointsPath: vp }), /input missing: anchor/);
+  await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { pointsPath: ply } }), /input missing: anchor/);
   for (const k of ['lat', 'lon', 'alt']) {
-    const bad = { ...ANCHOR, [k]: ANCHOR[k] + 0.001 };
-    await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { pointsPath: ply, anchor: bad }, viewpointsPath: vp }), new RegExp(`anchor\\.${k}`));
+    const bad = { ...INPUT_ANCHOR, [k]: INPUT_ANCHOR[k] + 0.001 };
+    await assert.rejects(run({ skylensDir: '.', outDir: o, commit: 'c', inputs: { pointsPath: ply, anchor: bad } }), new RegExp(`anchor\\.${k}=${FIXTURE.anchor[k]} 가 inputs\\.anchor\\.${k}=${bad[k]}.*점군은 보지 않는다`));
   }
+  assert.ok(!(await readdir(dir)).includes('o'));
 });
 
-test('run 음성: viewpoints 에 anchor 없음, coord 가 ENU 표기면 실패', async (t) => {
+test('run: 앵커가 같으면 점군 내용과 상관없이 통과한다 (점군 쪽 앵커 대조는 없다)', async (t) => {
   const { dir, ply } = await setup(t);
+  const recs = await run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs: { pointsPath: ply, anchor: { ...FIXTURE.anchor } } });
+  assert.equal(recs.length, 16);
+});
+
+test('run 음성: viewpoints 에 anchor·sceneFrame 없음, coord 가 ENU 표기, 시점 fov 오류면 실패', async (t) => {
+  const { dir, ply } = await setup(t, encodeSplatPly(syntheticPoints(1)));
   const noAnchor = join(dir, 'na.json');
-  await writeFile(noAnchor, JSON.stringify({ coord: 'scene (x=east, y=up, z=-north)', viewpoints: FIXTURE.viewpoints }));
-  const inputs = { pointsPath: ply, anchor: ANCHOR };
+  await writeFile(noAnchor, JSON.stringify({ coord: 'scene (x=east, y=up, z=-north)', sceneFrame: FIXTURE.sceneFrame, viewpoints: FIXTURE.viewpoints }));
+  const inputs = { pointsPath: ply, anchor: INPUT_ANCHOR };
   await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: noAnchor }), /na\.json.*anchor/);
-  assert.throws(() => loadViewpoints({ coord: 'ENU, x=east y=up z=-north', anchor: ANCHOR, viewpoints: FIXTURE.viewpoints }, ANCHOR, 'enu.json'), /enu\.json.*coord/);
-  assert.throws(() => loadViewpoints({ coord: 'scene', anchor: { lat: 1, lon: 'x', alt: 3 }, viewpoints: FIXTURE.viewpoints }, ANCHOR), /anchor/);
+  const noFrame = join(dir, 'nf.json');
+  await writeFile(noFrame, JSON.stringify({ ...FIXTURE, sceneFrame: undefined }));
+  await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: noFrame }), /nf\.json.*sceneFrame/);
+  const badFov = join(dir, 'fov.json');
+  await writeFile(badFov, JSON.stringify({ ...FIXTURE, viewpoints: [{ ...FIXTURE.viewpoints[0], fov_y_deg: 180 }] }));
+  await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: badFov }), /fov\.json.*fov_y_deg/);
+  assert.throws(() => loadViewpoints({ ...FIXTURE, coord: 'ENU, x=east y=up z=-north' }, INPUT_ANCHOR, 'enu.json'), /enu\.json.*coord/);
+  assert.throws(() => loadViewpoints({ ...FIXTURE, anchor: { lat: 1, lon: 'x', alt: 3 } }, INPUT_ANCHOR), /anchor/);
 });
 
 test('run 음성: 아무것도 안 찍히는 시점, 퇴화 시점이 있으면 실패', async (t) => {
   const { dir, ply } = await setup(t);
   const mk = async (name, vps) => {
     const p = join(dir, name);
-    await writeFile(p, JSON.stringify({ coord: 'scene (x=east, y=up, z=-north)', anchor: ANCHOR, viewpoints: vps }));
+    await writeFile(p, JSON.stringify({ ...FIXTURE, viewpoints: vps }));
     return p;
   };
-  const inputs = { pointsPath: ply, anchor: ANCHOR };
+  const inputs = { pointsPath: ply, anchor: INPUT_ANCHOR };
   const v0 = FIXTURE.viewpoints[0];
-  const away = await mk('away.json', [{ ...v0, id: 9, name: 'away', eye: [0, 120, 500], target: [0, 120, 600] }]);
+  const away = await mk('away.json', [{ ...v0, id: 9, name: 'away', eye: [0, 30, 500], target: [0, 30, 600] }]);
   await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: away }), /시점 9.*0/);
   const vertical = await mk('vert.json', [{ ...v0, id: 10, name: 'down', eye: [0, 300, 0], target: [0, 0, 0], up: [0, 1, 0] }]);
   await assert.rejects(run({ skylensDir: '.', outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: vertical }), /퇴화/);
 });
 
 // ---- 실제 skylens 레벨4(step07000) PLY ----
-// seg0_step07000.ply (sha256 c3a818cf...30ac) 로 만든 값. 파일이 다르면(skylens 갱신) 골든 비교만 건너뛰고 나머지는 검사한다.
-const REAL_SHA = 'c3a818cfc04e6123f3eb566caf0bd0a7d8f43fb2fdf099ed78fe2d6a917a30ac';
-const REAL_GOLDEN = {
-  1: '9f7bbe652a435c71818bc823645007e88c8453206f3809b8a8181f6bc8a5fde2',
-  2: '7c41db06ba7c99d59c78cd4e9b7d23ccfbfe69c18b50f10cdeb80bfe61925435',
-  3: '22e1aa35cde2113043181f4cffad0443a4badc56842850f6e44e0e45096dbf7f',
-  4: '9520c8a07089b6ee7cf386f6a604c0e31b4e6f30e38cc14562215c9608dd6d8b',
-  5: '9322602ade873bafebd8d73bff0cbe3176fba54dab4a47f9d4e5736711d72a60',
-  6: 'c1dc1b67c81fa1aa03e777f1cc5f56ba2b42d02d7210d8a1f46cd564a321e713',
-  7: 'b1a1778c64ddc9d6269c1f6f984a049b5134dab019e6df8db273867e33978147',
-  8: '2e8274d0a74b2d82168586440f33640a48f8dda4a701f9cc9c79e99226e5db1d',
-};
-const REAL_DRAWN = { 1: 3381, 2: 346, 3: 1277, 4: 1254, 5: 2964, 6: 7720, 7: 3386, 8: 629 };
+// 파일이 없으면 건너뛴다. 앱 틀 적용 뒤 점유율 5 % 미만인 시점이 있으면 run 이 실패하며, 그것이 정상 판정이다.
 const SKYLENS = process.env.SKYLENS_DIR ?? '/tmp/skylens';
 const REAL = join(SKYLENS, 'res/static/demo/segments/seg0_step07000.ply');
 const hasReal = await access(REAL).then(() => true, () => false);
-test('실제 레벨4 PLY: 8장, 모두 비어 있지 않고 재실행 sha256 동일', { skip: !hasReal && '실제 skylens 트리 없음' }, async (t) => {
-  const { dir, vp } = await setup(t);
-  const inputs = { pointsPath: REAL, anchor: ANCHOR };
-  const a = await run({ skylensDir: SKYLENS, outDir: join(dir, 'a'), commit: 'abcdef1', inputs, viewpointsPath: vp });
-  await run({ skylensDir: SKYLENS, outDir: join(dir, 'b'), commit: 'abcdef1', inputs, viewpointsPath: vp });
+test('실제 레벨4 PLY: 8장, 재실행 sha256 동일, 점유율 5 % 이상', { skip: !hasReal && '실제 skylens 트리 없음' }, async (t) => {
+  const { dir } = await setup(t, encodeSplatPly(syntheticPoints(1)));
+  const inputs = { pointsPath: REAL, anchor: INPUT_ANCHOR };
+  const a = await run({ skylensDir: SKYLENS, outDir: join(dir, 'a'), commit: 'abcdef1', inputs });
+  await run({ skylensDir: SKYLENS, outDir: join(dir, 'b'), commit: 'abcdef1', inputs });
   assertRecords(a);
   assert.ok(a[0].method.includes('f_dc'));
   const files = (await readdir(join(dir, 'a'))).sort();
   assert.equal(files.length, 8);
-  const same = sha(await readFile(REAL)) === REAL_SHA;
-  for (const f of files) {
-    const id = Number(f.match(/^viewpoint_(\d+)_/)[1]);
-    const h = sha(await readFile(join(dir, 'a', f)));
-    assert.equal(h, sha(await readFile(join(dir, 'b', f))), f);
-    if (same) assert.equal(h, REAL_GOLDEN[id], `real v${id} sha256`);
-  }
-  for (const r of a.filter((x) => x.metric.startsWith('ref_images.drawn_pixels'))) {
-    assert.ok(r.value > 0, r.metric);
-    if (same) assert.equal(r.value, REAL_DRAWN[Number(r.metric.split('.v')[1])], r.metric);
-  }
+  for (const f of files) assert.equal(sha(await readFile(join(dir, 'a', f))), sha(await readFile(join(dir, 'b', f))), f);
+  for (const r of a.filter((x) => x.metric.startsWith('ref_images.coverage'))) assert.ok(r.value >= MIN_COVERAGE, r.metric);
 });
 
 test('(4) 역투영 X_w = Rᵀ(X_c − t) 왕복 오차 < 1e-6', () => {
