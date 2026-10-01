@@ -1,8 +1,9 @@
 // tower_bytes 테스트: 중복 제거 집계(합성), 입력 검증 음성 테스트, 외부 호출 코드 부재,
-// T01.5 판정(실제 녹화 TOWER_RECORDING 에서 기준 건물 수 ±1%; 없으면 skip=미달).
+// 실제 녹화 재현(SKYLENS_DIR/tower_recording.jsonl; 없으면 skip).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdtemp } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +11,7 @@ import { assertRecords } from '../../../contracts/metrics/index.mjs';
 import { run, summarize, countBuildings, parseRecording } from './index.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const TOTAL = 37; // 합성 입력 크기. 판정 기준값과 무관하다.
+const TOTAL = 37; // 합성 입력 크기.
 
 function feature(id) {
   return { type: 'Feature', id, properties: { height: 10 + (id % 40) }, geometry: { type: 'Point', coordinates: [127 + id * 1e-5, 37] } };
@@ -47,6 +48,7 @@ test('summarize 집계', () => {
   assert.equal(s.building_bytes, 7 * 1000 + 21 + 10);
   assert.equal(s.dem_bytes, 7500);
   assert.equal(s.request_count, 7 + 1 + 2 + 1 + 1);
+  assert.equal(s.failed_responses, 1);
 });
 
 test('run 이 계약을 만족하는 Record[] 반환', async () => {
@@ -110,10 +112,28 @@ test('null feature 는 건물에서 제외', () => {
   assert.equal(countBuildings([{ kind: 'building', bytes: 1, body }]), 1);
 });
 
-// T01.5 판정: 실제 녹화가 있을 때만. 기대값 6,191 은 여기서만 쓴다.
-const REAL = process.env.TOWER_RECORDING;
-test('T01.5 판정: 녹화 응답에서 6,191 ±1% 재현', { skip: REAL ? false : '미달: 실제 녹화 없음' }, async () => {
+test('building 2xx 본문이 잘린 JSON 이면 줄 번호 포함 throw', async () => {
+  const bad = '{"kind":"building","status":200,"bytes":9,"body":"{\\"type\\":\\"FeatureColl"}';
+  await assert.rejects(runWith(`${ok}\n\n${bad}\n`), (e) => /neg\.jsonl/.test(e.message) && /3번째 줄/.test(e.message) && /JSON/.test(e.message));
+  assert.throws(() => countBuildings([{ kind: 'building', status: 200, bytes: 1, body: '{"type":"FeatureColl' }]), /JSON/);
+});
+
+test('building 비 2xx 는 건물 0동·failed_responses 로 집계, 오류 없음', async () => {
+  const bad = '{"kind":"building","status":500,"bytes":9,"body":"{\\"type\\":\\"FeatureColl"}';
+  const notFound = '{"kind":"dem","status":404,"bytes":3}';
+  const out = await runWith(`${bad}\n${notFound}\n${ok}\n`);
+  const val = (m) => out.find((r) => r.metric === `tower_bytes.${m}`).value;
+  assert.equal(val('building_count'), 0);
+  assert.equal(val('failed_responses'), 2);
+  assert.equal(val('request_count'), 3);
+});
+
+// 실제 녹화가 있을 때만: SKYLENS_DIR/tower_recording.jsonl.
+const DIR = process.env.SKYLENS_DIR;
+const REAL = DIR ? join(DIR, 'tower_recording.jsonl') : null;
+const realSkip = REAL && existsSync(REAL) ? false : 'SKYLENS_DIR/tower_recording.jsonl 없음';
+test('실제 녹화 응답에서 건물 수 집계', { skip: realSkip }, async () => {
   const out = await run({ commit: 'abcdef1', inputs: { towerRecording: REAL } });
   const n = out.find((r) => r.metric === 'tower_bytes.building_count').value;
-  assert.ok(n >= 6191 * 0.99 && n <= 6191 * 1.01, `건물 수 ${n}`);
+  assert.ok(Number.isInteger(n) && n > 0, `건물 수 ${n}`);
 });

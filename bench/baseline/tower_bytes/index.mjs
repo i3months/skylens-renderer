@@ -1,4 +1,4 @@
-// 관제탑 건물·지형 요청 수와 바이트 집계 (T01.5).
+// 관제탑 건물·지형 요청 수와 바이트 집계.
 // 녹화된 응답(JSON Lines)만 읽는다. 네트워크 호출은 하지 않는다.
 // 녹화 한 줄: {url, kind:'building'|'dem'|'imagery'|'other', status, bytes, body?}
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
@@ -32,19 +32,28 @@ export function parseRecording(text, name = '녹화') {
       throw new Error(`${name} ${idx + 1}번째 줄이 JSON 이 아니다`);
     }
     validateEntry(e, idx + 1, name);
+    Object.defineProperty(e, 'line', { value: idx + 1, enumerable: false });
+    if (e.kind === 'building' && !isFailed(e)) featuresOf(e, name); // 파싱 실패를 줄 번호와 함께 즉시 드러낸다
     entries.push(e);
   });
   if (entries.length === 0) throw new Error(`${name}: 항목이 0개다`);
   return entries;
 }
 
-function featuresOf(body) {
-  let b = body;
+/** status 가 정수이고 2xx 가 아니면 실패 응답이다. status 가 없는 항목은 실패로 세지 않는다. */
+function isFailed(e) {
+  return Number.isInteger(e.status) && (e.status < 200 || e.status >= 300);
+}
+
+/** 2xx 건물 응답의 features. 본문 문자열이 JSON 이 아니면 줄 번호와 함께 throw. */
+function featuresOf(e, name = '녹화') {
+  let b = e.body;
   if (typeof b === 'string') {
     try {
       b = JSON.parse(b);
     } catch {
-      return [];
+      const where = e.line ? `${name} ${e.line}번째 줄` : `${name} 건물 응답`;
+      throw new Error(`${where}: 건물 응답 본문이 JSON 이 아니다 (status ${e.status})`);
     }
   }
   return b && b.type === 'FeatureCollection' && Array.isArray(b.features) ? b.features : [];
@@ -55,8 +64,8 @@ export function countBuildings(entries) {
   const ids = new Set();
   let anonymous = 0;
   for (const e of entries) {
-    if (e.kind !== 'building') continue;
-    for (const f of featuresOf(e.body)) {
+    if (e.kind !== 'building' || isFailed(e)) continue; // 실패 응답은 건물을 더하지 않는다
+    for (const f of featuresOf(e)) {
       if (f === null || f === undefined) continue; // null feature 는 건물이 아니다
       const id = (f.id ?? (f.properties && f.properties.id));
       if (id === undefined || id === null) anonymous += 1;
@@ -79,6 +88,7 @@ export function summarize(entries) {
     imagery_bytes: sumBytes('imagery'),
     building_requests: entries.filter((e) => e.kind === 'building').length,
     dem_requests: entries.filter((e) => e.kind === 'dem').length,
+    failed_responses: entries.filter(isFailed).length,
   };
 }
 
@@ -97,6 +107,7 @@ export async function run({ outDir, commit, inputs } = {}) {
     rec('request_count', s.request_count, 'count'),
     rec('building_requests', s.building_requests, 'count'),
     rec('dem_requests', s.dem_requests, 'count'),
+    rec('failed_responses', s.failed_responses, 'count'),
   ]);
   if (outDir) {
     await mkdir(outDir, { recursive: true });
