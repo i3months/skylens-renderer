@@ -33,9 +33,10 @@ test('rejects unknown property type', () => {
 });
 test('rejects missing, negative and non-numeric vertex count; zero vertices without properties', () => {
   assert.throws(() => parsePlyHeader(hdr(0, '')), /no properties/);
-  assert.throws(() => parsePlyHeader(hdr(-1)), /vertex/);
-  assert.throws(() => parsePlyHeader(raw(['ply', FMT, ...XYZ, 'end_header'])), /vertex/);
-  assert.throws(() => parsePlyHeader(hdr('abc')), /vertex/);
+  assert.throws(() => parsePlyHeader(hdr(-1)), /element vertex missing/);
+  assert.throws(() => parsePlyHeader(raw(['ply', FMT, ...XYZ, 'end_header'])), /element vertex missing/);
+  assert.throws(() => parsePlyHeader(hdr('abc')), /element vertex missing/);
+  assert.throws(() => parsePlyHeader(hdr(1.5)), /element vertex missing/);
 });
 test('rejects a vertex element without properties (stride 0) for any count', () => {
   for (const n of [1, 1000000]) {

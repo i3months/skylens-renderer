@@ -15,6 +15,9 @@ import { assertRecords, serialize } from '../../../contracts/metrics/index.mjs';
 import { parsePlyHeader } from '../../../contracts/ply/index.mjs';
 import { STEP_LEVEL } from '../../../contracts/inputs/index.mjs';
 
+// 27 B/점 은 renderer_basis §7-4 의 점 저장 형식(x y z f32×3 + 법선 nx ny nz f32×3 + 색 r g b u8×3 = 12+12+3)에서 온 기대값이다.
+// 실제 데모 자산은 법선 없이 float32×14 = 56 B/점 인 PLY 라 이 형식에서 이탈한다(assumed_stride_matches = 0).
+// 기대값에 맞추려고 측정을 바꾸지 않고, 실측 stride 와 이탈 사실을 method 에 그대로 적는다.
 export const ASSUMED_STRIDE = 27;
 export const LEVELS = [0, 1, 2, 3];
 const NAME_RE = /^seg(\d+)_step(\d+)\.ply$/;
@@ -29,7 +32,9 @@ export function strideText(hdr) {
     else groups.push({ type: p.type, n: 1 });
   }
   const props = groups.map((g) => `${g.type}×${g.n}`).join(' + ');
-  const rel = hdr.stride === ASSUMED_STRIDE ? `기대 ${ASSUMED_STRIDE} B 와 일치` : `기대 ${ASSUMED_STRIDE} B 와 불일치`;
+  const rel = hdr.stride === ASSUMED_STRIDE
+    ? `기대 ${ASSUMED_STRIDE} B 와 일치`
+    : `기대 ${ASSUMED_STRIDE} B 와 불일치: renderer_basis §7-4 점 형식(xyz+법선+rgb) 이탈`;
   return `${hdr.stride} B/점 (${props}; ${rel})`;
 }
 
