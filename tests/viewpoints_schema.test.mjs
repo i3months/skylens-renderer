@@ -25,8 +25,9 @@ test('viewpoints_anchor_exists_and_in_range', () => {
 
 // 좌표계 문구의 의미 단위 검사. 문구가 달라도 아래 사실을 말하면 통과하고, 오도하면 실패한다.
 //  1) scene 좌표로 시작, 2) sceneFrame 정규화 틀을 가리킴, 3) GeoAnchor/ENU 가 아님을 밝힘, 4) 1 unit = 1 m 라고 하지 않음.
-const NEG = /(GeoAnchor|ENU).{0,30}(아님|아니|무관|not\b)/i;
-const CLAIMS_METRIC = /1\s*unit\s*=\s*1\s*(m\b|미터|meter)/i;
+// 부정어는 GeoAnchor/ENU 바로 뒤(조사·'원점'·짝 용어만 사이에 허용)에 붙어야 한다. 거리 창으로 보면 '원점은 GeoAnchor ENU 원점이며 ... 아니다' 같은 긍정문이 통과한다.
+const NEG = /(GeoAnchor|ENU)(?:\s*(?:의|와|과|가|이|은|는|원점|ENU|GeoAnchor))*\s*(?:아님|아니|무관|not\b)/i;
+const CLAIMS_METRIC = /1\s*unit\s*(?:=|은|는|이)\s*1\s*(?:m\b|미터|meter)(?!\s*(?:가|이)?\s*아니)/i;
 function coordProblems(text) {
   const out = [];
   if (typeof text !== 'string' || !/^scene\b/.test(text)) out.push('scene 으로 시작하지 않음');
@@ -59,6 +60,10 @@ test('viewpoints_coord_rewording_passes_misleading_fails', () => {
   assert.ok(coordProblems('scene (y=up; GeoAnchor ENU 아님)').some((m) => /sceneFrame/.test(m)));
   assert.ok(coordProblems('scene (sceneFrame 정규화 틀의 원점의 GeoAnchor)').length > 0);
   assert.ok(coordProblems(undefined).length > 0);
+  // 음성: 부정어가 멀리 있는 긍정문, 서술형 1 unit = 1 m 주장
+  assert.ok(coordProblems('scene (sceneFrame; 원점은 GeoAnchor ENU 원점이며 y=up 이고 축척은 맞춰져 있어 아니다)').some((m) => /아님을 밝히지/.test(m)));
+  assert.ok(coordProblems('scene (sceneFrame; 1 unit 은 1 m 이다; GeoAnchor ENU 아님)').some((m) => /1 m/.test(m)));
+  assert.deepEqual(coordProblems('scene, sceneFrame 기준. 1 unit 은 1 m 가 아니다. 원점은 GeoAnchor ENU 원점이 아니다.'), []);
 });
 
 test('viewpoints_eight_unique_ids', () => {
