@@ -10,6 +10,7 @@
 //   이 때문에 구간 하나뿐인 relay 를 여러 번 재생한 녹화([r40, r40])는 한 회차의 분할 프레임과 녹화만으로 구분할 수 없다.
 //   원본 없는 수준에서 이렇게 이어 붙인 회차가 있으면 run 이 method 에 그 모호성을 적는다.
 //   resend 프레임은 같은 구간 원본의 분할 연속을 끊는다(뒤에 온 같은 수준 원본은 stale).
+//   원본의 stale 판정은 재전송으로 받은 수준까지 포함한 최고 수준 기준이다(더 높은 수준 resend 뒤의 낮은 수준 원본은 stale).
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -57,9 +58,11 @@ const asc = (a, b) => a - b;
  * - segments: 구간 ID 별로 실제 받은 수준의 바이트 합 (ID 오름차순). 빠진 수준은 오류가 아니라 기록 대상이다.
  * - segment_levels: 구간별 받은 수준 (프로토콜 번호). segment_levels_skipped: 원본으로 받은 최고 수준보다 낮은데
  *   받지 못한 수준 (프로토콜 번호). 재전송 프레임만으로 생긴 최고 수준 때문에 생기는 공백은 건너뜀이 아니다.
- * - stale_levels: 도착 순서상 그 구간에서 원본(resend 아닌) 프레임으로 이미 받은 최고 수준 이하가 resend 표시 없이 다시 온 프레임 수.
- *   resend 프레임은 이 최고 수준에 들어가지 않으므로 재전송 뒤에 온 원본은 stale 이 아니다.
+ * - stale_levels: resend 표시 없이 온 원본 프레임 중 도착 시점에 그 구간에서 이미 받은 최고 수준(rhi, 재전송 포함)보다
+ *   낮은 수준이거나, 원본으로 받은 최고 수준과 같은데 분할 연속이 끊긴 프레임 수.
+ *   그래서 같은 수준 resend 뒤에 온 원본은 stale 이 아니지만 더 높은 수준 resend 뒤에 온 낮은 수준 원본은 stale 이다.
  *   같은 수준이 다른 수준 프레임 없이 연속으로 오면 분할 프레임이라 세지 않는다.
+ *   stale 원본의 final 은 완결 판정에 쓰지 않는다(추월당한 수준은 그 구간을 완결시키지 못한다).
  * - 같은 (구간,수준)의 resend 프레임은 원본이 녹화에 있으면 합에 넣지 않고 resend_bytes 로 센다.
  *   원본이 없으면 추월되지 않은 첫 회차(녹화 전체에서 바로 이어진 같은 (구간,수준) 재전송 프레임들)만 유일한 사본으로
  *   합에 넣고 나머지 회차는 resend_bytes.
@@ -67,7 +70,8 @@ const asc = (a, b) => a - b;
  *   추월되지 않은 resend 회차(원본 없는 수준이면 합에 들어가는 첫 회차)의 수준으로 올라가므로, 높은 수준이 원본이든
  *   재전송이든 추월 판정이 같다. skylens 보드는 수준을 교체하며 추월당한 수준은 건너뛰므로 받은 수준이 아니다.
  *   합·받은 수준에서 빼 resend_bytes 로 세고, 원본 최고 수준보다 낮은 그 수준은 건너뜀에 들어간다.
- * - resend_merged_rounds: 원본 없는 수준에서 연속 resend 프레임 여러 개를 한 회차로 이어 붙인 회차 수(모호성 표시용).
+ * - resend_merged_rounds: 완결 구간의 원본 없는 수준에서 연속 resend 프레임 여러 개를 한 회차로 이어 붙인 회차 수
+ *   (모호성 표시용, 프레임 수와 무관하게 회차당 1). 미완 구간은 segments 에 들어가지 않으므로 세지 않는다.
  * - resend_only_segments: 원본 프레임이 하나도 없는 구간 ID (오름차순).
  * - 모든 바이트 합은 total_bytes 의 부분합이므로 total_bytes 가 safe integer 를 넘으면 오류를 던진다.
  *   total_bytes·by_kind·windows 에는 항상 포함한다.
@@ -75,10 +79,10 @@ const asc = (a, b) => a - b;
  * - incomplete_segments: 위치와 무관한 모든 미완 구간(도착 순서). segments 에는 완결 구간만 남는다.
  * - top_level_assumed: final 필드 없이 topLevel 기본값을 썼는지(run 이 method 에 경고로 남김).
  * - top_level_ignored: final 필드가 있어 주어진 topLevel 을 완결 판정에 쓰지 않았는지(run 이 method 에 남김).
- * - 완결 판정: 녹화에 final 필드가 하나라도 있으면 구간에 final:true 원본(resend 아닌) 프레임이 있을 때.
- *   resend 프레임의 final 은 보지 않으므로 resend 전용 구간은 이 경우 미완이다.
- *   final 필드가 없으면 받은 수준(위 규칙으로 합에 들어간 수준)이 topLevel 이상일 때. 원본 없는 relay 재생 녹화는
- *   final 필드가 없을 때만 재전송 사본으로 완결될 수 있다(resend_only_segments 로 표시, run 이 method 에 남김).
+ * - 완결 판정: 원본(resend 아닌) 프레임에 final 필드가 하나라도 있으면 구간에 stale 아닌 final:true 원본 프레임이 있을 때.
+ *   final 필드가 resend 프레임에만 있으면 원본 구간은 topLevel 로 판정한다(resend 프레임의 final 은 보지 않는다).
+ *   그 밖에는 받은 수준(위 규칙으로 합에 들어간 수준)이 topLevel 이상일 때. resend 전용 구간은 녹화에 final 필드가
+ *   하나도 없을 때만 재전송 사본으로 완결될 수 있다(resend_only_segments 로 표시, run 이 method 에 남김).
  *   도착 순서상 끝에서부터 이어지는 미완 구간은 trailing_segments 로도 낸다
  *   (trailing_segment 는 그중 마지막 도착 구간, 없으면 null). 구간 도착 순서는 원본(resend 아닌) 프레임의 마지막 도착 기준이다.
  * - windows: windowMs 시간 창별 바이트 합 (트래픽이 있는 창만, 창 번호 오름차순).
@@ -93,7 +97,8 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
   let initialSum = 0;
   let stale = 0;
   let staleBytes = 0;
-  let anyFinal = false;
+  let anyFinal = false; // 원본 프레임에 final 필드가 있음
+  let anyFinalField = false; // 어떤 segment 프레임에든 final 필드가 있음
   const byKind = Object.create(null);
   // 구간 ID -> { perLevel: 수준 -> { orig, resend: [회차 { bytes: 프레임 바이트 배열, overtaken }] },
   //            hi(원본으로 받은 최고 수준), rhi(원본·추월되지 않은 재전송으로 받은 최고 수준), last(분할 연속 중인 원본 수준, 끊기면 -1), order, final(원본 final) }
@@ -115,13 +120,16 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
     const continuesRound = key !== null && key === prevResendKey;
     prevResendKey = key;
     if (f.segment === undefined) return;
-    if (f.final !== undefined) anyFinal = true;
+    if (f.final !== undefined) {
+      anyFinalField = true;
+      if (f.resend !== true) anyFinal = true;
+    }
     const s = segMap.get(f.segment) ?? { perLevel: new Map(), hi: -1, rhi: -1, last: -1, order: -1, lastIdx: -1, final: false };
     segMap.set(f.segment, s);
     const v = s.perLevel.get(f.level) ?? { orig: { n: 0, bytes: 0 }, resend: [] };
     s.perLevel.set(f.level, v);
     if (f.resend === true) {
-      // 녹화 전체에서 바로 앞 프레임이 같은 (구간,수준) resend 일 때만 같은 회차. stale 판정 최고 수준(hi)에는 넣지 않는다.
+      // 녹화 전체에서 바로 앞 프레임이 같은 (구간,수준) resend 일 때만 같은 회차. 원본 최고 수준(hi)에는 넣지 않는다.
       // 도착 시점에 이미 받은 최고 수준(rhi, 재전송으로만 받은 수준 포함)보다 낮으면 추월된 회차.
       // 같은 회차 안에서는 rhi 가 바뀌지 않는다(회차 첫 프레임에서 이미 반영).
       if (continuesRound) v.resend[v.resend.length - 1].bytes.push(f.bytes);
@@ -134,8 +142,9 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
       // 재전송은 같은 구간 원본의 분할 연속을 끊는다.
       s.last = -1;
     } else {
-      if (f.final === true) s.final = true;
-      const isStale = f.level < s.hi || (f.level === s.hi && s.last !== f.level);
+      // 추월 기준은 재전송으로 받은 수준까지 포함한 rhi, 같은 수준 분할 연속은 원본 최고 수준(hi)과 last 로 본다.
+      const isStale = f.level < s.rhi || (f.level === s.hi && s.last !== f.level);
+      if (f.final === true && !isStale) s.final = true;
       s.hi = Math.max(s.hi, f.level);
       s.rhi = Math.max(s.rhi, f.level);
       s.last = f.level;
@@ -155,11 +164,11 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
   for (const s of segMap.values()) if (s.order < 0) s.order = s.lastIdx;
   const allIds = [...segMap.keys()].sort(asc);
   // (구간,수준) 별 최종 바이트: 원본이 있으면 원본 합, 없으면 추월되지 않은 첫 재전송 회차.
-  let mergedRounds = 0;
   const effMap = new Map();
   for (const [id, s] of segMap) {
     const out = new Map();
     let resend = 0;
+    let merged = 0;
     for (const [l, v] of s.perLevel) {
       const all = sum(v.resend.map((r) => sum(r.bytes)));
       if (v.orig.n > 0) {
@@ -173,18 +182,20 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
         resend += all;
         continue;
       }
-      if (pick.bytes.length > 1) mergedRounds += 1;
+      if (pick.bytes.length > 1) merged += 1;
       out.set(l, sum(pick.bytes));
       resend += all - sum(pick.bytes);
     }
-    effMap.set(id, { out, resend });
+    effMap.set(id, { out, resend, merged });
   }
   const effective = (id) => effMap.get(id);
+  const resendOnly = (id) => [...segMap.get(id).perLevel.values()].every((v) => v.orig.n === 0);
   const complete = (id) => {
+    if (resendOnly(id) && anyFinalField) return false;
     if (anyFinal) return segMap.get(id).final;
     return [...effMap.get(id).out.keys()].some((l) => l >= topLevel);
   };
-  const resendOnlyIds = allIds.filter((id) => [...segMap.get(id).perLevel.values()].every((v) => v.orig.n === 0));
+  const resendOnlyIds = allIds.filter(resendOnly);
   // 도착 순서 끝에서부터 이어지는 미완 구간.
   const arrival = [...allIds].sort((a, b) => segMap.get(a).order - segMap.get(b).order);
   const trailingIds = new Set();
@@ -202,10 +213,12 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
   const segLevels = [];
   const segSkipped = [];
   let resendBytes = 0;
+  let mergedRounds = 0;
   for (const id of allIds) {
     const e = effective(id);
     resendBytes += e.resend;
     if (!complete(id)) continue;
+    mergedRounds += e.merged;
     const got = [...e.out.keys()].sort(asc);
     const origLevels = [...segMap.get(id).perLevel].filter(([, v]) => v.orig.n > 0).map(([l]) => l);
     // 건너뜀 기준 top 은 rhi 가 아니라 원본 최고 수준이다. 재접속 스냅샷은 현재 수준만 다시 보내므로 재전송으로만 받은
@@ -293,7 +306,8 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
     ? ` 참고: 원본 없는 연속 resend ${s.resend_merged_rounds}회차를 한 회차의 분할로 합산 (구간 하나뿐인 relay 반복 재생과 녹화만으로 구분 불가)`
     : '';
   // 원본이 없는 구간이 재전송 사본만으로 완결 처리되었으면 남긴다(final 필드 없는 녹화에서만 가능).
-  const onlyDone = s.resend_only_segments.filter((id) => s.segment_ids.includes(id)).length;
+  const doneIds = new Set(s.segment_ids);
+  const onlyDone = s.resend_only_segments.filter((id) => doneIds.has(id)).length;
   const resendOnly = onlyDone ? ` 참고: 원본 없는 resend 전용 구간 ${onlyDone}개를 재전송 사본으로 집계` : '';
   const mSeg = `ws_recording_replay by_segment_id${warn}${ambiguous}${resendOnly}`;
   const mWin = `ws_recording_replay window_ms=${DEFAULT_WINDOW_MS}${warn}`;
