@@ -1,24 +1,34 @@
 // 기준 이미지 생성기 (T01.8). T06 이전의 임시 CPU 점 래스터라이저다.
 // 순수 점 투영만 한다: 뒷면 제거, 보간, 구멍 메우기 없음 (RULES 1.2).
+// 입력은 원본 점군 PLY(inputs.pointsPath)가 필수다. 없으면 throw 하며 합성 점군으로 대체하지 않는다.
 //
-// 카메라 규약 (OpenGL 식):
-//   - 좌표계는 ENU, x=동 y=위 z=-북, 1 unit = 1 m.
-//   - 카메라는 자기 -z 방향을 본다. 카메라 좌표 X_c = R·X_w + t.
-//   - R 의 행: x_c = normalize(up × z_c), y_c = z_c × x_c, z_c = normalize(eye − target).
-//     t = −R·eye.  따라서 눈 앞의 점은 X_c.z < 0 이다. 깊이 d = −X_c.z.
+// 좌표 규약:
+//   - 씬 좌표: x=동, y=위, z=-북, 1 unit = 1 m (로컬 ENU 에서 변환한 값. ENU 자체가 아니다).
+//     원점의 GeoAnchor {lat,lon,alt} 는 viewpoints.json 의 anchor 이고 inputs.anchor 와 같아야 한다.
+//   - 이 파일의 카메라는 OpenGL 식(GL)이다: 카메라는 자기 -z 를 보고 +y 가 위이며, 눈 앞 점은 X_c.z < 0, 깊이 d = −X_c.z.
+//     renderer_basis §2 의 OpenCV 식은 +z 가 시선, +y 가 아래, d = X_c.z 이다.
+//     두 규약은 X_cv = diag(1,−1,−1)·X_gl 로 변환된다 (y, z 부호 반전). 식 이름이 같아도 부호가 다르니 섞지 말 것.
+//   - 카메라 좌표 X_c = R·X_w + t.
+//     R 의 행: x_c = normalize(up × z_c), y_c = z_c × x_c, z_c = normalize(eye − target). t = −R·eye.
 //   - 내부 행렬 K: f = (H/2)/tan(fov_y/2), c = (W/2, H/2).
-//   - 화면 좌표: u = cx + f·x_c/d, v = cy − f·y_c/d (v 는 아래로 증가).
+//   - 화면 좌표(GL): u = cx + f·x_c/d, v = cy − f·y_c/d (v 는 아래로 증가).
+//     OpenCV 로 쓰면 X_cv = diag(1,−1,−1)·X_c 이므로 u = cx + f·X_cv.x/X_cv.z, v = cy + f·X_cv.y/X_cv.z 로 같은 결과다.
 //   - 픽셀 (i,j) 는 [i,i+1)×[j,j+1) 구간이다. 점은 floor(u), floor(v) 픽셀에 찍힌다.
 //     그래서 주 점(cx,cy)은 픽셀 (W/2, H/2) 에 찍힌다 (W, H 짝수).
 //   - 점 크기 1 픽셀, z-버퍼로 가장 가까운(d 최소) 점 하나만 남긴다. 같은 깊이면 먼저 온 점이 이긴다.
 //
-// 입력 점 형식 (27 B, little-endian): x y z f32×3, nx ny nz f32×3, r g b u8×3.
+// 입력 점 형식: binary_little_endian PLY. 헤더는 contracts/ply 의 parsePlyHeader 로 읽는다.
+//   - 56 B 3DGS 스플랫(x y z f_dc_0..2 opacity scale_0..2 rot_0..3, float32×14): 중심 x y z 와
+//     f_dc 색(rgb = clamp(0.5 + 0.28209479·f_dc, 0, 1)·255)만 쓴다. opacity·scale·rot 는 쓰지 않는다.
+//   - x y z float32 + red green blue uchar 인 일반 점군도 읽는다.
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parsePlyHeader } from '../../../contracts/ply/index.mjs';
+import { requireInput } from '../../../contracts/inputs/index.mjs';
 
-export const POINT_BYTES = 27;
+export const SH_C0 = 0.28209479177387814;
 export const BACKGROUND = [0, 0, 0]; // 배경 고정색 (검정)
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -33,8 +43,15 @@ const norm = (a) => {
 
 /** 시점에서 R(행 우선 3x3, 길이 9)과 t(길이 3)를 만든다. */
 export function cameraExtrinsics({ eye, target, up }) {
-  const zc = norm(sub(eye, target));
-  const xc = norm(cross(up, zc));
+  for (const v of [eye, target, up]) {
+    if (!Array.isArray(v) || v.length !== 3 || !v.every(Number.isFinite)) throw new Error('카메라: eye/target/up 은 유한한 3-벡터여야 한다');
+  }
+  const ze = sub(eye, target);
+  if (Math.hypot(...ze) < 1e-9) throw new Error('퇴화 카메라: eye 와 target 이 같다');
+  const zc = norm(ze);
+  const xr = cross(up, zc);
+  if (Math.hypot(...up) < 1e-9 || Math.hypot(...xr) < 1e-6 * Math.hypot(...up)) throw new Error('퇴화 카메라: up 이 시선과 평행하다');
+  const xc = norm(xr);
   const yc = cross(zc, xc);
   const R = [...xc, ...yc, ...zc];
   const t = [
@@ -105,86 +122,101 @@ export function rasterize({ positions, colors, count }, view) {
   return { rgb, drawn, width: W, height: H };
 }
 
-/** 27 B 점 버퍼를 읽는다. */
-export function decodePoints(buf) {
-  if (buf.length % POINT_BYTES !== 0) throw new Error(`점 버퍼 길이 ${buf.length} 가 ${POINT_BYTES} 의 배수가 아니다`);
-  const count = buf.length / POINT_BYTES;
+const TYPE_READ = { float: 'readFloatLE', float32: 'readFloatLE', double: 'readDoubleLE', float64: 'readDoubleLE' };
+
+/**
+ * binary_little_endian PLY 를 읽어 {positions, colors, count, layout} 로 돌려준다.
+ * name 은 오류 메시지용 파일 이름. 헤더가 모자라거나 크기가 어긋나면 파일 이름을 넣어 throw 한다.
+ */
+export function decodePly(buf, name = '<buffer>') {
+  let h;
+  try {
+    h = parsePlyHeader(buf);
+  } catch (e) {
+    throw new Error(`${name}: ${e.message}`);
+  }
+  const expect = h.headerBytes + h.stride * h.vertexCount;
+  if (buf.length !== expect) throw new Error(`${name}: 크기 ${buf.length} B 가 헤더 ${h.headerBytes} + ${h.stride}×${h.vertexCount} = ${expect} B 와 다르다`);
+  const off = {};
+  let o = 0;
+  const SIZE = { char: 1, uchar: 1, int8: 1, uint8: 1, short: 2, ushort: 2, int16: 2, uint16: 2, int: 4, uint: 4, int32: 4, uint32: 4, float: 4, float32: 4, double: 8, float64: 8 };
+  for (const p of h.properties) {
+    off[p.name] = { at: o, type: p.type };
+    o += SIZE[p.type];
+  }
+  for (const k of ['x', 'y', 'z']) {
+    if (!off[k] || !TYPE_READ[off[k].type]) throw new Error(`${name}: 헤더에 float 속성 ${k} 가 없다`);
+  }
+  const f = (rec, k) => buf[TYPE_READ[off[k].type]](rec + off[k].at);
+  let layout;
+  if (off.f_dc_0 && off.f_dc_1 && off.f_dc_2) {
+    for (const k of ['f_dc_0', 'f_dc_1', 'f_dc_2']) if (!TYPE_READ[off[k].type]) throw new Error(`${name}: ${k} 가 float 이 아니다`);
+    layout = 'splat-f_dc';
+  } else if (off.red && off.green && off.blue && [off.red, off.green, off.blue].every((q) => q.type === 'uchar' || q.type === 'uint8')) {
+    layout = 'rgb-u8';
+  } else {
+    throw new Error(`${name}: 색 속성(f_dc_0..2 또는 uchar red green blue)이 없다`);
+  }
+  const count = h.vertexCount;
   const positions = new Float32Array(count * 3);
   const colors = new Uint8Array(count * 3);
+  const clamp8 = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255);
   for (let i = 0; i < count; i++) {
-    const o = i * POINT_BYTES;
-    positions[i * 3] = buf.readFloatLE(o);
-    positions[i * 3 + 1] = buf.readFloatLE(o + 4);
-    positions[i * 3 + 2] = buf.readFloatLE(o + 8);
-    colors[i * 3] = buf[o + 24];
-    colors[i * 3 + 1] = buf[o + 25];
-    colors[i * 3 + 2] = buf[o + 26];
-  }
-  return { positions, colors, count };
-}
-
-/** 점 목록을 27 B 형식으로 인코딩한다. 점은 {p:[x,y,z], n:[nx,ny,nz], rgb:[r,g,b]}. */
-export function encodePoints(points) {
-  const buf = Buffer.alloc(points.length * POINT_BYTES);
-  points.forEach((q, i) => {
-    const o = i * POINT_BYTES;
-    q.p.forEach((v, k) => buf.writeFloatLE(v, o + k * 4));
-    (q.n ?? [0, 1, 0]).forEach((v, k) => buf.writeFloatLE(v, o + 12 + k * 4));
-    q.rgb.forEach((v, k) => (buf[o + 24 + k] = v));
-  });
-  return buf;
-}
-
-/** 시드 고정 합성 점군 (mulberry32). 지면 격자 + 기둥 + 무작위 구름. 결정적이다. */
-export function syntheticPoints(seed = 1) {
-  let a = seed >>> 0;
-  const rnd = () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-  const pts = [];
-  for (let x = -200; x <= 200; x += 2) {
-    for (let z = -200; z <= 200; z += 2) {
-      pts.push({ p: [x, 0, z], n: [0, 1, 0], rgb: [90 + ((x + 200) % 100), 120, 90 + ((z + 200) % 100)] });
+    const rec = h.headerBytes + i * h.stride;
+    positions[i * 3] = f(rec, 'x');
+    positions[i * 3 + 1] = f(rec, 'y');
+    positions[i * 3 + 2] = f(rec, 'z');
+    if (layout === 'splat-f_dc') {
+      for (let c = 0; c < 3; c++) colors[i * 3 + c] = clamp8(0.5 + SH_C0 * f(rec, `f_dc_${c}`));
+    } else {
+      colors[i * 3] = buf[rec + off.red.at];
+      colors[i * 3 + 1] = buf[rec + off.green.at];
+      colors[i * 3 + 2] = buf[rec + off.blue.at];
     }
   }
-  for (let k = 0; k < 40; k++) {
-    const bx = (rnd() - 0.5) * 300;
-    const bz = (rnd() - 0.5) * 300;
-    const h = 5 + rnd() * 40;
-    for (let y = 0; y < h; y += 0.5) pts.push({ p: [bx, y, bz], n: [1, 0, 0], rgb: [200, 100 + Math.floor(rnd() * 100), 60] });
-  }
-  for (let k = 0; k < 20000; k++) {
-    pts.push({
-      p: [(rnd() - 0.5) * 800, rnd() * 300, (rnd() - 0.5) * 800],
-      n: [0, 0, 1],
-      rgb: [Math.floor(rnd() * 256), Math.floor(rnd() * 256), Math.floor(rnd() * 256)],
-    });
-  }
-  return pts;
+  return { positions, colors, count, layout, stride: h.stride };
 }
 
 export function encodePPM(rgb, width, height) {
   return Buffer.concat([Buffer.from(`P6\n${width} ${height}\n255\n`, 'ascii'), rgb]);
 }
 
+const sameNum = (a, b) => typeof a === 'number' && typeof b === 'number' && a === b;
+
+/** viewpoints.json 을 읽고 coord·anchor 를 검증한다. anchor 가 inputs.anchor 와 다르면 throw. */
+export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
+  if (typeof json.coord !== 'string' || !/^scene\b/.test(json.coord)) throw new Error(`${name}: coord 는 "scene (x=east, y=up, z=-north) ..." 로 시작해야 한다 (현재 ${JSON.stringify(json.coord)})`);
+  const a = json.anchor;
+  if (!a || !['lat', 'lon', 'alt'].every((k) => Number.isFinite(a[k]))) throw new Error(`${name}: anchor {lat,lon,alt} 가 없거나 숫자가 아니다`);
+  for (const k of ['lat', 'lon', 'alt']) {
+    if (!sameNum(a[k], anchor[k])) throw new Error(`${name}: anchor.${k}=${a[k]} 가 inputs.anchor.${k}=${anchor[k]} 와 다르다`);
+  }
+  if (!Array.isArray(json.viewpoints) || json.viewpoints.length === 0) throw new Error(`${name}: viewpoints 가 비어 있다`);
+  return json.viewpoints;
+}
+
 /**
- * 시점 8곳의 PPM(P6)을 outDir 에 쓴다. 파일 이름 viewpoint_<id>_<name>.ppm.
- * pointsPath 가 없으면 합성 점군(시드 1)을 쓴다. skylensDir 은 읽지 않는다.
+ * 시점마다 PPM(P6)을 outDir 에 쓴다. 파일 이름 viewpoint_<id>_<name>.ppm.
+ * inputs.pointsPath(PLY)와 inputs.anchor 가 필수다. 없으면 throw (합성 대체 없음).
+ * 어느 시점이든 drawn == 0 이거나 카메라가 퇴화면 throw 한다.
+ * viewpointsPath 는 테스트용 덮어쓰기이고 기본은 fixtures/viewpoints/viewpoints.json.
  */
-export async function run({ skylensDir, outDir, commit, pointsPath }) {
+export async function run({ skylensDir, outDir, commit, inputs, viewpointsPath = VIEWPOINTS_PATH }) {
   void skylensDir;
-  const vps = JSON.parse(await readFile(VIEWPOINTS_PATH, 'utf8')).viewpoints;
-  const pts = pointsPath ? decodePoints(await readFile(pointsPath)) : decodePoints(encodePoints(syntheticPoints(1)));
+  const pointsPath = requireInput(inputs, 'pointsPath');
+  const anchor = requireInput(inputs, 'anchor');
+  const vps = loadViewpoints(JSON.parse(await readFile(viewpointsPath, 'utf8')), anchor, viewpointsPath);
+  const bytes = await readFile(pointsPath);
+  const pts = decodePly(bytes, pointsPath);
   await mkdir(outDir, { recursive: true });
   const device = 'cpu-node-point-raster';
-  const method = pointsPath ? 'ref_images: 27B 점 파일, 순수 점 투영 z-버퍼' : 'ref_images: 합성 점군(seed=1), 순수 점 투영 z-버퍼';
+  const method = pts.layout === 'splat-f_dc'
+    ? `ref_images: PLY ${pts.stride}B 스플랫 ${pts.count}점, 중심 x y z·f_dc 색(0.5+0.28209479·f_dc) 사용(opacity·scale·rot 무시), 순수 점 투영 z-버퍼`
+    : `ref_images: PLY ${pts.stride}B 점 ${pts.count}개, x y z·uchar rgb, 순수 점 투영 z-버퍼`;
   const records = [];
   for (const vp of vps) {
     const r = rasterize(pts, vp);
+    if (!(r.drawn > 0)) throw new Error(`시점 ${vp.id} ${vp.name}: 찍힌 픽셀이 0 이다 (점군과 시점이 맞지 않음)`);
     await writeFile(join(outDir, `viewpoint_${vp.id}_${vp.name}.ppm`), encodePPM(r.rgb, r.width, r.height));
     records.push({ metric: `ref_images.drawn_pixels.v${vp.id}`, value: r.drawn, unit: 'count', device, method, commit });
     records.push({ metric: `ref_images.coverage.v${vp.id}`, value: r.drawn / (r.width * r.height), unit: 'ratio', device, method, commit });

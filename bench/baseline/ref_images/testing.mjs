@@ -1,0 +1,42 @@
+// 테스트 전용 도우미: 합성 점군과 56 B 스플랫 PLY 작성기. run() 경로에서는 쓰지 않는다.
+import { SH_C0 } from './index.mjs';
+
+/** 시드 고정 합성 점군 (mulberry32). 지면 격자 + 기둥 + 무작위 구름. 결정적이다. 점은 {p:[x,y,z], rgb:[r,g,b]}. */
+export function syntheticPoints(seed = 1) {
+  let a = seed >>> 0;
+  const rnd = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const pts = [];
+  for (let x = -200; x <= 200; x += 2) {
+    for (let z = -200; z <= 200; z += 2) pts.push({ p: [x, 0, z], rgb: [90 + ((x + 200) % 100), 120, 90 + ((z + 200) % 100)] });
+  }
+  for (let k = 0; k < 40; k++) {
+    const bx = (rnd() - 0.5) * 300;
+    const bz = (rnd() - 0.5) * 300;
+    const h = 5 + rnd() * 40;
+    for (let y = 0; y < h; y += 0.5) pts.push({ p: [bx, y, bz], rgb: [200, 100 + Math.floor(rnd() * 100), 60] });
+  }
+  for (let k = 0; k < 20000; k++) {
+    pts.push({ p: [(rnd() - 0.5) * 800, rnd() * 300, (rnd() - 0.5) * 800], rgb: [Math.floor(rnd() * 256), Math.floor(rnd() * 256), Math.floor(rnd() * 256)] });
+  }
+  return pts;
+}
+
+/** 56 B 3DGS 스플랫 PLY 를 만든다. 색은 f_dc = (rgb/255 − 0.5)/SH_C0 로 넣는다. */
+export function encodeSplatPly(points) {
+  const names = ['x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
+  const head = Buffer.from(`ply\nformat binary_little_endian 1.0\nelement vertex ${points.length}\n${names.map((n) => `property float ${n}\n`).join('')}end_header\n`, 'latin1');
+  const body = Buffer.alloc(points.length * 56);
+  points.forEach((q, i) => {
+    const o = i * 56;
+    q.p.forEach((v, k) => body.writeFloatLE(v, o + k * 4));
+    q.rgb.forEach((v, k) => body.writeFloatLE((v / 255 - 0.5) / SH_C0, o + 12 + k * 4));
+    body.writeFloatLE(1, o + 24);
+  });
+  return Buffer.concat([head, body]);
+}
