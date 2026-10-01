@@ -37,27 +37,31 @@ export function importsOf(src) {
 }
 
 /**
- * 3D 청크인가와 그 근거. evidence: 'package'(외부 확정) | 'sourcemap-3d' | 'sourcemap-app' | null(sourcemap 없음).
+ * 3D 청크인가와 그 근거. evidence: 'package'(외부 확정) | 'sourcemap-3d' | 'sourcemap-app' | 'sourcemap-parse-error:...' | null(sourcemap 없음).
  * sourcemap 이 있으면 그것이 우선이고(앱 문구가 표지에 걸려도 뒤집지 않는다), 없을 때만 코드 표지로 폴백한다.
- * 반환 {is3d, basis}: basis 는 package|sourcemap|heuristic|none(JS 아님).
+ * sourcemap JSON 파싱 실패 시에는 폴백과 함께 오류를 basis 에 기록한다.
+ * 반환 {is3d, basis}: basis 는 package|sourcemap|heuristic|sourcemap-parse-error:...|none(JS 아님).
  */
 export function classify3d(rel, buf, evidence = null) {
   if (!isJs(rel)) return { is3d: false, basis: 'none' };
   if (evidence === 'package') return { is3d: true, basis: 'package' };
   if (evidence === 'sourcemap-3d') return { is3d: true, basis: 'sourcemap' };
   if (evidence === 'sourcemap-app') return { is3d: false, basis: 'sourcemap' };
+  if (evidence && typeof evidence === 'string' && evidence.startsWith('sourcemap-parse-error:')) {
+    return { is3d: MARKER_3D.test(buf.toString('utf8').replace(PATH_LITERAL, '""')), basis: evidence };
+  }
   return { is3d: MARKER_3D.test(buf.toString('utf8').replace(PATH_LITERAL, '""')), basis: 'heuristic' };
 }
 
-/** 옆의 sourcemap 판정: 'sourcemap-3d' | 'sourcemap-app'(sources 가 있으나 3D 패키지 없음) | null(없음·깨짐·sources 비어 있음). */
+/** 옆의 sourcemap 판정: 'sourcemap-3d' | 'sourcemap-app'(sources 가 있으나 3D 패키지 없음) | 'sourcemap-parse-error'(JSON 파싱 실패) | null(없음·깨짐·sources 비어 있음). */
 export function mapEvidence(abs) {
   try {
     const mapText = readFileSync(`${abs}.map`, 'utf8');
     let sources;
     try {
       sources = JSON.parse(mapText).sources;
-    } catch {
-      return null;
+    } catch (e) {
+      return `sourcemap-parse-error:${e.message}`;
     }
     if (!Array.isArray(sources) || !sources.some((x) => typeof x === 'string')) return null;
     return sources.some((x) => typeof x === 'string' && PKG_3D_SOURCE.test(x.replace(/\\/g, '/'))) ? 'sourcemap-3d' : 'sourcemap-app';
@@ -68,9 +72,19 @@ export function mapEvidence(abs) {
 
 /** 근거별 파일 수 요약 문구와 경고(폐포 밖 JS)를 method 에 넣을 문자열로 만든다. */
 export function basisSummary(bases) {
-  const n = { package: 0, sourcemap: 0, heuristic: 0 };
-  for (const b of bases) if (b in n) n[b]++;
-  return `3D basis: package ${n.package}, sourcemap ${n.sourcemap}, code-marker heuristic ${n.heuristic} JS files${n.heuristic ? ' (no usable sourcemap; heuristic may misclassify)' : ''}`;
+  const n = { package: 0, sourcemap: 0, heuristic: 0, parseError: 0 };
+  const errors = [];
+  for (const b of bases) {
+    if (b === 'package') n.package++;
+    else if (b === 'sourcemap') n.sourcemap++;
+    else if (b === 'heuristic') n.heuristic++;
+    else if (typeof b === 'string' && b.startsWith('sourcemap-parse-error:')) {
+      n.parseError++;
+      errors.push(b.split(':').slice(1).join(':'));
+    }
+  }
+  const parseErrorText = n.parseError ? ` (${n.parseError} sourcemap parse error(s): ${errors.slice(0, 3).join(', ')}${errors.length > 3 ? '...' : ''})` : '';
+  return `3D basis: package ${n.package}, sourcemap ${n.sourcemap}, code-marker heuristic ${n.heuristic} JS files${n.heuristic ? ' (no usable sourcemap; heuristic may misclassify)' : ''}${parseErrorText}`;
 }
 export function outsideWarning(outside) {
   return outside.length ? `WARNING: ${outside.length} dist JS file(s) outside the entry closure were not measured (${outside.slice(0, 5).join(', ')}); entry closure may be incomplete` : '';
