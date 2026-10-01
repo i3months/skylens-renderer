@@ -205,3 +205,25 @@ test('processTreeMemory: 정상 statm 프로세스 하나 + 깨진 하나 → �
   assert.equal(m.pssProcs, 0);
   assert.equal(m.bytes, 50 * systemPageSize());
 });
+
+test('processTreeMemory: statm 이 연속 공백(100  5)이어도 trim·split(/\\s+/)로 올바르게 파싱', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-double-space-')));
+  mkdirSync(join(procRoot, '100'));
+  writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
+  writeFileSync(join(procRoot, '100', 'cmdline'), tag);
+  writeFileSync(join(procRoot, '100', 'statm'), '100  5');
+  const m = processTreeMemory(tag, { procRoot });
+  assert.deepEqual(m, { bytes: 5 * systemPageSize(), pssProcs: 0, rssProcs: 1 });
+});
+
+test('processTreeMemory: statm 이 개행으로 끝나면(100 \\n) trim 으로 처리해 올바르게 파싱', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-newline-')));
+  mkdirSync(join(procRoot, '100'));
+  writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
+  writeFileSync(join(procRoot, '100', 'cmdline'), tag);
+  writeFileSync(join(procRoot, '100', 'statm'), '100 5\n');
+  const m = processTreeMemory(tag, { procRoot });
+  assert.deepEqual(m, { bytes: 5 * systemPageSize(), pssProcs: 0, rssProcs: 1 });
+});

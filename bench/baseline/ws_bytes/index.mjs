@@ -56,13 +56,16 @@ const asc = (a, b) => a - b;
  * 프레임 배열을 집계하는 순수 함수.
  * - initial_bytes: 첫 'first_frame' 프레임까지(포함)의 바이트 합. 해당 프레임이 없으면 null.
  * - segments: 구간 ID 별로 실제 받은 수준의 바이트 합 (ID 오름차순). 빠진 수준은 오류가 아니라 기록 대상이다.
- * - segment_levels: 구간별 받은 수준 (프로토콜 번호). segment_levels_skipped: 원본으로 받은 최고 수준보다 낮은데
+ * - segment_levels: 구간별 받은 수준 전체 (프로토콜 번호). 같은 구간에서 나중에 온 더 높은 수준으로 교체된 낮은 수준도
+ *   포함한다(교체 여부는 보지 않음). 그래서 [L0, L2] 는 [1,3], 추월로 L0 이 stale 인 [L2, L0] 은 [3] 이다.
+ *   levels_received·segment_levels_mask 도 같은 뜻이다. segment_levels_skipped: 원본으로 받은 최고 수준보다 낮은데
  *   받지 못한 수준 (프로토콜 번호). 재전송 프레임만으로 생긴 최고 수준 때문에 생기는 공백은 건너뜀이 아니다.
  * - stale_levels: resend 표시 없이 온 원본 프레임 중 도착 시점에 그 구간에서 이미 받은 최고 수준(rhi, 재전송 포함)보다
  *   낮은 수준이거나, 원본으로 받은 최고 수준과 같은데 분할 연속이 끊긴 프레임 수.
  *   그래서 같은 수준 resend 뒤에 온 원본은 stale 이 아니지만 더 높은 수준 resend 뒤에 온 낮은 수준 원본은 stale 이다.
  *   같은 수준이 다른 수준 프레임 없이 연속으로 오면 분할 프레임이라 세지 않는다.
- *   stale 원본의 final 은 완결 판정에 쓰지 않는다(추월당한 수준은 그 구간을 완결시키지 못한다).
+ *   stale 원본의 final 은 그 수준이 도착 시점의 rhi 보다 낮을 때(추월당한 수준)만 완결 판정에 쓰지 않는다.
+ *   같은 최고 수준의 분할 연속이 끊겨 stale 인 원본의 final 은 쓴다(바이트는 여전히 stale 로 센다).
  * - 같은 (구간,수준)의 resend 프레임은 원본이 녹화에 있으면 합에 넣지 않고 resend_bytes 로 센다.
  *   원본이 없으면 추월되지 않은 첫 회차(녹화 전체에서 바로 이어진 같은 (구간,수준) 재전송 프레임들)만 유일한 사본으로
  *   합에 넣고 나머지 회차는 resend_bytes.
@@ -77,9 +80,11 @@ const asc = (a, b) => a - b;
  *   total_bytes·by_kind·windows 에는 항상 포함한다.
  * - stale 프레임 바이트는 total·windows·stale_bytes 에만 넣고 구간 합·받은 수준·건너뜀 계산에서는 뺀다.
  * - incomplete_segments: 위치와 무관한 모든 미완 구간(도착 순서). segments 에는 완결 구간만 남는다.
- * - top_level_assumed: final 필드 없이 topLevel 기본값을 썼는지(run 이 method 에 경고로 남김).
+ * - top_level_assumed: 원본 final 필드 없이 topLevel 기본값을 썼는지(run 이 method 에 경고로 남김).
+ * - final_resend_only: final 필드가 resend 프레임에만 있는지(run 이 경고 문구를 'final 필드 없음' 과 구분).
  * - top_level_ignored: final 필드가 있어 주어진 topLevel 을 완결 판정에 쓰지 않았는지(run 이 method 에 남김).
- * - 완결 판정: 원본(resend 아닌) 프레임에 final 필드가 하나라도 있으면 구간에 stale 아닌 final:true 원본 프레임이 있을 때.
+ * - 완결 판정: 원본(resend 아닌) 프레임에 final 필드가 하나라도 있으면 구간에 추월당하지 않은(도착 시점 rhi 이상 수준)
+ *   final:true 원본 프레임이 있을 때. 같은 최고 수준의 끊긴 연속이라 stale 인 final 원본도 완결시킨다.
  *   final 필드가 resend 프레임에만 있으면 원본 구간은 topLevel 로 판정한다(resend 프레임의 final 은 보지 않는다).
  *   그 밖에는 받은 수준(위 규칙으로 합에 들어간 수준)이 topLevel 이상일 때. resend 전용 구간은 녹화에 final 필드가
  *   하나도 없을 때만 재전송 사본으로 완결될 수 있다(resend_only_segments 로 표시, run 이 method 에 남김).
@@ -144,7 +149,8 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
     } else {
       // 추월 기준은 재전송으로 받은 수준까지 포함한 rhi, 같은 수준 분할 연속은 원본 최고 수준(hi)과 last 로 본다.
       const isStale = f.level < s.rhi || (f.level === s.hi && s.last !== f.level);
-      if (f.final === true && !isStale) s.final = true;
+      // final 은 추월당한 낮은 수준(rhi 미만)만 무시한다. 같은 최고 수준의 끊긴 연속은 stale 이어도 완결시킨다.
+      if (f.final === true && f.level >= s.rhi) s.final = true;
       s.hi = Math.max(s.hi, f.level);
       s.rhi = Math.max(s.rhi, f.level);
       s.last = f.level;
@@ -244,6 +250,7 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
     stale_levels: stale,
     stale_bytes: staleBytes,
     top_level_assumed: !anyFinal && topLevelOpt === undefined,
+    final_resend_only: !anyFinal && anyFinalField,
     top_level_ignored: anyFinal && topLevelOpt !== undefined,
     incomplete_segments: incompleteList,
     resend_bytes: resendBytes,
@@ -295,9 +302,10 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
   const device = 'replay';
   const rec = (metric, value, unit, method, extra = {}) => ({ metric, value, unit, device, method, commit, ...extra });
   // final 필드가 없는 녹화에서 기본 topLevel 을 쓰면 완결 판정이 가정임을 method 에 남긴다.
+  // final 필드가 resend 프레임에만 있으면 '없음' 이 아니므로 그 사실을 구분해 적는다.
   // final 필드가 있으면 inputs.wsTopLevel 은 완결 판정에 쓰이지 않으므로 그 사실도 남긴다.
   const warn = s.top_level_assumed
-    ? ` 경고: final 필드 없음, topLevel 가정(기본 ${DEFAULT_TOP_LEVEL}, inputs.wsTopLevel 로 지정)`
+    ? ` 경고: ${s.final_resend_only ? 'final 필드가 resend 에만 있음' : 'final 필드 없음'}, topLevel 가정(기본 ${DEFAULT_TOP_LEVEL}, inputs.wsTopLevel 로 지정)`
     : s.top_level_ignored
       ? ` 참고: final 필드로 완결 판정, inputs.wsTopLevel=${topLevel} 무시`
       : '';
@@ -312,6 +320,8 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
   const mSeg = `ws_recording_replay by_segment_id${warn}${ambiguous}${resendOnly}`;
   const mWin = `ws_recording_replay window_ms=${DEFAULT_WINDOW_MS}${warn}`;
   const mAll = `ws_recording_replay${warn}`;
+  // 받은 수준 지표는 교체된 낮은 수준까지 포함한 전체 수신 수준임을 method 에 밝힌다.
+  const mLv = `${mSeg} 받은 수준=교체된 낮은 수준 포함 전체`;
   const mean = (a) => sum(a) / a.length;
   const skipped = s.segment_levels_skipped.map((a) => a.length);
   const received = s.segment_levels.map((a) => a.length);
@@ -324,9 +334,9 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
     rec('ws_bytes.segment_total', mean(s.segments), 'B', mSeg, { samples: s.segments }),
     // 구간별(ID 오름차순, segment_total 과 같은 순서) 건너뛴 수준 수. value 는 전체 합.
     rec('ws_bytes.levels_skipped', sum(skipped), 'count', mSeg, { samples: skipped }),
-    // 구간별 받은 수준 수와 받은 수준 비트마스크 (프로토콜 수준 n 은 비트 n-1).
-    rec('ws_bytes.levels_received', mean(received), 'count', mSeg, { samples: received }),
-    rec('ws_bytes.segment_levels_mask', mean(masks), 'count', mSeg, { samples: masks }),
+    // 구간별 받은 수준 수와 받은 수준 비트마스크 (프로토콜 수준 n 은 비트 n-1). 교체된 낮은 수준도 포함한다.
+    rec('ws_bytes.levels_received', mean(received), 'count', mLv, { samples: received }),
+    rec('ws_bytes.segment_levels_mask', mean(masks), 'count', mLv, { samples: masks }),
     // 이미 받은 최고 수준 이하가 재전송 표시 없이 다시 온 프레임 수 (추월된 수준의 뒤늦은 전송·중복).
     rec('ws_bytes.stale_levels', s.stale_levels, 'count', mSeg),
     // 추월된 수준의 뒤늦은 프레임 바이트 (segment_total 에는 넣지 않음).
