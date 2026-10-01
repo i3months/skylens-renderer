@@ -30,7 +30,7 @@ if (reason) console.log(`# 브라우저 테스트 skip 사유: ${reason}`);
 
 const MIB = 1024 * 1024;
 // 100 MiB Float32Array(26214400 개)를 채워 실제로 상주시킨 뒤 캔버스를 그려 첫 프레임을 낸다.
-const HOLD = '<!doctype html><canvas id=c width=100 height=100></canvas><script>window.keep=new Float32Array(26214400).fill(1.5);const g=c.getContext("2d");g.fillStyle="#000";g.fillRect(0,0,100,100);g.fillStyle="#fff";g.fillRect(0,0,50,50)</script>';
+const HOLD = '<!doctype html><canvas id=view2 width=100 height=100></canvas><script>window.keep=new Float32Array(26214400).fill(1.5);const g=view2.getContext("2d");g.fillStyle="#000";g.fillRect(0,0,100,100);g.fillStyle="#fff";g.fillRect(0,0,50,50)</script>';
 const BLANK = HOLD.replace('new Float32Array(26214400).fill(1.5)', '[]');
 
 async function measure(html) {

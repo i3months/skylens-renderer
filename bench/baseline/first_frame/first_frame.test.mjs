@@ -62,9 +62,9 @@ test('run: 기본 entryPath 는 method 에 명시되고 inputs.entryPath 로 바
   assert.match(recs[0].method, /스트림 재생은 범위 밖/);
 });
 
-// 실제 skylens dist 로 도는 선택적 테스트. SKYLENS_DIST_DIR 가 있을 때만 실행한다.
-test('실제 dist(SKYLENS_DIST_DIR): 상황판 첫 프레임이 30 s 안에 감지된다', { skip: process.env.SKYLENS_DIST_DIR ? (reason ?? false) : 'SKYLENS_DIST_DIR 없음' }, async () => {
-  const recs = await run({ commit: 'abcdef1', inputs: { distDir: process.env.SKYLENS_DIST_DIR }, runs: 2, timeoutMs: 30000 });
+// 실제 skylens dist 로 도는 선택적 테스트. SKYLENS_DIR 가 있을 때만 실행한다.
+test('실제 dist(SKYLENS_DIR/dist): 상황판 첫 프레임이 30 s 안에 감지된다', { skip: process.env.SKYLENS_DIR ? (reason ?? false) : 'SKYLENS_DIR 없음' }, async () => {
+  const recs = await run({ commit: 'abcdef1', inputs: { distDir: join(process.env.SKYLENS_DIR, 'dist') }, runs: 2, timeoutMs: 30000 });
   assert.ok(recs[0].value > 0 && recs[0].value < 30000, `median ${recs[0].value}`);
   assert.match(recs[0].method, /\/res\/static\/status\.html/);
 });

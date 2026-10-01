@@ -13,7 +13,7 @@ const STEPS = ['00250', '01000', '03500', '07000'];
 
 function plyBuf(n, { stride56 = true, declared = n, extraBody = 0 } = {}) {
   const props = stride56
-    ? Array.from({ length: 14 }, (_, i) => `property float f${i}`)
+    ? Array.from({ length: 14 }, (_, i) => `property float ${['x', 'y', 'z'][i] ?? 'f' + i}`)
     : ['x', 'y', 'z', 'nx', 'ny', 'nz'].map((p) => `property float ${p}`).concat(['red', 'green', 'blue'].map((p) => `property uchar ${p}`));
   const head = `ply\nformat binary_little_endian 1.0\nelement vertex ${declared}\n${props.join('\n')}\nend_header\n`;
   return Buffer.concat([Buffer.from(head), Buffer.alloc((stride56 ? 56 : 27) * n + extraBody)]);

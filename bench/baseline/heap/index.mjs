@@ -1,11 +1,11 @@
-// 메모리 기준선 (T01.7). inputs.distDir 를 first_frame 과 같은 방식(http, 같은 인자·device)으로 열어 첫 프레임 뒤 측정한다. 참고값이다.
+// 메모리 기준선. inputs.distDir 를 first_frame 과 같은 방식(http, 같은 인자·device)으로 열어 첫 프레임 뒤 측정한다. 참고값이다.
 //   heap.js_used      V8 힙 사용량(JSHeapUsedSize, GC 후). TypedArray·WebGL 버퍼는 힙 밖이라 포함되지 않는다. 탭 전체 메모리(S3)와 대응시키지 않는다.
 //   heap.process_rss  브라우저 프로세스 트리(브라우저·렌더러·GPU 등) RSS 합. /proc 이 있는 Linux 에서만 기록한다.
 import { readFileSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { requireInput } from '../../../contracts/inputs/index.mjs';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
-import { launchBrowser, serveDist, measureFirstFrame, resolveEntryPath, DEAD_RELAY_QUERY, DEVICE } from '../_common/browser.mjs';
+import { launchBrowser, serveDist, measureFirstFrame, resolveEntryPath, DEFAULT_CANVAS_SELECTOR, DEAD_RELAY_QUERY, DEVICE } from '../_common/browser.mjs';
 
 export const RUNS = 5;
 export const METRIC = 'heap.js_used';
@@ -45,9 +45,10 @@ export function processTreeRss(tag) {
   return rss;
 }
 
-async function measureOnce(browser, url, tag, timeoutMs) {
+async function measureOnce(browser, url, tag, timeoutMs, canvasSelector) {
   const { after } = await measureFirstFrame(browser, url, {
     timeoutMs,
+    canvasSelector,
     after: async (page) => { // 첫 프레임 직후 같은 페이지에서 측정
       const cdp = await page.context().newCDPSession(page);
       await cdp.send('Performance.enable');
@@ -72,7 +73,7 @@ export async function run({ commit, inputs, runs = RUNS, timeoutMs = 30000 } = {
     const js = [];
     const rss = [];
     for (let i = 0; i < runs; i++) {
-      const r = await measureOnce(browser, server.url, tag, timeoutMs);
+      const r = await measureOnce(browser, server.url, tag, timeoutMs, inputs?.canvasSelector ?? DEFAULT_CANVAS_SELECTOR);
       js.push(r.js);
       if (r.rss !== null) rss.push(r.rss);
     }
