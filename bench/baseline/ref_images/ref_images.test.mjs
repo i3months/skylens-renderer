@@ -958,6 +958,14 @@ test('basisNote: float32·uint8 별칭 헤더도 기준 형식과 같고, 표기
   assert.doesNotMatch(basisNote({ layout: 'rgb-u8', stride: 27, normals: false }), /undefined/);
 });
 
+test('basisNote: 10개 속성(표준 9개 + 1개 추가)을 가진 PLY 는 27 B 와 다르다고 보고한다', () => {
+  const dec = (layout) => decodePly(encodePly([{ p: [1, 2, 3], rgb: [4, 5, 6] }], layout), 'f.ply');
+  // 표준 9개 속성 + 1개 추가: x y z nx ny nz red green blue extra_prop
+  const tenProps = dec([['float', 'x'], ['float', 'y'], ['float', 'z'], ['float', 'nx'], ['float', 'ny'], ['float', 'nz'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue'], ['float', 'extra_prop']]);
+  assert.ok(tenProps.stride > 27, `stride ${tenProps.stride} > 27`);
+  assert.match(basisNote(tenProps), /와 다름/);
+});
+
 // ---- 축별 clip 경계 ----
 test('applyFrameTransform: 한 축만 밖인 유한 점은 축마다 제거되고, 경계 위 점은 남는다 (회전 뒤 좌표로 판정)', () => {
   const fr = { R: ROTATIONS.none, s: 2, P: [10, 20, 30], clipMin: [-1, -2, -4], clipMax: [1, 2, 4] };

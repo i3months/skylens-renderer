@@ -67,8 +67,10 @@ export function processTreeMemory(tag, { procRoot = '/proc' } = {}) {
     try { pss = parsePss(readFileSync(`${procRoot}/${p}/smaps_rollup`, 'utf8')); } catch { /* 읽기 불가 → RSS 폴백 */ }
     if (pss !== null) { bytes += pss; pssProcs++; continue; }
     try {
-      const rss = Number(readFileSync(`${procRoot}/${p}/statm`, 'utf8').split(' ')[1]) * page;
-      if (!Number.isFinite(rss) || rss < 0) continue; // statm 이 깨졌거나(NaN) 음수면 합산하지 않고 이 프로세스를 건너뛴다
+      const fields = readFileSync(`${procRoot}/${p}/statm`, 'utf8').trim().split(/\s+/);
+      if (fields.length < 2 || !/^\d+$/.test(fields[1])) continue; // statm 형식이 깨졌으면 이 프로세스를 건너뛴다
+      const rss = Number(fields[1]) * page;
+      if (!Number.isFinite(rss) || rss < 0) continue; // 음수면 합산하지 않고 이 프로세스를 건너뛴다
       bytes += rss; rssProcs++;
     } catch { /* 사라진 프로세스 */ }
   }
