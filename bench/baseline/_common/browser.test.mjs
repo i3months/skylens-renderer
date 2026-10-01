@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveEntryPath, assertOptionalInputKeys, DEFAULT_CANVAS_SELECTOR, CONTROL_CANVAS_SELECTOR, DEFAULT_ENTRY_PATH, serveDist, launchBrowser, measureFirstFrame, buildDetectScript, unavailableReason, CHROMIUM_ARGS, DEVICE } from './browser.mjs';
+import { resolveEntryPath, assertOptionalInputKeys, DEFAULT_CANVAS_SELECTOR, CONTROL_CANVAS_SELECTOR, DEFAULT_ENTRY_PATH, serveDist, launchBrowser, measureFirstFrame, unavailableReason, CHROMIUM_ARGS, DEVICE } from './browser.mjs';
 
 async function page(html) {
   const dir = await mkdtemp(join(tmpdir(), 'bc-'));
@@ -117,11 +117,6 @@ const frame = () => { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); 
 frame();
 </script>`;
   await assert.rejects(() => measure(html, { timeoutMs: 2000 }), /첫 프레임 미감지/);
-});
-
-test('buildDetectScript 는 선택자를 받아 실행 가능한 스크립트 문자열을 만든다', () => {
-  assert.equal(typeof buildDetectScript('#c'), 'string');
-  assert.doesNotThrow(() => new Function(buildDetectScript('#c')));
 });
 
 test('assertOptionalInputKeys: 정확한 키와 다른 모듈용 키는 통과, 오타 키는 거부', () => {

@@ -1,13 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
-import { median, run, processTreeRss, parsePss, memoryMethodText, systemPageSize } from './index.mjs';
+import { median, run, processTreeRss, processTreeMemory, parsePss, memoryMethodText, systemPageSize } from './index.mjs';
 import { unavailableReason, DEVICE } from '../_common/browser.mjs';
 
 test('median: 기준 숫자', () => {
@@ -54,11 +55,11 @@ test('브라우저: 100 MiB Float32Array 픽스처는 빈 페이지 대비 프�
   assert.equal(hold['heap.js_used'].samples.length, 5);
   // 빈 페이지도 브라우저 기저 메모리가 수백 MiB 라 절대값은 무의미하다. 같은 브라우저의 빈 페이지 대비 증가분으로 판정한다.
   // 페이지 메모리는 렌더러 자식 프로세스에 있으므로 루트 프로세스만 세면 증가분이 거의 0 이 되어 실패한다.
-  // PSS 합 절대값은 같은 머신의 다른 chromium 이 도는 정도에 따라 약 80 MiB 씩 수준이 바뀌어(공유 라이브러리 페이지를 나눠 셈) 시점이 다른 두 측정을 비교하면 흔들린다.
+  // PSS 합 절대값은 같은 머신의 다른 chromium 이 도는 정도에 따라 약 80 MiB 씩 수준이 바뀔 수 있어(공유 라이브러리 페이지를 나눠 셈; 80 MiB 는 이전 노트의 미검증 추정치이지 측정값이 아니다) 시점이 다른 두 측정을 비교하면 흔들릴 수 있다.
   // 그래서 위에서 두 측정을 동시에 돌리고, 워밍업 1회를 버린 보고값(중앙값)끼리 뺀다.
   const delta = hold['heap.process_pss'].value - blank['heap.process_pss'].value; // 워밍업을 버린 보고값(중앙값)끼리 비교
-  // 문턱 근거: 픽스처는 정확히 100 MiB 를 상주시키므로 이론 증가분은 100 MiB 이고, 측정 증가분은 RSS 합 기준 실측 98.5~107.0 MiB, PSS 합·표본 최솟값 기준 반복 12회에서 약 99~106 MiB 였다. 문턱 90 MiB 와의 여유는 약 9~17 MiB 다.
-  // 90 MiB 는 100 MiB 의 90%로, 빈 페이지 대비 렌더러 기저 메모리 편차(수 MiB)와 5회 중앙값 잡음을 흡수하되
+  // 문턱 근거: 픽스처는 정확히 100 MiB 를 상주시키므로 이론 증가분은 100 MiB 이고, 측정 증가분은 RSS 합 기준 실측 98.5~107.0 MiB, PSS 합 기준 반복 12회에서 약 99~106 MiB 였다(과거 실측 수치이며 집계 방식은 기록돼 있지 않다. 실제 판정은 아래 delta, 곧 보고값(중앙값)의 차이다). 문턱 90 MiB 와의 여유는 약 9~17 MiB 다.
+  // 90 MiB 는 100 MiB 의 90%로, 빈 페이지 대비 렌더러 기저 메모리 편차(수 MiB)와 중앙값 잡음을 흡수하되
   // 상주가 빠지면(증가분 약 0) 확실히 실패하는 값이다. 측정값에 맞춰 낮추지 않는다.
   assert.ok(delta >= 90 * MIB, `delta ${delta}`);
   // TypedArray 는 V8 힙 밖이므로 js_used 는 50 MiB 미만.
@@ -113,10 +114,50 @@ test('memoryMethodText: PSS 사용·폴백·혼합을 구분해 기록', () => {
   assert.equal(memoryMethodText({ pssProcs: 0, rssProcs: 0 }), null); // 센 프로세스가 0개면 기록 생략 신호
 });
 
-test('run: 센 프로세스가 0개면 메모리 합 기록을 생략하고 js_used 만 낸다', { skip: reason ?? false }, async () => {
-  // 태그가 명령행에 없는 프로세스를 못 찾는 경우와 같은 결과(null)를 processTreeMemory 가 내는지 확인한다.
-  const { processTreeMemory } = await import('./index.mjs');
-  assert.equal(processTreeMemory(`--no-such-tag-${randomUUID()}`), null);
+// 가짜 /proc: 태그를 명령행에 가진 루트(pid 100)와 자식(pid 101). readable 이 true 면 statm 이 있고, false 면 smaps_rollup·statm 둘 다 없다(읽을 수 없는 프로세스).
+async function fakeProc(tag, readable) {
+  const root = await mkdtemp(join(tmpdir(), 'proc-'));
+  for (const [pid, ppid] of [['100', '1'], ['101', '100']]) {
+    await mkdir(join(root, pid));
+    await writeFile(join(root, pid, 'stat'), `${pid} (chromium) S ${ppid} 0 0 0`);
+    await writeFile(join(root, pid, 'cmdline'), `chromium\0${tag}\0`);
+    if (readable) await writeFile(join(root, pid, 'statm'), '100 50 10 0 0 0 0');
+  }
+  return root;
+}
+
+test('processTreeMemory: smaps·statm 을 읽을 수 없는 프로세스만 있으면 0 B 값이 아니라 null', async () => {
+  const tag = `--no-read-${randomUUID()}`;
+  assert.equal(processTreeMemory(tag, { procRoot: await fakeProc(tag, false) }), null);
+  // 대조: 같은 구조에서 statm 이 읽히면 RSS 폴백으로 센다(위 null 이 구조 오류 때문이 아님).
+  const m = processTreeMemory(tag, { procRoot: await fakeProc(tag, true) });
+  assert.deepEqual(m, { bytes: 2 * 50 * systemPageSize(), pssProcs: 0, rssProcs: 2 });
+  assert.equal(processTreeMemory(`--no-such-tag-${randomUUID()}`, { procRoot: await fakeProc(tag, true) }), null);
+});
+
+// 브라우저 없이 run 의 기록 구성만 본다: 브라우저 실행·1회 측정은 주입하고 메모리 읽기는 가짜 /proc 으로 한다.
+async function runWithProc(readable) {
+  const dist = await mkdtemp(join(tmpdir(), 'heap-'));
+  await mkdir(join(dist, 'res/static'), { recursive: true });
+  await writeFile(join(dist, 'res/static/status.html'), '<p>x</p>');
+  const deps = {
+    launch: async () => ({ close: async () => {} }),
+    measureOnce: async (_b, _u, tag, _t, _s, readMemory) => ({ js: 1234, mem: readMemory(tag) }),
+    readMemory: (tag) => { const procRoot = mkdtempSync(join(tmpdir(), 'proc-')); for (const [pid, ppid] of [['100', '1']]) { mkdirSync(join(procRoot, pid)); writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`); writeFileSync(join(procRoot, pid, 'cmdline'), tag); if (readable) writeFileSync(join(procRoot, pid, 'statm'), '100 50 10'); } return processTreeMemory(tag, { procRoot }); },
+  };
+  return run({ commit: 'abcdef1', inputs: { distDir: dist }, runs: 3, deps });
+}
+
+test('run: 센 프로세스가 0개면 heap.process_pss 기록 없이 js_used 만 낸다', async () => {
+  const recs = await runWithProc(false);
+  assert.deepEqual(recs.map((r) => r.metric), ['heap.js_used']);
+  assert.equal(recs.some((r) => r.metric === 'heap.process_pss'), false);
+});
+
+test('run: 대조 — 읽을 수 있는 프로세스가 있으면 heap.process_pss 가 기록된다', async () => {
+  const recs = await runWithProc(true);
+  assert.deepEqual(recs.map((r) => r.metric), ['heap.js_used', 'heap.process_pss']);
+  assert.equal(recs[1].value, 50 * systemPageSize());
 });
 
 test('systemPageSize: 양의 2의 거듭제곱(getconf PAGESIZE)', () => {

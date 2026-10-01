@@ -153,7 +153,7 @@ export const DIFF_TOLERANCE = 8;
  * 측정 대상의 GPU 부하를 늘리지 않도록 preserveDrawingBuffer 를 켜지 않고 매 프레임 readback 도 하지 않는다.
  * WebGL 캔버스는 draw·clear 호출이 있었고 직전 판독 프레임과 draw 서명(호출 수·정점 수)이 달라졌거나 100 ms 가 지난 프레임에서만,
  * 그 draw 와 같은 태스크의 마이크로태스크에서 1회 읽는다(그리기 버퍼가 유효한 시점). 2D 캔버스는 CPU 쪽이라 rAF 마다 읽는다.
- * 폴링 비용: 첫 프레임 감지 전에 매 rAF·마이크로태스크마다 선택자 일치 검사와 이미지 판독을 하므로, 감지 후 래퍼를 원본 함수로 복원해 오버헤드를 제거한다.
+ * 폴링 비용: 첫 프레임 감지 전에 매 rAF·마이크로태스크마다 선택자 일치 검사와 이미지 판독을 하므로, 감지 후 WebGL 메서드 래퍼와 getContext 래퍼를 원본 함수로 복원해 오버헤드를 제거한다(동작 검증은 wrapper_delegate.test.mjs).
  */
 export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
   if (typeof selector !== 'string' || !selector.trim()) throw new Error('canvasSelector 는 비어 있지 않은 CSS 선택자 문자열이어야 함');
@@ -162,11 +162,13 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
   const DIFF_RATIO = ${DIFF_RATIO}, TOL = ${DIFF_TOLERANCE}, RECHECK_MS = 100;
   const origGet = HTMLCanvasElement.prototype.getContext;
   const glCanvases = new WeakSet();
-  HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+  const getContextWrapper = function (type, attrs) {
     const ctx = origGet.call(this, type, attrs);
     if (ctx && /webgl/.test(String(type))) glCanvases.add(this);
     return ctx;
   };
+  getContextWrapper.__ffOrig = origGet;
+  HTMLCanvasElement.prototype.getContext = getContextWrapper;
   const drawn = (c) => {
     try {
       if (!c.width || !c.height) return false;
@@ -188,14 +190,14 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
   const found = (hit) => {
     window.__ffMs = performance.now();
     window.__ffCanvas = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/).join('.') : '');
-    // 감지 후 래퍼를 제거해 원본 함수로 복원(오버헤드 제거).
+    // 감지 후 래퍼를 제거해 원본 함수로 복원(오버헤드 제거). 감지 뒤에는 getContext 로 WebGL 캔버스를 기록할 필요도 없으므로 같이 복원한다.
+    // 페이지가 이 메서드를 이미 다시 덮어썼다면 래퍼가 아니므로(__ffOrig 없음, getContext 는 동일성 비교) 그 값은 건드리지 않는다.
+    if (HTMLCanvasElement.prototype.getContext === getContextWrapper) HTMLCanvasElement.prototype.getContext = origGet;
     for (const proto of [window.WebGLRenderingContext && WebGLRenderingContext.prototype, window.WebGL2RenderingContext && WebGL2RenderingContext.prototype]) {
       if (!proto) continue;
       for (const name of ['scissor', 'clearColor', 'bufferData', 'bufferSubData', 'texImage2D', 'texSubImage2D', 'useProgram', 'bindFramebuffer', 'blendFunc', 'enable', 'disable', 'clear', 'drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
-        const orig = proto[name];
-        if (typeof orig !== 'function') continue;
-        // 저장된 원본 함수로 직접 복원(저장된 함수가 있을 때만).
-        if (proto[name].__ffOrig) proto[name] = proto[name].__ffOrig;
+        // 래퍼일 때만(__ffOrig 가 있을 때) 저장된 원본 함수로 직접 복원.
+        if (typeof proto[name] === 'function' && proto[name].__ffOrig) proto[name] = proto[name].__ffOrig;
       }
     }
   };
