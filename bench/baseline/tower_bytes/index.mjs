@@ -16,6 +16,7 @@ function validateEntry(e, lineNo, name) {
   const where = `${name} ${lineNo}번째 줄`;
   if (e === null || typeof e !== 'object' || Array.isArray(e)) throw new Error(`${where}: 항목이 객체가 아니다`);
   if (!KINDS.includes(e.kind)) throw new Error(`${where}: kind 가 허용값(${KINDS.join('|')})이 아니다: ${JSON.stringify(e.kind)}`);
+  if (e.status !== undefined && !Number.isInteger(e.status)) throw new Error(`${where}: status 가 정수가 아니다: ${JSON.stringify(e.status)}`);
   if (!Number.isInteger(e.bytes) || e.bytes < 0) throw new Error(`${where}: bytes 가 0 이상 정수가 아니다: ${JSON.stringify(e.bytes)}`);
 }
 
@@ -69,7 +70,7 @@ export function countBuildings(entries) {
       if (f === null || f === undefined) continue; // null feature 는 건물이 아니다
       const id = (f.id ?? (f.properties && f.properties.id));
       if (id === undefined || id === null) anonymous += 1;
-      else ids.add(String(id));
+      else ids.add(typeof id === 'object' ? `json:${JSON.stringify(id)}` : String(id)); // 객체 id 는 JSON 키로 구분한다
     }
   }
   return ids.size + anonymous;

@@ -137,3 +137,69 @@ test('실제 녹화 응답에서 건물 수 집계', { skip: realSkip }, async (
   const n = out.find((r) => r.metric === 'tower_bytes.building_count').value;
   assert.ok(Number.isInteger(n) && n > 0, `건물 수 ${n}`);
 });
+
+// 손계산 기준 녹화: 건물 3개 응답(고유 id 1,2,3 + 중복 1 + id 없는 2동 + properties.id 7 + null),
+// 실패 건물 1, dem 2(100+200), imagery 1(40), other 1(5).
+function handEntries() {
+  const f = (o) => ({ type: 'Feature', geometry: null, properties: {}, ...o });
+  const col = (features) => ({ type: 'FeatureCollection', features });
+  return [
+    { kind: 'building', status: 200, bytes: 1000, body: col([f({ id: 1 }), f({ id: 2 }), f({})]) },
+    { kind: 'building', status: 200, bytes: 2000, body: JSON.stringify(col([f({ id: 2 }), f({ id: 3 }), f({}), f({ properties: { id: 7 } }), null])) },
+    { kind: 'building', status: 200, bytes: 300, body: col([f({ properties: { id: 7 } }), f({ id: 1 })]) },
+    { kind: 'building', status: 503, bytes: 9 },
+    { kind: 'dem', status: 200, bytes: 100 },
+    { kind: 'dem', status: 200, bytes: 200 },
+    { kind: 'imagery', status: 200, bytes: 40 },
+    { kind: 'other', status: 200, bytes: 5 },
+  ];
+}
+
+test('손계산: 모든 지표 정확값', () => {
+  const s = summarize(handEntries());
+  // 고유 id {1,2,3,7} 4동 + id 없는 2동 = 6동
+  assert.equal(s.building_count, 6);
+  assert.equal(s.building_bytes, 1000 + 2000 + 300 + 9);
+  assert.equal(s.dem_bytes, 300);
+  assert.equal(s.imagery_bytes, 40);
+  assert.equal(s.total_bytes, 3309 + 300 + 40 + 5);
+  assert.equal(s.request_count, 8);
+  assert.equal(s.building_requests, 4);
+  assert.equal(s.dem_requests, 2);
+  assert.equal(s.failed_responses, 1);
+});
+
+test('손계산: run 레코드 값과 단위', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tower-hand-'));
+  const rec = join(dir, 'h.jsonl');
+  await writeFile(rec, handEntries().map((e) => JSON.stringify(e)).join('\n'));
+  const out = await run({ commit: 'abcdef1', inputs: { towerRecording: rec } });
+  const got = Object.fromEntries(out.map((r) => [r.metric, [r.value, r.unit]]));
+  assert.deepEqual(got, {
+    'tower_bytes.building_count': [6, 'count'],
+    'tower_bytes.building_bytes': [3309, 'B'],
+    'tower_bytes.dem_bytes': [300, 'B'],
+    'tower_bytes.imagery_bytes': [40, 'B'],
+    'tower_bytes.total_bytes': [3654, 'B'],
+    'tower_bytes.request_count': [8, 'count'],
+    'tower_bytes.building_requests': [4, 'count'],
+    'tower_bytes.dem_requests': [2, 'count'],
+    'tower_bytes.failed_responses': [1, 'count'],
+  });
+});
+
+test('id 없는 feature 는 각각 1동, properties.id 는 id 로 병합', () => {
+  const body = { type: 'FeatureCollection', features: [{ type: 'Feature' }, { type: 'Feature' }, { type: 'Feature', properties: { id: 5 } }, { type: 'Feature', properties: { id: 5 } }] };
+  assert.equal(countBuildings([{ kind: 'building', bytes: 1, body }]), 3);
+});
+
+test('음성: status "500" 문자열은 성공 처리하지 않고 줄 번호와 함께 throw', async () => {
+  await assert.rejects(runWith(`${ok}\n{"kind":"building","status":"500","bytes":9}`), /2번째 줄.*status/);
+  await assert.rejects(runWith('{"kind":"dem","status":200.5,"bytes":9}'), /1번째 줄.*status/);
+});
+
+test('객체 id 는 [object Object] 로 합쳐지지 않고 JSON 키로 구분', () => {
+  const f = (id) => ({ type: 'Feature', id });
+  const body = { type: 'FeatureCollection', features: [f({ a: 1 }), f({ a: 2 }), f({ a: 1 }), f('[object Object]')] };
+  assert.equal(countBuildings([{ kind: 'building', bytes: 1, body }]), 3);
+});
