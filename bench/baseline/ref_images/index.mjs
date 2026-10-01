@@ -235,7 +235,8 @@ export function applyFrameTransform({ positions, colors, count }, fr) {
     outC[j * 3 + 2] = colors[i * 3 + 2];
     j++;
   }
-  // subarray: 복사 없이 앞 j 점만 보인다(입력은 바꾸지 않는다).
+  // subarray: 복사 없이 앞 j 점만 보인다(입력은 바꾸지 않는다). 결과의 `.buffer` 를 직접 쓰지 말 것:
+  // 버려진 뒷부분까지 담은 원래 할당(count 점분)을 가리킨다. byteOffset·byteLength 와 함께 쓰거나 slice 로 복사한다.
   return { positions: outP.subarray(0, j * 3), colors: outC.subarray(0, j * 3), count: j, clipped: count - j };
 }
 
@@ -277,7 +278,8 @@ function planPly(h, name) {
     throw new Error(`${name}: 색 속성(f_dc_0..2 또는 uchar red green blue)이 없다`);
   }
   const rawCount = h.vertexCount;
-  return { off, layout, stride: h.stride, rawCount, positions: new Float32Array(rawCount * 3), colors: new Uint8Array(rawCount * 3), j: 0, nonFinite: 0 };
+  const normals = Boolean(off.nx && off.ny && off.nz);
+  return { off, layout, normals, stride: h.stride, rawCount, positions: new Float32Array(rawCount * 3), colors: new Uint8Array(rawCount * 3), j: 0, nonFinite: 0 };
 }
 
 const clamp8 = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255);
@@ -331,17 +333,26 @@ function decodeRecords(buf, base, n, plan) {
 }
 
 function finishPly(plan) {
-  const { j, nonFinite, rawCount, layout, stride } = plan;
+  const { j, nonFinite, rawCount, layout, stride, normals } = plan;
+  // 비유한 레코드가 있으면 결과는 rawCount 점분 할당의 subarray 다. `.buffer` 를 직접 쓰지 말 것
+  // (제외된 꼬리까지 포함한다). byteOffset·byteLength 와 함께 쓰거나 slice 로 복사한다.
   return {
     positions: nonFinite ? plan.positions.subarray(0, j * 3) : plan.positions,
     colors: nonFinite ? plan.colors.subarray(0, j * 3) : plan.colors,
-    count: j, rawCount, nonFinite, layout, stride,
+    count: j, rawCount, nonFinite, layout, stride, normals,
   };
 }
 
+const END_HEADER = Buffer.from('end_header\n', 'latin1');
+
+/**
+ * buf 앞의 헤더를 읽는다. end_header 까지만 잘라 넘기므로 본문 크기와 무관하게 복사는 헤더만큼이고 헤더 길이 상한은 없다.
+ * end_header 가 없으면(오류 경로) 앞 1 MiB 만 넘겨 같은 "end_header not found" 오류를 낸다.
+ */
 function headerOf(buf, name) {
+  const at = buf.indexOf(END_HEADER);
   try {
-    return parsePlyHeader(buf.subarray(0, Math.min(buf.length, HEADER_MAX)));
+    return parsePlyHeader(buf.subarray(0, at < 0 ? Math.min(buf.length, HEADER_MAX) : at + END_HEADER.length));
   } catch (e) {
     throw new Error(`${name}: ${e.message}`);
   }
@@ -370,6 +381,7 @@ export function decodePly(buf, name = '<buffer>') {
 /**
  * decodePly 와 같은 결과를 파일에서 청크(chunkRecords 레코드)씩 읽어 만든다. 파일 전체를 한 버퍼로 올리지 않으므로
  * 2 GiB 를 넘는 PLY 도 읽을 수 있고, 메모리는 점당 15 B(위치 12 + 색 3)와 청크 하나다.
+ * 헤더는 앞 1 MiB(HEADER_MAX) 안에서만 찾는다. 넘으면 "헤더 1 MiB 상한 초과" 로 throw (decodePly 는 상한이 없다).
  */
 export async function decodePlyFile(path, name = path, { chunkRecords = DEFAULT_CHUNK_RECORDS } = {}) {
   if (!Number.isInteger(chunkRecords) || chunkRecords <= 0) throw new Error(`${name}: chunkRecords 는 양의 정수여야 한다`);
@@ -382,6 +394,9 @@ export async function decodePlyFile(path, name = path, { chunkRecords = DEFAULT_
       const { bytesRead } = await fh.read(head, got, head.length - got, got);
       if (bytesRead === 0) break;
       got += bytesRead;
+    }
+    if (got === HEADER_MAX && size > HEADER_MAX && head.indexOf(END_HEADER) < 0) {
+      throw new Error(`${name}: 헤더 1 MiB 상한 초과 (앞 ${HEADER_MAX} B 안에 end_header 가 없다; 청크 읽기는 헤더를 이 상한까지만 찾는다)`);
     }
     const h = headerOf(head.subarray(0, got), name);
     const err = sizeError(name, size, h);
@@ -447,8 +462,16 @@ export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
   return { viewpoints: json.viewpoints, sceneFrame: json.sceneFrame };
 }
 
-// 측정 기준 문서(renderer_basis §7-4)의 점 레코드(27 B)와 이 도구가 읽는 형식의 차이. method 에 항상 싣는다.
-export const BASIS_NOTE = 'renderer_basis §7-4 27 B 와 다름: 56 B 스플랫, 법선 없음, 중심점만 사용';
+/**
+ * 측정 기준 문서(renderer_basis §7-4)의 점 레코드(27 B: x y z float32, nx ny nz float32, r g b uint8)와
+ * 이 도구가 읽은 형식의 관계. 디코드 결과(layout·stride·normals)에서 만들며 method 에 항상 싣는다.
+ * 법선은 어느 형식이든 읽지 않는다(헤더에 있으면 "법선 있음·무시").
+ */
+export function basisNote({ layout, stride, normals }) {
+  const n = normals ? '법선 nx ny nz 있음·무시' : '법선 없음';
+  if (layout === 'splat-f_dc') return `renderer_basis §7-4 27 B 와 다름: ${stride} B 스플랫, ${n}, 중심점만 사용`;
+  return `renderer_basis §7-4 27 B ${stride === 27 ? '와 같은 크기' : '와 다름'}: ${stride} B 점(x y z·uchar rgb), ${n}, 중심점만 사용`;
+}
 
 const fmt = (v) => Number(v.toPrecision(10));
 
@@ -468,14 +491,19 @@ export async function run({ skylensDir, outDir, commit, inputs, viewpointsPath =
   const fr = computeSceneFrame(await decodePlyFile(framePath, framePath), sceneFrame, framePath);
   const raw = await decodePlyFile(pointsPath, pointsPath);
   const pts = applyFrameTransform(raw, fr);
+  if (pts.count === 0) {
+    throw new Error(`ref_images: ${pointsPath}: 그릴 점이 0개다 (원본 ${raw.rawCount}점 중 비유한 ${raw.nonFinite}점 제외, `
+      + `앱 틀 clip 상자 밖 ${pts.clipped}점 제외)`);
+  }
   const device = 'cpu-node-point-raster';
   const frameNote = `앱 틀 적용(틀 PLY ${sceneFrame.framePly} ${fr.total}점·표본 stride ${fr.sampleStride}, rotate ${fr.rotate}, `
     + `${sceneFrame.percentileLo}~${sceneFrame.percentileHi} 분위 상자 최대 변=${sceneFrame.targetExtent}, `
     + `s=${fmt(fr.s)} P=[${fr.P.map(fmt).join(',')}], 여유 ${sceneFrame.clipMargin} 밖 ${pts.clipped}점 제거, `
     + `비유한 ${raw.nonFinite}점 제외; ${pts.count}/${raw.rawCount}점 사용)`;
+  const note = basisNote(raw);
   const method = raw.layout === 'splat-f_dc'
-    ? `ref_images: PLY ${raw.stride}B 스플랫 ${raw.rawCount}점, 중심 x y z·f_dc 색(0.5+0.28209479·f_dc) 사용(opacity·scale·rot 무시), 순수 점 투영 z-버퍼, ${BASIS_NOTE}, ${frameNote}`
-    : `ref_images: PLY ${raw.stride}B 점 ${raw.rawCount}개, x y z·uchar rgb, 순수 점 투영 z-버퍼, ${BASIS_NOTE}, ${frameNote}`;
+    ? `ref_images: PLY ${raw.stride}B 스플랫 ${raw.rawCount}점, 중심 x y z·f_dc 색(0.5+0.28209479·f_dc) 사용(opacity·scale·rot 무시), 순수 점 투영 z-버퍼, ${note}, ${frameNote}`
+    : `ref_images: PLY ${raw.stride}B 점 ${raw.rawCount}개, x y z·uchar rgb 사용, 순수 점 투영 z-버퍼, ${note}, ${frameNote}`;
   const records = [];
   const rasters = [];
   for (const vp of vps) {
