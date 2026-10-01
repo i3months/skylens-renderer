@@ -271,15 +271,16 @@ test('dist: 깨진 sourcemap·sources 가 빈 맵은 앱 판정이 아니라 코
     put(dist, 'assets/nonjson-3.js.map', JSON.stringify({ version: 3, sources: [1, null] }));
     put(dist, 'assets/plain-4.js', 'const t="three splat";\n');
     put(dist, 'assets/plain-4.js.map', '<html>404</html>');
-    await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const r = await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
     const d = JSON.parse(readFileSync(join(out, 'bundle_tower.json'), 'utf8'));
     const f = (n) => d.files.find((x) => x.path === `assets/${n}`);
-    // 깨진 JSON 은 코드 표지로 판정하되(is_3d) 실패 사유를 basis 에 남긴다(F-048 ④). sources 가 비었거나 문자열이 아닌 맵은 파싱 성공이라 그대로 heuristic.
+    // 깨진 JSON 은 코드 표지로 판정하되(is_3d) 실패 사유를 basis 에 남긴다. sources 가 비었거나 문자열이 아닌 맵은 파싱 성공이라 그대로 heuristic.
     assert.equal(f('broken-1.js').is_3d, true);
     assert.match(f('broken-1.js').basis, /^sourcemap-parse-error:.+/);
     for (const n of ['empty-2.js', 'nonjson-3.js']) assert.deepEqual([f(n).is_3d, f(n).basis], [true, 'heuristic'], n);
     assert.equal(f('plain-4.js').is_3d, false);
     assert.match(f('plain-4.js').basis, /^sourcemap-parse-error:.+/);
+    assert.match(r[0].method, /2 sourcemap parse error\(s\)/);
   } finally {
     rmSync(dist, { recursive: true, force: true });
     rmSync(out, { recursive: true, force: true });
