@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 사용법:
 //   node tools/baseline_report/cli.mjs [--summary summary.json] a.json b.json
-//   node tools/baseline_report/cli.mjs --status summary.json   (하위 작업별 충족/미달 표)
+//   node tools/baseline_report/cli.mjs --status summary.json   (모듈별 측정됨/실패/건너뜀 표)
 import { toReport, toStatusTable } from './report.mjs';
 
 const args = process.argv.slice(2);

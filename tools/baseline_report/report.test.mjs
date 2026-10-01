@@ -26,11 +26,11 @@ test('분산 단위: ratio 로 찍히지 않고 stdev 는 ms', () => {
   assert.ok(toTable([{ ...old, metric: 'ref_images.coverage.v1' }]).includes('| ratio |'));
 });
 
-test('미달 절이 표 맨 위에 온다', () => {
+test('실패 절이 표 맨 위에 온다', () => {
   const { text } = toReport([A], { summary: SUMMARY });
   assert.ok(
     text.startsWith(
-      '## 미달·측정 불가\n\n| 모듈 | 단계 | 오류 |\n| --- | --- | --- |\n| first_frame | run | chromium 없음 |\n\n| metric | 값 |',
+      '## 실패·측정 불가\n\n| 모듈 | 단계 | 오류 |\n| --- | --- | --- |\n| first_frame | run | chromium 없음 |\n\n| metric | 값 |',
     ),
   );
   assert.ok(toReport([A], { summary: { ...SUMMARY, failed: [] } }).text.startsWith('| metric |'));
@@ -46,7 +46,7 @@ test('records.json 만 있고 summary.json 이 없으면 경고', () => {
   writeFileSync(join(dir, 'summary.json'), JSON.stringify(SUMMARY));
   const r2 = toReport([rec]);
   assert.equal(r2.warnings.length, 0);
-  assert.ok(r2.text.startsWith('## 미달·측정 불가'));
+  assert.ok(r2.text.startsWith('## 실패·측정 불가'));
 });
 
 test('--status 표', () => {
@@ -56,12 +56,12 @@ test('--status 표', () => {
   const expected = [
     '| 하위 작업 | 상태 | 레코드 | 비고 |',
     '| --- | --- | --- | --- |',
-    '| asset_bytes | 충족 | 3 |  |',
-    '| bundle_status | 충족 | 2 |  |',
-    '| first_frame | 미달 |  | run: chromium 없음 |',
+    '| asset_bytes | 측정됨 | 3 |  |',
+    '| bundle_status | 측정됨 | 2 |  |',
+    '| first_frame | 실패 |  | run: chromium 없음 |',
     '| heap | 건너뜀 |  |  |',
     '',
-    '충족 2, 미달 1, 건너뜀 1',
+    '측정됨 2, 실패 1, 건너뜀 1',
     '',
   ].join('\n');
   assert.equal(toStatusTable(f), expected);
@@ -71,4 +71,20 @@ test('--status 표', () => {
   writeFileSync(bad, JSON.stringify({ ok: [] }));
   assert.throws(() => toStatusTable(bad), (e) => e.message === `${bad}: failed must be an array`);
   assert.throws(() => toStatusTable(join(dir, 'none.json')), /none\.json/);
+});
+
+test('ok 모듈은 판정어 없이 측정됨으로 찍힌다', () => {
+  const t = toStatusTable(SUMMARY);
+  assert.ok(!/충족|미달/.test(t));
+  assert.ok(t.includes('| asset_bytes | 측정됨 | 3 |  |'));
+});
+
+test('소프트웨어 렌더 기기 레코드는 참고값 절로 분리된다', () => {
+  const sw = { ...A, metric: 'first_frame.p50', value: 900, device: 'headless-chromium-swiftshader (software render, reference)' };
+  const t = toTable([sw, A]);
+  const [main, ref] = t.split('## 참고값(클라우드)');
+  assert.ok(main.includes('| frame.p95 | 16 | ms | pixel7 |'));
+  assert.ok(!main.includes('swiftshader'));
+  assert.ok(ref.includes('| first_frame.p50 | 900 | ms | headless-chromium-swiftshader'));
+  assert.ok(!toTable([A]).includes('참고값'));
 });
