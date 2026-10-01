@@ -4,6 +4,10 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertRecords, serialize } from '../../../contracts/metrics/index.mjs';
+import { buildDist as defaultBuildDist } from '../_common/build.mjs';
+
+/** dist(빌드된 skylens)가 필요한 모듈. inputs.distDir 가 없으면 복사본에서 한 번 빌드해 넘긴다. */
+export const DIST_MODULES = ['bundle_status', 'bundle_tower', 'first_frame', 'heap'];
 
 /** 실행 순서를 겸하는 모듈 이름 목록. records.json 의 레코드 순서도 이 순서를 따른다. */
 export const MODULES = [
@@ -45,7 +49,7 @@ function checkNames(label, names) {
  * @param {string[]} [o.modules] 모듈 이름 목록 재정의 (테스트용, 기본 MODULES)
  * @returns {Promise<{summary: object, records: object[], exitCode: number}>}
  */
-export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, skip, modulesDir = DEFAULT_MODULES_DIR, modules = MODULES } = {}) {
+export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, skip, modulesDir = DEFAULT_MODULES_DIR, modules = MODULES, buildDist = defaultBuildDist } = {}) {
   if (!outDir) throw new Error('outDir 이 필요하다');
   // 이름 검증은 기본 MODULES 를 쓸 때만 한다 (재정의 시에는 재정의한 목록 기준).
   const known = new Set(modules);
@@ -61,9 +65,24 @@ export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, sk
   const failed = [];
   const skipped = [];
 
+  // dist 가 필요한 모듈이 하나라도 실행 대상이면 빌드한다. 빌드가 실패하면 그 모듈들만 failed.
+  let buildError = null;
+  const wantsDist = modules.some((n) => DIST_MODULES.includes(n) && !(onlySet && !onlySet.has(n)) && !skipSet.has(n));
+  if (wantsDist && !inputs.distDir) {
+    try {
+      inputs = { ...inputs, distDir: await buildDist({ skylensDir, workDir: join(outDir, '_build') }) };
+    } catch (e) {
+      buildError = errText(e);
+    }
+  }
+
   for (const name of modules) {
     if ((onlySet && !onlySet.has(name)) || skipSet.has(name)) {
       skipped.push(name);
+      continue;
+    }
+    if (buildError && DIST_MODULES.includes(name)) {
+      failed.push({ module: name, stage: 'build', error: buildError });
       continue;
     }
     let mod;

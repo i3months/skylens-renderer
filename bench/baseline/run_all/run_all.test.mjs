@@ -111,7 +111,7 @@ test('CLI: 실패 시 종료코드 1, 전부 성공 시 0, 인자 누락 시 2',
       : `export async function run({ commit }) { return [{ metric: '${name}.n', value: 1, unit: 'count', device: 'd', method: 'm', commit }]; }`;
     await writeFile(join(dir, name, 'index.mjs'), body);
   }
-  const base = ['--skylens-dir', root, '--commit', COMMIT, '--modules-dir', dir];
+  const base = ['--skylens-dir', root, '--commit', COMMIT, '--modules-dir', dir, '--dist-dir', join(root, 'prebuilt_dist')];
   const out = join(root, 'cli_out');
   const bad = spawnSync(process.execPath, [CLI, ...base, '--out', out], { encoding: 'utf8' });
   assert.equal(bad.status, 1);
@@ -152,7 +152,7 @@ export async function run({ outDir, commit, inputs, skylensDir }) {
 
 test('runAll: inputs 가 모듈에 그대로 전달된다', async () => {
   const dir = await mkInputsModules();
-  const inputs = { pointsPath: '/p.ply', wsRecording: '/w.jsonl', anchor: { lat: 1.5, lon: 2.5, alt: 3 } };
+  const inputs = { pointsPath: '/p.ply', wsRecording: '/w.jsonl', distDir: '/d', anchor: { lat: 1.5, lon: 2.5, alt: 3 } };
   const out = join(root, 'in_out');
   await runAll({ skylensDir: root, outDir: out, commit: COMMIT, modulesDir: dir, inputs });
   const got = JSON.parse(await readFile(join(out, 'bundle_status', 'got.json'), 'utf8'));
@@ -160,13 +160,24 @@ test('runAll: inputs 가 모듈에 그대로 전달된다', async () => {
   assert.equal(got.skylensDir, root);
   // inputs 생략 시 빈 객체
   const out2 = join(root, 'in_out2');
-  await runAll({ skylensDir: root, outDir: out2, commit: COMMIT, modulesDir: dir });
-  assert.deepEqual(JSON.parse(await readFile(join(out2, 'bundle_status', 'got.json'), 'utf8')).inputs, {});
+  await runAll({ skylensDir: root, outDir: out2, commit: COMMIT, modulesDir: dir, buildDist: async ({ skylensDir, workDir }) => `${skylensDir}|${workDir}` });
+  // distDir 가 없으면 run_all 이 빌드한 결과를 넘긴다(빌드 작업 폴더는 outDir/_build).
+  assert.deepEqual(JSON.parse(await readFile(join(out2, 'bundle_status', 'got.json'), 'utf8')).inputs, { distDir: `${root}|${join(out2, '_build')}` });
+});
+
+test('runAll: 빌드가 실패하면 dist 모듈 4개만 build 단계 failed, 나머지는 계속', async () => {
+  const dir = await mkInputsModules();
+  const out = join(root, 'build_fail');
+  const { summary, exitCode } = await runAll({ skylensDir: root, outDir: out, commit: COMMIT, modulesDir: dir,
+    inputs: { pointsPath: '/p.ply' }, buildDist: async () => { throw new Error('npm ci 실패'); } });
+  assert.deepEqual(summary.failed.map((f) => [f.module, f.stage]), [['bundle_status', 'build'], ['bundle_tower', 'build'], ['first_frame', 'build'], ['heap', 'build']]);
+  assert.equal(summary.ok.length, 4);
+  assert.equal(exitCode, 1);
 });
 
 test('CLI: 점군 경로가 없으면 ref_images 는 failed(종료코드 1), 있으면 전달되어 0', async () => {
   const dir = await mkInputsModules();
-  const base = ['--skylens-dir', root, '--commit', COMMIT, '--modules-dir', dir];
+  const base = ['--skylens-dir', root, '--commit', COMMIT, '--modules-dir', dir, '--dist-dir', join(root, 'prebuilt_dist')];
   const out = join(root, 'cli_in1');
   const bad = spawnSync(process.execPath, [CLI, ...base, '--out', out], { encoding: 'utf8' });
   assert.equal(bad.status, 1);
