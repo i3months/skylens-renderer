@@ -759,7 +759,7 @@ test('비대칭 시점(eye [5,3,10], target [2,1,0]): 투영이 cameraExtrinsics
   near(proj(at(1, 0)), 160 + f / d, 120, d, 'target + x_c');
   near(proj(at(0, 1)), 160, 120 - f / d, d, 'target + y_c');
   near(proj(at(-2, 0.5)), 160 - (2 * f) / d, 120 - (0.5 * f) / d, d, 'target − 2x_c + 0.5y_c');
-  // 같은 정답을 rasterize 픽셀로도: (1, 0.3) → u = 179.553…, v = 114.134…; (−2, 0.5) → u = 120.893…, v = 110.223…
+  // 같은 정답을 rasterize 픽셀로도: (1, 0.3) → u = 179.553…, v = 114.134…; (−2, 0.5) → u = 120.89497…, v = 110.223…
   assert.deepEqual(whitePixels(rasterize(one(at(1, 0.3)), view)), [[179, 114]]);
   assert.deepEqual(whitePixels(rasterize(one(at(-2, 0.5)), view)), [[120, 110]]);
 });
@@ -934,6 +934,28 @@ test('basisNote: 기준 형식 27 B 인데 속성 순서가 다르면 "같은 �
   assert.equal(swapped.normalType, 'float');
   assert.doesNotMatch(basisNote(swapped), /같은 형식/);
   assert.match(basisNote(swapped), /27 B 와 크기만 같고 형식은 다름/);
+});
+
+test('basisNote: float32·uint8 별칭 헤더도 기준 형식과 같고, 표기는 float·uchar 로 맞춘다; 법선이 int 면 같지 않다', () => {
+  const names = ['x', 'y', 'z', 'nx', 'ny', 'nz', 'red', 'green', 'blue'];
+  const raw = (types) => {
+    const head = Buffer.from(`ply\nformat binary_little_endian 1.0\nelement vertex 1\n${names.map((n, i) => `property ${types[i]} ${n}\n`).join('')}end_header\n`, 'latin1');
+    return Buffer.concat([head, Buffer.alloc(27)]);
+  };
+  const N = (coord, normal) => decodePly(raw([coord, coord, coord, normal, normal, normal, 'uchar', 'uchar', 'uchar']), 'a.ply');
+  const alias = decodePly(raw(['float32', 'float32', 'float32', 'float32', 'float32', 'float32', 'uint8', 'uint8', 'uint8']), 'a.ply');
+  assert.equal(alias.stride, 27);
+  assert.deepEqual([alias.coordType, alias.normalType], ['float', 'float']);
+  assert.equal(basisNote(alias), 'renderer_basis §7-4 27 B 와 같은 형식: 27 B 점(x y z float·uchar rgb), 법선 nx ny nz float 있음·무시, 중심점만 사용');
+  assert.doesNotMatch(basisNote(alias), /float32/);
+  // 좌표 float + 법선 int 도 27 B 지만 기준 형식이 아니다
+  const intN = N('float', 'int');
+  assert.equal(intN.stride, 27);
+  assert.equal(intN.normalType, 'int');
+  assert.equal(basisNote(intN), 'renderer_basis §7-4 27 B 와 크기만 같고 형식은 다름: 27 B 점(x y z float·uchar rgb), 법선 nx ny nz int 있음·무시, 중심점만 사용');
+  // 형 정보가 없는 직접 호출은 형을 적지 않는다
+  assert.doesNotMatch(basisNote({ layout: 'rgb-u8', stride: 27, normals: true }), /undefined/);
+  assert.doesNotMatch(basisNote({ layout: 'rgb-u8', stride: 27, normals: false }), /undefined/);
 });
 
 // ---- 축별 clip 경계 ----

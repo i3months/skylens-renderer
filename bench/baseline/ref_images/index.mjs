@@ -293,8 +293,7 @@ function planPly(h, name) {
   if (layout === 'rgb-u8' && normals) {
     const expected = ['x', 'y', 'z', 'nx', 'ny', 'nz', 'red', 'green', 'blue'];
     const actual = h.properties.map((p) => p.name);
-    propertyOrderCorrect = expected.every((name, i) => actual[i] === name && actual.length >= expected.length) ||
-                           expected.every((name, i) => actual[i] === name);
+    propertyOrderCorrect = expected.every((name, i) => actual[i] === name);
   }
   return { off, layout, normals, coordType, normalType, propertyOrderCorrect, stride: h.stride, rawCount, positions: new Float32Array(rawCount * 3), colors: new Uint8Array(rawCount * 3), j: 0, nonFinite: 0 };
 }
@@ -484,6 +483,7 @@ export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
  * 이 도구가 읽은 형식의 관계. 디코드 결과(layout·stride·normals·coordType·normalType)에서 만들며 method 에 항상 싣는다.
  * 레코드 크기만으로 판정하지 않는다: double 좌표 + uchar rgb 도 27 B 지만 기준 형식이 아니다.
  * 형 정보(coordType·normalType)가 없으면 형을 적지 않고, 기준 형식과 같다고도 하지 않는다.
+ * 속성 순서도 기준과 같아야 한다(x y z nx ny nz red green blue 가 앞에서부터 차례로 있어야 하고, 뒤에 속성이 더 있어도 된다).
  * 법선은 어느 형식이든 읽지 않는다(헤더에 있으면 "법선 nx ny nz <형> 있음·무시").
  */
 export function basisNote({ layout, stride, normals, coordType, normalType, propertyOrderCorrect }) {
