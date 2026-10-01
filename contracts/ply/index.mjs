@@ -5,7 +5,7 @@ const SIZES = { char: 1, uchar: 1, int8: 1, uint8: 1, short: 2, ushort: 2, int16
 /**
  * @param {Uint8Array|Buffer} buf at least the whole header
  * @returns {{format: string, vertexCount: number, properties: {name: string, type: string}[], headerBytes: number, stride: number}}
- * Throws Error('ply: ...') when there is no header end, no `element vertex`, a list property, or an unknown type.
+ * Throws Error('ply: ...') when there is no header end, no `element vertex`, a list property, an unknown type, an empty vertex layout (stride 0), or no x/y/z property.
  */
 export function parsePlyHeader(buf) {
   const marker = Buffer.from('end_header\n');
@@ -33,5 +33,9 @@ export function parsePlyHeader(buf) {
   if (format !== 'binary_little_endian') throw new Error(`ply: unsupported format ${format}`);
   if (!Number.isInteger(vertexCount) || vertexCount < 0) throw new Error('ply: element vertex missing');
   const stride = properties.reduce((s, p) => s + SIZES[p.type], 0);
+  if (stride === 0) throw new Error('ply: vertex has no properties');
+  for (const axis of ['x', 'y', 'z']) {
+    if (!properties.some((p) => p.name === axis)) throw new Error(`ply: vertex property ${axis} missing`);
+  }
   return { format, vertexCount, properties, headerBytes, stride };
 }
