@@ -1,11 +1,11 @@
 // run_all 테스트. 임시 디렉터리에 가짜 모듈을 만들어 modulesDir 로 주입한다.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, copyFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { runAll, MODULES } from './index.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), 'cli.mjs');
@@ -231,4 +231,44 @@ test('runAll: 빌드 타임아웃은 dist 모듈에 timeout 단계로 기록', a
   const buildDist = async () => { throw Object.assign(new Error('x'), { stage: 'timeout' }); };
   const { summary } = await runAll({ skylensDir: dir, outDir: join(dir, 'o'), commit: COMMIT, modulesDir: dir, modules: ['bundle_status'], buildDist });
   assert.equal(summary.failed[0].stage, 'timeout');
+});
+
+test('runAll: 타임아웃된 모듈은 죽어서 이후 outDir 에 파일을 쓰지 못한다', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ra-late-'));
+  await mkdir(join(dir, 'slow'), { recursive: true });
+  await writeFile(join(dir, 'slow', 'index.mjs'), `import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+export async function run({ outDir }) {
+  await new Promise((r) => setTimeout(r, 1200));
+  await writeFile(join(outDir, 'late.txt'), 'late');
+  return [];
+}`);
+  const out = join(dir, 'out');
+  const { summary } = await runAll({ skylensDir: dir, outDir: out, commit: COMMIT, modulesDir: dir, modules: ['slow'], moduleTimeoutMs: 300 });
+  assert.equal(summary.failed[0].stage, 'timeout');
+  await new Promise((r) => setTimeout(r, 1800));
+  assert.deepEqual(await readdir(join(out, 'slow')).catch(() => []), []);
+});
+
+test('CLI: SIGTERM 을 받으면 실행 중이던 모듈의 자식 프로세스까지 정리된다', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ra-sig-'));
+  const mark = join(dir, `ra-mark-sleep-${process.pid}`);
+  await copyFile(spawnSync('which', ['sleep']).stdout.toString().trim(), mark);
+  await chmod(mark, 0o755);
+  await mkdir(join(dir, 'asset_bytes'), { recursive: true });
+  await writeFile(join(dir, 'asset_bytes', 'index.mjs'), `import { spawn } from 'node:child_process';
+export async function run() { spawn(${JSON.stringify(mark)}, ['35'], { stdio: 'ignore' }); return new Promise(() => {}); }`);
+  const alive = () => spawnSync('pgrep', ['-f', mark]).stdout.toString().trim();
+  const child = spawn(process.execPath, [CLI, '--skylens-dir', dir, '--out', join(dir, 'o'), '--commit', COMMIT, '--modules-dir', dir, '--only', 'asset_bytes'], { stdio: 'ignore' });
+  const exited = new Promise((r) => child.on('exit', (code, sig) => r(sig)));
+  for (let i = 0; i < 50 && !alive(); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(alive(), '모듈의 자식이 떠 있어야 한다');
+  child.kill('SIGTERM');
+  assert.equal(await exited, 'SIGTERM');
+  let left = 'x';
+  for (let i = 0; i < 40 && left; i++) {
+    left = alive();
+    if (left) await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.equal(left, '');
 });
