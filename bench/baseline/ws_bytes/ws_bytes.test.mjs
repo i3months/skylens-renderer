@@ -748,27 +748,28 @@ test('변이(j) 이어 붙인 회차를 프레임 수-1 로 세면 실패: [r40,
 const fin = (f) => ({ ...f, final: true });
 const perms = (a) => (a.length <= 1 ? [a] : a.flatMap((x, i) => perms([...a.slice(0, i), ...a.slice(i + 1)]).map((p) => [x, ...p])));
 
-test('변이(k) 끊긴 연속의 stale final 을 버리면 실패: [L2 5, L1 3, L2 5 final] 은 완결 [5]', async () => {
+// 사본 규칙: 끊긴 같은 최고 수준 원본은 늦게 온 사본이라 바이트·final·뒤 분할 조각이 모두 stale.
+// 완결 판정과 segments 합은 같은 프레임 집합(stale 아닌 원본)을 근거로 한다.
+test('사본 규칙: [L2 5, L1 3, L2 5 final] 은 끊긴 연속의 final 이 사본이라 미완, stale_bytes 8', async () => {
   const s = summarize([F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))]);
-  assert.deepEqual(s.segment_ids, [1]);
-  assert.deepEqual(s.segments, [5]);
-  assert.deepEqual(s.incomplete_segments, []);
-  // 바이트 쪽 stale 집계는 그대로: L1 3 과 끊긴 뒤의 L2 5
+  assert.deepEqual(s.segment_ids, []);
+  assert.deepEqual(s.segments, []);
+  assert.deepEqual(s.incomplete_segments, [{ id: 1, bytes: 5, levels: [3] }]);
+  // L1 3(추월당한 수준)과 끊긴 뒤의 L2 5 final 둘 다 stale
   assert.equal(s.stale_levels, 2);
   assert.equal(s.stale_bytes, 8);
-  assert.deepEqual(s.segment_levels, [[3]]);
-  const r = await runText(BASE + fr(1, 2, 5) + fr(1, 1, 3) + fr(1, 2, 5, ',"final":true'));
-  assert.deepEqual(get(r, 'ws_bytes.segment_total').samples, [5]);
-  assert.equal(get(r, 'ws_bytes.stale_bytes').value, 8);
+  await assert.rejects(runText(BASE + fr(1, 2, 5) + fr(1, 1, 3) + fr(1, 2, 5, ',"final":true')), /미완 구간만/);
 });
 
-test('[L2 5, rL2 5, L2 5 final] 은 완결 [5], [L2 5 final, rL2 5, L2 5] 도 완결 [5]', () => {
+test('사본 규칙: [L2 5, rL2 5, L2 5 final] 은 미완, [L2 5 final, rL2 5, L2 5] 는 완결 [5] (순서 의존)', () => {
+  // final 을 실은 프레임이 원본 연속(L2 5) 밖의 사본이라 완결 근거가 아니다
   const a = summarize([F(1, 2, 5), F(1, 2, 5, true), fin(F(1, 2, 5))]);
-  assert.deepEqual(a.segment_ids, [1]);
-  assert.deepEqual(a.segments, [5]);
+  assert.deepEqual(a.segment_ids, []);
+  assert.deepEqual(a.incomplete_segments, [{ id: 1, bytes: 5, levels: [3] }]);
   assert.equal(a.stale_levels, 1);
   assert.equal(a.stale_bytes, 5);
   assert.equal(a.resend_bytes, 5);
+  // final 이 원본 연속 안에 있으면 완결, 뒤의 사본은 stale
   const b = summarize([fin(F(1, 2, 5)), F(1, 2, 5, true), F(1, 2, 5)]);
   assert.deepEqual(b.segment_ids, [1]);
   assert.deepEqual(b.segments, [5]);
@@ -776,25 +777,29 @@ test('[L2 5, rL2 5, L2 5 final] 은 완결 [5], [L2 5 final, rL2 5, L2 5] 도 �
   assert.equal(b.resend_bytes, 5);
 });
 
-test('같은 프레임 집합의 모든 순열은 완결 판정이 같다 (바이트는 분할 연속 여부에 따라 손계산 값)', () => {
-  // {L2 5, L1 3, L2 5 final}: 6순열 모두 완결
+test('사본 규칙 순서 의존 고정: final 이 원본 연속 밖(끊긴 뒤)이면 미완, 안이면 완결 (손계산 값)', () => {
+  // {L2 5, L1 3, L2 5 final}: final 이 끊긴 연속 뒤에 오는 [L2, L1, L2f] 하나만 미완
   const A = [F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))];
-  for (const p of perms(A)) assert.deepEqual(summarize(p).segment_ids, [1], JSON.stringify(p));
   const [L2, L1, L2f] = A;
-  // 끊긴 연속: 5, 연속 분할: 10, L1 이 먼저면 L1 도 받은 수준: 3+5+5
-  assert.deepEqual(summarize([L2, L1, L2f]).segments, [5]);
+  const brokenFinal = (p) => p[0] === L2 && p[1] === L1;
+  for (const p of perms(A)) assert.deepEqual(summarize(p).segment_ids, brokenFinal(p) ? [] : [1], JSON.stringify(p));
+  // 끊긴 연속: 앞 원본만 5, 연속 분할: 10, L1 이 먼저면 L1 도 받은 수준: 3+5+5
+  assert.deepEqual(summarize([L2, L1, L2f]).incomplete_segments, [{ id: 1, bytes: 5, levels: [3] }]);
   assert.deepEqual(summarize([L2f, L1, L2]).segments, [5]);
   assert.deepEqual(summarize([L2, L2f, L1]).segments, [10]);
   assert.deepEqual(summarize([L2f, L2, L1]).segments, [10]);
   assert.deepEqual(summarize([L1, L2, L2f]).segments, [13]);
   assert.deepEqual(summarize([L1, L2f, L2]).segments, [13]);
-  // {L2 5, rL2 5, L2 5 final}: 6순열 모두 완결. resend 가 두 원본 사이면 5, 아니면 분할 10
+  // {L2 5, rL2 5, L2 5 final}: resend 가 두 원본 사이면 뒤 원본은 사본(5), 아니면 분할 10.
+  // 사이에 끼고 final 이 뒤 사본에 있으면 미완
   const B = [F(1, 2, 5), F(1, 2, 5, true), fin(F(1, 2, 5))];
   for (const p of perms(B)) {
     const s = summarize(p);
-    assert.deepEqual(s.segment_ids, [1], JSON.stringify(p));
     const between = p[1].resend === true;
-    assert.deepEqual(s.segments, [between ? 5 : 10], JSON.stringify(p));
+    const finalInCopy = between && p[2].final === true;
+    assert.deepEqual(s.segment_ids, finalInCopy ? [] : [1], JSON.stringify(p));
+    if (!finalInCopy) assert.deepEqual(s.segments, [between ? 5 : 10], JSON.stringify(p));
+    assert.equal(s.stale_bytes, between ? 5 : 0, JSON.stringify(p));
     assert.equal(s.resend_bytes, 5);
   }
   // 추월당한 낮은 수준의 final 은 순서에 따라 다르다(의도): [L1 5, L0 3 final] 미완, [L0 3 final, L1 5] 완결
@@ -832,4 +837,84 @@ test('final 필드가 resend 프레임에만 있으면 method 는 "final 필드 
   for (const x of r2) assert.match(x.method, /final 필드 없음, topLevel 가정/);
   assert.equal(summarize([F(1, 2, 4)]).final_resend_only, false);
   assert.equal(summarize([fin(F(1, 2, 4))]).final_resend_only, false);
+});
+
+// ---- 끊긴 같은 최고 수준 원본은 사본 규칙 ----
+test('사본 규칙 변이(l) stale 프레임이 분할 연속을 다시 시작하면 실패: [L2 40, rL2 40, L2 7, L2 9] 는 [40], stale 2·16', async () => {
+  // 끊긴 뒤의 L2 7 과 그 뒤 조각 L2 9 가 같은 판정(stale)을 받는다
+  const s = summarize([F(1, 2, 40), F(1, 2, 40, true), F(1, 2, 7), F(1, 2, 9)]);
+  assert.deepEqual(s.segment_ids, [1]);
+  assert.deepEqual(s.segments, [40]);
+  assert.equal(s.stale_levels, 2);
+  assert.equal(s.stale_bytes, 16);
+  assert.equal(s.resend_bytes, 40);
+  assert.equal(s.total_bytes, 96);
+  assert.deepEqual(s.segment_levels, [[3]]);
+  const r = await runText(BASE + fr(1, 2, 40) + fr(1, 2, 40, ',"resend":true') + fr(1, 2, 7) + fr(1, 2, 9));
+  assert.deepEqual(get(r, 'ws_bytes.segment_total').samples, [40]);
+  assert.equal(get(r, 'ws_bytes.stale_bytes').value, 16);
+  assert.equal(get(r, 'ws_bytes.stale_levels').value, 2);
+});
+
+test('사본 규칙 변이(l): [L0 10, rL0 10, L0 7, L0 9 final] 은 final 도 사본 조각이라 미완 (바이트와 같은 판정)', () => {
+  const s = summarize([F(1, 0, 10), F(1, 0, 10, true), F(1, 0, 7), fin(F(1, 0, 9))]);
+  assert.deepEqual(s.segment_ids, []);
+  assert.deepEqual(s.incomplete_segments, [{ id: 1, bytes: 10, levels: [1] }]);
+  assert.equal(s.stale_levels, 2);
+  assert.equal(s.stale_bytes, 16);
+  assert.equal(s.resend_bytes, 10);
+  // 대조군: 끊기지 않은 연속이면 final 조각까지 원본 분할이라 완결 [26]
+  const ok = summarize([F(1, 0, 10), F(1, 0, 7), fin(F(1, 0, 9))]);
+  assert.deepEqual(ok.segments, [26]);
+  assert.equal(ok.stale_levels, 0);
+});
+
+test('사본 규칙: 완결 근거와 segments 합은 같은 프레임 집합 (final 프레임이 stale 이면 미완, 아니면 합에 포함)', () => {
+  const sumOf = (a) => a.reduce((x, y) => x + y, 0);
+  const cases = [
+    [F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))],
+    [F(1, 2, 40), F(1, 2, 40, true), F(1, 2, 7), fin(F(1, 2, 9))],
+    [F(1, 0, 10), F(1, 0, 10, true), F(1, 0, 7), fin(F(1, 0, 9))],
+    [F(1, 2, 5), F(1, 2, 5, true), fin(F(1, 2, 5))],
+    [fin(F(1, 2, 5)), F(1, 2, 5, true), F(1, 2, 5)],
+  ];
+  for (const c of cases) {
+    const s = summarize(c);
+    // stale 아닌 원본 바이트 = 근거 프레임 집합의 바이트
+    const kept = sumOf(c.filter((f) => f.resend !== true).map((f) => f.bytes)) - s.stale_bytes;
+    const got = s.segment_ids.length ? s.segments[0] : s.incomplete_segments[0].bytes;
+    assert.equal(got, kept, JSON.stringify(c));
+    // final 프레임이 근거 집합에 있으면(= 끊기지 않은 원본) 완결, 아니면 미완
+    const finIdx = c.findIndex((f) => f.final === true);
+    const tail = summarize(c.slice(0, finIdx + 1));
+    const finalKept = tail.stale_bytes === summarize(c.slice(0, finIdx)).stale_bytes;
+    assert.deepEqual(s.segment_ids, finalKept ? [1] : [], JSON.stringify(c));
+  }
+});
+
+// ---- final 이 resend 에만 있으면 wsTopLevel 을 무시하지 않는다 ----
+test('변이(m) top_level_ignored 가 anyFinalField 기준이면 실패: final 이 resend 에만 있고 wsTopLevel 을 주면 무시 아님', async () => {
+  const s = summarize([F(1, 0, 1), F(1, 1, 2), fin(F(2, 1, 4, true))], { topLevel: 1 });
+  assert.equal(s.top_level_ignored, false);
+  assert.equal(s.top_level_assumed, false);
+  assert.deepEqual(s.segments, [3]);
+  const r = await runText(BASE + fr(1, 0, 1) + fr(1, 1, 2) + fr(2, 1, 4, ',"resend":true,"final":true'), { topLevel: 1 });
+  assert.deepEqual(get(r, 'ws_bytes.segment_total').samples, [3]);
+  for (const x of r) assert.doesNotMatch(x.method, /무시/);
+});
+
+// ---- 더 높은 수준 resend 에 추월당한 원본의 final ----
+test('변이(n) final 의 추월 기준이 원본 최고 수준(hi)이면 실패: [L1 5, rL2 5, L1 3 final] 미완, [L1 5, L1 3 final] 완결', () => {
+  const s = summarize([F(1, 1, 5), F(1, 2, 5, true), fin(F(1, 1, 3))]);
+  assert.deepEqual(s.segment_ids, []);
+  assert.equal(s.incomplete_segments.length, 1);
+  assert.equal(s.stale_bytes, 3);
+  // 대조군: 끼어든 resend 가 없으면 L1 3 final 은 분할 조각이라 완결 [8]
+  const c = summarize([F(1, 1, 5), fin(F(1, 1, 3))]);
+  assert.deepEqual(c.segment_ids, [1]);
+  assert.deepEqual(c.segments, [8]);
+  // 끊긴 연속 조건과 겹치지 않는 형태: final 수준(1)이 원본 최고 수준(0)과 다르고 resend 최고 수준(2)보다 낮다
+  const d = summarize([F(1, 0, 5), F(1, 2, 5, true), fin(F(1, 1, 3))]);
+  assert.deepEqual(d.segment_ids, []);
+  assert.equal(d.stale_bytes, 3);
 });

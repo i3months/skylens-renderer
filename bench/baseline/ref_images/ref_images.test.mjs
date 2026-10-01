@@ -945,9 +945,10 @@ test('basisNote: float32·uint8 별칭 헤더도 기준 형식과 같고, 표기
   const N = (coord, normal) => decodePly(raw([coord, coord, coord, normal, normal, normal, 'uchar', 'uchar', 'uchar']), 'a.ply');
   const alias = decodePly(raw(['float32', 'float32', 'float32', 'float32', 'float32', 'float32', 'uint8', 'uint8', 'uint8']), 'a.ply');
   assert.equal(alias.stride, 27);
-  assert.deepEqual([alias.coordType, alias.normalType], ['float', 'float']);
+  assert.deepEqual([alias.coordType, alias.normalType, alias.colorType], ['float', 'float', 'uchar']);
   assert.equal(basisNote(alias), 'renderer_basis §7-4 27 B 와 같은 형식: 27 B 점(x y z float·uchar rgb), 법선 nx ny nz float 있음·무시, 중심점만 사용');
   assert.doesNotMatch(basisNote(alias), /float32/);
+  assert.doesNotMatch(basisNote(alias), /uint8/);
   // 좌표 float + 법선 int 도 27 B 지만 기준 형식이 아니다
   const intN = N('float', 'int');
   assert.equal(intN.stride, 27);
@@ -963,7 +964,9 @@ test('basisNote: 10개 속성(표준 9개 + 1개 추가)을 가진 PLY 는 27 B 
   // 표준 9개 속성 + 1개 추가: x y z nx ny nz red green blue extra_prop
   const tenProps = dec([['float', 'x'], ['float', 'y'], ['float', 'z'], ['float', 'nx'], ['float', 'ny'], ['float', 'nz'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue'], ['float', 'extra_prop']]);
   assert.ok(tenProps.stride > 27, `stride ${tenProps.stride} > 27`);
-  assert.match(basisNote(tenProps), /와 다름/);
+  assert.equal(tenProps.stride, 31);
+  assert.equal(tenProps.propertyOrderCorrect, false);
+  assert.equal(basisNote(tenProps), 'renderer_basis §7-4 27 B 와 다름: 31 B 점(x y z float·uchar rgb), 법선 nx ny nz float 있음·무시, 중심점만 사용');
 });
 
 // ---- 축별 clip 경계 ----
