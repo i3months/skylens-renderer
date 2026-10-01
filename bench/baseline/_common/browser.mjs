@@ -78,6 +78,7 @@ export const DEAD_RELAY_QUERY = 'splat=off&relay=ws://127.0.0.1:9/stream';
 
 /** inputs.entryPath 를 검증해 돌려준다(없으면 기본값). '/' 로 시작하는 경로여야 한다. */
 export function resolveEntryPath(inputs) {
+  assertOptionalInputKeys(inputs);
   const p = inputs?.entryPath ?? DEFAULT_ENTRY_PATH;
   if (typeof p !== 'string' || !p.startsWith('/') || p.startsWith('//') || /[?#]/.test(p)) {
     throw new Error(`inputs.entryPath 는 '/' 로 시작하는 URL 경로여야 함(쿼리·해시 불가): ${String(p)}`);
@@ -112,8 +113,33 @@ export async function serveDist(distDir, { entryPath = DEFAULT_ENTRY_PATH } = {}
   return { port, url: `http://127.0.0.1:${port}${entryPath}${entryPath === DEFAULT_ENTRY_PATH ? `?${DEAD_RELAY_QUERY}` : ''}`, close: () => new Promise((r) => { server.close(r); server.closeAllConnections?.(); }) };
 }
 
-/** 상황판 3D 뷰 캔버스 선택자(skylens recon.html 의 WebGL 캔버스). 2D 미니맵(.minimap__canvas)·영상 패널 캔버스는 대상이 아니다. */
-export const DEFAULT_CANVAS_SELECTOR = '#view2';
+/** 상황판 3D 뷰 캔버스 선택자(skylens develop res/static/status.html 의 canvas#status-view). 2D 미니맵(.minimap__canvas)·영상 패널 캔버스는 대상이 아니다. */
+export const DEFAULT_CANVAS_SELECTOR = '#status-view';
+/** 관제탑 3D 뷰 캔버스 선택자(develop res/static/control.html 의 canvas#control-view). 관제탑을 측정하려면 entryPath '/res/static/control.html' 과 함께 canvasSelector 로 넘긴다. */
+export const CONTROL_CANVAS_SELECTOR = '#control-view';
+
+const OPTIONAL_KEYS = ['entryPath', 'canvasSelector'];
+const KNOWN_KEYS = new Set(['pointsPath', 'wsRecording', 'towerRecording', 'distDir', 'anchor', ...OPTIONAL_KEYS]);
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  }
+  return d[a.length][b.length];
+}
+/** 선택 입력 키(entryPath, canvasSelector)를 잘못 적은 키(대소문자·구분자·1~2자 오타)가 있으면 조용히 기본값으로 가지 않고 throw. 다른 모듈용 키는 통과. */
+export function assertOptionalInputKeys(inputs) {
+  for (const k of Object.keys(inputs ?? {})) {
+    if (KNOWN_KEYS.has(k)) continue;
+    const norm = k.toLowerCase().replace(/[-_\s]/g, '');
+    for (const opt of OPTIONAL_KEYS) {
+      if (norm === opt.toLowerCase() || editDistance(norm, opt.toLowerCase()) <= 2) {
+        throw new Error(`알 수 없는 inputs 키 '${k}': '${opt}' 를 뜻하는가? (정확한 이름만 허용)`);
+      }
+    }
+  }
+}
 /** measureFirstFrame 의 하위 호환 기본값(모든 canvas). 3D 뷰만 판정하려면 canvasSelector 를 넘긴다. */
 export const ANY_CANVAS_SELECTOR = 'canvas';
 
@@ -172,7 +198,7 @@ export const DETECT_SCRIPT = buildDetectScript();
 
 /**
  * 새 컨텍스트에서 url 을 열고 첫 프레임 시각(ms, 탐색 시작 기준)을 반환한다. 시간 안에 감지하지 못하면 throw.
- * canvasSelector 로 판정 대상 캔버스를 한정한다(기본 'canvas' = 모든 캔버스, 하위 호환). 반환의 canvas 는 판정한 요소 표기(예 canvas#view2).
+ * canvasSelector 로 판정 대상 캔버스를 한정한다(기본 'canvas' = 모든 캔버스, 하위 호환). 반환의 canvas 는 판정한 요소 표기(예 canvas#status-view).
  * after(page) 가 있으면 첫 프레임 감지 직후 호출해 그 결과를 { ms, canvas, after } 로 돌려준다.
  */
 export async function measureFirstFrame(browser, url, { timeoutMs = 30000, after, canvasSelector = ANY_CANVAS_SELECTOR } = {}) {

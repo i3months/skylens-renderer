@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { requireInput } from '../../../contracts/inputs/index.mjs';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
-import { launchBrowser, serveDist, measureFirstFrame, resolveEntryPath, DEFAULT_CANVAS_SELECTOR, DEAD_RELAY_QUERY, DEVICE } from '../_common/browser.mjs';
+import { launchBrowser, serveDist, measureFirstFrame, resolveEntryPath, assertOptionalInputKeys, DEFAULT_CANVAS_SELECTOR, DEAD_RELAY_QUERY, DEVICE } from '../_common/browser.mjs';
 
 export const RUNS = 5;
 
@@ -25,6 +25,7 @@ export function stddev(xs) {
 
 /** inputs.canvasSelector 를 검증해 돌려준다(없으면 상황판 3D 캔버스 기본값). */
 export function resolveCanvasSelector(inputs) {
+  assertOptionalInputKeys(inputs);
   const s = inputs?.canvasSelector ?? DEFAULT_CANVAS_SELECTOR;
   if (typeof s !== 'string' || !s.trim()) throw new Error(`inputs.canvasSelector 는 비어 있지 않은 CSS 선택자여야 함: ${String(s)}`);
   return s.trim();
