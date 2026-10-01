@@ -150,17 +150,21 @@ export const DIFF_TOLERANCE = 8;
 /**
  * 페이지 안 첫 프레임 감지 스크립트(addInitScript). 감지 시 window.__ffMs 에 performance.now() 를 기록한다.
  * 비어 있는(배경색 하나로만 채워진) 캔버스는 그려진 것으로 치지 않는다. alpha:false WebGL 의 불투명 clear 도 마찬가지.
- * WebGL 캔버스를 읽을 수 있도록 preserveDrawingBuffer 를 켠다.
+ * 측정 대상의 GPU 부하를 늘리지 않도록 preserveDrawingBuffer 를 켜지 않고 매 프레임 readback 도 하지 않는다.
+ * WebGL 캔버스는 draw·clear 호출이 있었고 직전 판독 프레임과 draw 서명(호출 수·정점 수)이 달라졌거나 100 ms 가 지난 프레임에서만,
+ * 그 draw 와 같은 태스크의 마이크로태스크에서 1회 읽는다(그리기 버퍼가 유효한 시점). 2D 캔버스는 CPU 쪽이라 rAF 마다 읽는다.
  */
 export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
   if (typeof selector !== 'string' || !selector.trim()) throw new Error('canvasSelector 는 비어 있지 않은 CSS 선택자 문자열이어야 함');
   return `(() => {
   const SEL = ${JSON.stringify(selector)};
-  const DIFF_RATIO = ${DIFF_RATIO}, TOL = ${DIFF_TOLERANCE};
+  const DIFF_RATIO = ${DIFF_RATIO}, TOL = ${DIFF_TOLERANCE}, RECHECK_MS = 100;
   const origGet = HTMLCanvasElement.prototype.getContext;
+  const glCanvases = new WeakSet();
   HTMLCanvasElement.prototype.getContext = function (type, attrs) {
-    if (/webgl/.test(type)) attrs = Object.assign({}, attrs, { preserveDrawingBuffer: true });
-    return origGet.call(this, type, attrs);
+    const ctx = origGet.call(this, type, attrs);
+    if (ctx && /webgl/.test(String(type))) glCanvases.add(this);
+    return ctx;
   };
   const drawn = (c) => {
     try {
@@ -180,15 +184,64 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
       return diff / n >= DIFF_RATIO;
     } catch (e) { return false; }
   };
+  const found = (hit) => {
+    window.__ffMs = performance.now();
+    window.__ffCanvas = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/).join('.') : '');
+  };
+  // WebGL: draw 호출 서명이 바뀐 프레임에서만 같은 태스크 안에서 1회 판독.
+  const sig = new WeakMap(); // canvas -> { cur, read, queued }
+  const onDraw = (gl, n) => {
+    if (window.__ffMs !== undefined) return;
+    const c = gl.canvas;
+    if (!(c instanceof HTMLCanvasElement)) return;
+    let st = sig.get(c);
+    if (!st) { st = { cur: 0, read: -1, at: -1e9, queued: false }; sig.set(c, st); }
+    st.cur = (st.cur * 31 + 1 + (n | 0)) | 0;
+    if (st.queued) return;
+    st.queued = true;
+    queueMicrotask(() => {
+      st.queued = false;
+      if (window.__ffMs !== undefined) return;
+      const s = st.cur; st.cur = 0;
+      const now = performance.now();
+      if (s === st.read && now - st.at < RECHECK_MS) return; // 서명이 같아도 버퍼 내용만 바뀐 경우를 위해 드물게 재판독
+      st.read = s; st.at = now;
+      try { if (!c.matches(SEL)) return; } catch (e) { return; }
+      if (drawn(c)) found(c);
+    });
+  };
+  // 자원·상태 변경(scissor·버퍼·텍스처·프로그램 등)은 draw 서명에 섞어 같은 호출 수라도 내용이 바뀐 프레임을 후보로 만든다(uniform 은 제외, 매 프레임 바뀜).
+  for (const proto of [window.WebGLRenderingContext && WebGLRenderingContext.prototype, window.WebGL2RenderingContext && WebGL2RenderingContext.prototype]) {
+    if (!proto) continue;
+    for (const name of ['scissor', 'clearColor', 'bufferData', 'bufferSubData', 'texImage2D', 'texSubImage2D', 'useProgram', 'bindFramebuffer', 'blendFunc', 'enable', 'disable']) {
+      const orig = proto[name];
+      if (typeof orig !== 'function') continue;
+      proto[name] = function (...a) {
+        const r = orig.apply(this, a);
+        const st = sig.get(this.canvas);
+        if (st) st.cur = (st.cur * 17 + name.length + (typeof a[0] === 'number' ? a[0] : 0)) | 0;
+        else if (this.canvas instanceof HTMLCanvasElement) sig.set(this.canvas, { cur: name.length, read: -1, at: -1e9, queued: false });
+        return r;
+      };
+    }
+  }
+  for (const proto of [window.WebGLRenderingContext && WebGLRenderingContext.prototype, window.WebGL2RenderingContext && WebGL2RenderingContext.prototype]) {
+    if (!proto) continue;
+    for (const name of ['clear', 'drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
+      const orig = proto[name];
+      if (typeof orig !== 'function') continue;
+      proto[name] = function (...a) {
+        const r = orig.apply(this, a);
+        onDraw(this, name === 'clear' ? a[0] : name === 'drawRangeElements' ? a[4] : a[name.startsWith('drawArrays') ? 2 : 1]);
+        return r;
+      };
+    }
+  }
   const tick = () => {
     if (window.__ffMs !== undefined) return;
     let hit = null;
-    try { hit = [...document.querySelectorAll(SEL)].find((e) => e instanceof HTMLCanvasElement && drawn(e)) || null; } catch (e) { hit = null; }
-    if (hit) {
-      window.__ffMs = performance.now();
-      window.__ffCanvas = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/).join('.') : '');
-      return;
-    }
+    try { hit = [...document.querySelectorAll(SEL)].find((e) => e instanceof HTMLCanvasElement && !glCanvases.has(e) && drawn(e)) || null; } catch (e) { hit = null; }
+    if (hit) { found(hit); return; }
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);

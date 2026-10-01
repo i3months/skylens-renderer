@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveEntryPath, assertOptionalInputKeys, DEFAULT_CANVAS_SELECTOR, CONTROL_CANVAS_SELECTOR, DEFAULT_ENTRY_PATH, serveDist, launchBrowser, measureFirstFrame, unavailableReason, CHROMIUM_ARGS, DEVICE } from './browser.mjs';
+import { resolveEntryPath, assertOptionalInputKeys, DEFAULT_CANVAS_SELECTOR, CONTROL_CANVAS_SELECTOR, DEFAULT_ENTRY_PATH, serveDist, launchBrowser, measureFirstFrame, buildDetectScript, unavailableReason, CHROMIUM_ARGS, DEVICE } from './browser.mjs';
 
 async function page(html) {
   const dir = await mkdtemp(join(tmpdir(), 'bc-'));
@@ -81,6 +81,39 @@ test('양성: 500 ms 뒤 그리는 2D 캔버스는 500 ms 이상 2500 ms 미만'
 test('양성: 바로 그리는 페이지는 2500 ms 미만에 감지', opts, async () => {
   const { ms } = await measure(GL(false, 0), { timeoutMs: 10000 });
   assert.ok(ms > 0 && ms < 2500, `ms ${ms}`);
+});
+
+test('양성: drawArrays 로 삼각형을 그리는 WebGL(preserveDrawingBuffer 없음)도 감지', opts, async () => {
+  const html = `<!doctype html><canvas id=c width=200 height=200></canvas><script>
+const gl = document.getElementById('c').getContext('webgl');
+const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); return o; };
+const pr = gl.createProgram();
+gl.attachShader(pr, sh(gl.VERTEX_SHADER, 'attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}'));
+gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, 'void main(){gl_FragColor=vec4(1.,0.,0.,1.);}'));
+gl.linkProgram(pr); gl.useProgram(pr);
+const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.8,-0.8, 0.8,-0.8, 0,0.8]), gl.STATIC_DRAW);
+const l = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, 2, gl.FLOAT, false, 0, 0);
+const frame = () => { gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.TRIANGLES, 0, 3); requestAnimationFrame(frame); };
+setTimeout(frame, 300);
+</script>`;
+  const { ms } = await measure(html, { timeoutMs: 10000 });
+  assert.ok(ms >= 300 && ms < 2500, `ms ${ms}`);
+});
+
+test('감지 스크립트는 preserveDrawingBuffer 를 강제하지 않는다(측정 대상 GPU 부하 불변)', opts, async () => {
+  const s = await serveDist(await page(GL(false, 0)));
+  const b = await launchBrowser();
+  try {
+    const { after } = await measureFirstFrame(b, s.url, { timeoutMs: 10000, after: (p) => p.evaluate(() => document.getElementById('c').getContext('webgl').getContextAttributes().preserveDrawingBuffer) });
+    assert.equal(after, false);
+  } finally { await b.close(); await s.close(); }
+});
+
+test('감지 스크립트 소스: preserveDrawingBuffer 를 켜지 않고 WebGL 은 draw·clear 후보 프레임에서만 읽는다', () => {
+  const src = buildDetectScript('#c');
+  assert.doesNotMatch(src, /preserveDrawingBuffer\s*:\s*true/);
+  assert.match(src, /queueMicrotask/);
 });
 
 test('assertOptionalInputKeys: 정확한 키와 다른 모듈용 키는 통과, 오타 키는 거부', () => {
