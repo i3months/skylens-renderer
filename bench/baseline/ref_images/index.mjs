@@ -257,6 +257,13 @@ const SIZE = { char: 1, uchar: 1, int8: 1, uint8: 1, short: 2, ushort: 2, int16:
 const HEADER_MAX = 1 << 20; // 헤더 탐색 상한 1 MiB
 const DEFAULT_CHUNK_RECORDS = 1 << 16;
 
+const CANON_TYPE = { float32: 'float', float64: 'double', int8: 'char', uint8: 'uchar', int16: 'short', uint16: 'ushort', int32: 'int', uint32: 'uint' };
+/** 세 축 속성의 형 이름(별칭은 float·double·uchar 등으로 맞춤). 셋이 같으면 하나, 다르면 x/y/z 순서로 '/' 로 잇는다. */
+const typeName = (types) => {
+  const c = types.map((t) => CANON_TYPE[t] ?? t);
+  return c.every((t) => t === c[0]) ? c[0] : c.join('/');
+};
+
 /** 헤더에서 속성 오프셋·색 배치를 정하고 출력 버퍼를 만든다. 크기 검사는 호출 쪽(총 바이트)에서 한다. */
 function planPly(h, name) {
   const off = {};
@@ -279,7 +286,9 @@ function planPly(h, name) {
   }
   const rawCount = h.vertexCount;
   const normals = Boolean(off.nx && off.ny && off.nz);
-  return { off, layout, normals, stride: h.stride, rawCount, positions: new Float32Array(rawCount * 3), colors: new Uint8Array(rawCount * 3), j: 0, nonFinite: 0 };
+  const coordType = typeName(['x', 'y', 'z'].map((k) => off[k].type));
+  const normalType = normals ? typeName(['nx', 'ny', 'nz'].map((k) => off[k].type)) : null;
+  return { off, layout, normals, coordType, normalType, stride: h.stride, rawCount, positions: new Float32Array(rawCount * 3), colors: new Uint8Array(rawCount * 3), j: 0, nonFinite: 0 };
 }
 
 const clamp8 = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255);
@@ -333,13 +342,13 @@ function decodeRecords(buf, base, n, plan) {
 }
 
 function finishPly(plan) {
-  const { j, nonFinite, rawCount, layout, stride, normals } = plan;
+  const { j, nonFinite, rawCount, layout, stride, normals, coordType, normalType } = plan;
   // 비유한 레코드가 있으면 결과는 rawCount 점분 할당의 subarray 다. `.buffer` 를 직접 쓰지 말 것
   // (제외된 꼬리까지 포함한다). byteOffset·byteLength 와 함께 쓰거나 slice 로 복사한다.
   return {
     positions: nonFinite ? plan.positions.subarray(0, j * 3) : plan.positions,
     colors: nonFinite ? plan.colors.subarray(0, j * 3) : plan.colors,
-    count: j, rawCount, nonFinite, layout, stride, normals,
+    count: j, rawCount, nonFinite, layout, stride, normals, coordType, normalType,
   };
 }
 
@@ -464,13 +473,18 @@ export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
 
 /**
  * 측정 기준 문서(renderer_basis §7-4)의 점 레코드(27 B: x y z float32, nx ny nz float32, r g b uint8)와
- * 이 도구가 읽은 형식의 관계. 디코드 결과(layout·stride·normals)에서 만들며 method 에 항상 싣는다.
- * 법선은 어느 형식이든 읽지 않는다(헤더에 있으면 "법선 있음·무시").
+ * 이 도구가 읽은 형식의 관계. 디코드 결과(layout·stride·normals·coordType·normalType)에서 만들며 method 에 항상 싣는다.
+ * 레코드 크기만으로 판정하지 않는다: double 좌표 + uchar rgb 도 27 B 지만 기준 형식이 아니다.
+ * 형 정보(coordType·normalType)가 없으면 형을 적지 않고, 기준 형식과 같다고도 하지 않는다.
+ * 법선은 어느 형식이든 읽지 않는다(헤더에 있으면 "법선 nx ny nz <형> 있음·무시").
  */
-export function basisNote({ layout, stride, normals }) {
-  const n = normals ? '법선 nx ny nz 있음·무시' : '법선 없음';
+export function basisNote({ layout, stride, normals, coordType, normalType }) {
+  const n = normals ? `법선 nx ny nz${normalType ? ` ${normalType}` : ''} 있음·무시` : '법선 없음';
   if (layout === 'splat-f_dc') return `renderer_basis §7-4 27 B 와 다름: ${stride} B 스플랫, ${n}, 중심점만 사용`;
-  return `renderer_basis §7-4 27 B ${stride === 27 ? '와 같은 크기' : '와 다름'}: ${stride} B 점(x y z·uchar rgb), ${n}, 중심점만 사용`;
+  const same = stride === 27 && coordType === 'float' && normals && normalType === 'float';
+  const rel = same ? '와 같은 형식' : stride === 27 ? '와 크기만 같고 형식은 다름' : '와 다름';
+  const xyz = coordType ? `x y z ${coordType}` : 'x y z';
+  return `renderer_basis §7-4 27 B ${rel}: ${stride} B 점(${xyz}·uchar rgb), ${n}, 중심점만 사용`;
 }
 
 const fmt = (v) => Number(v.toPrecision(10));
