@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveEntryPath, assertOptionalInputKeys, DEFAULT_CANVAS_SELECTOR, CONTROL_CANVAS_SELECTOR, DEFAULT_ENTRY_PATH, serveDist, launchBrowser, measureFirstFrame, unavailableReason, CHROMIUM_ARGS, DEVICE } from './browser.mjs';
+import { resolveEntryPath, assertOptionalInputKeys, DEFAULT_CANVAS_SELECTOR, CONTROL_CANVAS_SELECTOR, DEFAULT_ENTRY_PATH, serveDist, buildDetectScript, launchBrowser, measureFirstFrame, unavailableReason, CHROMIUM_ARGS, DEVICE } from './browser.mjs';
 
 async function page(html) {
   const dir = await mkdtemp(join(tmpdir(), 'bc-'));
@@ -50,8 +50,13 @@ test('공용 인자: swiftshader 와 device 라벨', () => {
   assert.match(DEVICE, /swiftshader/);
 });
 
+// 브라우저 없이도 실행(건너뛰지 않음): 감지 스크립트가 문법적으로 유효해야 한다.
+test('detect script has no syntax error (no browser needed)', () => {
+  assert.doesNotThrow(() => new Function(buildDetectScript('#c')));
+});
+
 const reason = process.platform !== 'linux' ? 'linux 전용(swiftshader 인자)' : await unavailableReason();
-if (reason) console.log(`# 브라우저 테스트 skip 사유: ${reason}`);
+if (reason) console.error(`# 브라우저 테스트 skip 사유: ${reason}`);
 const opts = { skip: reason ?? false };
 
 async function measure(html, o) {

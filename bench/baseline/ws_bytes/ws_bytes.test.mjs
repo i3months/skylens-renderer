@@ -208,10 +208,11 @@ test('resend 뒤에 온 같은 수준 원본은 stale 이 아니고 resend 가 �
   assert.equal(s.resend_bytes, 7);
   assert.deepEqual(s.segments, [8]);
   assert.deepEqual(s.segment_levels, [[2, 3]]);
-  // 더 높은 수준 resend 뒤의 낮은 수준 원본도 stale 이 아님
+  // 더 높은 수준 resend 뒤의 낮은 수준 원본은 추월된 수준이라 stale (합 9, stale 4)
   const t = summarize([F(1, 2, 9, true), F(1, 0, 4)]);
-  assert.equal(t.stale_levels, 0);
-  assert.deepEqual(t.segments, [13]);
+  assert.equal(t.stale_levels, 1);
+  assert.equal(t.stale_bytes, 4);
+  assert.deepEqual(t.segments, [9]);
 });
 
 test('바이트 합계가 safe integer 를 넘으면 오류', async () => {
@@ -680,4 +681,62 @@ test('변이(e) 모호성 문구가 시간 창 method 에도 붙으면 실패: [
   assert.match(get(r, 'ws_bytes.segment_total').method, /구분 불가/);
   assert.doesNotMatch(get(r, 'ws_bytes.window_1000ms').method, /구분 불가/);
   assert.doesNotMatch(get(r, 'ws_bytes.total').method, /구분 불가/);
+});
+
+test('변이(f) 원본 stale 기준이 원본 최고 수준(hi)이면 실패: [rL2 40, L0 5] 는 [40], 수준 [[3]], stale 1, stale_bytes 5', () => {
+  const s = summarize([F(1, 2, 40, true), F(1, 0, 5)]);
+  assert.deepEqual(s.segments, [40]);
+  assert.deepEqual(s.segment_levels, [[3]]);
+  assert.equal(s.stale_levels, 1);
+  assert.equal(s.stale_bytes, 5);
+  assert.equal(s.resend_bytes, 0);
+  assert.equal(s.total_bytes, 45);
+  // 같은 수준 분할 연속은 그대로: [L2 30, L2 50] 은 stale 0, [80]
+  const split = summarize([F(1, 2, 30), F(1, 2, 50)]);
+  assert.equal(split.stale_levels, 0);
+  assert.deepEqual(split.segments, [80]);
+});
+
+test('변이(g) stale 원본의 final 로 완결하면 실패: [L1 5, L0 3 final] 은 미완 1개, segment_ids []', async () => {
+  const s = summarize([F(1, 1, 5), { ...F(1, 0, 3), final: true }]);
+  assert.deepEqual(s.segment_ids, []);
+  assert.deepEqual(s.segments, []);
+  assert.equal(s.incomplete_segments.length, 1);
+  assert.deepEqual(s.incomplete_segments[0], { id: 1, bytes: 5, levels: [2] });
+  assert.equal(s.stale_levels, 1);
+  assert.equal(s.stale_bytes, 3);
+  await assert.rejects(runText(BASE + fr(1, 1, 5) + fr(1, 0, 3, ',"final":true')), /미완 구간만/);
+});
+
+test('변이(h) resend 프레임의 final 로 final 판정 모드가 켜지면 실패: 원본 구간은 topLevel 로 완결 [7]', async () => {
+  const frames = [F(1, 0, 1), F(1, 1, 2), F(1, 2, 4), { ...F(2, 2, 4, true), final: true }];
+  const s = summarize(frames);
+  assert.deepEqual(s.segment_ids, [1]);
+  assert.deepEqual(s.segments, [7]);
+  // final 필드가 있는 녹화의 resend 전용 구간은 여전히 미완
+  assert.deepEqual(s.incomplete_segments, [{ id: 2, bytes: 4, levels: [3] }]);
+  assert.equal(s.top_level_assumed, true);
+  const r = await runText(BASE + fr(1, 0, 1) + fr(1, 1, 2) + fr(1, 2, 4) + fr(2, 2, 4, ',"resend":true,"final":true'));
+  assert.deepEqual(get(r, 'ws_bytes.segment_total').samples, [7]);
+  assert.equal(get(r, 'ws_bytes.incomplete_segment_bytes').value, 4);
+});
+
+test('변이(i) 미완 구간의 이어 붙인 회차를 세면 실패: [r40 final, r40 final, (2) 3 final] 은 merged 0', async () => {
+  const fin = (f) => ({ ...f, final: true });
+  const s = summarize([fin(F(1, 2, 40, true)), fin(F(1, 2, 40, true)), fin(F(2, 2, 3))]);
+  assert.deepEqual(s.segment_ids, [2]);
+  assert.deepEqual(s.segments, [3]);
+  assert.equal(s.resend_merged_rounds, 0);
+  const r = await runText(BASE + fr(1, 2, 40, ',"resend":true,"final":true') + fr(1, 2, 40, ',"resend":true,"final":true') + fr(2, 2, 3, ',"final":true'));
+  assert.deepEqual(get(r, 'ws_bytes.segment_total').samples, [3]);
+  assert.doesNotMatch(get(r, 'ws_bytes.segment_total').method, /분할로 합산/);
+});
+
+test('변이(j) 이어 붙인 회차를 프레임 수-1 로 세면 실패: [r40, r40, r40] 은 한 회차 120, merged 1', async () => {
+  const s = summarize([F(1, 2, 40, true), F(1, 2, 40, true), F(1, 2, 40, true)]);
+  assert.deepEqual(s.segments, [120]);
+  assert.equal(s.resend_merged_rounds, 1);
+  assert.equal(s.resend_bytes, 0);
+  const r = await runText(BASE + [0, 1, 2].map(() => fr(1, 2, 40, ',"resend":true')).join(''));
+  assert.match(get(r, 'ws_bytes.segment_total').method, /resend 1회차를 한 회차의 분할로 합산/);
 });

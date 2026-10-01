@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { serveDist, launchBrowser, measureFirstFrame, buildDetectScript, unavailableReason } from './browser.mjs';
 
 const reason = process.platform !== 'linux' ? 'linux 전용(swiftshader 인자)' : await unavailableReason();
-if (reason) console.log(`# 브라우저 테스트 skip 사유: ${reason}`);
+if (reason) console.error(`# 브라우저 테스트 skip 사유: ${reason}`);
 const opts = { skip: reason ?? false };
 
 const WRAPPED = ['scissor', 'clearColor', 'bufferData', 'bufferSubData', 'texImage2D', 'texSubImage2D', 'useProgram', 'bindFramebuffer', 'blendFunc', 'enable', 'disable',
