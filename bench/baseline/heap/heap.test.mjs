@@ -42,22 +42,23 @@ async function measure(html) {
   return Object.fromEntries(recs.map((r) => [r.metric, r]));
 }
 
-test('브라우저: 100 MiB Float32Array 픽스처는 빈 페이지 대비 프로세스 트리 RSS 가 90 MiB 이상 늘고, JS 힙은 힙 밖이라 작다', { skip: reason ?? false }, async () => {
-  const hold = await measure(HOLD);
-  const blank = await measure(BLANK);
-  assert.deepEqual(Object.keys(hold).sort(), ['heap.js_used', 'heap.process_rss']);
+test('브라우저: 100 MiB Float32Array 픽스처는 빈 페이지 대비 프로세스 트리 PSS 합이 90 MiB 이상 늘고, JS 힙은 힙 밖이라 작다', { skip: reason ?? false }, async () => {
+  // 두 픽스처를 동시에 재서 같은 시점의 시스템 상태(다른 chromium 이 공유 페이지를 나눠 갖는 정도)를 맞춘다.
+  const [hold, blank] = await Promise.all([measure(HOLD), measure(BLANK)]);
+  assert.deepEqual(Object.keys(hold).sort(), ['heap.js_used', 'heap.process_pss']);
   // 메모리 합은 공유 페이지 중복을 피하려 PSS 를 쓰고, 그 사용 여부가 method 에 기록된다(smaps_rollup 을 읽을 수 없으면 RSS 폴백이 기록된다).
   const pssReadable = existsSync(`/proc/${process.pid}/smaps_rollup`);
-  assert.match(hold['heap.process_rss'].method, pssReadable ? /PSS 사용.*smaps_rollup/ : /PSS 미사용.*RSS/);
+  assert.match(hold['heap.process_pss'].method, pssReadable ? /PSS 사용.*smaps_rollup/ : /PSS 미사용.*RSS/);
   assert.equal(hold['heap.js_used'].unit, 'B');
   assert.equal(hold['heap.js_used'].device, DEVICE);
   assert.equal(hold['heap.js_used'].samples.length, 5);
   // 빈 페이지도 브라우저 기저 메모리가 수백 MiB 라 절대값은 무의미하다. 같은 브라우저의 빈 페이지 대비 증가분으로 판정한다.
   // 페이지 메모리는 렌더러 자식 프로세스에 있으므로 루트 프로세스만 세면 증가분이 거의 0 이 되어 실패한다.
-  // 중앙값 대신 표본 최솟값끼리 비교한다: PSS 합은 프로세스 구성에 따라 두 수준(약 80 MiB 차)으로 갈리는 표본이 섞여 중앙값 차가 흔들리지만 하위 수준끼리의 차는 안정적이다.
-  const delta = Math.min(...hold['heap.process_rss'].samples) - Math.min(...blank['heap.process_rss'].samples);
+  // PSS 합 절대값은 같은 머신의 다른 chromium 이 도는 정도에 따라 약 80 MiB 씩 수준이 바뀌어(공유 라이브러리 페이지를 나눠 셈) 시점이 다른 두 측정을 비교하면 흔들린다.
+  // 그래서 위에서 두 측정을 동시에 돌리고, 워밍업 1회를 버린 보고값(중앙값)끼리 뺀다.
+  const delta = hold['heap.process_pss'].value - blank['heap.process_pss'].value; // 워밍업을 버린 보고값(중앙값)끼리 비교
   // 문턱 근거: 픽스처는 정확히 100 MiB 를 상주시키므로 이론 증가분은 100 MiB 이고, 측정 증가분은 RSS 합 기준 실측 98.5~107.0 MiB, PSS 합·표본 최솟값 기준 반복 12회에서 약 99~106 MiB 였다. 문턱 90 MiB 와의 여유는 약 9~17 MiB 다.
-  // 90 MiB 는 100 MiB 의 90%로, 빈 페이지 대비 렌더러 기저 메모리 편차(수 MiB)와 3회 중앙값 잡음을 흡수하되
+  // 90 MiB 는 100 MiB 의 90%로, 빈 페이지 대비 렌더러 기저 메모리 편차(수 MiB)와 5회 중앙값 잡음을 흡수하되
   // 상주가 빠지면(증가분 약 0) 확실히 실패하는 값이다. 측정값에 맞춰 낮추지 않는다.
   assert.ok(delta >= 90 * MIB, `delta ${delta}`);
   // TypedArray 는 V8 힙 밖이므로 js_used 는 50 MiB 미만.
@@ -108,7 +109,14 @@ test('parsePss: smaps_rollup 의 Pss(kB)를 바이트로, 없으면 null', () =>
 test('memoryMethodText: PSS 사용·폴백·혼합을 구분해 기록', () => {
   assert.match(memoryMethodText({ pssProcs: 4, rssProcs: 0 }), /^PSS 사용/);
   assert.match(memoryMethodText({ pssProcs: 0, rssProcs: 3 }), /^PSS 미사용.*RSS/);
-  assert.match(memoryMethodText({ pssProcs: 2, rssProcs: 1 }), /^PSS 일부 사용/);
+  assert.match(memoryMethodText({ pssProcs: 2, rssProcs: 1 }), /^경고: PSS·RSS 방식이 섞임/);
+  assert.equal(memoryMethodText({ pssProcs: 0, rssProcs: 0 }), null); // 센 프로세스가 0개면 기록 생략 신호
+});
+
+test('run: 센 프로세스가 0개면 메모리 합 기록을 생략하고 js_used 만 낸다', { skip: reason ?? false }, async () => {
+  // 태그가 명령행에 없는 프로세스를 못 찾는 경우와 같은 결과(null)를 processTreeMemory 가 내는지 확인한다.
+  const { processTreeMemory } = await import('./index.mjs');
+  assert.equal(processTreeMemory(`--no-such-tag-${randomUUID()}`), null);
 });
 
 test('systemPageSize: 양의 2의 거듭제곱(getconf PAGESIZE)', () => {
