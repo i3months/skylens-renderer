@@ -28,7 +28,7 @@ function checkFrame(f, where) {
   if (f === null || typeof f !== 'object' || Array.isArray(f)) throw new Error(`${where}: 프레임은 객체여야 함`);
   if (!(Number.isFinite(f.t_ms) && f.t_ms >= 0)) throw new Error(`${where}: t_ms 가 올바르지 않음`);
   if (f.dir !== 'rx' && f.dir !== 'tx') throw new Error(`${where}: dir 은 rx 또는 tx 여야 함`);
-  if (!(Number.isInteger(f.bytes) && f.bytes >= 0)) throw new Error(`${where}: bytes 가 올바르지 않음`);
+  if (!(Number.isSafeInteger(f.bytes) && f.bytes >= 0)) throw new Error(`${where}: bytes 가 올바르지 않음`);
   if (typeof f.kind !== 'string' || f.kind === '') throw new Error(`${where}: kind 가 올바르지 않음`);
   const hasSeg = f.segment !== undefined;
   if (hasSeg !== (f.level !== undefined)) throw new Error(`${where}: segment 와 level 은 함께 있어야 함`);
@@ -55,15 +55,19 @@ const asc = (a, b) => a - b;
  * - stale_levels: 도착 순서상 그 구간에서 이미 받은 최고 수준 이하가 resend 표시 없이 다시 온 프레임 수.
  *   같은 수준이 다른 수준 프레임 없이 연속으로 오면 분할 프레임이라 세지 않는다.
  * - 같은 (구간,수준)의 resend 프레임은 원본이 녹화에 있으면 합에 넣지 않고 resend_bytes 로 센다.
- *   원본이 없으면 첫 재전송 프레임 하나만 유일한 사본으로 합에 넣고 나머지 재전송은 resend_bytes
- *   (재전송은 회차를 구분할 수 없어 분할 프레임으로 합산하지 않는다).
+ *   원본이 없으면 첫 회차(다른 수준 프레임이 끼기 전까지 연속한 재전송 프레임들)만 유일한 사본으로 합에 넣고
+ *   나머지 회차는 resend_bytes.
  *   total_bytes·by_kind·windows 에는 항상 포함한다.
+ * - stale 프레임 바이트는 total·windows·stale_bytes 에만 넣고 구간 합·받은 수준·건너뜀 계산에서는 뺀다.
+ * - incomplete_segments: 위치와 무관한 모든 미완 구간(도착 순서). segments 에는 완결 구간만 남는다.
+ * - top_level_assumed: final 필드 없이 topLevel 기본값을 썼는지(run 이 method 에 경고로 남김).
  * - 완결 판정: 녹화에 final 필드가 하나라도 있으면 구간에 final 프레임이 있을 때, 없으면 받은 수준이 topLevel 이상일 때.
- *   도착 순서상 끝에서부터 이어지는 미완 구간은 모두 segments 에서 빼고 trailing_segments 로 따로 낸다
+ *   도착 순서상 끝에서부터 이어지는 미완 구간은 trailing_segments 로도 낸다
  *   (trailing_segment 는 그중 마지막 도착 구간, 없으면 null). 구간 도착 순서는 원본(resend 아닌) 프레임의 마지막 도착 기준이다.
  * - windows: windowMs 시간 창별 바이트 합 (트래픽이 있는 창만, 창 번호 오름차순).
  */
-export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel = DEFAULT_TOP_LEVEL } = {}) {
+export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topLevelOpt } = {}) {
+  const topLevel = topLevelOpt === undefined ? DEFAULT_TOP_LEVEL : topLevelOpt;
   if (!Array.isArray(frames)) throw new Error('frames 는 배열이어야 함');
   if (!(Number.isFinite(windowMs) && windowMs > 0)) throw new Error('windowMs 는 양수여야 함');
   if (!isLevel(topLevel)) throw new Error(`topLevel 은 0..${MAX_LEVEL} 정수여야 함`);
@@ -71,9 +75,10 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel = DEF
   let initialBytes = null;
   let initialSum = 0;
   let stale = 0;
+  let staleBytes = 0;
   let anyFinal = false;
   const byKind = Object.create(null);
-  // 구간 ID -> { perLevel: 수준 -> { orig, resend: [재전송 프레임별 바이트] }, hi(받은 최고 수준), last(마지막 원본 수준), order, final }
+  // 구간 ID -> { perLevel: 수준 -> { orig, resend: [회차별 프레임 바이트 배열] }, hi(받은 최고 수준), last(마지막 원본 수준), order, final }
   const segMap = new Map();
   const winMap = new Map(); // 창 번호 -> 합
   frames.forEach((f, i) => {
@@ -88,22 +93,31 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel = DEF
     winMap.set(w, (winMap.get(w) ?? 0) + f.bytes);
     if (f.segment === undefined) return;
     if (f.final !== undefined) anyFinal = true;
-    const s = segMap.get(f.segment) ?? { perLevel: new Map(), hi: -1, last: -1, order: -1, lastIdx: -1, final: false };
+    const s = segMap.get(f.segment) ?? { perLevel: new Map(), hi: -1, last: -1, order: -1, lastIdx: -1, final: false, prev: -1 };
     segMap.set(f.segment, s);
     const v = s.perLevel.get(f.level) ?? { orig: { n: 0, bytes: 0 }, resend: [] };
     s.perLevel.set(f.level, v);
     if (f.final === true) s.final = true;
     if (f.resend === true) {
-      v.resend.push(f.bytes);
+      // 같은 수준 재전송이 다른 수준 프레임 없이 이어지면 한 회차.
+      if (s.prev === f.level && v.resend.length > 0) v.resend[v.resend.length - 1].push(f.bytes);
+      else v.resend.push([f.bytes]);
       s.hi = Math.max(s.hi, f.level);
     } else {
-      if (f.level < s.hi || (f.level === s.hi && s.last !== f.level)) stale += 1;
+      const isStale = f.level < s.hi || (f.level === s.hi && s.last !== f.level);
       s.hi = Math.max(s.hi, f.level);
       s.last = f.level;
-      s.order = i;
-      v.orig.n += 1;
-      v.orig.bytes += f.bytes;
+      if (isStale) {
+        // 추월된 수준의 뒤늦은 프레임: total·windows·stale_bytes 에만 센다.
+        stale += 1;
+        staleBytes += f.bytes;
+      } else {
+        s.order = i;
+        v.orig.n += 1;
+        v.orig.bytes += f.bytes;
+      }
     }
+    s.prev = f.level;
     s.lastIdx = i;
   });
   // 원본이 없는 구간의 도착 순서는 마지막 프레임 위치.
@@ -115,8 +129,10 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel = DEF
     let resend = 0;
     for (const [l, v] of segMap.get(id).perLevel) {
       const useOrig = v.orig.n > 0;
-      out.set(l, useOrig ? v.orig.bytes : v.resend[0]);
-      resend += sum(v.resend) - (useOrig ? 0 : v.resend[0]);
+      if (!useOrig && v.resend.length === 0) continue; // stale 프레임만 있는 수준은 받은 수준이 아님
+      const first = useOrig ? 0 : sum(v.resend[0]);
+      out.set(l, useOrig ? v.orig.bytes : first);
+      resend += sum(v.resend.map(sum)) - first;
     }
     return { out, resend };
   };
@@ -129,12 +145,15 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel = DEF
   const arrival = [...allIds].sort((a, b) => segMap.get(a).order - segMap.get(b).order);
   const trailingIds = new Set();
   for (let k = arrival.length - 1; k >= 0 && !complete(arrival[k]); k--) trailingIds.add(arrival[k]);
-  const trailingList = arrival.filter((id) => trailingIds.has(id)).map((id) => {
+  const describe = (id) => {
     const e = effective(id);
     const lv = [...e.out.keys()].sort(asc);
     return { id, bytes: sum([...e.out.values()]), levels: lv.map(toProtocolLevel) };
-  });
-  const segIds = allIds.filter((id) => !trailingIds.has(id));
+  };
+  const trailingList = arrival.filter((id) => trailingIds.has(id)).map(describe);
+  // 완결 아닌 구간은 위치와 무관하게 segments 에서 뺀다.
+  const incompleteList = arrival.filter((id) => !complete(id)).map(describe);
+  const segIds = allIds.filter((id) => complete(id));
   const segments = [];
   const segLevels = [];
   const segSkipped = [];
@@ -142,7 +161,7 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel = DEF
   for (const id of allIds) {
     const e = effective(id);
     resendBytes += e.resend;
-    if (trailingIds.has(id)) continue;
+    if (!complete(id)) continue;
     const got = [...e.out.keys()].sort(asc);
     const origLevels = [...segMap.get(id).perLevel].filter(([, v]) => v.orig.n > 0).map(([l]) => l);
     const top = origLevels.length ? Math.max(...origLevels) : -1;
@@ -163,6 +182,9 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel = DEF
     segment_levels: segLevels,
     segment_levels_skipped: segSkipped,
     stale_levels: stale,
+    stale_bytes: staleBytes,
+    top_level_assumed: !anyFinal && topLevelOpt === undefined,
+    incomplete_segments: incompleteList,
     resend_bytes: resendBytes,
     trailing_segment: trailingList.length ? trailingList[trailingList.length - 1] : null,
     trailing_segments: trailingList,
@@ -205,13 +227,15 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
   }
   if (s.initial_bytes === null) throw new Error(`${path}: '${FIRST_FRAME_KIND}' 프레임이 없음`);
   if (s.segments.length === 0) {
-    throw new Error(`${path}: ${s.trailing_segments.length ? '완결된 segment 가 없음 (미완 구간만 있음)' : 'segment 프레임이 없음'}`);
+    throw new Error(`${path}: ${s.incomplete_segments.length ? '완결된 segment 가 없음 (미완 구간만 있음)' : 'segment 프레임이 없음'}`);
   }
   const device = 'replay';
   const rec = (metric, value, unit, method, extra = {}) => ({ metric, value, unit, device, method, commit, ...extra });
-  const mSeg = 'ws_recording_replay by_segment_id';
-  const mWin = `ws_recording_replay window_ms=${DEFAULT_WINDOW_MS}`;
-  const mAll = 'ws_recording_replay';
+  // final 필드가 없는 녹화에서 기본 topLevel 을 쓰면 완결 판정이 가정임을 method 에 남긴다.
+  const warn = s.top_level_assumed ? ` 경고: final 필드 없음, topLevel 가정(기본 ${DEFAULT_TOP_LEVEL}, inputs.wsTopLevel 로 지정)` : '';
+  const mSeg = `ws_recording_replay by_segment_id${warn}`;
+  const mWin = `ws_recording_replay window_ms=${DEFAULT_WINDOW_MS}${warn}`;
+  const mAll = `ws_recording_replay${warn}`;
   const mean = (a) => sum(a) / a.length;
   const skipped = s.segment_levels_skipped.map((a) => a.length);
   const received = s.segment_levels.map((a) => a.length);
@@ -229,10 +253,14 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
     rec('ws_bytes.segment_levels_mask', mean(masks), 'count', mSeg, { samples: masks }),
     // 이미 받은 최고 수준 이하가 재전송 표시 없이 다시 온 프레임 수 (추월된 수준의 뒤늦은 전송·중복).
     rec('ws_bytes.stale_levels', s.stale_levels, 'count', mSeg),
+    // 추월된 수준의 뒤늦은 프레임 바이트 (segment_total 에는 넣지 않음).
+    rec('ws_bytes.stale_bytes', s.stale_bytes, 'B', mSeg),
     // 같은 (구간,수준)을 다시 보낸 재전송 바이트 (segment_total 에는 넣지 않음).
     rec('ws_bytes.resend_bytes', s.resend_bytes, 'B', mSeg),
     // 녹화 끝의 미완 구간 바이트 (없으면 0, segment_total 에서 제외).
     rec('ws_bytes.trailing_segment_bytes', sum(s.trailing_segments.map((t) => t.bytes)), 'B', mSeg),
+    // 위치와 무관한 모든 미완 구간 바이트 (segment_total 에서 제외).
+    rec('ws_bytes.incomplete_segment_bytes', sum(s.incomplete_segments.map((t) => t.bytes)), 'B', mSeg),
     // 시간 창 지표: 트래픽이 있는 창만.
     rec('ws_bytes.window_1000ms', mean(s.windows), 'B', mWin, { samples: s.windows }),
   ];
