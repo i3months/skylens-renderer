@@ -45,3 +45,8 @@ export function parse(text) {
  *   - returned records must pass assertRecords(); no network calls except the package registry.
  * Tests live next to the module as <name>.test.mjs and read SKYLENS_DIR from the environment.
  */
+
+/*
+ * T01 rework: run receives { skylensDir, outDir, commit, inputs }; see contracts/inputs/index.mjs.
+ * A module whose required input is missing throws (run_all records it as failed); it never substitutes synthetic data.
+ */
