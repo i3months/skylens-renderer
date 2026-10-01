@@ -1,4 +1,5 @@
 // 테스트 전용 도우미: 합성 점군과 56 B 스플랫 PLY 작성기. run() 경로에서는 쓰지 않는다.
+// mulberry32 PRNG: Tommy Ettinger 의 알고리즘, 공개 도메인(public domain).
 import { SH_C0 } from './index.mjs';
 
 /** 시드 고정 합성 점군 (mulberry32). 지면 격자 + 기둥 + 무작위 구름. 결정적이다. 점은 {p:[x,y,z], rgb:[r,g,b]}. */
