@@ -2,7 +2,7 @@
 // 감지 뒤에는 모두 원본(__ffOrig 없음, 네이티브 함수)으로 복원되며 페이지의 그리기 호출이 계속 동작하는지를 동작으로 확인한다.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serveDist, launchBrowser, measureFirstFrame, buildDetectScript, unavailableReason } from './browser.mjs';
@@ -39,11 +39,15 @@ const inspect = (names) => {
 
 async function withPage(html, fn) {
   const dist = await mkdtemp(join(tmpdir(), 'wd-'));
-  await mkdir(join(dist, 'res/static'), { recursive: true });
-  await writeFile(join(dist, 'res/static/status.html'), html);
-  const s = await serveDist(dist);
-  const b = await launchBrowser();
-  try { return await fn(b, s.url); } finally { await b.close(); await s.close(); }
+  try {
+    await mkdir(join(dist, 'res/static'), { recursive: true });
+    await writeFile(join(dist, 'res/static/status.html'), html);
+    const s = await serveDist(dist);
+    const b = await launchBrowser();
+    try { return await fn(b, s.url); } finally { await b.close(); await s.close(); }
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+  }
 }
 
 test('감지 뒤: 모든 WebGL 메서드와 getContext 가 원본으로 복원되고 그리기는 계속 동작', opts, async () => {

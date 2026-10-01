@@ -922,6 +922,20 @@ test('basisNote: rgb 점은 크기가 아니라 좌표 형·법선 형으로 기
   assert.doesNotMatch(basisNote({ layout: 'rgb-u8', stride: 27, normals: true }), /같은 형식/);
 });
 
+test('basisNote: 기준 형식 27 B 인데 속성 순서가 다르면 "같은 형식" 이 아니다', () => {
+  const dec = (layout) => decodePly(encodePly([{ p: [1, 2, 3], rgb: [4, 5, 6] }], layout), 'f.ply');
+  // 정상 순서: x y z nx ny nz red green blue
+  const correct = dec([['float', 'x'], ['float', 'y'], ['float', 'z'], ['float', 'nx'], ['float', 'ny'], ['float', 'nz'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue']]);
+  assert.equal(basisNote(correct), 'renderer_basis §7-4 27 B 와 같은 형식: 27 B 점(x y z float·uchar rgb), 법선 nx ny nz float 있음·무시, 중심점만 사용');
+  // 속성 순서가 바뀜: rgb 가 normals 보다 먼저
+  const swapped = dec([['float', 'x'], ['float', 'y'], ['float', 'z'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue'], ['float', 'nx'], ['float', 'ny'], ['float', 'nz']]);
+  assert.equal(swapped.stride, 27);
+  assert.equal(swapped.coordType, 'float');
+  assert.equal(swapped.normalType, 'float');
+  assert.doesNotMatch(basisNote(swapped), /같은 형식/);
+  assert.match(basisNote(swapped), /27 B 와 크기만 같고 형식은 다름/);
+});
+
 // ---- 축별 clip 경계 ----
 test('applyFrameTransform: 한 축만 밖인 유한 점은 축마다 제거되고, 경계 위 점은 남는다 (회전 뒤 좌표로 판정)', () => {
   const fr = { R: ROTATIONS.none, s: 2, P: [10, 20, 30], clipMin: [-1, -2, -4], clipMax: [1, 2, 4] };
