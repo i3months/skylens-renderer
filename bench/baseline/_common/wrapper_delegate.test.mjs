@@ -94,3 +94,48 @@ test('페이지가 먼저 덮어쓴 getContext 는 감지 뒤 복원이 건드�
   }));
   assert.equal(after, true);
 });
+
+// 감지 뒤에도 페이지가 감지 전에 캡처해 둔 래퍼는 남는다. 이 래퍼는 해시 경로에 들어가지 않고 원본으로 위임해야 한다.
+// 테스트 훅(window.__ffTestHook.hash)이 해시 경로 진입 수를 센다.
+const CAPTURE = `window.__ffTestHook = { hash: 0 };
+const P = WebGLRenderingContext.prototype;
+window.cap = { scissor: P.scissor, clear: P.clear, drawArrays: P.drawArrays };`;
+
+test('wrapper_delegate: 감지 뒤 캡처된 래퍼를 N회 호출해도 해시 경로 진입은 0회', opts, async () => {
+  const N = 50;
+  const { after } = await withPage(GL(0, CAPTURE), (b, url) => measureFirstFrame(b, url, {
+    timeoutMs: 10000,
+    after: (page) => page.evaluate((n) => {
+      const gl = document.getElementById('c').getContext('webgl');
+      const before = window.__ffTestHook.hash;
+      for (let i = 0; i < n; i++) {
+        window.cap.scissor.call(gl, 0, 0, 10, 10);
+        window.cap.clear.call(gl, gl.COLOR_BUFFER_BIT);
+        window.cap.drawArrays.call(gl, gl.TRIANGLES, 0, 0);
+      }
+      return { before, afterCalls: window.__ffTestHook.hash, wrappedKept: window.cap.clear.__ffOrig !== undefined };
+    }, N),
+  }));
+  assert.equal(after.wrappedKept, true, '캡처한 함수가 래퍼가 아니라 검증이 무의미함');
+  assert.equal(after.afterCalls, after.before, '감지 뒤 해시 경로에 진입함');
+});
+
+test('wrapper_delegate(대조): 감지 전에는 같은 호출이 해시 경로에 들어간다', opts, async () => {
+  await withPage(GL(null, CAPTURE), async (b, url) => {
+    const ctx = await b.newContext();
+    try {
+      const page = await ctx.newPage();
+      await page.addInitScript(buildDetectScript('#c'));
+      await page.goto(url, { waitUntil: 'load' });
+      const r = await page.evaluate(() => {
+        const gl = document.getElementById('c').getContext('webgl');
+        const h0 = window.__ffTestHook.hash;
+        window.cap.scissor.call(gl, 0, 0, 10, 10);
+        window.cap.drawArrays.call(gl, gl.TRIANGLES, 0, 0);
+        return { d: window.__ffTestHook.hash - h0, ff: window.__ffMs };
+      });
+      assert.equal(r.ff, undefined);
+      assert.equal(r.d, 2);
+    } finally { await ctx.close(); }
+  });
+});

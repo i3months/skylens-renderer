@@ -288,9 +288,11 @@ function planPly(h, name) {
   const normals = Boolean(off.nx && off.ny && off.nz);
   const coordType = typeName(['x', 'y', 'z'].map((k) => off[k].type));
   const normalType = normals ? typeName(['nx', 'ny', 'nz'].map((k) => off[k].type)) : null;
+  // rgb-u8 레이아웃이면 color 속성들의 type을 읽고, 그렇지 않으면 null. rgb-u8 검증(line 282)에서
+  // color 속성이 uchar임이 보장되므로 colorType 은 현재 늘 uchar 이다. 색 형 허용을 넓힐 때 쓰임.
   const colorType = layout === 'rgb-u8' ? typeName(['red', 'green', 'blue'].map((k) => off[k].type)) : null;
   // 속성 순서 검사: rgb-u8 + normals 일 때 x y z nx ny nz red green blue 순서가 정확히 맞는지
-  // 앞 9개 접두 일치만 검사하되, stride===27 조건(정확히 이 9개 속성, 패딩 없음)으로 맞춤
+  // 정확히 9개 속성이고 순서가 맞으면 true. 뒤에 추가 속성이 있으면 false (결과적으로 stride > 27).
   let propertyOrderCorrect = false;
   if (layout === 'rgb-u8' && normals) {
     const expected = ['x', 'y', 'z', 'nx', 'ny', 'nz', 'red', 'green', 'blue'];
@@ -482,18 +484,21 @@ export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
 
 /**
  * 측정 기준 문서(renderer_basis §7-4)의 점 레코드(27 B: x y z float32, nx ny nz float32, r g b uint8)와
- * 이 도구가 읽은 형식의 관계. 디코드 결과(layout·stride·normals·coordType·normalType)에서 만들며 method 에 항상 싣는다.
+ * 이 도구가 읽은 형식의 관계. 디코드 결과(layout·stride·normals·coordType·normalType·colorType·propertyOrderCorrect)에서 만들며 method 에 항상 싣는다.
  * 레코드 크기만으로 판정하지 않는다: double 좌표 + uchar rgb 도 27 B 지만 기준 형식이 아니다.
- * 형 정보(coordType·normalType)가 없으면 형을 적지 않고, 기준 형식과 같다고도 하지 않는다.
- * 속성 순서도 기준과 같아야 한다(x y z nx ny nz red green blue 가 앞에서부터 차례로 정확히 이 9개여야 하고, 뒤에 속성이 더 있으면 stride 가 27 을 초과해 형식이 다르다).
+ * 형 정보(coordType·normalType·colorType)가 없으면 형을 적지 않고, 기준 형식과 같다고도 하지 않는다.
+ * 속성 순서도 기준과 같아야 한다(propertyOrderCorrect): x y z nx ny nz red green blue 가 앞에서부터 차례로 정확히 이 9개여야 하고, 뒤에 속성이 더 있으면 stride 가 27 을 초과해 형식이 다르다.
  * 법선은 어느 형식이든 읽지 않는다(헤더에 있으면 "법선 nx ny nz <형> 있음·무시").
  */
 export function basisNote({ layout, stride, normals, coordType, normalType, colorType, propertyOrderCorrect }) {
   const n = normals ? `법선 nx ny nz${normalType ? ` ${normalType}` : ''} 있음·무시` : '법선 없음';
   if (layout === 'splat-f_dc') return `renderer_basis §7-4 27 B 와 다름: ${stride} B 스플랫, ${n}, 중심점만 사용`;
+  // propertyOrderCorrect 이 true 면 정확히 9개 속성이므로 stride === 27 는 방어적 검사 (길이 조건과 겹침).
   const same = stride === 27 && coordType === 'float' && normals && normalType === 'float' && propertyOrderCorrect;
   const rel = same ? '와 같은 형식' : stride === 27 ? '와 크기만 같고 형식은 다름' : '와 다름';
   const xyz = coordType ? `x y z ${coordType}` : 'x y z';
+  // rgb-u8 레이아웃에서는 color 속성 검증(line 282)으로 colorType 이 항상 uchar 이므로
+  // 'uchar rgb' 가 출력된다. colorType 은 색 형 허용을 넓힐 때를 대비한 것이다.
   const rgb = colorType ? `${colorType} rgb` : 'uchar rgb';
   return `renderer_basis §7-4 27 B ${rel}: ${stride} B 점(${xyz}·${rgb}), ${n}, 중심점만 사용`;
 }
