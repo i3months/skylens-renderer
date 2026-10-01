@@ -93,16 +93,17 @@ function runModule({ modulesDir, name, skylensDir, outDir, commit, inputs, timeo
  * @param {string} [o.modulesDir] <모듈명>/index.mjs 를 찾을 폴더 (테스트에서 가짜 모듈 주입용)
  * @param {number} [o.moduleTimeoutMs] 모듈별 타임아웃. 초과 시 그 모듈만 failed(stage 'timeout')
  * @param {string[]} [o.modules] 모듈 이름 목록 재정의 (테스트용, 기본 MODULES)
- * @returns {Promise<{summary: object, records: object[], exitCode: number}>}
+ * @returns {Promise<{summary: object, records: object[], exitCode: number}>} exitCode: 실패 있음 1, 실행 대상 0개 2, 그 외 0
  */
 export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, skip, modulesDir = DEFAULT_MODULES_DIR, modules = MODULES, buildDist = defaultBuildDist, moduleTimeoutMs = DEFAULT_MODULE_TIMEOUT_MS } = {}) {
   if (!outDir) throw new Error('outDir 이 필요하다');
+  if (Array.isArray(only) && only.length === 0) throw new Error('only 에 모듈 이름이 없다');
   // 이름 검증은 기본 MODULES 를 쓸 때만 한다 (재정의 시에는 재정의한 목록 기준).
   const known = new Set(modules);
   for (const [label, names] of [['only', only], ['skip', skip]]) {
     for (const n of names ?? []) if (!known.has(n)) throw new Error(`${label}: unknown module ${n}`);
   }
-  const onlySet = only && only.length ? new Set(only) : null;
+  const onlySet = only ? new Set(only) : null;
   const skipSet = new Set(skip ?? []);
 
   await mkdir(outDir, { recursive: true });
@@ -146,5 +147,5 @@ export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, sk
   // 실패한 모듈의 레코드는 넣지 않는다. 같은 입력이면 바이트 동일하게 직렬화된다.
   await writeFile(join(outDir, 'records.json'), serialize(records));
   await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
-  return { summary, records, exitCode: failed.length ? 1 : 0 };
+  return { summary, records, exitCode: failed.length ? 1 : ok.length ? 0 : 2 };
 }
