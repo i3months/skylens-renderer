@@ -38,13 +38,14 @@ function checkNames(label, names) {
  * @param {string} o.skylensDir skylens develop 체크아웃 (읽기 전용)
  * @param {string} o.outDir 산출물 루트. 모듈별로 outDir/<모듈명>/ 을 쓰게 한다
  * @param {string} o.commit skylens 커밋 해시
+ * @param {object} [o.inputs] 외부 입력 (contracts/inputs). 그대로 각 모듈 run 에 전달한다. 없으면 {}
  * @param {string[]} [o.only] 지정하면 이 모듈만 실행
  * @param {string[]} [o.skip] 이 모듈은 건너뜀
  * @param {string} [o.modulesDir] <모듈명>/index.mjs 를 찾을 폴더 (테스트에서 가짜 모듈 주입용)
  * @param {string[]} [o.modules] 모듈 이름 목록 재정의 (테스트용, 기본 MODULES)
  * @returns {Promise<{summary: object, records: object[], exitCode: number}>}
  */
-export async function runAll({ skylensDir, outDir, commit, only, skip, modulesDir = DEFAULT_MODULES_DIR, modules = MODULES } = {}) {
+export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, skip, modulesDir = DEFAULT_MODULES_DIR, modules = MODULES } = {}) {
   if (!outDir) throw new Error('outDir 이 필요하다');
   // 이름 검증은 기본 MODULES 를 쓸 때만 한다 (재정의 시에는 재정의한 목록 기준).
   const known = new Set(modules);
@@ -76,7 +77,7 @@ export async function runAll({ skylensDir, outDir, commit, only, skip, modulesDi
     try {
       const moduleOut = join(outDir, name);
       await mkdir(moduleOut, { recursive: true });
-      const list = await mod.run({ skylensDir, outDir: moduleOut, commit });
+      const list = await mod.run({ skylensDir, outDir: moduleOut, commit, inputs });
       if (!Array.isArray(list)) throw new Error('run 이 배열을 반환하지 않음');
       assertRecords(list);
       records.push(...list);

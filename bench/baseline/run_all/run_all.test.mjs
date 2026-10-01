@@ -129,3 +129,71 @@ test('CLI: 실패 시 종료코드 1, 전부 성공 시 0, 인자 누락 시 2',
   const missing = spawnSync(process.execPath, [CLI, '--out', out], { encoding: 'utf8' });
   assert.equal(missing.status, 2);
 });
+
+// 가짜 모듈 8개: bundle_status 는 받은 inputs 를 got.json 에 기록(echo), ref_images 는 pointsPath 가 없으면 throw
+async function mkInputsModules() {
+  const dir = join(root, 'inputs_modules');
+  const contract = new URL('../../../contracts/inputs/index.mjs', import.meta.url).href;
+  for (const name of MODULES) {
+    await mkdir(join(dir, name), { recursive: true });
+    const body = name === 'ref_images'
+      ? `import { requireInput } from '${contract}';
+export async function run({ commit, inputs }) { requireInput(inputs, 'pointsPath'); return [{ metric: 'ref.n', value: 1, unit: 'count', device: 'd', method: 'm', commit }]; }`
+      : `import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+export async function run({ outDir, commit, inputs, skylensDir }) {
+  await writeFile(join(outDir, 'got.json'), JSON.stringify({ inputs, skylensDir }));
+  return [{ metric: '${name}.n', value: 1, unit: 'count', device: 'd', method: 'm', commit }];
+}`;
+    await writeFile(join(dir, name, 'index.mjs'), body);
+  }
+  return dir;
+}
+
+test('runAll: inputs 가 모듈에 그대로 전달된다', async () => {
+  const dir = await mkInputsModules();
+  const inputs = { pointsPath: '/p.ply', wsRecording: '/w.jsonl', anchor: { lat: 1.5, lon: 2.5, alt: 3 } };
+  const out = join(root, 'in_out');
+  await runAll({ skylensDir: root, outDir: out, commit: COMMIT, modulesDir: dir, inputs });
+  const got = JSON.parse(await readFile(join(out, 'bundle_status', 'got.json'), 'utf8'));
+  assert.deepEqual(got.inputs, inputs);
+  assert.equal(got.skylensDir, root);
+  // inputs 생략 시 빈 객체
+  const out2 = join(root, 'in_out2');
+  await runAll({ skylensDir: root, outDir: out2, commit: COMMIT, modulesDir: dir });
+  assert.deepEqual(JSON.parse(await readFile(join(out2, 'bundle_status', 'got.json'), 'utf8')).inputs, {});
+});
+
+test('CLI: 점군 경로가 없으면 ref_images 는 failed(종료코드 1), 있으면 전달되어 0', async () => {
+  const dir = await mkInputsModules();
+  const base = ['--skylens-dir', root, '--commit', COMMIT, '--modules-dir', dir];
+  const out = join(root, 'cli_in1');
+  const bad = spawnSync(process.execPath, [CLI, ...base, '--out', out], { encoding: 'utf8' });
+  assert.equal(bad.status, 1);
+  const s = JSON.parse(await readFile(join(out, 'summary.json'), 'utf8'));
+  assert.equal(s.ok.length, 7);
+  assert.equal(s.totalRecords, 7);
+  assert.deepEqual(s.failed.map((f) => [f.module, f.stage]), [['ref_images', 'run']]);
+  assert.match(s.failed[0].error, /input missing: pointsPath/);
+
+  const out2 = join(root, 'cli_in2');
+  const good = spawnSync(process.execPath, [CLI, ...base, '--out', out2, '--points', '/x/a.ply', '--ws-recording', '/x/w.jsonl',
+    '--tower-recording', '/x/t.jsonl', '--dist-dir', '/x/dist', '--anchor-lat', '37.5', '--anchor-lon', '-127.25', '--anchor-alt', '12'], { encoding: 'utf8' });
+  assert.equal(good.status, 0);
+  assert.equal(JSON.parse(await readFile(join(out2, 'summary.json'), 'utf8')).ok.length, 8);
+  const got = JSON.parse(await readFile(join(out2, 'bundle_status', 'got.json'), 'utf8'));
+  assert.deepEqual(got.inputs, {
+    pointsPath: '/x/a.ply', wsRecording: '/x/w.jsonl', towerRecording: '/x/t.jsonl', distDir: '/x/dist',
+    anchor: { lat: 37.5, lon: -127.25, alt: 12 },
+  });
+});
+
+test('CLI: 앵커 일부만 주거나 숫자가 아니면 종료코드 2', () => {
+  const base = [CLI, '--skylens-dir', root, '--commit', COMMIT, '--out', join(root, 'cli_bad')];
+  const a = spawnSync(process.execPath, [...base, '--anchor-lat', '1'], { encoding: 'utf8' });
+  assert.equal(a.status, 2);
+  assert.match(a.stderr, /셋 다/);
+  const b = spawnSync(process.execPath, [...base, '--anchor-lat', 'x', '--anchor-lon', '1', '--anchor-alt', '2'], { encoding: 'utf8' });
+  assert.equal(b.status, 2);
+  assert.match(b.stderr, /숫자/);
+});
