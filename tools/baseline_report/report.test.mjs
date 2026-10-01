@@ -88,3 +88,28 @@ test('소프트웨어 렌더 기기 레코드는 참고값 절로 분리된다',
   assert.ok(ref.includes('| first_frame.p50 | 900 | ms | headless-chromium-swiftshader'));
   assert.ok(!toTable([A]).includes('참고값'));
 });
+
+test('--status 표: 순서가 섞인 summary 는 모듈명 순으로 정렬되고 | 는 이스케이프된다', () => {
+  const mixed = {
+    ok: [{ module: 'zeta', records: 7 }, { module: 'alpha', records: 1 }],
+    failed: [{ module: 'mid', stage: 'run', error: 'a|b 실패' }],
+    skipped: ['beta'],
+  };
+  const expected = [
+    '| 하위 작업 | 상태 | 레코드 | 비고 |',
+    '| --- | --- | --- | --- |',
+    '| alpha | 측정됨 | 1 |  |',
+    '| beta | 건너뜀 |  |  |',
+    '| mid | 실패 |  | run: a\\|b 실패 |',
+    '| zeta | 측정됨 | 7 |  |',
+    '',
+    '측정됨 2, 실패 1, 건너뜀 1',
+    '',
+  ].join('\n');
+  assert.equal(toStatusTable(mixed), expected);
+});
+
+test('실패 절: 오류와 모듈명의 | 는 이스케이프되어 열 수가 유지된다', () => {
+  const { text } = toReport([A], { summary: { ok: [], skipped: [], failed: [{ module: 'x|y', stage: 'run', error: 'a|b' }] } });
+  assert.ok(text.startsWith('## 실패·측정 불가\n\n| 모듈 | 단계 | 오류 |\n| --- | --- | --- |\n| x\\|y | run | a\\|b |\n\n'));
+});
