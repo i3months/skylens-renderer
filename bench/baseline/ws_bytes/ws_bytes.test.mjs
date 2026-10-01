@@ -614,3 +614,70 @@ test('[r40, r40] 은 한 회차 분할로 80 이지만 단일 구간 relay 반�
   assert.equal(get(orig, 'ws_bytes.resend_bytes').value, 8);
   for (const x of orig) assert.doesNotMatch(x.method, /구분 불가|resend 전용/);
 });
+
+// ---- 추월 판정 기준: 재전송으로만 받은 수준도 이미 받은 최고 수준 ----
+test('[rL2 40, rL0 5] 는 [L2 40, rL0 5] 와 같이 수준 0 회차가 추월됨: segments [40], 수준 [[3]], resend 5', () => {
+  const s = summarize([F(1, 2, 40, true), F(1, 0, 5, true)]);
+  assert.deepEqual(s.segments, [40]);
+  assert.deepEqual(s.segment_levels, [[3]]);
+  assert.equal(s.resend_bytes, 5);
+  assert.equal(s.total_bytes, 45);
+  const o = summarize([F(1, 2, 40), F(1, 0, 5, true)]);
+  assert.deepEqual(o.segments, [40]);
+  assert.deepEqual(o.segment_levels, [[3]]);
+  assert.equal(o.resend_bytes, 5);
+  // 건너뜀 기준은 원본 최고 수준이라 둘이 다르다 (재전송으로만 받은 최고 수준 아래 공백은 건너뜀이 아님)
+  assert.deepEqual(s.segment_levels_skipped, [[]]);
+  assert.deepEqual(o.segment_levels_skipped, [[1, 2]]);
+});
+
+test('[L0 1, rL3 40, rL1 5] (topLevel 3): rL1 은 rL3 에 추월됨, 수준 [[1,4]], resend 5', () => {
+  const s = summarize([F(1, 0, 1), F(1, 3, 40, true), F(1, 1, 5, true)], T3);
+  assert.deepEqual(s.segment_ids, [1]);
+  assert.deepEqual(s.segments, [41]);
+  assert.deepEqual(s.segment_levels, [[1, 4]]);
+  assert.equal(s.resend_bytes, 5);
+  assert.deepEqual(s.segment_levels_skipped, [[]]);
+});
+
+// ---- 변이 검출 ----
+test('변이(a) 추월 기준이 s.last 이면 실패: [L2 10, rL1 5, rL0 7] 는 [10], 건너뜀 [[1,2]], resend 12', () => {
+  // rL1 이 분할 연속(last)을 끊어도 rL0 은 여전히 수준 2 에 추월됨
+  const s = summarize([F(1, 2, 10), F(1, 1, 5, true), F(1, 0, 7, true)]);
+  assert.deepEqual(s.segments, [10]);
+  assert.deepEqual(s.segment_levels, [[3]]);
+  assert.deepEqual(s.segment_levels_skipped, [[1, 2]]);
+  assert.equal(s.resend_bytes, 12);
+});
+
+test('변이(b) 재전송이 같은 수준 분할만 끊으면 실패: [L1 7, rL2 3, L1 7, L2 1] 는 stale 1, [8]', () => {
+  // 다른 수준 resend 도 원본 분할 연속을 끊으므로 셋째 프레임(L1 7)은 stale
+  const s = summarize([F(1, 1, 7), F(1, 2, 3, true), F(1, 1, 7), F(1, 2, 1)]);
+  assert.equal(s.stale_levels, 1);
+  assert.equal(s.stale_bytes, 7);
+  assert.deepEqual(s.segments, [8]);
+  assert.deepEqual(s.segment_levels, [[2, 3]]);
+  assert.equal(s.resend_bytes, 3);
+});
+
+test('변이(c) resend 전용 판정이 some 이면 실패: [L0 4, rL2 9] 는 resend_only_segments []', () => {
+  const s = summarize([F(1, 0, 4), F(1, 2, 9, true)]);
+  assert.deepEqual(s.resend_only_segments, []);
+  assert.deepEqual(s.segments, [13]);
+});
+
+test('변이(d) run 의 완결 구간 필터를 지우면 실패: 미완 resend 전용 구간은 method 에 resend 전용으로 적지 않음', async () => {
+  // final 필드가 있어 구간 2(rL2 9)는 미완인 resend 전용 구간이다. 집계되지 않았으므로 문구가 없어야 한다
+  const r = await runText(BASE + fr(1, 2, 10, ',"final":true') + fr(2, 2, 9, ',"resend":true'));
+  const seg = get(r, 'ws_bytes.segment_total');
+  assert.deepEqual(seg.samples, [10]);
+  assert.doesNotMatch(seg.method, /resend 전용/);
+  assert.equal(get(r, 'ws_bytes.incomplete_segment_bytes').value, 9);
+});
+
+test('변이(e) 모호성 문구가 시간 창 method 에도 붙으면 실패: [r40, r40] 은 구간 지표에만 적는다', async () => {
+  const r = await runText(BASE + fr(1, 2, 40, ',"resend":true') + fr(1, 2, 40, ',"resend":true'));
+  assert.match(get(r, 'ws_bytes.segment_total').method, /구분 불가/);
+  assert.doesNotMatch(get(r, 'ws_bytes.window_1000ms').method, /구분 불가/);
+  assert.doesNotMatch(get(r, 'ws_bytes.total').method, /구분 불가/);
+});

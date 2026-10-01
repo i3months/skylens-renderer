@@ -63,9 +63,10 @@ const asc = (a, b) => a - b;
  * - 같은 (구간,수준)의 resend 프레임은 원본이 녹화에 있으면 합에 넣지 않고 resend_bytes 로 센다.
  *   원본이 없으면 추월되지 않은 첫 회차(녹화 전체에서 바로 이어진 같은 (구간,수준) 재전송 프레임들)만 유일한 사본으로
  *   합에 넣고 나머지 회차는 resend_bytes.
- * - 추월된 resend 회차: 도착 시점에 그 구간 원본 최고 수준(hi)보다 낮은 수준의 회차. skylens 보드는 수준을 교체하며
- *   추월당한 수준은 건너뛰므로 받은 수준이 아니다. 합·받은 수준에서 빼 resend_bytes 로 세고, 원본 최고 수준보다
- *   낮은 그 수준은 건너뜀에 들어간다.
+ * - 추월된 resend 회차: 도착 시점에 그 구간에서 이미 받은 최고 수준(rhi)보다 낮은 수준의 회차. rhi 는 원본 프레임과
+ *   추월되지 않은 resend 회차(원본 없는 수준이면 합에 들어가는 첫 회차)의 수준으로 올라가므로, 높은 수준이 원본이든
+ *   재전송이든 추월 판정이 같다. skylens 보드는 수준을 교체하며 추월당한 수준은 건너뛰므로 받은 수준이 아니다.
+ *   합·받은 수준에서 빼 resend_bytes 로 세고, 원본 최고 수준보다 낮은 그 수준은 건너뜀에 들어간다.
  * - resend_merged_rounds: 원본 없는 수준에서 연속 resend 프레임 여러 개를 한 회차로 이어 붙인 회차 수(모호성 표시용).
  * - resend_only_segments: 원본 프레임이 하나도 없는 구간 ID (오름차순).
  * - 모든 바이트 합은 total_bytes 의 부분합이므로 total_bytes 가 safe integer 를 넘으면 오류를 던진다.
@@ -95,7 +96,7 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
   let anyFinal = false;
   const byKind = Object.create(null);
   // 구간 ID -> { perLevel: 수준 -> { orig, resend: [회차 { bytes: 프레임 바이트 배열, overtaken }] },
-  //            hi(원본으로 받은 최고 수준), last(분할 연속 중인 원본 수준, 끊기면 -1), order, final(원본 final) }
+  //            hi(원본으로 받은 최고 수준), rhi(원본·추월되지 않은 재전송으로 받은 최고 수준), last(분할 연속 중인 원본 수준, 끊기면 -1), order, final(원본 final) }
   const segMap = new Map();
   const winMap = new Map(); // 창 번호 -> 합
   let prevResendKey = null; // 바로 앞 프레임이 resend 였으면 그 (구간,수준), 아니면 null
@@ -115,21 +116,28 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
     prevResendKey = key;
     if (f.segment === undefined) return;
     if (f.final !== undefined) anyFinal = true;
-    const s = segMap.get(f.segment) ?? { perLevel: new Map(), hi: -1, last: -1, order: -1, lastIdx: -1, final: false };
+    const s = segMap.get(f.segment) ?? { perLevel: new Map(), hi: -1, rhi: -1, last: -1, order: -1, lastIdx: -1, final: false };
     segMap.set(f.segment, s);
     const v = s.perLevel.get(f.level) ?? { orig: { n: 0, bytes: 0 }, resend: [] };
     s.perLevel.set(f.level, v);
     if (f.resend === true) {
       // 녹화 전체에서 바로 앞 프레임이 같은 (구간,수준) resend 일 때만 같은 회차. stale 판정 최고 수준(hi)에는 넣지 않는다.
-      // 도착 시점에 원본 최고 수준보다 낮으면 추월된 회차. 같은 회차 안에서는 hi 가 바뀌지 않는다.
+      // 도착 시점에 이미 받은 최고 수준(rhi, 재전송으로만 받은 수준 포함)보다 낮으면 추월된 회차.
+      // 같은 회차 안에서는 rhi 가 바뀌지 않는다(회차 첫 프레임에서 이미 반영).
       if (continuesRound) v.resend[v.resend.length - 1].bytes.push(f.bytes);
-      else v.resend.push({ bytes: [f.bytes], overtaken: f.level < s.hi });
+      else {
+        const overtaken = f.level < s.rhi;
+        v.resend.push({ bytes: [f.bytes], overtaken });
+        // 추월되지 않은 회차는 받은 수준이다(원본이 없으면 첫 회차가 사본, 있어도 이미 받은 수준 이하가 아님).
+        if (!overtaken) s.rhi = Math.max(s.rhi, f.level);
+      }
       // 재전송은 같은 구간 원본의 분할 연속을 끊는다.
       s.last = -1;
     } else {
       if (f.final === true) s.final = true;
       const isStale = f.level < s.hi || (f.level === s.hi && s.last !== f.level);
       s.hi = Math.max(s.hi, f.level);
+      s.rhi = Math.max(s.rhi, f.level);
       s.last = f.level;
       if (isStale) {
         // 추월된 수준의 뒤늦은 프레임: total·windows·stale_bytes 에만 센다.
@@ -200,6 +208,9 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
     if (!complete(id)) continue;
     const got = [...e.out.keys()].sort(asc);
     const origLevels = [...segMap.get(id).perLevel].filter(([, v]) => v.orig.n > 0).map(([l]) => l);
+    // 건너뜀 기준 top 은 rhi 가 아니라 원본 최고 수준이다. 재접속 스냅샷은 현재 수준만 다시 보내므로 재전송으로만 받은
+    // 최고 수준 아래의 공백은 보내졌다가 건너뛴 것인지 녹화로 알 수 없다(도착하지 않은 것을 건너뜀으로 채우지 않는다).
+    // 그래서 추월 판정과 달리 [rL2, rL0] 의 건너뜀은 []이고 [L2, rL0] 은 [1,2] 다.
     const top = origLevels.length ? Math.max(...origLevels) : -1;
     const skipped = [];
     for (let l = 0; l < top; l++) if (!e.out.has(l)) skipped.push(toProtocolLevel(l));
