@@ -47,3 +47,10 @@ test('baseline_report_table', () => {
   const cli = new URL('./cli.mjs', import.meta.url).pathname;
   assert.equal(execFileSync('node', [cli, f1, f2], { encoding: 'utf8' }), EXPECTED);
 });
+
+test('toTable: 셀 안의 | 는 이스케이프되어 행의 열 수가 유지된다', () => {
+  const t = toTable([{ ...B, method: 'm|n', device: 'd|e' }]);
+  const row = t.split('\n')[2];
+  assert.equal(row, '| bundle.status.gzip | 1,234,567 | B | d\\|e | m\\|n | abc1234 |');
+  assert.equal(row.split(/(?<!\\)\|/).length, 8);
+});

@@ -19,9 +19,9 @@ export function killGroup(p) {
   try { process.kill(-p.pid, 'SIGKILL'); } catch { try { p.kill('SIGKILL'); } catch { /* 이미 종료 */ } }
 }
 
-// 살아 있는 자식 그룹 추적. SIGINT/SIGTERM 을 받으면 모두 죽이고 원래 시그널 동작을 그대로 이어 간다.
+// 살아 있는 자식 그룹 추적. SIGINT/SIGTERM/SIGHUP 을 받으면 모두 죽이고 원래 시그널 동작을 그대로 이어 간다.
 const active = new Set();
-const SIGNALS = ['SIGINT', 'SIGTERM'];
+const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 function onSignal(sig) {
   for (const p of active) killGroup(p);
   active.clear();

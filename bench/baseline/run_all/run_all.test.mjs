@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, copyFile, chmod } fro
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { runAll, MODULES } from './index.mjs';
 
@@ -271,4 +272,57 @@ export async function run() { spawn(${JSON.stringify(mark)}, ['35'], { stdio: 'i
     if (left) await new Promise((r) => setTimeout(r, 100));
   }
   assert.equal(left, '');
+});
+
+test('CLI: 빈 필터(--only , / --skip ,)는 종료코드 2', () => {
+  for (const flag of ['--only', '--skip']) {
+    for (const v of [',', ' , ,', '']) {
+      const r = spawnSync(process.execPath, [CLI, '--skylens-dir', root, '--out', join(root, 'cli_empty'), '--commit', COMMIT, '--modules-dir', modulesDir, flag, v], { encoding: 'utf8' });
+      assert.equal(r.status, 2, `${flag} ${JSON.stringify(v)}`);
+      assert.match(r.stderr, new RegExp(flag.slice(2)));
+    }
+  }
+});
+
+async function hangingCli(tag, { killWith }) {
+  const dir = await mkdtemp(join(tmpdir(), `ra-${tag}-`));
+  await mkdir(join(dir, 'asset_bytes'), { recursive: true });
+  const pidFile = join(dir, 'worker.pid');
+  await writeFile(join(dir, 'asset_bytes', 'index.mjs'), `import { writeFileSync, appendFileSync } from 'node:fs';
+export async function run({ outDir }) {
+  writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+  setInterval(() => appendFileSync(outDir + '/tick.txt', 'x'), 50);
+  return new Promise(() => {});
+}`);
+  const child = spawn(process.execPath, [CLI, '--skylens-dir', dir, '--out', join(dir, 'o'), '--commit', COMMIT, '--modules-dir', dir, '--only', 'asset_bytes'], { stdio: 'ignore' });
+  const exited = new Promise((r) => child.on('exit', (code, sig) => r(sig)));
+  let wpid = 0;
+  for (let i = 0; i < 100 && !wpid; i++) {
+    wpid = Number(await readFile(pidFile, 'utf8').catch(() => 0));
+    if (!wpid) await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(wpid > 0, 'worker 가 떠야 한다');
+  // 좀비(종료됐지만 회수 안 됨)는 죽은 것으로 본다.
+  const alive = () => { try { return !/\)\s+Z/.test(readFileSync(`/proc/${wpid}/stat`, 'utf8')); } catch { return false; } };
+  assert.ok(alive());
+  const tick = join(dir, 'o', 'asset_bytes', 'tick.txt');
+  for (let i = 0; i < 50 && !(await readFile(tick, 'utf8').catch(() => '')); i++) await new Promise((r) => setTimeout(r, 50));
+  child.kill(killWith);
+  await exited;
+  const t0 = Date.now();
+  while (alive() && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 25));
+  return { gone: !alive(), ms: Date.now() - t0, dir };
+}
+
+test('CLI: 부모가 SIGKILL 로 죽어도 worker 는 1 s 안에 사라지고 outDir 에 더 쓰지 않는다', async () => {
+  const r = await hangingCli('kill', { killWith: 'SIGKILL' });
+  assert.ok(r.gone && r.ms < 1000, `worker 잔존 또는 지연 ${r.ms}ms`);
+  const size = (await readFile(join(r.dir, 'o', 'asset_bytes', 'tick.txt'), 'utf8')).length;
+  await new Promise((r2) => setTimeout(r2, 400));
+  assert.equal((await readFile(join(r.dir, 'o', 'asset_bytes', 'tick.txt'), 'utf8')).length, size);
+});
+
+test('CLI: 부모가 SIGHUP 을 받아도 worker 는 1 s 안에 사라진다', async () => {
+  const r = await hangingCli('hup', { killWith: 'SIGHUP' });
+  assert.ok(r.gone && r.ms < 1000, `worker 잔존 또는 지연 ${r.ms}ms`);
 });
