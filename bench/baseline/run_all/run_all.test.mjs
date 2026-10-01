@@ -208,3 +208,27 @@ test('CLI: 앵커 일부만 주거나 숫자가 아니면 종료코드 2', () =>
   assert.equal(b.status, 2);
   assert.match(b.stderr, /숫자/);
 });
+
+test('runAll: 멈춘 모듈은 timeout 으로 기록하고 records.json 은 작성, 나머지는 계속', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ra-to-'));
+  const body = (r) => `export async function run() { ${r} }`;
+  await mkdir(join(dir, 'hang'), { recursive: true });
+  await mkdir(join(dir, 'fine'), { recursive: true });
+  await writeFile(join(dir, 'hang', 'index.mjs'), body('return new Promise(() => {});'));
+  await writeFile(join(dir, 'fine', 'index.mjs'), body('return [];'));
+  const out = join(dir, 'out');
+  const { summary, exitCode } = await runAll({ skylensDir: dir, outDir: out, commit: COMMIT, modulesDir: dir, modules: ['hang', 'fine'], moduleTimeoutMs: 300 });
+  assert.equal(exitCode, 1);
+  assert.equal(summary.failed.length, 1);
+  assert.equal(summary.failed[0].module, 'hang');
+  assert.equal(summary.failed[0].stage, 'timeout');
+  assert.deepEqual(summary.ok.map((o) => o.module), ['fine']);
+  assert.equal((await readFile(join(out, 'records.json'), 'utf8')).trim(), '[]');
+});
+
+test('runAll: 빌드 타임아웃은 dist 모듈에 timeout 단계로 기록', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'ra-bt-'));
+  const buildDist = async () => { throw Object.assign(new Error('x'), { stage: 'timeout' }); };
+  const { summary } = await runAll({ skylensDir: dir, outDir: join(dir, 'o'), commit: COMMIT, modulesDir: dir, modules: ['bundle_status'], buildDist });
+  assert.equal(summary.failed[0].stage, 'timeout');
+});
