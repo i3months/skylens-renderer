@@ -47,6 +47,6 @@ export function parse(text) {
  */
 
 /*
- * T01 rework: run receives { skylensDir, outDir, commit, inputs }; see contracts/inputs/index.mjs.
+ * run receives { skylensDir, outDir, commit, inputs }; see contracts/inputs/index.mjs.
  * A module whose required input is missing throws (run_all records it as failed); it never substitutes synthetic data.
  */
