@@ -2,7 +2,7 @@
 // 기준값(raw/gzip 바이트)은 고정 입력에서 독립적으로(python gzip -9) 구해 박았다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from './index.mjs';
@@ -61,6 +61,10 @@ test('dist: status.html 폐포의 raw/gzip 합이 박아 둔 숫자와 같다', 
     assertRecords(r);
     assert.equal(val(r, 'bundle_status.gzip_bytes'), STATUS.gzip);
     assert.equal(val(r, 'bundle_status.raw_bytes'), STATUS.raw);
+    assert.equal(val(r, 'bundle_status.3d.gzip_bytes'), 84);
+    assert.equal(val(r, 'bundle_status.3d.raw_bytes'), 5622);
+    assert.ok(val(r, 'bundle_status.3d.gzip_bytes') < val(r, 'bundle_status.gzip_bytes'));
+    assert.match(r[0].method, /three\/splat\/renderer/);
     assert.match(r[0].method, /dist/);
     assert.match(r[0].method, /shared chunks/);
   } finally {
@@ -79,6 +83,40 @@ test('무관 청크·변형·동적 import 대상을 추가해도 값 불변', a
     await put(dist, 'assets/drone-Z.js', 'k'.repeat(9000));
     await put(dist, 'assets/math-C.js.map', 'm'.repeat(9000));
     assert.deepEqual(await run({ skylensDir: '/x', outDir: null, commit: COMMIT, inputs }), a);
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+  }
+});
+
+test('dist: 3D 합계에 CSS 가 0개이고 3D 표지 없는 청크는 빠진다', async () => {
+  const dist = await mockDist();
+  const out = await mkdtemp(join(tmpdir(), 'skylens-out-'));
+  try {
+    await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const m = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8')).manifest;
+    const t = m.filter((f) => f.is_3d);
+    assert.deepEqual(t.map((f) => f.file), ['assets/math-C.js']);
+    assert.equal(t.filter((f) => f.file.endsWith('.css')).length, 0);
+    assert.ok(m.some((f) => f.file.endsWith('.css')));
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test('dist: 동적 import() 와 mapDeps 청크가 폐포·3D 합계에 들어간다', async () => {
+  const dist = await mockDist();
+  try {
+    const inputs = { distDir: dist };
+    const a = await run({ skylensDir: '/x', outDir: null, commit: COMMIT, inputs });
+    await put(dist, 'assets/status-A.js', FILES['status-A.js'] + 'const l=()=>import("./lazy-3d.js");const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/map-3d.js","assets/map.css"])))=>i.map(i=>d[i]);\n');
+    await put(dist, 'assets/lazy-3d.js', 'new WebGLRenderer();\n'.repeat(100));
+    await put(dist, 'assets/map-3d.js', 'class SplatMesh{}\n'.repeat(100));
+    await put(dist, 'assets/map.css', '.q{top:0}\n'.repeat(30));
+    const b = await run({ skylensDir: '/x', outDir: null, commit: COMMIT, inputs });
+    assert.ok(val(b, 'bundle_status.raw_bytes') > val(a, 'bundle_status.raw_bytes') + 3000);
+    assert.ok(val(b, 'bundle_status.3d.raw_bytes') >= val(a, 'bundle_status.3d.raw_bytes') + 3500);
+    assert.ok(val(b, 'bundle_status.3d.gzip_bytes') < val(b, 'bundle_status.gzip_bytes'));
   } finally {
     await rm(dist, { recursive: true, force: true });
   }
@@ -107,12 +145,30 @@ test('source: cjs·min·webgpu 변형을 추가해도 값 불변, 진입점 하�
     const a = await run({ skylensDir: d, outDir: null, commit: COMMIT, inputs });
     assert.equal(val(a, 'bundle_status.three.gzip_bytes'), 50);
     assert.equal(val(a, 'bundle_status.raw_bytes'), 5600);
+    assert.equal(val(a, 'bundle_status.3d.gzip_bytes'), 50);
     await put(d, 'node_modules/three/build/three.cjs', 'c'.repeat(9000));
     await put(d, 'node_modules/three/build/three.min.js', 'm'.repeat(9000));
     await put(d, 'node_modules/three/build/three.webgpu.js', 'w'.repeat(9000));
     await put(d, 'node_modules/three/build/three.webgpu.min.js', 'v'.repeat(9000));
     const b = await run({ skylensDir: d, outDir: null, commit: COMMIT, inputs });
     assert.deepEqual(b, a);
+  } finally {
+    await rm(d, { recursive: true, force: true });
+  }
+});
+
+test('source: three.module.js 가 import 하는 three.core.js 가 포함된다', async () => {
+  const d = await mkdtemp(join(tmpdir(), 'skylens-src-'));
+  try {
+    await put(d, 'node_modules/three/package.json', JSON.stringify({ exports: { '.': { import: './build/three.module.js' } } }));
+    await put(d, 'node_modules/three/build/three.module.js', "export * from './three.core.js';\n" + THREE);
+    await put(d, 'node_modules/three/build/three.core.js', 'core-body-aa\n'.repeat(300));
+    const inputs = { allowSource: true };
+    const a = await run({ skylensDir: d, outDir: null, commit: COMMIT, inputs });
+    assert.equal(val(a, 'bundle_status.raw_bytes'), 4000 + 33 + 3900);
+    assert.ok(val(a, 'bundle_status.three.gzip_bytes') > 50);
+    assert.equal(val(a, 'bundle_status.3d.gzip_bytes'), val(a, 'bundle_status.three.gzip_bytes'));
+    assert.deepEqual(await run({ skylensDir: d, outDir: null, commit: COMMIT, inputs }), a);
   } finally {
     await rm(d, { recursive: true, force: true });
   }
