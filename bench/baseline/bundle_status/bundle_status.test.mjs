@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from './index.mjs';
@@ -10,7 +11,6 @@ import { assertRecords } from '../../../contracts/metrics/index.mjs';
 
 const COMMIT = 'abcdef1234567';
 const THREE = 'abcdefg\n'.repeat(500); // raw 4000, gzip 50
-const SPLATS = 'hijklmn\n'.repeat(300); // raw 2400, gzip 47
 const VIEW = 'pqrstuv\n'.repeat(200); // raw 1600, gzip 41
 
 async function put(root, rel, text) {
@@ -40,9 +40,8 @@ const html = (js, css) => `<!doctype html><html><head>
 <link rel="stylesheet" crossorigin href="/assets/style-E.css">
 <link rel="icon" href="/favicon.svg">
 </head><body></body></html>`;
-// 기대값: status = 공유(geo+math+deep+style) + status-A + side + status-D, tower = 공유 + control-G + control-H
+// 기대값: status = 공유(geo+math+deep+style) + status-A + side + status-D
 const STATUS = { raw: 10241, gzip: 446 };
-const TOWER = { raw: 9380, gzip: 387 };
 
 async function mockDist() {
   const d = await mkdtemp(join(tmpdir(), 'skylens-dist-'));
@@ -189,4 +188,81 @@ test('진입 HTML 이 없으면 reject, 참조 파일이 없어도 reject', asyn
 test('distDir 없으면 빌드 필요로 reject, distDir 가 없는 경로면 reject', async () => {
   await assert.rejects(run({ skylensDir: '/nonexistent', outDir: null, commit: COMMIT }), /dist 가 필요/);
   await assert.rejects(run({ skylensDir: '/x', outDir: null, commit: COMMIT, inputs: { distDir: '/nonexistent/dist' } }), /distDir/);
+});
+
+// 하위 디렉터리 진입 HTML 픽스처: res/static/status.html 이 res/static/assets/ 의 청크를 참조한다.
+const SUB_ENTRY = [
+  'import("./c1.js",{with:{}});',
+  'const b=()=>import(`./c2.js`);',
+  'const u=new URL("./c3.js",import.meta.url);',
+  'const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/three-a.js","assets/gone.js"])))=>i.map(i=>d[i]);',
+].join('\n') + '\n';
+
+async function subDist(entry = SUB_ENTRY) {
+  const d = await mkdtemp(join(tmpdir(), 'skylens-sub-'));
+  await put(d, 'res/static/status.html', '<!doctype html><script type="module" src="./assets/entry.js"></script>');
+  await put(d, 'res/static/assets/entry.js', entry);
+  await put(d, 'res/static/assets/three-a.js', 'const q=1;\n'.repeat(50));
+  await put(d, 'res/static/assets/c1.js', 'export const c1=1;\n');
+  await put(d, 'res/static/assets/c2.js', 'export const c2=1;\n');
+  await put(d, 'res/static/assets/c3.js', 'export const c3=1;\n');
+  await put(d, 'res/static/assets/stray.js', 'export const z=1;\n');
+  await put(d, 'res/static/assets/three-a.js.map', JSON.stringify({ sources: ['../../node_modules/three/src/core/Object3D.js'] }));
+  return d;
+}
+
+test('dist: 진입 HTML 이 하위 디렉터리여도 mapDeps·동적 import 3형태가 폐포에 들어가고 못 푼 참조는 method 에 기록된다', async () => {
+  const dist = await subDist();
+  const out = await mkdtemp(join(tmpdir(), 'skylens-out-'));
+  try {
+    const r = await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const j = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8'));
+    const files = j.manifest.map((f) => f.file);
+    for (const n of ['entry', 'three-a', 'c1', 'c2', 'c3']) assert.ok(files.includes(`res/static/assets/${n}.js`), n);
+    assert.equal(j.manifest.find((f) => f.file.endsWith('three-a.js')).is_3d, true);
+    assert.match(r[0].method, /unresolved dynamic\/mapDeps refs: 1 \(WARNING.*assets\/gone\.js/);
+    assert.deepEqual(j.unresolved.map((u) => u.spec), ['assets/gone.js']);
+    assert.deepEqual(j.outside_closure_js, ['res/static/assets/stray.js']);
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test('dist: 못 푼 참조가 없으면 method 에 0 으로 기록된다', async () => {
+  const dist = await subDist(SUB_ENTRY.replace(',"assets/gone.js"', ''));
+  try {
+    const r = await run({ skylensDir: '/x', outDir: null, commit: COMMIT, inputs: { distDir: dist } });
+    assert.match(r[0].method, /unresolved dynamic\/mapDeps refs: 0(?:;|$)/);
+    assert.doesNotMatch(r[0].method, /WARNING/);
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+  }
+});
+
+test('dist: CSS 에 3D 표지 문구가 있어도 3D 합계에서 빠지고, webgl2 백틱·webgpu·sourcemap 은 3D 로 잡힌다', async () => {
+  const dist = await mockDist();
+  const out = await mkdtemp(join(tmpdir(), 'skylens-out-'));
+  try {
+    await put(dist, 'assets/status-A.js', FILES['status-A.js'] + 'import"./gl-2.js";import"./gpu-3.js";import"./mapped-4.js";\n');
+    await put(dist, 'assets/gl-2.js', 'const c=el.getContext(`webgl2`);\n');
+    await put(dist, 'assets/gpu-3.js', 'const c=el.getContext("webgpu");\n');
+    await put(dist, 'assets/mapped-4.js', 'const m=1;\n');
+    await put(dist, 'assets/mapped-4.js.map', JSON.stringify({ sources: ['../node_modules/@mkkellogg/gaussian-splats-3d/src/Viewer.js'] }));
+    await put(dist, 'assets/status-D.css', '/* three splat Gaussian WebGLRenderer BufferGeometry Matrix4 */\n.a{color:red}\n');
+    await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const m = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8')).manifest;
+    assert.equal(m.find((f) => f.file === 'assets/status-D.css').is_3d, false);
+    assert.deepEqual(m.filter((f) => f.is_3d).map((f) => f.file), ['assets/gl-2.js', 'assets/gpu-3.js', 'assets/mapped-4.js', 'assets/math-C.js']);
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+// 실제 develop vite dist(SKYLENS_DIR/dist)가 있을 때만: 못 푼 참조가 0 으로 method 에 기록돼야 한다.
+const REAL_DIST = process.env.SKYLENS_DIR ? join(process.env.SKYLENS_DIR, 'dist') : null;
+test('실제 dist: 못 푼 동적/mapDeps 참조가 0 으로 method 에 기록된다', { skip: !REAL_DIST || !existsSync(join(REAL_DIST, 'res', 'static', 'status.html')) }, async () => {
+  const r = await run({ skylensDir: process.env.SKYLENS_DIR, outDir: null, commit: COMMIT, inputs: { distDir: REAL_DIST } });
+  assert.match(r[0].method, /unresolved dynamic\/mapDeps refs: 0(?:;|$)/);
 });

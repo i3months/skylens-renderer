@@ -6,7 +6,7 @@
 import { gzipSync } from 'node:zlib';
 import { readdir, readFile, mkdir, writeFile, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
-import { distClosure, sourceClosure, is3d, MARKER_DESC } from './closure.mjs';
+import { distClosure, sourceClosure, is3d, outsideJs, MARKER_DESC } from './closure.mjs';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
 
 const EXTS = new Set(['.js', '.mjs', '.cjs', '.css', '.wasm']);
@@ -62,8 +62,9 @@ async function collect(skylensDir, inputs) {
   const distDir = inputs?.distDir;
   if (distDir) {
     if (!(await isDir(distDir))) throw new Error(`bundle_status: distDir 가 디렉터리가 아니다: ${distDir}`);
-    const files = distClosure('bundle_status', distDir, 'status.html').map((f) => ({ group: 'closure', path: f.abs, rel: f.rel }));
-    return { mode: 'dist', files };
+    const report = {};
+    const files = distClosure('bundle_status', distDir, 'status.html', report).map((f) => ({ group: 'closure', path: f.abs, rel: f.rel, forced3d: f.forced3d }));
+    return { mode: 'dist', files, unresolved: report.unresolved, outside: outsideJs(distDir, new Set(files.map((f) => f.rel))) };
   }
   if (!inputs?.allowSource) {
     throw new Error(`bundle_status: 빌드된 dist 가 필요하다(inputs.distDir). skylensDir(${skylensDir})에서 먼저 빌드해 넘겨라`);
@@ -84,7 +85,7 @@ async function collect(skylensDir, inputs) {
 }
 
 export async function run({ skylensDir, outDir, commit, inputs }) {
-  const { mode, files } = await collect(skylensDir, inputs);
+  const { mode, files, unresolved = [], outside = [] } = await collect(skylensDir, inputs);
   const totals = new Map(GROUPS.map((g) => [g.key, 0]));
   const manifest = [];
   let raw = 0;
@@ -103,7 +104,10 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
   const closureDesc = mode === 'dist'
     ? 'status.html entry closure (script/modulepreload/stylesheet + static imports + dynamic import() + vite mapDeps); shared chunks (math, geo, style css) are also in the tower bundle; '
     : 'source closure (entry files + relative static/dynamic imports, one entry per package); packages three and gaussian-splats-3d are 3D by package; ';
-  const method = `${mode}; ` + closureDesc + `raw and gzip level 9 per file, summed; ${files.length} files in closure (reference total); 3D total (bundle_status.3d.*) = ${MARKER_DESC}; ${manifest.filter((m) => m.is_3d).length} 3D files`;
+  const unresolvedDesc = mode === 'dist'
+    ? `; unresolved dynamic/mapDeps refs: ${unresolved.length}${unresolved.length ? ` (WARNING: 3D total may be understated; ${unresolved.slice(0, 5).map((u) => `${u.from} -> ${u.spec}`).join(', ')})` : ''}`
+    : '';
+  const method = `${mode}; ` + closureDesc + `raw and gzip level 9 per file, summed; ${files.length} files in closure (reference total); 3D total (bundle_status.3d.*) = ${MARKER_DESC}; ${manifest.filter((m) => m.is_3d).length} 3D files` + unresolvedDesc;
   const base = { unit: 'B', device: 'n/a', method, commit };
   const records = [{ metric: 'bundle_status.3d.gzip_bytes', value: gz3, ...base }];
   records.push({ metric: 'bundle_status.3d.raw_bytes', value: raw3, ...base });
@@ -113,7 +117,7 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
   assertRecords(records);
   if (outDir) {
     await mkdir(outDir, { recursive: true });
-    await writeFile(join(outDir, 'bundle_status.manifest.json'), JSON.stringify({ mode, manifest }, null, 2) + '\n');
+    await writeFile(join(outDir, 'bundle_status.manifest.json'), JSON.stringify({ mode, manifest, unresolved, outside_closure_js: outside }, null, 2) + '\n');
   }
   return records;
 }

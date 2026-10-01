@@ -1,7 +1,7 @@
 // bundle_tower 측정 테스트. 모의 dist 를 distDir 로 넘긴다. 기준값은 독립 계산(python gzip -9)한 고정 숫자.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { run } from './index.mjs';
@@ -38,8 +38,7 @@ const html = (js, css) => `<!doctype html><html><head>
 <link rel="stylesheet" crossorigin href="/assets/style-E.css">
 <link rel="icon" href="/favicon.svg">
 </head><body></body></html>`;
-// 기대값: status = 공유(geo+math+deep+style) + status-A + side + status-D, tower = 공유 + control-G + control-H
-const STATUS = { raw: 10241, gzip: 446 };
+// 기대값: tower = 공유(geo+math+deep+style) + control-G + control-H
 const TOWER = { raw: 9393, gzip: 401 };
 
 function mockDist() {
@@ -179,13 +178,8 @@ test('source(opt-in): three.module.js 가 import 하는 three.core.js 가 포함
 });
 
 test('소스 대상 0개 → reject, distDir 없음 → 빌드 필요로 reject', async () => {
-  const dist = mkdtempSync(join(tmpdir(), 'sky-empty-'));
-  try {
-    await assert.rejects(run({ skylensDir: '/nonexistent', commit: COMMIT }), /dist 가 필요/);
-    await assert.rejects(run({ skylensDir: '/nonexistent', commit: COMMIT, inputs: { allowSource: true } }), /측정 대상/);
-  } finally {
-    rmSync(dist, { recursive: true, force: true });
-  }
+  await assert.rejects(run({ skylensDir: '/nonexistent', commit: COMMIT }), /dist 가 필요/);
+  await assert.rejects(run({ skylensDir: '/nonexistent', commit: COMMIT, inputs: { allowSource: true } }), /측정 대상/);
 });
 
 test('run 이 assertRecords 를 호출한다: 잘못된 commit 은 reject', async () => {
@@ -195,4 +189,53 @@ test('run 이 assertRecords 를 호출한다: 잘못된 commit 은 reject', asyn
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }
+});
+
+test('dist: 진입 HTML 이 하위 디렉터리여도 mapDeps·동적 import 3형태가 폐포에 들어가고 못 푼 참조는 method·json 에 기록된다', async () => {
+  const dist = mkdtempSync(join(tmpdir(), 'sky-sub-'));
+  const out = mkdtempSync(join(tmpdir(), 'sky-out-'));
+  try {
+    put(dist, 'res/static/control.html', '<!doctype html><script type="module" src="./assets/entry.js"></script>');
+    put(dist, 'res/static/assets/entry.js', [
+      'import("./c1.js",{with:{}});',
+      'const b=()=>import(`./c2.js`);',
+      'const u=new URL("./c3.js",import.meta.url);',
+      'const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/three-a.js","assets/gone.js"])))=>i.map(i=>d[i]);',
+    ].join('\n') + '\n');
+    for (const n of ['c1', 'c2', 'c3']) put(dist, `res/static/assets/${n}.js`, `export const ${n}=1;\n`);
+    put(dist, 'res/static/assets/three-a.js', 'const q=1;\n'.repeat(50));
+    put(dist, 'res/static/assets/three-a.js.map', JSON.stringify({ sources: ['../../node_modules/three/src/core/Object3D.js'] }));
+    put(dist, 'res/static/assets/stray.js', 'export const z=1;\n');
+    const r = await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const j = JSON.parse(readFileSync(join(out, 'bundle_tower.json'), 'utf8'));
+    const paths = j.files.map((f) => f.path);
+    for (const n of ['entry', 'three-a', 'c1', 'c2', 'c3']) assert.ok(paths.includes(`res/static/assets/${n}.js`), n);
+    assert.deepEqual(j.files.filter((f) => f.is_3d).map((f) => f.path), ['res/static/assets/three-a.js']);
+    assert.match(r[0].method, /못 푼 동적\/mapDeps 참조 1개 \(경고.*assets\/gone\.js/);
+    assert.deepEqual(j.outside_closure_js, ['res/static/assets/stray.js']);
+  } finally {
+    rmSync(dist, { recursive: true, force: true });
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test('dist: CSS 에 3D 표지 문구가 있어도 3D 합계에서 빠진다', async () => {
+  const dist = mockDist();
+  const out = mkdtempSync(join(tmpdir(), 'sky-out-'));
+  try {
+    put(dist, 'assets/control-H.css', '/* three splat Gaussian WebGLRenderer */\n.c{top:0}\n');
+    await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const f = JSON.parse(readFileSync(join(out, 'bundle_tower.json'), 'utf8')).files;
+    assert.equal(f.find((x) => x.path === 'assets/control-H.css').is_3d, false);
+  } finally {
+    rmSync(dist, { recursive: true, force: true });
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+// 실제 develop vite dist(SKYLENS_DIR/dist)가 있을 때만: 못 푼 참조가 0 으로 method 에 기록돼야 한다.
+const REAL_DIST = process.env.SKYLENS_DIR ? join(process.env.SKYLENS_DIR, 'dist') : null;
+test('실제 dist: 못 푼 동적/mapDeps 참조가 0 으로 method 에 기록된다', { skip: !REAL_DIST || !existsSync(join(REAL_DIST, 'res', 'static', 'control.html')) }, async () => {
+  const r = await run({ skylensDir: process.env.SKYLENS_DIR, commit: COMMIT, inputs: { distDir: REAL_DIST } });
+  assert.match(r[0].method, /못 푼 동적\/mapDeps 참조 0개/);
 });
