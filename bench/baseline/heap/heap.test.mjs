@@ -179,5 +179,29 @@ test('processTreeMemory: smaps 를 읽을 수 없고 statm 이 깨졌으면(1 ab
   writeFileSync(join(procRoot, '100', 'statm'), '1 abc');
   const m = processTreeMemory(tag, { procRoot });
   assert.equal(m, null);
-  assert.ok(m === null || Number.isFinite(m.bytes));
+});
+
+test('processTreeMemory: statm 이 음수(1 -5)면 −20480 B 를 만들지 않고 그 프로세스를 제외 → null', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-negative-')));
+  mkdirSync(join(procRoot, '100'));
+  writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
+  writeFileSync(join(procRoot, '100', 'cmdline'), tag);
+  writeFileSync(join(procRoot, '100', 'statm'), '1 -5');
+  assert.equal(processTreeMemory(tag, { procRoot }), null);
+});
+
+test('processTreeMemory: 정상 statm 프로세스 하나 + 깨진 하나 → 깨진 쪽만 건너뛰고 rssProcs 1·bytes 유한', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-mixed-')));
+  for (const [pid, ppid, statm] of [['100', '1', '100 50 10'], ['101', '100', '1 abc']]) {
+    mkdirSync(join(procRoot, pid));
+    writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`);
+    writeFileSync(join(procRoot, pid, 'cmdline'), pid === '100' ? tag : 'child');
+    writeFileSync(join(procRoot, pid, 'statm'), statm);
+  }
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m.rssProcs, 1);
+  assert.equal(m.pssProcs, 0);
+  assert.equal(m.bytes, 50 * systemPageSize());
 });
