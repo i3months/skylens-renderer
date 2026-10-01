@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
-import { median, run, processTreeRss } from './index.mjs';
+import { median, run, processTreeRss, parsePss, memoryMethodText, systemPageSize } from './index.mjs';
 import { unavailableReason, DEVICE } from '../_common/browser.mjs';
 
 test('median: 기준 숫자', () => {
@@ -37,7 +37,7 @@ async function measure(html) {
   const dist = await mkdtemp(join(tmpdir(), 'heap-'));
   await mkdir(join(dist, 'res/static'), { recursive: true });
   await writeFile(join(dist, 'res/static/status.html'), html);
-  const recs = await run({ commit: 'abcdef1', inputs: { distDir: dist }, runs: 3, timeoutMs: 15000 });
+  const recs = await run({ commit: 'abcdef1', inputs: { distDir: dist }, runs: 5, timeoutMs: 15000 });
   assertRecords(recs);
   return Object.fromEntries(recs.map((r) => [r.metric, r]));
 }
@@ -46,13 +46,17 @@ test('브라우저: 100 MiB Float32Array 픽스처는 빈 페이지 대비 프�
   const hold = await measure(HOLD);
   const blank = await measure(BLANK);
   assert.deepEqual(Object.keys(hold).sort(), ['heap.js_used', 'heap.process_rss']);
+  // 메모리 합은 공유 페이지 중복을 피하려 PSS 를 쓰고, 그 사용 여부가 method 에 기록된다(smaps_rollup 을 읽을 수 없으면 RSS 폴백이 기록된다).
+  const pssReadable = existsSync(`/proc/${process.pid}/smaps_rollup`);
+  assert.match(hold['heap.process_rss'].method, pssReadable ? /PSS 사용.*smaps_rollup/ : /PSS 미사용.*RSS/);
   assert.equal(hold['heap.js_used'].unit, 'B');
   assert.equal(hold['heap.js_used'].device, DEVICE);
-  assert.equal(hold['heap.js_used'].samples.length, 3);
+  assert.equal(hold['heap.js_used'].samples.length, 5);
   // 빈 페이지도 브라우저 기저 메모리가 수백 MiB 라 절대값은 무의미하다. 같은 브라우저의 빈 페이지 대비 증가분으로 판정한다.
   // 페이지 메모리는 렌더러 자식 프로세스에 있으므로 루트 프로세스만 세면 증가분이 거의 0 이 되어 실패한다.
-  const delta = hold['heap.process_rss'].value - blank['heap.process_rss'].value;
-  // 문턱 근거: 픽스처는 정확히 100 MiB 를 상주시키므로 이론 증가분은 100 MiB 이고, 측정 증가분은 약 98 MiB(여유 약 8 MiB)다.
+  // 중앙값 대신 표본 최솟값끼리 비교한다: PSS 합은 프로세스 구성에 따라 두 수준(약 80 MiB 차)으로 갈리는 표본이 섞여 중앙값 차가 흔들리지만 하위 수준끼리의 차는 안정적이다.
+  const delta = Math.min(...hold['heap.process_rss'].samples) - Math.min(...blank['heap.process_rss'].samples);
+  // 문턱 근거: 픽스처는 정확히 100 MiB 를 상주시키므로 이론 증가분은 100 MiB 이고, 측정 증가분은 RSS 합 기준 실측 98.5~107.0 MiB, PSS 합·표본 최솟값 기준 반복 12회에서 약 99~106 MiB 였다. 문턱 90 MiB 와의 여유는 약 9~17 MiB 다.
   // 90 MiB 는 100 MiB 의 90%로, 빈 페이지 대비 렌더러 기저 메모리 편차(수 MiB)와 3회 중앙값 잡음을 흡수하되
   // 상주가 빠지면(증가분 약 0) 확실히 실패하는 값이다. 측정값에 맞춰 낮추지 않는다.
   assert.ok(delta >= 90 * MIB, `delta ${delta}`);
@@ -68,7 +72,8 @@ test('processTreeRss: 자손 프로세스의 메모리까지 합산한다(루트
   const proc = spawn(process.execPath, ['-e', parent, '--', tag], { stdio: ['ignore', 'pipe', 'inherit'], detached: true });
   t.after(() => { try { process.kill(-proc.pid, 'SIGKILL'); } catch { /* 이미 종료 */ } });
   await new Promise((resolve, reject) => { proc.once('error', reject); proc.stdout.on('data', (d) => { if (String(d).includes('ready')) resolve(); }); });
-  const rootOnly = Number(readFileSync(`/proc/${proc.pid}/statm`, 'utf8').split(' ')[1]) * 4096;
+  // 합산(tree)이 Pss 이므로 루트도 Pss 로 맞춘다(파일 페이지 공유로 Pss < RSS).
+  const rootOnly = parsePss(readFileSync(`/proc/${proc.pid}/smaps_rollup`, 'utf8')) ?? Number(readFileSync(`/proc/${proc.pid}/statm`, 'utf8').split(' ')[1]) * systemPageSize();
   const tree = processTreeRss(tag);
   assert.ok(rootOnly < 60 * MIB, `root ${rootOnly}`);
   assert.ok(tree - rootOnly >= 100 * MIB, `tree ${tree} root ${rootOnly}`);
@@ -92,4 +97,21 @@ test('실제 dist(SKYLENS_DIR): 상황판 js_used 가 양수이고 method 에 en
 test('run: 선택 입력 키 이름이 틀리면(entrypath, canvas_selector) 기본값으로 가지 않고 거부', async () => {
   await assert.rejects(() => run({ commit: 'abcdef1', inputs: { distDir: '/x', entrypath: '/a.html' } }), /알 수 없는 inputs 키 'entrypath'/);
   await assert.rejects(() => run({ commit: 'abcdef1', inputs: { distDir: '/x', canvas_selector: '#a' } }), /canvasSelector/);
+});
+
+test('parsePss: smaps_rollup 의 Pss(kB)를 바이트로, 없으면 null', () => {
+  assert.equal(parsePss('Rss:   2000 kB\nPss:   1234 kB\nPss_Anon: 99 kB\n'), 1234 * 1024);
+  assert.equal(parsePss('Rss: 2000 kB\n'), null);
+  assert.equal(parsePss(''), null);
+});
+
+test('memoryMethodText: PSS 사용·폴백·혼합을 구분해 기록', () => {
+  assert.match(memoryMethodText({ pssProcs: 4, rssProcs: 0 }), /^PSS 사용/);
+  assert.match(memoryMethodText({ pssProcs: 0, rssProcs: 3 }), /^PSS 미사용.*RSS/);
+  assert.match(memoryMethodText({ pssProcs: 2, rssProcs: 1 }), /^PSS 일부 사용/);
+});
+
+test('systemPageSize: 양의 2의 거듭제곱(getconf PAGESIZE)', () => {
+  const n = systemPageSize();
+  assert.ok(Number.isInteger(n) && n >= 4096 && (n & (n - 1)) === 0, `page ${n}`);
 });
