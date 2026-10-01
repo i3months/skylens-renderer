@@ -1,0 +1,181 @@
+{
+  "coord": "ENU, x=east y=up z=-north, 1 unit = 1 m",
+  "viewpoints": [
+    {
+      "id": 1,
+      "name": "status_overview",
+      "eye": [
+        0,
+        120,
+        300
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 2,
+      "name": "status_close",
+      "eye": [
+        10,
+        25,
+        60
+      ],
+      "target": [
+        0,
+        5,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 3,
+      "name": "status_low",
+      "eye": [
+        -40,
+        8,
+        90
+      ],
+      "target": [
+        0,
+        6,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 4,
+      "name": "tower_high",
+      "eye": [
+        0,
+        400,
+        500
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 5,
+      "name": "tower_mid",
+      "eye": [
+        150,
+        150,
+        250
+      ],
+      "target": [
+        0,
+        10,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 6,
+      "name": "tower_street",
+      "eye": [
+        60,
+        12,
+        120
+      ],
+      "target": [
+        0,
+        8,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 7,
+      "name": "tower_edge_west",
+      "eye": [
+        -300,
+        80,
+        200
+      ],
+      "target": [
+        0,
+        10,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 8,
+      "name": "tower_far",
+      "eye": [
+        500,
+        250,
+        700
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    }
+  ]
+}

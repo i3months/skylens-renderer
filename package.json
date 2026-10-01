@@ -1,0 +1,10 @@
+{
+  "name": "skylens-renderer",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/ bench/ tools/"
+  }
+}
