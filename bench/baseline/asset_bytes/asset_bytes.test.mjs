@@ -48,7 +48,18 @@ test('run: 합성 56 B PLY, 수준별 합계·stride·matches', async () => {
     assert.equal(get('asset_bytes.points_total').value, 110);
     // 헤더 길이는 N 자릿수에 따라 달라지므로 파일 길이로 기대값을 만든다(점 수는 위에서 고정)
     assert.equal(get('asset_bytes.level_0_total').value, plyBuf(1).length + plyBuf(10).length);
-    assert.match(get('asset_bytes.stride').method, /56 B/);
+    assert.match(get('asset_bytes.stride').method, /56 B\/점 \(float×14/);
+    assert.doesNotMatch(get('asset_bytes.stride').method, /27 B 가정/);
+    // 구간별 합계와 평균: 두 구간의 크기가 달라야 첫 구간 값으로 대체한 변형이 드러난다
+    const segTotals = recs.filter((r) => r.metric === 'asset_bytes.segment_total').map((r) => r.value);
+    const seg0 = [1, 2, 3, 4].reduce((a, n) => a + plyBuf(n).length, 0);
+    const seg1 = [10, 20, 30, 40].reduce((a, n) => a + plyBuf(n).length, 0);
+    assert.notEqual(seg0, seg1);
+    assert.deepEqual(segTotals, [seg0, seg1]);
+    const mean = get('asset_bytes.segment_total_mean');
+    assert.deepEqual(mean.samples, [seg0, seg1]);
+    assert.equal(mean.value, (seg0 + seg1) / 2);
+    assert.notEqual(mean.value, mean.samples[0]);
     assert.equal(JSON.parse(await readFile(path.join(f.dir, 'out', 'asset_bytes.json'), 'utf8')).length, recs.length);
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
@@ -59,6 +70,11 @@ test('run: 27 B 스트라이드 PLY 는 matches 1', async () => {
     const recs = await run({ skylensDir: f.dir, commit: COMMIT });
     assert.equal(recs.find((r) => r.metric === 'asset_bytes.stride').value, 27);
     assert.equal(recs.find((r) => r.metric === 'asset_bytes.assumed_stride_matches').value, 1);
+    const m = recs.find((r) => r.metric === 'asset_bytes.stride').method;
+    assert.match(m, /27 B\/점/);
+    assert.doesNotMatch(m, /56/);
+    assert.doesNotMatch(m, /불일치|이탈/);
+    assert.doesNotMatch(recs.find((r) => r.metric === 'asset_bytes.level_0').method, /56/);
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
@@ -82,6 +98,32 @@ test('음성: 본문 뒤 잉여 바이트, 헤더 없는 파일, 누락 수준',
     await assert.rejects(run({ skylensDir: f.dir, commit: COMMIT }), /seg0_step00250\.ply.*end_header/);
     await rm(path.join(f.seg, 'seg0_step07000.ply'));
     await assert.rejects(run({ skylensDir: f.dir, commit: COMMIT }), /수준 3/);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('음성: 수준 누락 시 segment_total·평균 레코드를 쓰지 않는다', async () => {
+  const f = await fixture({ 0: [1, 1, 1, 1] });
+  const out = path.join(f.dir, 'out');
+  try {
+    await rm(path.join(f.seg, 'seg0_step07000.ply'));
+    await assert.rejects(run({ skylensDir: f.dir, outDir: out, commit: COMMIT }), /수준 3/);
+    const saved = JSON.parse(await readFile(path.join(out, 'asset_bytes.json'), 'utf8'));
+    assert.equal(saved.some((r) => /segment_total|_total$|points_total/.test(r.metric)), false);
+    assert.equal(saved.filter((r) => /^asset_bytes\.level_\d$/.test(r.metric)).length, 3);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('음성: 알 수 없는 step 파일은 경고 없이 빠지지 않고 던진다', async () => {
+  const f = await fixture({ 0: [1, 1, 1, 1] });
+  const out = path.join(f.dir, 'out');
+  try {
+    await writeFile(path.join(f.seg, 'seg0_step05000.ply'), plyBuf(1));
+    const unknown = [];
+    await collectSizes(f.seg, unknown);
+    assert.deepEqual(unknown, ['seg0_step05000.ply']);
+    await assert.rejects(run({ skylensDir: f.dir, outDir: out, commit: COMMIT }), /seg0_step05000\.ply.*STEP_LEVEL/);
+    const saved = JSON.parse(await readFile(path.join(out, 'asset_bytes.json'), 'utf8'));
+    assert.equal(saved.some((r) => r.metric === 'asset_bytes.segment_total'), false);
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
