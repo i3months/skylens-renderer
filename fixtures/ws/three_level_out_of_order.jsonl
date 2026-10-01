@@ -1,0 +1,8 @@
+{"t_ms":0,"dir":"rx","bytes":1,"kind":"first_frame"}
+{"t_ms":100,"dir":"rx","bytes":10,"kind":"points","segment":1,"level":0,"final":false}
+{"t_ms":101,"dir":"rx","bytes":20,"kind":"points","segment":1,"level":1,"final":false}
+{"t_ms":102,"dir":"rx","bytes":40,"kind":"points","segment":1,"level":2,"final":true}
+{"t_ms":200,"dir":"rx","bytes":1,"kind":"points","segment":4,"level":0,"final":false}
+{"t_ms":201,"dir":"rx","bytes":2,"kind":"points","segment":4,"level":1,"final":false}
+{"t_ms":202,"dir":"rx","bytes":4,"kind":"points","segment":4,"level":2,"final":true}
+{"t_ms":300,"dir":"rx","bytes":8,"kind":"points","segment":2,"level":0,"final":false}

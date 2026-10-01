@@ -1,0 +1,15 @@
+{
+  "$comment": "baseline measurement record; one JSON object per measurement, files hold arrays",
+  "type": "object",
+  "required": ["metric", "value", "unit", "device", "method", "commit"],
+  "properties": {
+    "metric": {"type": "string", "pattern": "^[a-z0-9_.]+$"},
+    "value": {"type": "number"},
+    "unit": {"enum": ["B", "count", "ms", "fps", "MB", "ratio", "px"]},
+    "device": {"type": "string"},
+    "method": {"type": "string"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+    "samples": {"type": "array", "items": {"type": "number"}}
+  },
+  "additionalProperties": false
+}
