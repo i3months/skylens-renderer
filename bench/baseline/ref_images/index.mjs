@@ -288,14 +288,16 @@ function planPly(h, name) {
   const normals = Boolean(off.nx && off.ny && off.nz);
   const coordType = typeName(['x', 'y', 'z'].map((k) => off[k].type));
   const normalType = normals ? typeName(['nx', 'ny', 'nz'].map((k) => off[k].type)) : null;
-  // 속성 순서 검사: rgb-u8 + normals 일 때 x y z nx ny nz red green blue 순서가 맞는지
+  const colorType = layout === 'rgb-u8' ? typeName(['red', 'green', 'blue'].map((k) => off[k].type)) : null;
+  // 속성 순서 검사: rgb-u8 + normals 일 때 x y z nx ny nz red green blue 순서가 정확히 맞는지
+  // 앞 9개 접두 일치만 검사하되, stride===27 조건(정확히 이 9개 속성, 패딩 없음)으로 맞춤
   let propertyOrderCorrect = false;
   if (layout === 'rgb-u8' && normals) {
     const expected = ['x', 'y', 'z', 'nx', 'ny', 'nz', 'red', 'green', 'blue'];
     const actual = h.properties.map((p) => p.name);
-    propertyOrderCorrect = expected.every((name, i) => actual[i] === name);
+    propertyOrderCorrect = actual.length === expected.length && expected.every((name, i) => actual[i] === name);
   }
-  return { off, layout, normals, coordType, normalType, propertyOrderCorrect, stride: h.stride, rawCount, positions: new Float32Array(rawCount * 3), colors: new Uint8Array(rawCount * 3), j: 0, nonFinite: 0 };
+  return { off, layout, normals, coordType, normalType, colorType, propertyOrderCorrect, stride: h.stride, rawCount, positions: new Float32Array(rawCount * 3), colors: new Uint8Array(rawCount * 3), j: 0, nonFinite: 0 };
 }
 
 const clamp8 = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255);
@@ -349,13 +351,13 @@ function decodeRecords(buf, base, n, plan) {
 }
 
 function finishPly(plan) {
-  const { j, nonFinite, rawCount, layout, stride, normals, coordType, normalType, propertyOrderCorrect } = plan;
+  const { j, nonFinite, rawCount, layout, stride, normals, coordType, normalType, colorType, propertyOrderCorrect } = plan;
   // 비유한 레코드가 있으면 결과는 rawCount 점분 할당의 subarray 다. `.buffer` 를 직접 쓰지 말 것
   // (제외된 꼬리까지 포함한다). byteOffset·byteLength 와 함께 쓰거나 slice 로 복사한다.
   return {
     positions: nonFinite ? plan.positions.subarray(0, j * 3) : plan.positions,
     colors: nonFinite ? plan.colors.subarray(0, j * 3) : plan.colors,
-    count: j, rawCount, nonFinite, layout, stride, normals, coordType, normalType, propertyOrderCorrect,
+    count: j, rawCount, nonFinite, layout, stride, normals, coordType, normalType, colorType, propertyOrderCorrect,
   };
 }
 
@@ -486,13 +488,14 @@ export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
  * 속성 순서도 기준과 같아야 한다(x y z nx ny nz red green blue 가 앞에서부터 차례로 정확히 이 9개여야 하고, 뒤에 속성이 더 있으면 stride 가 27 을 초과해 형식이 다르다).
  * 법선은 어느 형식이든 읽지 않는다(헤더에 있으면 "법선 nx ny nz <형> 있음·무시").
  */
-export function basisNote({ layout, stride, normals, coordType, normalType, propertyOrderCorrect }) {
+export function basisNote({ layout, stride, normals, coordType, normalType, colorType, propertyOrderCorrect }) {
   const n = normals ? `법선 nx ny nz${normalType ? ` ${normalType}` : ''} 있음·무시` : '법선 없음';
   if (layout === 'splat-f_dc') return `renderer_basis §7-4 27 B 와 다름: ${stride} B 스플랫, ${n}, 중심점만 사용`;
   const same = stride === 27 && coordType === 'float' && normals && normalType === 'float' && propertyOrderCorrect;
   const rel = same ? '와 같은 형식' : stride === 27 ? '와 크기만 같고 형식은 다름' : '와 다름';
   const xyz = coordType ? `x y z ${coordType}` : 'x y z';
-  return `renderer_basis §7-4 27 B ${rel}: ${stride} B 점(${xyz}·uchar rgb), ${n}, 중심점만 사용`;
+  const rgb = colorType ? `${colorType} rgb` : 'uchar rgb';
+  return `renderer_basis §7-4 27 B ${rel}: ${stride} B 점(${xyz}·${rgb}), ${n}, 중심점만 사용`;
 }
 
 const fmt = (v) => Number(v.toPrecision(10));
