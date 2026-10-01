@@ -164,3 +164,15 @@ test('systemPageSize: 양의 2의 거듭제곱(getconf PAGESIZE)', () => {
   const n = systemPageSize();
   assert.ok(Number.isInteger(n) && n >= 4096 && (n & (n - 1)) === 0, `page ${n}`);
 });
+
+test('processTreeMemory: smaps 를 읽을 수 없고 statm 이 깨졌으면(1 abc) NaN 을 합산하지 않고 null', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = mkdtempSync(join(tmpdir(), 'proc-garbled-'));
+  mkdirSync(join(procRoot, '100'));
+  writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
+  writeFileSync(join(procRoot, '100', 'cmdline'), tag);
+  writeFileSync(join(procRoot, '100', 'statm'), '1 abc');
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m, null);
+  assert.ok(m === null || Number.isFinite(m.bytes));
+});
