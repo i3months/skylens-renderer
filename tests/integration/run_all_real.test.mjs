@@ -13,7 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { MODULES } from '../../bench/baseline/run_all/index.mjs';
 import { unavailableReason } from '../../bench/baseline/_common/browser.mjs';
 import { STEP_LEVEL } from '../../contracts/inputs/index.mjs';
-import { encodeSplatPly, syntheticPoints } from '../../bench/baseline/ref_images/testing.mjs';
+import { encodeSplatPly, syntheticScene } from '../../bench/baseline/ref_images/testing.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CLI = join(ROOT, 'bench', 'baseline', 'run_all', 'cli.mjs');
@@ -63,7 +63,7 @@ before(async () => {
   }
 
   // 점군(ref_images): 앵커 좌표계 장면에 걸치는 합성 점군
-  await writeFile(join(root, 'points.ply'), encodeSplatPly(syntheticPoints(1)));
+  await writeFile(join(root, 'points.ply'), encodeSplatPly(syntheticScene()));
 
   // ws 녹화: 첫 프레임 + 구간 2개 x 4수준
   const ws = [{ t_ms: 0, dir: 'tx', bytes: 100, kind: 'hello' }, { t_ms: 100, dir: 'rx', bytes: 300, kind: 'first_frame' }];
@@ -86,13 +86,13 @@ before(async () => {
 
   // 미니 dist: 두 진입 HTML 이 공유 청크를 정적 import 한다. 상황판은 캔버스에 그린다(브라우저 모듈용).
   await writeFile(join(dist, 'res', 'static', 'status.html'),
-    '<!doctype html><html><body><canvas id="c" width="200" height="200"></canvas><script type="module" src="/assets/status.js"></script></body></html>\n');
+    '<!doctype html><html><body><canvas id="view2" width="200" height="200"></canvas><script type="module" src="/assets/status.js"></script></body></html>\n');
   await writeFile(join(dist, 'res', 'static', 'control.html'),
     '<!doctype html><html><body><script type="module" src="/assets/control.js"></script></body></html>\n');
   await writeFile(join(dist, 'assets', 'shared.js'), 'export const shared = "x".repeat(2000);\n');
   await writeFile(join(dist, 'assets', 'control.js'), 'import { shared } from "./shared.js";\nwindow.__control = shared.length;\n');
   await writeFile(join(dist, 'assets', 'status.js'),
-    'import { shared } from "./shared.js";\nconst g = document.getElementById("c").getContext("2d");\ng.fillStyle = "#000";\ng.fillRect(0, 0, 200, 200);\ng.fillStyle = "#fff";\ng.fillRect(0, 0, 120, 120);\nwindow.__status = shared.length;\n');
+    'import { shared } from "./shared.js";\nconst g = document.getElementById("view2").getContext("2d");\ng.fillStyle = "#000";\ng.fillRect(0, 0, 200, 200);\ng.fillStyle = "#fff";\ng.fillRect(0, 0, 120, 120);\nwindow.__status = shared.length;\n');
 
   outDir = join(root, 'out');
   const a = VIEWPOINTS.anchor;
