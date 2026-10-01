@@ -1,9 +1,11 @@
-// 기준선 측정 레코드를 SPEC §4 '현재(T01 측정)' 열 형식의 마크다운 표로 바꾼다.
+// 기준선 측정 레코드를 마크다운 표로 바꾼다. 소프트웨어 렌더 기기 레코드는 본 표에서 빼 참고값 절로 분리한다.
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { assertRecords, parse } from '../../contracts/metrics/index.mjs';
 
 const HEADER = '| metric | 값 | 단위 | 기기 | 방법 | 커밋 |\n| --- | --- | --- | --- | --- | --- |';
+const REF_TITLE = '## 참고값(클라우드)';
+const SOFTWARE_DEVICE = /swiftshader|software|llvmpipe|softpipe|swrast/i;
 const EMPTY_NOTE = '측정 전: 측정된 항목이 없다.';
 
 /** 정수는 천 단위 쉼표, 소수는 최대 3자리(끝의 0 은 생략). */
@@ -38,11 +40,10 @@ function load(input) {
   return out;
 }
 
-/** records: 레코드 배열 또는 JSON 파일 경로 배열. 스키마 위반이면 던진다. */
-export function toTable(records) {
-  if (!Array.isArray(records)) throw new Error('records must be an array');
-  const list = assertRecords(load(records));
-  if (list.length === 0) return `${HEADER}\n\n${EMPTY_NOTE}\n`;
+/** 소프트웨어 렌더(swiftshader 등) 기기에서 잰 레코드인가. */
+export const isSoftwareDevice = (r) => SOFTWARE_DEVICE.test(r.device);
+
+function rowsOf(list) {
   const sorted = [...list].sort(
     (a, b) =>
       cmp(a.metric, b.metric) ||
@@ -51,9 +52,24 @@ export function toTable(records) {
       cmp(a.commit, b.commit) ||
       a.value - b.value,
   );
-  const rows = sorted.map((r) => {
-    const value = formatNumber(r.value) + (r.samples ? ` (n=${r.samples.length})` : '');
-    return `| ${[r.metric, value, displayUnit(r), r.device, r.method, r.commit].map(cell).join(' | ')} |`;
-  });
-  return `${HEADER}\n${rows.join('\n')}\n`;
+  return sorted
+    .map((r) => {
+      const value = formatNumber(r.value) + (r.samples ? ` (n=${r.samples.length})` : '');
+      return `| ${[r.metric, value, displayUnit(r), r.device, r.method, r.commit].map(cell).join(' | ')} |`;
+    })
+    .join('\n');
+}
+
+/**
+ * records: 레코드 배열 또는 JSON 파일 경로 배열. 스키마 위반이면 던진다.
+ * 소프트웨어 렌더 기기 레코드는 본 표가 아니라 뒤의 '참고값(클라우드)' 절에 둔다.
+ */
+export function toTable(records) {
+  if (!Array.isArray(records)) throw new Error('records must be an array');
+  const list = assertRecords(load(records));
+  const main = list.filter((r) => !isSoftwareDevice(r));
+  const ref = list.filter(isSoftwareDevice);
+  let out = main.length === 0 ? `${HEADER}\n\n${EMPTY_NOTE}\n` : `${HEADER}\n${rowsOf(main)}\n`;
+  if (ref.length) out += `\n${REF_TITLE}\n\n${HEADER}\n${rowsOf(ref)}\n`;
+  return out;
 }
