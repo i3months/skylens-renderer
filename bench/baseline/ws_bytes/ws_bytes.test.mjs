@@ -213,6 +213,9 @@ test('resend 뒤에 온 같은 수준 원본은 stale 이 아니고 resend 가 �
   assert.equal(t.stale_levels, 1);
   assert.equal(t.stale_bytes, 4);
   assert.deepEqual(t.segments, [9]);
+  // 원본 없는 수준 2 의 재전송은 유일한 사본이라 받은 수준이고 재전송 바이트가 아니다
+  assert.deepEqual(t.segment_levels, [[3]]);
+  assert.equal(t.resend_bytes, 0);
 });
 
 test('바이트 합계가 safe integer 를 넘으면 오류', async () => {
@@ -739,4 +742,94 @@ test('변이(j) 이어 붙인 회차를 프레임 수-1 로 세면 실패: [r40,
   assert.equal(s.resend_bytes, 0);
   const r = await runText(BASE + [0, 1, 2].map(() => fr(1, 2, 40, ',"resend":true')).join(''));
   assert.match(get(r, 'ws_bytes.segment_total').method, /resend 1회차를 한 회차의 분할로 합산/);
+});
+
+// ---- 끊긴 같은 최고 수준 연속의 final·받은 수준 뜻·resend 전용 final 경고 ----
+const fin = (f) => ({ ...f, final: true });
+const perms = (a) => (a.length <= 1 ? [a] : a.flatMap((x, i) => perms([...a.slice(0, i), ...a.slice(i + 1)]).map((p) => [x, ...p])));
+
+test('변이(k) 끊긴 연속의 stale final 을 버리면 실패: [L2 5, L1 3, L2 5 final] 은 완결 [5]', async () => {
+  const s = summarize([F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))]);
+  assert.deepEqual(s.segment_ids, [1]);
+  assert.deepEqual(s.segments, [5]);
+  assert.deepEqual(s.incomplete_segments, []);
+  // 바이트 쪽 stale 집계는 그대로: L1 3 과 끊긴 뒤의 L2 5
+  assert.equal(s.stale_levels, 2);
+  assert.equal(s.stale_bytes, 8);
+  assert.deepEqual(s.segment_levels, [[3]]);
+  const r = await runText(BASE + fr(1, 2, 5) + fr(1, 1, 3) + fr(1, 2, 5, ',"final":true'));
+  assert.deepEqual(get(r, 'ws_bytes.segment_total').samples, [5]);
+  assert.equal(get(r, 'ws_bytes.stale_bytes').value, 8);
+});
+
+test('[L2 5, rL2 5, L2 5 final] 은 완결 [5], [L2 5 final, rL2 5, L2 5] 도 완결 [5]', () => {
+  const a = summarize([F(1, 2, 5), F(1, 2, 5, true), fin(F(1, 2, 5))]);
+  assert.deepEqual(a.segment_ids, [1]);
+  assert.deepEqual(a.segments, [5]);
+  assert.equal(a.stale_levels, 1);
+  assert.equal(a.stale_bytes, 5);
+  assert.equal(a.resend_bytes, 5);
+  const b = summarize([fin(F(1, 2, 5)), F(1, 2, 5, true), F(1, 2, 5)]);
+  assert.deepEqual(b.segment_ids, [1]);
+  assert.deepEqual(b.segments, [5]);
+  assert.equal(b.stale_levels, 1);
+  assert.equal(b.resend_bytes, 5);
+});
+
+test('같은 프레임 집합의 모든 순열은 완결 판정이 같다 (바이트는 분할 연속 여부에 따라 손계산 값)', () => {
+  // {L2 5, L1 3, L2 5 final}: 6순열 모두 완결
+  const A = [F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))];
+  for (const p of perms(A)) assert.deepEqual(summarize(p).segment_ids, [1], JSON.stringify(p));
+  const [L2, L1, L2f] = A;
+  // 끊긴 연속: 5, 연속 분할: 10, L1 이 먼저면 L1 도 받은 수준: 3+5+5
+  assert.deepEqual(summarize([L2, L1, L2f]).segments, [5]);
+  assert.deepEqual(summarize([L2f, L1, L2]).segments, [5]);
+  assert.deepEqual(summarize([L2, L2f, L1]).segments, [10]);
+  assert.deepEqual(summarize([L2f, L2, L1]).segments, [10]);
+  assert.deepEqual(summarize([L1, L2, L2f]).segments, [13]);
+  assert.deepEqual(summarize([L1, L2f, L2]).segments, [13]);
+  // {L2 5, rL2 5, L2 5 final}: 6순열 모두 완결. resend 가 두 원본 사이면 5, 아니면 분할 10
+  const B = [F(1, 2, 5), F(1, 2, 5, true), fin(F(1, 2, 5))];
+  for (const p of perms(B)) {
+    const s = summarize(p);
+    assert.deepEqual(s.segment_ids, [1], JSON.stringify(p));
+    const between = p[1].resend === true;
+    assert.deepEqual(s.segments, [between ? 5 : 10], JSON.stringify(p));
+    assert.equal(s.resend_bytes, 5);
+  }
+  // 추월당한 낮은 수준의 final 은 순서에 따라 다르다(의도): [L1 5, L0 3 final] 미완, [L0 3 final, L1 5] 완결
+  assert.deepEqual(summarize([F(1, 1, 5), fin(F(1, 0, 3))]).segment_ids, []);
+  assert.deepEqual(summarize([fin(F(1, 0, 3)), F(1, 1, 5)]).segment_ids, [1]);
+});
+
+test('segment_levels 는 교체된 낮은 수준까지 포함한 전체 수신 수준: [L0 10, L2 30] 은 [[1,3]], [L2 30, L0 10] 은 [[3]]', async () => {
+  const up = summarize([F(1, 0, 10), F(1, 2, 30)]);
+  assert.deepEqual(up.segment_levels, [[1, 3]]);
+  assert.deepEqual(up.segments, [40]);
+  const down = summarize([F(1, 2, 30), F(1, 0, 10)]);
+  assert.deepEqual(down.segment_levels, [[3]]);
+  assert.deepEqual(down.segments, [30]);
+  const r = await runText(BASE + fr(1, 0, 10) + fr(1, 2, 30));
+  assert.deepEqual(get(r, 'ws_bytes.segment_levels_mask').samples, [5]);
+  assert.deepEqual(get(r, 'ws_bytes.levels_received').samples, [2]);
+  for (const m of ['ws_bytes.segment_levels_mask', 'ws_bytes.levels_received']) {
+    assert.match(get(r, m).method, /교체된 낮은 수준 포함 전체/);
+  }
+  const r2 = await runText(BASE + fr(1, 2, 30) + fr(1, 0, 10));
+  assert.deepEqual(get(r2, 'ws_bytes.segment_levels_mask').samples, [4]);
+});
+
+test('final 필드가 resend 프레임에만 있으면 method 는 "final 필드 없음" 이 아니라 "resend 에만 있음"', async () => {
+  const text = BASE + fr(1, 0, 1) + fr(1, 1, 2) + fr(1, 2, 4) + fr(2, 2, 4, ',"resend":true,"final":true');
+  const r = await runText(text);
+  for (const x of r) {
+    assert.doesNotMatch(x.method, /final 필드 없음/);
+    assert.match(x.method, /final 필드가 resend 에만 있음, topLevel 가정/);
+  }
+  assert.equal(summarize([F(1, 2, 4), fin(F(2, 2, 4, true))]).final_resend_only, true);
+  // final 필드가 전혀 없으면 기존 문구
+  const r2 = await runText(BASE + fr(1, 2, 4));
+  for (const x of r2) assert.match(x.method, /final 필드 없음, topLevel 가정/);
+  assert.equal(summarize([F(1, 2, 4)]).final_resend_only, false);
+  assert.equal(summarize([fin(F(1, 2, 4))]).final_resend_only, false);
 });
