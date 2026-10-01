@@ -1,76 +1,125 @@
-// 합성 점 파일(작은 점 수)로 자산 바이트 집계와 크기 검사를 확인한다.
+// PLY 자산 바이트 집계: 실제 /tmp/skylens 트리(있을 때)와 합성 픽스처로 확인한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { run, checkPointFile, assertPointFile, LEVELS, POINT_BYTES } from './index.mjs';
-import { assertRecords } from '../../../contracts/metrics/index.mjs';
+import { run, checkLayout, collectSizes, defaultAssetsRoot } from './index.mjs';
+import { parsePlyHeader } from '../../../contracts/ply/index.mjs';
 
 const COMMIT = 'abcdef1234567';
+const STEPS = ['00250', '01000', '03500', '07000'];
 
-async function fixture(counts, header = 0, extra = {}) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'asset_bytes-'));
-  const assets = path.join(dir, 'assets');
-  await mkdir(assets);
-  for (const [seg, pts] of Object.entries(counts)) {
-    for (const [i, level] of LEVELS.entries()) {
-      await writeFile(path.join(assets, `seg${seg}_L${level}.bin`), Buffer.alloc(header + POINT_BYTES * pts[i]));
-    }
-  }
-  for (const [name, size] of Object.entries(extra)) await writeFile(path.join(assets, name), Buffer.alloc(size));
-  return { dir, assets };
+function plyBuf(n, { stride56 = true, declared = n, extraBody = 0 } = {}) {
+  const props = stride56
+    ? Array.from({ length: 14 }, (_, i) => `property float f${i}`)
+    : ['x', 'y', 'z', 'nx', 'ny', 'nz'].map((p) => `property float ${p}`).concat(['red', 'green', 'blue'].map((p) => `property uchar ${p}`));
+  const head = `ply\nformat binary_little_endian 1.0\nelement vertex ${declared}\n${props.join('\n')}\nend_header\n`;
+  return Buffer.concat([Buffer.from(head), Buffer.alloc((stride56 ? 56 : 27) * n + extraBody)]);
 }
 
-test('27 B × 점 수 와 파일 크기 차 ≤ 헤더 크기', () => {
-  for (const header of [0, 16]) {
-    for (const n of [0, 1, 7, 100]) {
-      const r = checkPointFile(header + POINT_BYTES * n, header);
-      assert.ok(r.ok, r.errors.join());
-      assert.equal(r.points, n);
-      assert.ok(r.remainder <= header);
-    }
+async function fixture(counts, opts = {}) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asset_bytes-'));
+  const seg = defaultAssetsRoot(dir);
+  await mkdir(seg, { recursive: true });
+  for (const [s, pts] of Object.entries(counts)) {
+    for (const [i, step] of STEPS.entries()) await writeFile(path.join(seg, `seg${s}_step${step}.ply`), plyBuf(pts[i], opts));
   }
-  assert.equal(assertPointFile(54), 2);
+  return { dir, seg };
+}
+
+test('checkLayout: size − stride×N == 헤더 길이', () => {
+  const buf = plyBuf(3);
+  const hdr = parsePlyHeader(buf);
+  assert.equal(hdr.stride, 56);
+  assert.equal(checkLayout(buf.length, hdr).ok, true);
+  assert.equal(checkLayout(buf.length + 1, hdr).ok, false);
+  assert.equal(checkLayout(buf.length - 56, hdr).ok, false);
 });
 
-test('헤더 크기를 초과하는 손상 파일은 거부', () => {
-  assert.equal(checkPointFile(28).ok, false); // 1 B 초과
-  assert.equal(checkPointFile(26 + 27, 16).ok, false); // 본문 37 B, 나머지 10
-  assert.equal(checkPointFile(16 + 27 * 3 + 1, 16).ok, false);
-  assert.equal(checkPointFile(10, 16).ok, false); // 헤더보다 작음
-  assert.equal(checkPointFile(-1).ok, false);
-  assert.throws(() => assertPointFile(100, 0, 'seg0_L250.bin'), /seg0_L250\.bin/);
-});
-
-test('run: 구간별 4수준 합과 수준별 지표, assertRecords 통과', async () => {
-  const { dir, assets } = await fixture({ 0: [1, 2, 3, 4], 1: [10, 20, 30, 40] }, 0, { 'notes.txt': 5 });
+test('run: 합성 56 B PLY, 수준별 합계·stride·matches', async () => {
+  const f = await fixture({ 0: [1, 2, 3, 4], 1: [10, 20, 30, 40] });
   try {
-    const recs = await run({ skylensDir: dir, outDir: path.join(dir, 'out'), commit: COMMIT });
-    assertRecords(recs);
-    const tot = recs.filter((r) => r.metric === 'asset_bytes.segment_total');
-    assert.deepEqual(tot.map((r) => r.value), [27 * 10, 27 * 100]);
-    assert.ok(tot.every((r) => r.unit === 'B'));
-    const l250 = recs.filter((r) => r.metric === 'asset_bytes.level_250').map((r) => r.value);
-    assert.deepEqual(l250, [27, 270]);
-    assert.equal(recs.find((r) => r.metric === 'asset_bytes.points_total').value, 110);
-    assert.equal(recs.find((r) => r.metric === 'asset_bytes.segment_total_mean').value, 27 * 55);
-    assert.equal(JSON.parse(await readFile(path.join(dir, 'out', 'asset_bytes.json'), 'utf8')).length, recs.length);
-    // assetsRoot 인자 지정
-    assert.equal((await run({ skylensDir: '/nonexistent', assetsRoot: assets, commit: COMMIT })).length, recs.length);
+    const recs = await run({ skylensDir: f.dir, outDir: path.join(f.dir, 'out'), commit: COMMIT });
+    const get = (m) => recs.find((r) => r.metric === m);
+    assert.equal(get('asset_bytes.stride').value, 56);
+    assert.equal(get('asset_bytes.assumed_stride_matches').value, 0);
+    assert.equal(get('asset_bytes.points_total').value, 110);
+    // 헤더 길이는 N 자릿수에 따라 달라지므로 파일 길이로 기대값을 만든다(점 수는 위에서 고정)
+    assert.equal(get('asset_bytes.level_0_total').value, plyBuf(1).length + plyBuf(10).length);
+    assert.match(get('asset_bytes.stride').method, /56 B/);
+    assert.equal(JSON.parse(await readFile(path.join(f.dir, 'out', 'asset_bytes.json'), 'utf8')).length, recs.length);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('run: 27 B 스트라이드 PLY 는 matches 1', async () => {
+  const f = await fixture({ 0: [1, 1, 1, 1] }, { stride56: false });
+  try {
+    const recs = await run({ skylensDir: f.dir, commit: COMMIT });
+    assert.equal(recs.find((r) => r.metric === 'asset_bytes.stride').value, 27);
+    assert.equal(recs.find((r) => r.metric === 'asset_bytes.assumed_stride_matches').value, 1);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('음성: 헤더 N 과 본문 크기가 어긋난 파일은 거부하되 바이트는 기록', async () => {
+  const f = await fixture({ 0: [1, 1, 1, 1] });
+  await writeFile(path.join(f.seg, 'seg0_step03500.ply'), plyBuf(5, { declared: 7 })); // 헤더 7점, 본문 5점
+  const out = path.join(f.dir, 'out');
+  try {
+    await assert.rejects(run({ skylensDir: f.dir, outDir: out, commit: COMMIT }), /seg0_step03500\.ply/);
+    const saved = JSON.parse(await readFile(path.join(out, 'asset_bytes.json'), 'utf8'));
+    assert.equal(saved.find((r) => r.metric === 'asset_bytes.level_2').value, plyBuf(5).length);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('음성: 본문 뒤 잉여 바이트, 헤더 없는 파일, 누락 수준', async () => {
+  const f = await fixture({ 0: [1, 1, 1, 1] });
+  try {
+    await writeFile(path.join(f.seg, 'seg0_step00250.ply'), plyBuf(1, { extraBody: 3 }));
+    await assert.rejects(run({ skylensDir: f.dir, commit: COMMIT }), /seg0_step00250\.ply/);
+    await writeFile(path.join(f.seg, 'seg0_step00250.ply'), Buffer.alloc(100));
+    await assert.rejects(run({ skylensDir: f.dir, commit: COMMIT }), /seg0_step00250\.ply.*end_header/);
+    await rm(path.join(f.seg, 'seg0_step07000.ply'));
+    await assert.rejects(run({ skylensDir: f.dir, commit: COMMIT }), /수준 3/);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('음성: 자산 디렉터리 없음/비어 있음은 던진다', async () => {
+  await assert.rejects(run({ skylensDir: '/nonexistent', commit: COMMIT }));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'asset_bytes-'));
+  try {
+    await mkdir(defaultAssetsRoot(dir), { recursive: true });
+    await assert.rejects(run({ skylensDir: dir, commit: COMMIT }), /자산 파일이 없다/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('run: 헤더 크기 인자 적용, 손상·누락은 거부', async () => {
-  const ok = await fixture({ 0: [1, 1, 1, 1] }, 8);
-  const bad = await fixture({ 0: [1, 1, 1, 1] }, 0, { 'seg0_L250.bin': 40 });
-  const miss = await fixture({ 0: [1, 1, 1, 1] });
+test('중복 키: seg1 과 seg01 은 던진다 (덮어쓰지 않음)', async () => {
+  const f = await fixture({ 1: [1, 1, 1, 1] });
   try {
-    const recs = await run({ skylensDir: ok.dir, commit: COMMIT, headerSize: 8 });
-    assert.equal(recs.find((r) => r.metric === 'asset_bytes.segment_total').value, 4 * 35);
-    await assert.rejects(run({ skylensDir: ok.dir, commit: COMMIT }), /seg0_L/); // 헤더 0 이면 8 B 초과
-    await assert.rejects(run({ skylensDir: bad.dir, commit: COMMIT }), /seg0_L250\.bin/);
-    await rm(path.join(miss.assets, 'seg0_L7000.bin'));
-    await assert.rejects(run({ skylensDir: miss.dir, commit: COMMIT }), /수준 7000/);
-  } finally { for (const f of [ok, bad, miss]) await rm(f.dir, { recursive: true, force: true }); }
+    await writeFile(path.join(f.seg, 'seg01_step00250.ply'), plyBuf(2));
+    await assert.rejects(collectSizes(f.seg), /중복 키.*seg01_step00250\.ply|중복 키.*seg1_step00250\.ply/);
+    await assert.rejects(run({ skylensDir: f.dir, commit: COMMIT }), /중복 키/);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('중복 키: step00250 과 step0250 (같은 수준)은 던진다', async () => {
+  const f = await fixture({ 0: [1, 1, 1, 1] });
+  try {
+    await writeFile(path.join(f.seg, 'seg0_step0250.ply'), plyBuf(2));
+    await assert.rejects(run({ skylensDir: f.dir, commit: COMMIT }), /중복 키/);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+});
+
+const REAL = process.env.SKYLENS_DIR ?? '/tmp/skylens';
+test('실제 데모 16개 파일: 수준별 합계·stride 56·matches 0', { skip: !existsSync(defaultAssetsRoot(REAL)) && '실제 skylens 트리 없음' }, async () => {
+  const recs = await run({ skylensDir: REAL, commit: COMMIT });
+  const get = (m) => recs.find((r) => r.metric === m).value;
+  assert.equal(get('asset_bytes.level_0_total'), 473744);
+  assert.equal(get('asset_bytes.level_1_total'), 1256960);
+  assert.equal(get('asset_bytes.level_2_total'), 14170732);
+  assert.equal(get('asset_bytes.level_3_total'), 26070736);
+  assert.equal(get('asset_bytes.stride'), 56);
+  assert.equal(get('asset_bytes.assumed_stride_matches'), 0);
+  assert.equal(recs.filter((r) => /^asset_bytes\.level_\d$/.test(r.metric)).length, 16);
 });
