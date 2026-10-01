@@ -87,13 +87,13 @@ before(async () => {
 
   // 미니 dist: 두 진입 HTML 이 공유 청크를 정적 import 한다. 상황판은 캔버스에 그린다(브라우저 모듈용).
   await writeFile(join(dist, 'res', 'static', 'status.html'),
-    '<!doctype html><html><body><canvas id="view2" width="200" height="200"></canvas><script type="module" src="/assets/status.js"></script></body></html>\n');
+    '<!doctype html><html><body><canvas id="status-view" width="200" height="200"></canvas><script type="module" src="/assets/status.js"></script></body></html>\n');
   await writeFile(join(dist, 'res', 'static', 'control.html'),
     '<!doctype html><html><body><script type="module" src="/assets/control.js"></script></body></html>\n');
   await writeFile(join(dist, 'assets', 'shared.js'), 'export const shared = "x".repeat(2000);\n');
   await writeFile(join(dist, 'assets', 'control.js'), 'import { shared } from "./shared.js";\nwindow.__control = shared.length;\n');
   await writeFile(join(dist, 'assets', 'status.js'),
-    'import { shared } from "./shared.js";\nconst g = document.getElementById("view2").getContext("2d");\ng.fillStyle = "#000";\ng.fillRect(0, 0, 200, 200);\ng.fillStyle = "#fff";\ng.fillRect(0, 0, 120, 120);\nwindow.__status = shared.length;\n');
+    'import { shared } from "./shared.js";\nconst g = document.getElementById("status-view").getContext("2d");\ng.fillStyle = "#000";\ng.fillRect(0, 0, 200, 200);\ng.fillStyle = "#fff";\ng.fillRect(0, 0, 120, 120);\nwindow.__status = shared.length;\n');
 
   outDir = join(root, 'out');
   const a = VIEWPOINTS.anchor;
