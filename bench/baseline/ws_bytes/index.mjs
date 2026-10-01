@@ -9,7 +9,7 @@
 //   (relay 재생은 재생 1회에 구간당 메시지 1개라 다른 구간 프레임이 사이에 끼면 다른 회차).
 //   이 때문에 구간 하나뿐인 relay 를 여러 번 재생한 녹화([r40, r40])는 한 회차의 분할 프레임과 녹화만으로 구분할 수 없다.
 //   원본 없는 수준에서 이렇게 이어 붙인 회차가 있으면 run 이 method 에 그 모호성을 적는다.
-//   resend 프레임은 같은 구간 원본의 분할 연속을 끊는다(뒤에 온 같은 수준 원본은 stale).
+//   resend 프레임은 같은 구간 원본의 분할 연속을 끊는다(뒤에 온 같은 수준 원본과 그 뒤 조각·final 은 stale 사본).
 //   원본의 stale 판정은 재전송으로 받은 수준까지 포함한 최고 수준 기준이다(더 높은 수준 resend 뒤의 낮은 수준 원본은 stale).
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -64,8 +64,16 @@ const asc = (a, b) => a - b;
  *   낮은 수준이거나, 원본으로 받은 최고 수준과 같은데 분할 연속이 끊긴 프레임 수.
  *   그래서 같은 수준 resend 뒤에 온 원본은 stale 이 아니지만 더 높은 수준 resend 뒤에 온 낮은 수준 원본은 stale 이다.
  *   같은 수준이 다른 수준 프레임 없이 연속으로 오면 분할 프레임이라 세지 않는다.
- *   stale 원본의 final 은 그 수준이 도착 시점의 rhi 보다 낮을 때(추월당한 수준)만 완결 판정에 쓰지 않는다.
- *   같은 최고 수준의 분할 연속이 끊겨 stale 인 원본의 final 은 쓴다(바이트는 여전히 stale 로 센다).
+ *   끊긴 연속은 사본 규칙(F-053): 같은 최고 수준의 분할 연속이 resend 나 다른 수준 프레임(stale 포함)으로 끊긴 뒤 온
+ *   그 수준 원본은 늦게 온 사본이다. 그 프레임과 뒤따르는 같은 수준 조각은 전부 stale 이고(stale 프레임은 연속을
+ *   다시 시작하지 않는다), 그 final 도 완결 근거에서 뺀다. stale 원본의 final 은 추월당한 수준이든 끊긴 연속이든
+ *   쓰지 않으므로, 완결 판정과 segments 합은 언제나 같은 프레임 집합(stale 아닌 원본)을 근거로 한다.
+ *   근거: 분할 전송은 같은 수준 연속 프레임이고(끊긴 뒤의 조각은 그 메시지의 일부가 될 수 없다), 딜레이 패턴은 수준을
+ *   교체하므로 원본이 (구간,수준)에 두 번째 메시지를 보낼 일이 없어 끊긴 뒤 같은 수준은 새 메시지가 아니라 사본이다.
+ *   새 메시지로 보면 [L2 5, rL2 5, L2 5 final] 이 한 수준을 두 번 더한 10 이 된다. 또 도착하지 않은 것을 메우지 않는다:
+ *   원본 연속이 final 없이 끝났으면 사본의 final 로 그 원본이 끝났다고 채우지 않는다.
+ *   대가로 완결이 순서에 의존한다: [L2 5, rL2 5, L2 5 final] 은 미완, [L2 5 final, rL2 5, L2 5] 는 완결 [5]
+ *   (추월당한 수준의 final 이 [L1 5, L0 3 final] 미완·[L0 3 final, L1 5] 완결인 것과 같은 종류의 의존).
  * - 같은 (구간,수준)의 resend 프레임은 원본이 녹화에 있으면 합에 넣지 않고 resend_bytes 로 센다.
  *   원본이 없으면 추월되지 않은 첫 회차(녹화 전체에서 바로 이어진 같은 (구간,수준) 재전송 프레임들)만 유일한 사본으로
  *   합에 넣고 나머지 회차는 resend_bytes.
@@ -83,8 +91,8 @@ const asc = (a, b) => a - b;
  * - top_level_assumed: 원본 final 필드 없이 topLevel 기본값을 썼는지(run 이 method 에 경고로 남김).
  * - final_resend_only: final 필드가 resend 프레임에만 있는지(run 이 경고 문구를 'final 필드 없음' 과 구분).
  * - top_level_ignored: final 필드가 있어 주어진 topLevel 을 완결 판정에 쓰지 않았는지(run 이 method 에 남김).
- * - 완결 판정: 원본(resend 아닌) 프레임에 final 필드가 하나라도 있으면 구간에 추월당하지 않은(도착 시점 rhi 이상 수준)
- *   final:true 원본 프레임이 있을 때. 같은 최고 수준의 끊긴 연속이라 stale 인 final 원본도 완결시킨다.
+ * - 완결 판정: 원본(resend 아닌) 프레임에 final 필드가 하나라도 있으면 구간에 stale 아닌 final:true 원본 프레임이
+ *   있을 때(추월당한 수준·끊긴 같은 최고 수준 연속의 final 은 쓰지 않는다, 위 사본 규칙).
  *   final 필드가 resend 프레임에만 있으면 원본 구간은 topLevel 로 판정한다(resend 프레임의 final 은 보지 않는다).
  *   그 밖에는 받은 수준(위 규칙으로 합에 들어간 수준)이 topLevel 이상일 때. resend 전용 구간은 녹화에 final 필드가
  *   하나도 없을 때만 재전송 사본으로 완결될 수 있다(resend_only_segments 로 표시, run 이 method 에 남김).
@@ -149,11 +157,13 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
     } else {
       // 추월 기준은 재전송으로 받은 수준까지 포함한 rhi, 같은 수준 분할 연속은 원본 최고 수준(hi)과 last 로 본다.
       const isStale = f.level < s.rhi || (f.level === s.hi && s.last !== f.level);
-      // final 은 추월당한 낮은 수준(rhi 미만)만 무시한다. 같은 최고 수준의 끊긴 연속은 stale 이어도 완결시킨다.
-      if (f.final === true && f.level >= s.rhi) s.final = true;
+      // 사본 규칙: final 은 바이트와 같은 프레임 집합으로 본다. stale 프레임(추월당한 수준이든 끊긴 같은 최고 수준이든)의
+      // final 은 완결 근거가 아니다.
+      if (f.final === true && !isStale) s.final = true;
       s.hi = Math.max(s.hi, f.level);
       s.rhi = Math.max(s.rhi, f.level);
-      s.last = f.level;
+      // stale 프레임은 분할 연속을 잇지도 새로 시작하지도 않는다. 끊긴 뒤의 같은 수준 조각은 모두 stale 로 남는다.
+      s.last = isStale ? -1 : f.level;
       if (isStale) {
         // 추월된 수준의 뒤늦은 프레임: total·windows·stale_bytes 에만 센다.
         stale += 1;
