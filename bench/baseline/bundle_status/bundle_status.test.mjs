@@ -332,3 +332,20 @@ test('실제 dist: 못 푼 동적/mapDeps 참조가 0 으로 method 에 기록�
   const r = await run({ skylensDir: process.env.SKYLENS_DIR, outDir: null, commit: COMMIT, inputs: { distDir: REAL_DIST } });
   assert.match(r[0].method, /unresolved dynamic\/mapDeps refs: 0(?:;|$)/);
 });
+
+test('dist: sources 경로에 ] 가 있어도 sourcemap 으로 3D 판정된다', async () => {
+  const dist = await mockDist();
+  const out = await mkdtemp(join(tmpdir(), 'skylens-out-'));
+  try {
+    await put(dist, 'assets/status-A.js', FILES['status-A.js'] + 'import"./bracket-5.js";\n');
+    await put(dist, 'assets/bracket-5.js', 'const a=1;\n');
+    await put(dist, 'assets/bracket-5.js.map', JSON.stringify({ version: 3, sources: ['webpack:///./pages/[id].js', 'node_modules/three/build/three.module.js'] }));
+    await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const m = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8')).manifest;
+    const e = m.find((x) => x.file === 'assets/bracket-5.js');
+    assert.deepEqual([e.is_3d, e.basis], [true, 'sourcemap']);
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  }
+});
