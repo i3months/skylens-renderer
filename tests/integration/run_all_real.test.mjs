@@ -60,8 +60,11 @@ before(async () => {
     }
   }
 
-  // 점군(ref_images): 앵커 좌표계 장면에 걸치는 합성 점군
-  await writeFile(join(root, 'points.ply'), encodeSplatPly(syntheticScene()));
+  // 점군(ref_images): 원좌표 틀 합성 장면. 같은 파일을 틀 PLY(viewpoints.json sceneFrame.framePly) 자리에도 둔다.
+  const scene = encodeSplatPly(syntheticScene());
+  await writeFile(join(root, 'points.ply'), scene);
+  await mkdir(dirname(join(skylensDir, VIEWPOINTS.sceneFrame.framePly)), { recursive: true });
+  await writeFile(join(skylensDir, VIEWPOINTS.sceneFrame.framePly), scene);
 
   // ws 녹화: 첫 프레임 + 구간 2개 x 4수준
   const ws = [{ t_ms: 0, dir: 'tx', bytes: 100, kind: 'hello' }, { t_ms: 100, dir: 'rx', bytes: 300, kind: 'first_frame' }];
@@ -159,6 +162,8 @@ test('합성 입력의 알려진 값이 레코드에 반영된다', () => {
   assert.ok(val('bundle_tower.gzip_bytes') > 0);
   // ref_images: 시점마다 찍힌 픽셀 지표
   for (const vp of VIEWPOINTS.viewpoints) assert.ok(val(`ref_images.drawn_pixels.v${vp.id}`) > 0, `v${vp.id}`);
+  for (const vp of VIEWPOINTS.viewpoints) assert.ok(val(`ref_images.coverage.v${vp.id}`) >= 0.05, `v${vp.id} 점유율`);
+  assert.equal(val('ref_images.nonfinite_excluded'), 0);
 });
 
 test('선택 입력 entryPath 키 이름이 바뀌면 브라우저 모듈이 이를 알아채지 못해 이 테스트가 깨진다', { skip: browserReason || false }, async () => {

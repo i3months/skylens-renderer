@@ -24,8 +24,12 @@ test('viewpoints_anchor_exists_and_in_range', () => {
 });
 
 test('viewpoints_coord_string_is_scene', () => {
-  assert.equal(doc.coord, 'scene (x=east, y=up, z=-north), 1 unit = 1 m; PLY 원좌표에 sceneFrame(앱이 스플랫을 그리는 틀)을 적용한 뒤의 좌표');
-  assert.match(doc.coord, /^scene \(x=east, y=up, z=-north\)/, 'coord 는 scene 으로 시작');
+  assert.equal(doc.coord, 'scene (sceneFrame 정규화 틀: y=up, 원점=틀 PLY 5~95 % 분위 상자의 XZ 중심·바닥 y=0, 1 unit = PLY 원좌표 1/s unit; GeoAnchor ENU 아님)');
+  assert.match(doc.coord, /^scene \(sceneFrame/, 'coord 는 scene 으로 시작하고 sceneFrame 틀을 가리킨다');
+  // 원점은 GeoAnchor 의 ENU 원점이 아니고, 1 unit 은 축척 s 적용 뒤라 1 m 가 아니다.
+  assert.doesNotMatch(doc.coord, /1 unit = 1 m/);
+  assert.doesNotMatch(doc.note, /원점의 GeoAnchor|1 unit = 1 m/);
+  assert.match(doc.note, /GeoAnchor 의 ENU 원점이 아니며/);
   assert.ok(!/^ENU/.test(doc.coord), 'coord 가 ENU 로 시작하면 안 됨');
   assert.ok(!/^scene\b/.test('ENU, x=east y=up z=-north'), '음성: ENU 표기는 scene 접두 검사에 걸리지 않는다');
   assert.match(doc.note, /diag\(1,-1,-1\)/, 'note 에 OpenCV<->GL diag(1,-1,-1) 명시');
@@ -56,11 +60,16 @@ test('viewpoints_negative_parallel_up_detected', () => {
 
 test('viewpoints_scene_frame_declared', () => {
   const f = doc.sceneFrame;
-  assert.equal(f.rotate, 'x180');
+  // 자체 촬영(demoPreview)은 회전 없음, 틀은 demoPreview 한 파일에서 앱과 같은 stride 표본으로 구한다.
+  assert.equal(f.rotate, 'none');
   assert.equal(f.targetExtent, 44);
-  assert.ok(f.percentileLo >= 0 && f.percentileLo < f.percentileHi && f.percentileHi <= 1);
-  assert.ok(f.clipMargin >= 0);
-  assert.match(f.source, /sceneSource\.ts/);
+  assert.equal(f.percentileLo, 0.05);
+  assert.equal(f.percentileHi, 0.95);
+  assert.equal(f.clipMargin, 0.15);
+  assert.equal(f.sampleTarget, 60000);
+  assert.equal(f.framePly, 'res/static/demo/step00250_light.ply');
+  assert.match(f.source, /develop .*sceneSource\.ts/);
+  assert.doesNotMatch(f.source, /skylens_client\/data/, 'main 브랜치 경로를 근거로 쓰지 않는다');
   assert.match(doc.coord, /sceneFrame/, 'coord 가 점군 틀을 가리켜야 함');
 });
 
@@ -73,6 +82,9 @@ test('viewpoints_size_and_fov_valid', () => {
 });
 
 test('viewpoints_eyes_within_scene_frame_scale', () => {
-  // 시점은 앱 틀(최대 변 44 m, 원점 중심)에 맞춘다: 눈은 원점에서 150 m 안.
-  for (const v of doc.viewpoints) assert.ok(Math.hypot(...v.eye) <= 150, `시점 ${v.id} 가 틀에서 너무 멀다`);
+  // 시점은 앱 틀(최대 변 44, 원점 중심)에 맞춘다: 눈은 원점에서 60 unit 안, 시선 목표는 틀 상자(±22, 높이 0..44) 안.
+  for (const v of doc.viewpoints) {
+    assert.ok(Math.hypot(...v.eye) <= 60, `시점 ${v.id} 가 틀에서 너무 멀다`);
+    assert.ok(Math.abs(v.target[0]) <= 22 && Math.abs(v.target[2]) <= 22 && v.target[1] >= 0 && v.target[1] <= 44, `시점 ${v.id} target`);
+  }
 });

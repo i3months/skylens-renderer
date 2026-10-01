@@ -3,14 +3,18 @@
 // 입력은 원본 점군 PLY(inputs.pointsPath)가 필수다. 없으면 throw 하며 합성 점군으로 대체하지 않는다.
 //
 // 좌표 규약:
-//   - 씬 좌표: x=동, y=위, z=-북, 1 unit = 1 m (로컬 ENU 에서 변환한 값. ENU 자체가 아니다).
-//     원점의 GeoAnchor {lat,lon,alt} 는 viewpoints.json 의 anchor 이고 inputs.anchor 와 같아야 한다.
-//     anchor 는 운영자 선언값이다. 두 선언(viewpoints.json, inputs.anchor)끼리만 대조하며 점군 파일은 대조하지 않는다.
-//     PLY 헤더·스플랫 레코드에는 앵커가 없고, 앱의 청크 메시지(SplatAlign.anchor)는 선택 항목이며 PLY 와 따로 온다.
-//     그래서 "점군과 앵커가 맞는지"는 이 모듈이 알 수 없다.
-//   - 점군 틀: PLY 원좌표는 씬 좌표가 아니다. viewpoints.json 의 sceneFrame 이 앱이 스플랫을 그리는 변환을 적는다.
-//     x 축 180° 회전 (x,y,z)→(x,−y,−z), 5~95 % 분위 상자의 최대 변 = targetExtent 가 되게 균등 축척,
-//     XZ 중심을 원점, 5 % 분위 바닥을 y=0 으로 이동, 상자+여유(15 %) 밖 점은 버린다. 시점은 이 변환 후 좌표로 잡혀 있다.
+//   - 씬 좌표: x, y=위, z 의 오른손 좌표. 앱(skylens develop sceneSource.ts deriveFromSplat)이 스플랫을 그리는
+//     정규화 틀이다: world = s·(R·raw) + P. 원점은 틀 PLY 의 5~95 % 분위 상자의 XZ 중심과 그 상자의 바닥(y=0)이며,
+//     GeoAnchor 의 ENU 원점이 아니다. 축 방향도 동/북에 맞췄다는 보장이 없다(PLY 원좌표 축을 회전 R 만 해서 쓴다).
+//   - 단위: PLY 원좌표 1 unit 이 축척 s 적용 전의 단위다. 씬 좌표 1 unit 은 원좌표 1/s unit 이며 1 m 가 아니다
+//     (segments.json metersPerUnit 는 원좌표 기준 값이라 씬 좌표에 그대로 쓰면 안 된다).
+//   - anchor 는 운영자 선언값이다. 두 선언(viewpoints.json, inputs.anchor)끼리만 대조하며 점군 파일은 대조하지 않는다.
+//     PLY 헤더·스플랫 레코드에는 앵커가 없고 이 모듈은 앵커로 좌표를 옮기지 않는다.
+//   - 점군 틀(sceneFrame): 앱과 같이 틀 PLY(framePly, 기본 res/static/demo/step00250_light.ply = CONFIG.splat.demoPreview)
+//     한 파일에서 s·P·clip 을 한 번 구하고, 그려야 할 점군(구간 PLY 등)에는 같은 변환을 적용만 한다.
+//     틀 계산: 표본 stride = max(1, floor(total/sampleTarget)), 회전 R(none | x180), 표본의 lo~hi 분위 상자,
+//     s = targetExtent / 최대 변, P = (−s·cx, −s·lo_y, −s·cz), 상자 ± clipMargin·최대 변(회전 후, 축척 전) 밖 점은 버린다.
+//     자체 촬영(demoPreview 와 그 구간 PLY)은 rotate=none, 인터넷 샘플만 x180 이다(sceneSource.ts:342-356).
 //   - 이 파일의 카메라는 OpenGL 식(GL)이다: 카메라는 자기 -z 를 보고 +y 가 위이며, 눈 앞 점은 X_c.z < 0, 깊이 d = −X_c.z.
 //     renderer_basis §2 의 OpenCV 식은 +z 가 시선, +y 가 아래, d = X_c.z 이다.
 //     두 규약은 X_cv = diag(1,−1,−1)·X_gl 로 변환된다 (y, z 부호 반전). 식 이름이 같아도 부호가 다르니 섞지 말 것.
@@ -24,9 +28,11 @@
 //   - 점 크기 1 픽셀, z-버퍼로 가장 가까운(d 최소) 점 하나만 남긴다. 같은 깊이면 먼저 온 점이 이긴다(엄격한 <).
 //
 // 입력 점 형식: binary_little_endian PLY. 헤더는 contracts/ply 의 parsePlyHeader 로 읽는다.
-//   - 56 B 3DGS 스플랫(x y z f_dc_0..2 opacity scale_0..2 rot_0..3, float32×14): 중심 x y z 와
+//   - 3DGS 스플랫(x y z f_dc_0..2 ... float32): 중심 x y z 와
 //     f_dc 색(rgb = clamp(0.5 + 0.28209479·f_dc, 0, 1)·255)만 쓴다. opacity·scale·rot 는 쓰지 않는다.
 //   - x y z float32 + red green blue uchar 인 일반 점군도 읽는다.
+//   - 비유한(NaN·±Inf) 좌표나 f_dc 를 가진 레코드는 그리는 점군에서 제외하고 그 수를 method 와
+//     ref_images.nonfinite_excluded 지표로 보고한다. 틀 PLY 에 비유한 값이 있으면 앱과 같은 표본을 만들 수 없으므로 throw.
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
@@ -37,6 +43,7 @@ import { requireInput } from '../../../contracts/inputs/index.mjs';
 export const SH_C0 = 0.28209479177387814;
 export const BACKGROUND = [0, 0, 0]; // 배경 고정색 (검정)
 export const MIN_COVERAGE = 0.05; // 시점별 최소 점유율(찍힌 픽셀/전체). 고정값이며 입력으로 바꿀 수 없다.
+export const ROTATIONS = { none: [1, 0, 0, 0, 1, 0, 0, 0, 1], x180: [1, 0, 0, 0, -1, 0, 0, 0, -1] }; // 행 우선 3x3
 
 const here = dirname(fileURLToPath(import.meta.url));
 const VIEWPOINTS_PATH = join(here, '../../../fixtures/viewpoints/viewpoints.json');
@@ -127,7 +134,7 @@ export function rasterize({ positions, colors, count }, view) {
     if (!s) continue;
     const px = Math.floor(s.u);
     const py = Math.floor(s.v);
-    if (px < 0 || px >= W || py < 0 || py >= H) continue;
+    if (!(px >= 0 && px < W && py >= 0 && py < H)) continue;
     const idx = py * W + px;
     if (s.depth < zbuf[idx]) {
       if (zbuf[idx] === Infinity) drawn++;
@@ -140,56 +147,84 @@ export function rasterize({ positions, colors, count }, view) {
   return { rgb, drawn, width: W, height: H };
 }
 
+/** 오름차순 배열의 분위. sceneSource.ts pct 와 같은 반올림 색인. */
 const pct = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))))];
 
 /** sceneFrame 형식 검사. */
 export function assertSceneFrame(f, name = 'viewpoints.json') {
   const bad = (m) => { throw new Error(`${name}: sceneFrame ${m}`); };
   if (!f || typeof f !== 'object') bad('가 없다 (점군 틀을 명시해야 한다)');
-  if (f.rotate !== 'x180') bad(`.rotate 는 "x180" 이어야 한다 (현재 ${JSON.stringify(f.rotate)})`);
+  if (!Object.hasOwn(ROTATIONS, f.rotate)) bad(`.rotate 는 "none" 또는 "x180" 이어야 한다 (현재 ${JSON.stringify(f.rotate)})`);
   if (!(Number.isFinite(f.targetExtent) && f.targetExtent > 0)) bad('.targetExtent 는 양수여야 한다');
   if (!(Number.isFinite(f.percentileLo) && Number.isFinite(f.percentileHi) && f.percentileLo >= 0 && f.percentileLo < f.percentileHi && f.percentileHi <= 1)) bad('.percentileLo/.percentileHi 는 0 ≤ lo < hi ≤ 1 이어야 한다');
   if (!(Number.isFinite(f.clipMargin) && f.clipMargin >= 0)) bad('.clipMargin 은 0 이상이어야 한다');
+  if (!(Number.isInteger(f.sampleTarget) && f.sampleTarget > 0)) bad('.sampleTarget 은 양의 정수여야 한다');
+  if (typeof f.framePly !== 'string' || !f.framePly.endsWith('.ply') || f.framePly.startsWith('/')) bad('.framePly 는 skylens 트리 기준 상대 .ply 경로여야 한다');
+}
+
+const rot = (R, x, y, z) => [R[0] * x + R[1] * y + R[2] * z, R[3] * x + R[4] * y + R[5] * z, R[6] * x + R[7] * y + R[8] * z];
+
+/**
+ * 틀 PLY 에서 앱과 같은 방법으로 틀 변환을 구한다(sceneSource.ts:335-391).
+ * 돌려주는 값: {rotate, R, s, P:[3], rMin, rMax, clipMin, clipMax, sampleStride, sampleCount, total}.
+ * 비유한 좌표가 있으면 throw (앱 표본과 같아질 수 없다).
+ */
+export function computeSceneFrame({ positions, count, nonFinite = 0 }, frame, name = 'sceneFrame') {
+  assertSceneFrame(frame, name);
+  if (nonFinite > 0) throw new Error(`${name}: 틀 PLY 에 비유한 레코드 ${nonFinite}개가 있다 (앱과 같은 표본을 만들 수 없다)`);
+  if (!(count > 0)) throw new Error(`${name}: 점이 없다`);
+  for (let i = 0; i < count * 3; i++) if (!Number.isFinite(positions[i])) throw new Error(`${name}: 틀 PLY 에 비유한 좌표가 있다 (점 ${Math.floor(i / 3)})`);
+  const R = ROTATIONS[frame.rotate];
+  const sampleStride = Math.max(1, Math.floor(count / frame.sampleTarget));
+  const xs = [];
+  const ys = [];
+  const zs = [];
+  for (let i = 0; i < count; i += sampleStride) {
+    const v = rot(R, positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+    xs.push(v[0]);
+    ys.push(v[1]);
+    zs.push(v[2]);
+  }
+  for (const a of [xs, ys, zs]) a.sort((p, q) => p - q);
+  const rMin = [pct(xs, frame.percentileLo), pct(ys, frame.percentileLo), pct(zs, frame.percentileLo)];
+  const rMax = [pct(xs, frame.percentileHi), pct(ys, frame.percentileHi), pct(zs, frame.percentileHi)];
+  const maxDim = Math.max(rMax[0] - rMin[0], rMax[1] - rMin[1], rMax[2] - rMin[2]);
+  if (!(maxDim > 0)) throw new Error(`${name}: 분위 상자의 크기가 0 이다`);
+  const s = frame.targetExtent / maxDim;
+  const P = [-s * ((rMin[0] + rMax[0]) * 0.5), -s * rMin[1], -s * ((rMin[2] + rMax[2]) * 0.5)];
+  const margin = maxDim * frame.clipMargin;
+  return {
+    rotate: frame.rotate, R, s, P, rMin, rMax,
+    clipMin: rMin.map((v) => v - margin), clipMax: rMax.map((v) => v + margin),
+    sampleStride, sampleCount: xs.length, total: count,
+  };
 }
 
 /**
- * 앱이 스플랫을 그리는 틀을 PLY 원좌표에 적용한다. 새 {positions, colors, count} 를 돌려주고 입력은 바꾸지 않는다.
- * 회전 → 5~95 % 분위 상자 → s = targetExtent / 최대 변 → XZ 중심 원점, 하단(lo 분위 y) y=0 → 상자+margin 밖 제거.
+ * 구한 틀 변환을 점군에 적용만 한다: 회전 → clip 상자 밖(또는 비유한) 제거 → world = s·v + P.
+ * 새 {positions, colors, count, clipped} 를 돌려주고 입력은 바꾸지 않는다.
  */
-export function applySceneFrame({ positions, colors, count }, frame, name = 'sceneFrame') {
-  assertSceneFrame(frame, name);
-  if (!(count > 0)) throw new Error(`${name}: 점이 없다`);
-  const xs = new Float64Array(count);
-  const ys = new Float64Array(count);
-  const zs = new Float64Array(count);
-  for (let i = 0; i < count; i++) {
-    xs[i] = positions[i * 3];
-    ys[i] = -positions[i * 3 + 1];
-    zs[i] = -positions[i * 3 + 2];
-  }
-  const rx = Float64Array.from(xs).sort();
-  const ry = Float64Array.from(ys).sort();
-  const rz = Float64Array.from(zs).sort();
-  const lo = [pct(rx, frame.percentileLo), pct(ry, frame.percentileLo), pct(rz, frame.percentileLo)];
-  const hi = [pct(rx, frame.percentileHi), pct(ry, frame.percentileHi), pct(rz, frame.percentileHi)];
-  const maxDim = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
-  if (!(maxDim > 0)) throw new Error(`${name}: 분위 상자의 크기가 0 이다`);
-  const s = frame.targetExtent / maxDim;
-  const margin = maxDim * frame.clipMargin;
-  const shift = [-s * ((lo[0] + hi[0]) / 2), -s * lo[1], -s * ((lo[2] + hi[2]) / 2)];
+export function applyFrameTransform({ positions, colors, count }, fr) {
   const outP = new Float32Array(count * 3);
   const outC = new Uint8Array(count * 3);
   let j = 0;
   for (let i = 0; i < count; i++) {
-    const v = [xs[i], ys[i], zs[i]];
-    if (v.some((q, k) => q < lo[k] - margin || q > hi[k] + margin)) continue;
+    const v = rot(fr.R, positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+    let inside = true;
+    for (let k = 0; k < 3; k++) if (!(v[k] >= fr.clipMin[k] && v[k] <= fr.clipMax[k])) inside = false;
+    if (!inside) continue;
     for (let k = 0; k < 3; k++) {
-      outP[j * 3 + k] = s * v[k] + shift[k];
+      outP[j * 3 + k] = fr.s * v[k] + fr.P[k];
       outC[j * 3 + k] = colors[i * 3 + k];
     }
     j++;
   }
-  return { positions: outP.slice(0, j * 3), colors: outC.slice(0, j * 3), count: j };
+  return { positions: outP.slice(0, j * 3), colors: outC.slice(0, j * 3), count: j, clipped: count - j };
+}
+
+/** 같은 점군에서 틀을 구하고 바로 적용한다(틀 PLY 와 그릴 점군이 같은 경우). */
+export function applySceneFrame(points, frame, name = 'sceneFrame') {
+  return applyFrameTransform(points, computeSceneFrame(points, frame, name));
 }
 
 /** 점유율 = drawn/(W·H) 이 MIN_COVERAGE 보다 낮으면 throw. 경계값(정확히 5 %)은 통과한다. */
@@ -202,7 +237,8 @@ export function assertCoverage(vp, drawn) {
 const TYPE_READ = { float: 'readFloatLE', float32: 'readFloatLE', double: 'readDoubleLE', float64: 'readDoubleLE' };
 
 /**
- * binary_little_endian PLY 를 읽어 {positions, colors, count, layout} 로 돌려준다.
+ * binary_little_endian PLY 를 읽어 {positions, colors, count, layout, stride, nonFinite, rawCount} 로 돌려준다.
+ * 좌표·f_dc 중 하나라도 비유한인 레코드는 제외하고 nonFinite 에 센다(색을 조용히 바꾸지 않는다).
  * name 은 오류 메시지용 파일 이름. 헤더가 모자라거나 크기가 어긋나면 파일 이름을 넣어 throw 한다.
  */
 export function decodePly(buf, name = '<buffer>') {
@@ -234,24 +270,35 @@ export function decodePly(buf, name = '<buffer>') {
   } else {
     throw new Error(`${name}: 색 속성(f_dc_0..2 또는 uchar red green blue)이 없다`);
   }
-  const count = h.vertexCount;
-  const positions = new Float32Array(count * 3);
-  const colors = new Uint8Array(count * 3);
+  const rawCount = h.vertexCount;
+  const positions = new Float32Array(rawCount * 3);
+  const colors = new Uint8Array(rawCount * 3);
   const clamp8 = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255);
-  for (let i = 0; i < count; i++) {
+  let j = 0;
+  let nonFinite = 0;
+  for (let i = 0; i < rawCount; i++) {
     const rec = h.headerBytes + i * h.stride;
-    positions[i * 3] = f(rec, 'x');
-    positions[i * 3 + 1] = f(rec, 'y');
-    positions[i * 3 + 2] = f(rec, 'z');
-    if (layout === 'splat-f_dc') {
-      for (let c = 0; c < 3; c++) colors[i * 3 + c] = clamp8(0.5 + SH_C0 * f(rec, `f_dc_${c}`));
-    } else {
-      colors[i * 3] = buf[rec + off.red.at];
-      colors[i * 3 + 1] = buf[rec + off.green.at];
-      colors[i * 3 + 2] = buf[rec + off.blue.at];
+    const p = [f(rec, 'x'), f(rec, 'y'), f(rec, 'z')];
+    const dc = layout === 'splat-f_dc' ? [f(rec, 'f_dc_0'), f(rec, 'f_dc_1'), f(rec, 'f_dc_2')] : null;
+    if (!p.every(Number.isFinite) || (dc && !dc.every(Number.isFinite))) {
+      nonFinite++;
+      continue;
     }
+    positions.set(p, j * 3);
+    if (dc) {
+      for (let c = 0; c < 3; c++) colors[j * 3 + c] = clamp8(0.5 + SH_C0 * dc[c]);
+    } else {
+      colors[j * 3] = buf[rec + off.red.at];
+      colors[j * 3 + 1] = buf[rec + off.green.at];
+      colors[j * 3 + 2] = buf[rec + off.blue.at];
+    }
+    j++;
   }
-  return { positions, colors, count, layout, stride: h.stride };
+  return {
+    positions: nonFinite ? positions.slice(0, j * 3) : positions,
+    colors: nonFinite ? colors.slice(0, j * 3) : colors,
+    count: j, rawCount, nonFinite, layout, stride: h.stride,
+  };
 }
 
 export function encodePPM(rgb, width, height) {
@@ -266,7 +313,7 @@ const sameNum = (a, b) => typeof a === 'number' && typeof b === 'number' && a ==
  * 검증을 통과하면 {viewpoints, sceneFrame} 을 돌려준다.
  */
 export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
-  if (typeof json.coord !== 'string' || !/^scene\b/.test(json.coord)) throw new Error(`${name}: coord 는 "scene (x=east, y=up, z=-north) ..." 로 시작해야 한다 (현재 ${JSON.stringify(json.coord)})`);
+  if (typeof json.coord !== 'string' || !/^scene\b/.test(json.coord)) throw new Error(`${name}: coord 는 "scene ..." 로 시작해야 한다 (현재 ${JSON.stringify(json.coord)})`);
   const a = json.anchor;
   if (!a || !['lat', 'lon', 'alt'].every((k) => Number.isFinite(a[k]))) throw new Error(`${name}: anchor {lat,lon,alt} 가 없거나 숫자가 아니다`);
   for (const k of ['lat', 'lon', 'alt']) {
@@ -284,26 +331,32 @@ export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
   return { viewpoints: json.viewpoints, sceneFrame: json.sceneFrame };
 }
 
+const fmt = (v) => Number(v.toPrecision(10));
+
 /**
  * 시점마다 PPM(P6)을 outDir 에 쓴다. 파일 이름 viewpoint_<id>_<name>.ppm.
  * inputs.pointsPath(PLY)와 inputs.anchor 가 필수다. 없으면 throw (합성 대체 없음).
+ * 틀은 <skylensDir>/<sceneFrame.framePly> 에서 구한다. 없으면 throw.
  * 어느 시점이든 drawn == 0, 점유율 < MIN_COVERAGE, 카메라 퇴화, fov·해상도 부적합이면 throw 한다(파일은 쓰기 전에 모두 검사).
  * viewpointsPath 는 테스트용 덮어쓰기이고 기본은 fixtures/viewpoints/viewpoints.json.
  */
 export async function run({ skylensDir, outDir, commit, inputs, viewpointsPath = VIEWPOINTS_PATH }) {
-  void skylensDir;
   const pointsPath = requireInput(inputs, 'pointsPath');
   const anchor = requireInput(inputs, 'anchor');
   const { viewpoints: vps, sceneFrame } = loadViewpoints(JSON.parse(await readFile(viewpointsPath, 'utf8')), anchor, viewpointsPath);
-  const bytes = await readFile(pointsPath);
-  const raw = decodePly(bytes, pointsPath);
-  const framed = applySceneFrame(raw, sceneFrame, viewpointsPath);
-  const pts = { ...framed, layout: raw.layout, stride: raw.stride, rawCount: raw.count };
+  if (typeof skylensDir !== 'string' || skylensDir === '') throw new Error('ref_images: skylensDir 가 없다 (틀 PLY 를 찾을 수 없다)');
+  const framePath = join(skylensDir, sceneFrame.framePly);
+  const fr = computeSceneFrame(decodePly(await readFile(framePath), framePath), sceneFrame, framePath);
+  const raw = decodePly(await readFile(pointsPath), pointsPath);
+  const pts = applyFrameTransform(raw, fr);
   const device = 'cpu-node-point-raster';
-  const frameNote = `앱 틀 적용(x180 회전, ${sceneFrame.percentileLo}~${sceneFrame.percentileHi} 분위 상자 최대 변=${sceneFrame.targetExtent} m, XZ 중심·바닥 y=0, 여유 ${sceneFrame.clipMargin} 밖 제거; ${framed.count}/${raw.count}점 사용)`;
-  const method = pts.layout === 'splat-f_dc'
-    ? `ref_images: PLY ${pts.stride}B 스플랫 ${raw.count}점, 중심 x y z·f_dc 색(0.5+0.28209479·f_dc) 사용(opacity·scale·rot 무시), 순수 점 투영 z-버퍼, ${frameNote}`
-    : `ref_images: PLY ${pts.stride}B 점 ${raw.count}개, x y z·uchar rgb, 순수 점 투영 z-버퍼, ${frameNote}`;
+  const frameNote = `앱 틀 적용(틀 PLY ${sceneFrame.framePly} ${fr.total}점·표본 stride ${fr.sampleStride}, rotate ${fr.rotate}, `
+    + `${sceneFrame.percentileLo}~${sceneFrame.percentileHi} 분위 상자 최대 변=${sceneFrame.targetExtent}, `
+    + `s=${fmt(fr.s)} P=[${fr.P.map(fmt).join(',')}], 여유 ${sceneFrame.clipMargin} 밖 ${pts.clipped}점 제거, `
+    + `비유한 ${raw.nonFinite}점 제외; ${pts.count}/${raw.rawCount}점 사용)`;
+  const method = raw.layout === 'splat-f_dc'
+    ? `ref_images: PLY ${raw.stride}B 스플랫 ${raw.rawCount}점, 중심 x y z·f_dc 색(0.5+0.28209479·f_dc) 사용(opacity·scale·rot 무시), 순수 점 투영 z-버퍼, ${frameNote}`
+    : `ref_images: PLY ${raw.stride}B 점 ${raw.rawCount}개, x y z·uchar rgb, 순수 점 투영 z-버퍼, ${frameNote}`;
   const records = [];
   const rasters = [];
   for (const vp of vps) {
@@ -313,6 +366,7 @@ export async function run({ skylensDir, outDir, commit, inputs, viewpointsPath =
     rasters.push([vp, r]);
   }
   await mkdir(outDir, { recursive: true });
+  records.push({ metric: 'ref_images.nonfinite_excluded', value: raw.nonFinite, unit: 'count', device, method, commit });
   for (const [vp, r] of rasters) {
     await writeFile(join(outDir, `viewpoint_${vp.id}_${vp.name}.ppm`), encodePPM(r.rgb, r.width, r.height));
     records.push({ metric: `ref_images.drawn_pixels.v${vp.id}`, value: r.drawn, unit: 'count', device, method, commit });
