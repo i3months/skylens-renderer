@@ -153,6 +153,7 @@ export const DIFF_TOLERANCE = 8;
  * 측정 대상의 GPU 부하를 늘리지 않도록 preserveDrawingBuffer 를 켜지 않고 매 프레임 readback 도 하지 않는다.
  * WebGL 캔버스는 draw·clear 호출이 있었고 직전 판독 프레임과 draw 서명(호출 수·정점 수)이 달라졌거나 100 ms 가 지난 프레임에서만,
  * 그 draw 와 같은 태스크의 마이크로태스크에서 1회 읽는다(그리기 버퍼가 유효한 시점). 2D 캔버스는 CPU 쪽이라 rAF 마다 읽는다.
+ * 폴링 비용: 첫 프레임 감지 전에 매 rAF·마이크로태스크마다 선택자 일치 검사와 이미지 판독을 하므로, 감지 후 래퍼를 원본 함수로 복원해 오버헤드를 제거한다.
  */
 export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
   if (typeof selector !== 'string' || !selector.trim()) throw new Error('canvasSelector 는 비어 있지 않은 CSS 선택자 문자열이어야 함');
@@ -187,6 +188,16 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
   const found = (hit) => {
     window.__ffMs = performance.now();
     window.__ffCanvas = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/).join('.') : '');
+    // 감지 후 래퍼를 제거해 원본 함수로 복원(오버헤드 제거).
+    for (const proto of [window.WebGLRenderingContext && WebGLRenderingContext.prototype, window.WebGL2RenderingContext && WebGL2RenderingContext.prototype]) {
+      if (!proto) continue;
+      for (const name of ['scissor', 'clearColor', 'bufferData', 'bufferSubData', 'texImage2D', 'texSubImage2D', 'useProgram', 'bindFramebuffer', 'blendFunc', 'enable', 'disable', 'clear', 'drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
+        const orig = proto[name];
+        if (typeof orig !== 'function') continue;
+        // 저장된 원본 함수로 직접 복원(저장된 함수가 있을 때만).
+        if (proto[name].__ffOrig) proto[name] = proto[name].__ffOrig;
+      }
+    }
   };
   // WebGL: draw 호출 서명이 바뀐 프레임에서만 같은 태스크 안에서 1회 판독.
   const sig = new WeakMap(); // canvas -> { cur, read, queued }
@@ -216,13 +227,15 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
     for (const name of ['scissor', 'clearColor', 'bufferData', 'bufferSubData', 'texImage2D', 'texSubImage2D', 'useProgram', 'bindFramebuffer', 'blendFunc', 'enable', 'disable']) {
       const orig = proto[name];
       if (typeof orig !== 'function') continue;
-      proto[name] = function (...a) {
+      const wrapped = function (...a) {
         const r = orig.apply(this, a);
         const st = sig.get(this.canvas);
         if (st) st.cur = (st.cur * 17 + name.length + (typeof a[0] === 'number' ? a[0] : 0)) | 0;
         else if (this.canvas instanceof HTMLCanvasElement) sig.set(this.canvas, { cur: name.length, read: -1, at: -1e9, queued: false });
         return r;
       };
+      wrapped.__ffOrig = orig;
+      proto[name] = wrapped;
     }
   }
   for (const proto of [window.WebGLRenderingContext && WebGLRenderingContext.prototype, window.WebGL2RenderingContext && WebGL2RenderingContext.prototype]) {
@@ -230,11 +243,13 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
     for (const name of ['clear', 'drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
       const orig = proto[name];
       if (typeof orig !== 'function') continue;
-      proto[name] = function (...a) {
+      const wrapped = function (...a) {
         const r = orig.apply(this, a);
         onDraw(this, name === 'clear' ? a[0] : name === 'drawRangeElements' ? a[4] : a[name.startsWith('drawArrays') ? 2 : 1]);
         return r;
       };
+      wrapped.__ffOrig = orig;
+      proto[name] = wrapped;
     }
   }
   const tick = () => {
