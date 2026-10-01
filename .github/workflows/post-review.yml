@@ -1,0 +1,46 @@
+name: Post review
+
+# When a pull request is closed (merged or not), post the matching review note
+# from the research repository as a comment on that pull request.
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post review note
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          NOTES: i3months/skylens-renderer-lab
+        run: |
+          set -euo pipefail
+          if ! raw=$(gh api "repos/$NOTES/contents/reviews/pr-$PR.md?ref=main" --jq .content 2>/dev/null); then
+            echo "No review note for PR #$PR"
+            exit 0
+          fi
+          body=$(printf '%s' "$raw" | base64 -d)
+          if [ -z "$body" ]; then
+            echo "Review note is empty"
+            exit 0
+          fi
+          first=$(printf '%s\n' "$body" | head -n 1)
+          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq '.[].body')
+          if printf '%s\n' "$existing" | grep -qxF -- "$first"; then
+            echo "Already posted: $first"
+            exit 0
+          fi
+          gh api "repos/$REPO/issues/$PR/comments" -f body="$body" --jq .html_url
