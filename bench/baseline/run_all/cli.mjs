@@ -2,7 +2,7 @@
 // 사용법: node cli.mjs --skylens-dir <경로> --out <경로> --commit <해시> [--only a,b] [--skip c]
 //   [--points <ply>] [--ws-recording <jsonl>] [--tower-recording <jsonl>] [--dist-dir <dir>]
 //   [--anchor-lat <n> --anchor-lon <n> --anchor-alt <n>]  (앵커는 셋 다 함께)
-// 하나라도 실패하면 종료코드 1, 잘못된 인자는 2.
+// 하나라도 실패하면 종료코드 1, 잘못된 인자나 실행 대상이 0개(전부 건너뜀)면 2.
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { runAll } from './index.mjs';
