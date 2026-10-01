@@ -278,7 +278,8 @@ test('dist: 깨진 sourcemap·sources 가 빈 맵은 앱 판정이 아니라 코
     assert.equal(f('broken-1.js').is_3d, true);
     assert.match(f('broken-1.js').basis, /^sourcemap-parse-error:.+/);
     for (const n of ['empty-2.js', 'nonjson-3.js']) assert.deepEqual([f(n).is_3d, f(n).basis], [true, 'heuristic'], n);
-    assert.deepEqual([f('plain-4.js').is_3d, f('plain-4.js').basis], [false, 'heuristic']);
+    assert.equal(f('plain-4.js').is_3d, false);
+    assert.match(f('plain-4.js').basis, /^sourcemap-parse-error:.+/);
   } finally {
     rmSync(dist, { recursive: true, force: true });
     rmSync(out, { recursive: true, force: true });
