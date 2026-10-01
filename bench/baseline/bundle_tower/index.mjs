@@ -8,7 +8,7 @@
 import { gzipSync } from 'node:zlib';
 import { readdirSync, readFileSync, existsSync, statSync, lstatSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { distClosure, sourceClosure, is3d, outsideJs, posix as toPosix, MARKER_DESC } from '../bundle_status/closure.mjs';
+import { distClosure, sourceClosure, classify3d, outsideJs, basisSummary, outsideWarning, posix as toPosix, MARKER_DESC } from '../bundle_status/closure.mjs';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
 
 const METRIC = 'bundle_tower.gzip_bytes';
@@ -59,7 +59,7 @@ export function selectFiles(skylensDir, inputs) {
     const report = {};
     for (const f of distClosure('bundle_tower', dist, 'control.html', report)) {
       picked.set(f.rel, f.abs);
-      forced.set(f.rel, f.forced3d);
+      forced.set(f.rel, f.evidence);
     }
     unresolved = report.unresolved;
     outside = outsideJs(dist, new Set(picked.keys()));
@@ -78,9 +78,9 @@ export function selectFiles(skylensDir, inputs) {
     }
     const t = threeEntry(join(skylensDir, 'node_modules', 'three'));
     if (t) addRoot(t, 'three');
-    for (const f of sourceClosure(skylensDir, roots)) picked.set(posix(skylensDir, f.abs), f.abs), forced.set(posix(skylensDir, f.abs), f.group === 'three');
+    for (const f of sourceClosure(skylensDir, roots)) picked.set(posix(skylensDir, f.abs), f.abs), forced.set(posix(skylensDir, f.abs), f.group === 'three' ? 'package' : null);
   }
-  const files = [...picked.keys()].sort().map((rel) => ({ rel, abs: picked.get(rel), forced3d: forced.get(rel) === true }));
+  const files = [...picked.keys()].sort().map((rel) => ({ rel, abs: picked.get(rel), evidence: forced.get(rel) ?? null }));
   if (!files.length) throw new Error(`bundle_tower: 측정 대상이 없다(${mode}): ${dist ?? skylensDir}`);
   return { mode, files, unresolved, outside };
 }
@@ -93,7 +93,10 @@ export function gzipSize(buf) {
 export async function run({ skylensDir, outDir, commit, inputs }) {
   const { mode, files, unresolved, outside } = selectFiles(skylensDir, inputs);
   const bufs = files.map((f) => readFileSync(f.abs));
-  const detail = files.map((f, i) => ({ path: f.rel, gzip: gzipSize(bufs[i]), raw: bufs[i].length, is_3d: is3d(f.rel, bufs[i], f.forced3d) }));
+  const detail = files.map((f, i) => {
+    const { is3d, basis } = classify3d(f.rel, bufs[i], f.evidence);
+    return { path: f.rel, gzip: gzipSize(bufs[i]), raw: bufs[i].length, is_3d: is3d, basis };
+  });
   const total = detail.reduce((s, d) => s + d.gzip, 0);
   const raw = detail.reduce((s, d) => s + d.raw, 0);
   const three = detail.filter((d) => d.is_3d);
@@ -101,12 +104,12 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
   const raw3 = three.reduce((s, d) => s + d.raw, 0);
   if (outDir) {
     mkdirSync(outDir, { recursive: true });
-    writeFileSync(join(outDir, 'bundle_tower.json'), JSON.stringify({ mode, unresolved, outside_closure_js: outside, total, raw, total_3d: total3, raw_3d: raw3, files: detail }, null, 2) + '\n');
+    writeFileSync(join(outDir, 'bundle_tower.json'), JSON.stringify({ mode, unresolved, outside_closure_js: outside, warnings: outsideWarning(outside) ? [outsideWarning(outside)] : [], total, raw, total_3d: total3, raw_3d: raw3, files: detail }, null, 2) + '\n');
   }
   const closureDesc = mode === 'dist'
     ? 'control.html 진입 폐포(script/modulepreload/stylesheet + 정적 import + 동적 import() + vite mapDeps); 공유 청크(math·geo·style css)는 현황판에도 포함; '
     : '소스 폐포(진입 파일 + 상대 정적/동적 import, three 는 패키지 진입점 하나); three 패키지는 패키지 단위로 3D; ';
-  const base = { unit: 'B', device: 'node-zlib', method: `${mode}; ${closureDesc}파일별 raw·gzip level 9 합산; 폐포 파일 ${files.length}개(참고값); 3D 합계(bundle_tower.3d.*) = ${MARKER_DESC}; 3D 파일 ${three.length}개${mode === 'dist' ? `; 못 푼 동적/mapDeps 참조 ${unresolved.length}개${unresolved.length ? ` (경고: 3D 합계가 과소일 수 있다; ${unresolved.slice(0, 5).map((x) => `${x.from} -> ${x.spec}`).join(', ')})` : ''}` : ''}`, commit };
+  const base = { unit: 'B', device: 'node-zlib', method: `${mode}; ${closureDesc}파일별 raw·gzip level 9 합산; 폐포 파일 ${files.length}개(참고값); 3D 합계(bundle_tower.3d.*) = ${MARKER_DESC}; 3D 파일 ${three.length}개; ${basisSummary(detail.map((d) => d.basis))}${outsideWarning(outside) ? `; ${outsideWarning(outside)}` : ''}${mode === 'dist' ? `; 못 푼 동적/mapDeps 참조 ${unresolved.length}개${unresolved.length ? ` (경고: 3D 합계가 과소일 수 있다; ${unresolved.slice(0, 5).map((x) => `${x.from} -> ${x.spec}`).join(', ')})` : ''}` : ''}`, commit };
   return assertRecords([
     { metric: 'bundle_tower.3d.gzip_bytes', value: total3, ...base },
     { metric: 'bundle_tower.3d.raw_bytes', value: raw3, ...base },

@@ -6,7 +6,7 @@
 import { gzipSync } from 'node:zlib';
 import { readdir, readFile, mkdir, writeFile, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
-import { distClosure, sourceClosure, is3d, outsideJs, MARKER_DESC } from './closure.mjs';
+import { distClosure, sourceClosure, classify3d, outsideJs, basisSummary, outsideWarning, MARKER_DESC } from './closure.mjs';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
 
 const EXTS = new Set(['.js', '.mjs', '.cjs', '.css', '.wasm']);
@@ -63,7 +63,7 @@ async function collect(skylensDir, inputs) {
   if (distDir) {
     if (!(await isDir(distDir))) throw new Error(`bundle_status: distDir 가 디렉터리가 아니다: ${distDir}`);
     const report = {};
-    const files = distClosure('bundle_status', distDir, 'status.html', report).map((f) => ({ group: 'closure', path: f.abs, rel: f.rel, forced3d: f.forced3d }));
+    const files = distClosure('bundle_status', distDir, 'status.html', report).map((f) => ({ group: 'closure', path: f.abs, rel: f.rel, evidence: f.evidence }));
     return { mode: 'dist', files, unresolved: report.unresolved, outside: outsideJs(distDir, new Set(files.map((f) => f.rel))) };
   }
   if (!inputs?.allowSource) {
@@ -78,7 +78,7 @@ async function collect(skylensDir, inputs) {
     const root = join(skylensDir, ...pkg.parts);
     if (await isDir(root)) roots.push({ abs: await packageEntry(root), group: pkg.key });
   }
-  const files = sourceClosure(skylensDir, roots).map((f) => ({ group: f.group, path: f.abs, rel: posix(relative(skylensDir, f.abs)), forced3d: f.group !== 'statusview' }));
+  const files = sourceClosure(skylensDir, roots).map((f) => ({ group: f.group, path: f.abs, rel: posix(relative(skylensDir, f.abs)), evidence: f.group !== 'statusview' ? 'package' : null }));
   files.sort((x, y) => (x.rel < y.rel ? -1 : x.rel > y.rel ? 1 : 0));
   if (!files.length) throw new Error(`bundle_status: 측정 대상이 없다: ${skylensDir}`);
   return { mode: 'source', files };
@@ -96,9 +96,9 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
     const bytes = gz(buf);
     raw += buf.length;
     totals.set(f.group, (totals.get(f.group) ?? 0) + bytes);
-    const three = is3d(f.rel, buf, f.forced3d);
+    const { is3d: three, basis } = classify3d(f.rel, buf, f.evidence);
     if (three) { gz3 += bytes; raw3 += buf.length; }
-    manifest.push({ group: f.group, file: f.rel, gzip_bytes: bytes, raw_bytes: buf.length, is_3d: three });
+    manifest.push({ group: f.group, file: f.rel, gzip_bytes: bytes, raw_bytes: buf.length, is_3d: three, basis });
   }
   const sum = [...totals.values()].reduce((a, b) => a + b, 0);
   const closureDesc = mode === 'dist'
@@ -107,7 +107,8 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
   const unresolvedDesc = mode === 'dist'
     ? `; unresolved dynamic/mapDeps refs: ${unresolved.length}${unresolved.length ? ` (WARNING: 3D total may be understated; ${unresolved.slice(0, 5).map((u) => `${u.from} -> ${u.spec}`).join(', ')})` : ''}`
     : '';
-  const method = `${mode}; ` + closureDesc + `raw and gzip level 9 per file, summed; ${files.length} files in closure (reference total); 3D total (bundle_status.3d.*) = ${MARKER_DESC}; ${manifest.filter((m) => m.is_3d).length} 3D files` + unresolvedDesc;
+  const warnings = outsideWarning(outside) ? [outsideWarning(outside)] : [];
+  const method = `${mode}; ` + closureDesc + `raw and gzip level 9 per file, summed; ${files.length} files in closure (reference total); 3D total (bundle_status.3d.*) = ${MARKER_DESC}; ${manifest.filter((m) => m.is_3d).length} 3D files` + `; ${basisSummary(manifest.map((m) => m.basis))}` + unresolvedDesc + warnings.map((w) => `; ${w}`).join('');
   const base = { unit: 'B', device: 'n/a', method, commit };
   const records = [{ metric: 'bundle_status.3d.gzip_bytes', value: gz3, ...base }];
   records.push({ metric: 'bundle_status.3d.raw_bytes', value: raw3, ...base });
@@ -117,7 +118,7 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
   assertRecords(records);
   if (outDir) {
     await mkdir(outDir, { recursive: true });
-    await writeFile(join(outDir, 'bundle_status.manifest.json'), JSON.stringify({ mode, manifest, unresolved, outside_closure_js: outside }, null, 2) + '\n');
+    await writeFile(join(outDir, 'bundle_status.manifest.json'), JSON.stringify({ mode, manifest, unresolved, outside_closure_js: outside, warnings }, null, 2) + '\n');
   }
   return records;
 }
