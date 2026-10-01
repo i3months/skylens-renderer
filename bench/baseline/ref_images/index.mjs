@@ -1,11 +1,13 @@
 // 기준 이미지 생성기. 렌더러 구현 이전의 임시 CPU 점 래스터라이저다.
+// 출처·라이선스: skylens(MIT License) src/.../sceneSource.ts 의 deriveFromSplat 알고리즘 재구현이다(틀 계산 부분만).
+// 코드를 복사하지 않고 줄 단위 동작을 옮겨 쓴 것이며, 원 저장소 라이선스 고지는 skylens 의 LICENSE 를 따른다.
 // 순수 점 투영만 한다: 뒷면 제거, 보간, 구멍 메우기 없음 (RULES 1.2).
 // 입력은 원본 점군 PLY(inputs.pointsPath)가 필수다. 없으면 throw 하며 합성 점군으로 대체하지 않는다.
 //
 // 좌표 규약:
 //   - 씬 좌표: x, y=위, z 의 오른손 좌표. 앱(skylens develop sceneSource.ts deriveFromSplat)이 스플랫을 그리는
-//     정규화 틀이다: world = s·(R·raw) + P. 원점은 틀 PLY 의 5~95 % 분위 상자의 XZ 중심과 그 상자의 바닥(y=0)이며,
-//     GeoAnchor 의 ENU 원점이 아니다. 축 방향도 동/북에 맞췄다는 보장이 없다(PLY 원좌표 축을 회전 R 만 해서 쓴다).
+//     정규화 틀이다: world = s·(R·raw) + P. 원점은 sceneFrame 정규화 중심, 곧 틀 PLY 의 5~95 % 분위 상자의 XZ 중심과
+//     그 상자의 바닥(y=0)이며, GeoAnchor 의 ENU 원점이 아니다(viewpoints.json coord·note 와 같은 설명). 축 방향도 동/북에 맞췄다는 보장이 없다(PLY 원좌표 축을 회전 R 만 해서 쓴다).
 //   - 단위: PLY 원좌표 1 unit 이 축척 s 적용 전의 단위다. 씬 좌표 1 unit 은 원좌표 1/s unit 이며 1 m 가 아니다
 //     (segments.json metersPerUnit 는 원좌표 기준 값이라 씬 좌표에 그대로 쓰면 안 된다).
 //   - anchor 는 운영자 선언값이다. 두 선언(viewpoints.json, inputs.anchor)끼리만 대조하며 점군 파일은 대조하지 않는다.
@@ -34,7 +36,7 @@
 //   - 비유한(NaN·±Inf) 좌표나 f_dc 를 가진 레코드는 그리는 점군에서 제외하고 그 수를 method 와
 //     ref_images.nonfinite_excluded 지표로 보고한다. 틀 PLY 에 비유한 값이 있으면 앱과 같은 표본을 만들 수 없으므로 throw.
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parsePlyHeader } from '../../../contracts/ply/index.mjs';
@@ -128,17 +130,23 @@ export function rasterize({ positions, colors, count }, view) {
   for (let i = 0; i < W * H; i++) rgb.set(BACKGROUND, i * 3);
   const zbuf = new Float64Array(W * H).fill(Infinity);
   let drawn = 0;
+  // 점마다 배열·객체를 만들지 않도록 worldToCamera·projectCamera 와 같은 식을 스칼라로 푼다(결과 비트 동일).
   for (let i = 0; i < count; i++) {
-    const c = worldToCamera(R, t, [positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]]);
-    const s = projectCamera(K, c);
-    if (!s) continue;
-    const px = Math.floor(s.u);
-    const py = Math.floor(s.v);
+    const x = positions[i * 3];
+    const y = positions[i * 3 + 1];
+    const z = positions[i * 3 + 2];
+    const cz = R[6] * x + R[7] * y + R[8] * z + t[2];
+    const d = -cz;
+    if (!(d > 0)) continue;
+    const cxv = R[0] * x + R[1] * y + R[2] * z + t[0];
+    const cyv = R[3] * x + R[4] * y + R[5] * z + t[1];
+    const px = Math.floor(K.cx + (K.f * cxv) / d);
+    const py = Math.floor(K.cy - (K.f * cyv) / d);
     if (!(px >= 0 && px < W && py >= 0 && py < H)) continue;
     const idx = py * W + px;
-    if (s.depth < zbuf[idx]) {
+    if (d < zbuf[idx]) {
       if (zbuf[idx] === Infinity) drawn++;
-      zbuf[idx] = s.depth;
+      zbuf[idx] = d;
       rgb[idx * 3] = colors[i * 3];
       rgb[idx * 3 + 1] = colors[i * 3 + 1];
       rgb[idx * 3 + 2] = colors[i * 3 + 2];
@@ -207,19 +215,28 @@ export function computeSceneFrame({ positions, count, nonFinite = 0 }, frame, na
 export function applyFrameTransform({ positions, colors, count }, fr) {
   const outP = new Float32Array(count * 3);
   const outC = new Uint8Array(count * 3);
+  const R = fr.R;
+  const lo = fr.clipMin;
+  const hi = fr.clipMax;
   let j = 0;
   for (let i = 0; i < count; i++) {
-    const v = rot(fr.R, positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
-    let inside = true;
-    for (let k = 0; k < 3; k++) if (!(v[k] >= fr.clipMin[k] && v[k] <= fr.clipMax[k])) inside = false;
-    if (!inside) continue;
-    for (let k = 0; k < 3; k++) {
-      outP[j * 3 + k] = fr.s * v[k] + fr.P[k];
-      outC[j * 3 + k] = colors[i * 3 + k];
-    }
+    const x = positions[i * 3];
+    const y = positions[i * 3 + 1];
+    const z = positions[i * 3 + 2];
+    const v0 = R[0] * x + R[1] * y + R[2] * z;
+    const v1 = R[3] * x + R[4] * y + R[5] * z;
+    const v2 = R[6] * x + R[7] * y + R[8] * z;
+    if (!(v0 >= lo[0] && v0 <= hi[0] && v1 >= lo[1] && v1 <= hi[1] && v2 >= lo[2] && v2 <= hi[2])) continue;
+    outP[j * 3] = fr.s * v0 + fr.P[0];
+    outP[j * 3 + 1] = fr.s * v1 + fr.P[1];
+    outP[j * 3 + 2] = fr.s * v2 + fr.P[2];
+    outC[j * 3] = colors[i * 3];
+    outC[j * 3 + 1] = colors[i * 3 + 1];
+    outC[j * 3 + 2] = colors[i * 3 + 2];
     j++;
   }
-  return { positions: outP.slice(0, j * 3), colors: outC.slice(0, j * 3), count: j, clipped: count - j };
+  // subarray: 복사 없이 앞 j 점만 보인다(입력은 바꾸지 않는다).
+  return { positions: outP.subarray(0, j * 3), colors: outC.subarray(0, j * 3), count: j, clipped: count - j };
 }
 
 /** 같은 점군에서 틀을 구하고 바로 적용한다(틀 PLY 와 그릴 점군이 같은 경우). */
@@ -235,24 +252,14 @@ export function assertCoverage(vp, drawn) {
 }
 
 const TYPE_READ = { float: 'readFloatLE', float32: 'readFloatLE', double: 'readDoubleLE', float64: 'readDoubleLE' };
+const SIZE = { char: 1, uchar: 1, int8: 1, uint8: 1, short: 2, ushort: 2, int16: 2, uint16: 2, int: 4, uint: 4, int32: 4, uint32: 4, float: 4, float32: 4, double: 8, float64: 8 };
+const HEADER_MAX = 1 << 20; // 헤더 탐색 상한 1 MiB
+const DEFAULT_CHUNK_RECORDS = 1 << 16;
 
-/**
- * binary_little_endian PLY 를 읽어 {positions, colors, count, layout, stride, nonFinite, rawCount} 로 돌려준다.
- * 좌표·f_dc 중 하나라도 비유한인 레코드는 제외하고 nonFinite 에 센다(색을 조용히 바꾸지 않는다).
- * name 은 오류 메시지용 파일 이름. 헤더가 모자라거나 크기가 어긋나면 파일 이름을 넣어 throw 한다.
- */
-export function decodePly(buf, name = '<buffer>') {
-  let h;
-  try {
-    h = parsePlyHeader(buf);
-  } catch (e) {
-    throw new Error(`${name}: ${e.message}`);
-  }
-  const expect = h.headerBytes + h.stride * h.vertexCount;
-  if (buf.length !== expect) throw new Error(`${name}: 크기 ${buf.length} B 가 헤더 ${h.headerBytes} + ${h.stride}×${h.vertexCount} = ${expect} B 와 다르다`);
+/** 헤더에서 속성 오프셋·색 배치를 정하고 출력 버퍼를 만든다. 크기 검사는 호출 쪽(총 바이트)에서 한다. */
+function planPly(h, name) {
   const off = {};
   let o = 0;
-  const SIZE = { char: 1, uchar: 1, int8: 1, uint8: 1, short: 2, ushort: 2, int16: 2, uint16: 2, int: 4, uint: 4, int32: 4, uint32: 4, float: 4, float32: 4, double: 8, float64: 8 };
   for (const p of h.properties) {
     off[p.name] = { at: o, type: p.type };
     o += SIZE[p.type];
@@ -260,7 +267,6 @@ export function decodePly(buf, name = '<buffer>') {
   for (const k of ['x', 'y', 'z']) {
     if (!off[k] || !TYPE_READ[off[k].type]) throw new Error(`${name}: 헤더에 float 속성 ${k} 가 없다`);
   }
-  const f = (rec, k) => buf[TYPE_READ[off[k].type]](rec + off[k].at);
   let layout;
   if (off.f_dc_0 && off.f_dc_1 && off.f_dc_2) {
     for (const k of ['f_dc_0', 'f_dc_1', 'f_dc_2']) if (!TYPE_READ[off[k].type]) throw new Error(`${name}: ${k} 가 float 이 아니다`);
@@ -271,22 +277,49 @@ export function decodePly(buf, name = '<buffer>') {
     throw new Error(`${name}: 색 속성(f_dc_0..2 또는 uchar red green blue)이 없다`);
   }
   const rawCount = h.vertexCount;
-  const positions = new Float32Array(rawCount * 3);
-  const colors = new Uint8Array(rawCount * 3);
-  const clamp8 = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255);
-  let j = 0;
-  let nonFinite = 0;
-  for (let i = 0; i < rawCount; i++) {
-    const rec = h.headerBytes + i * h.stride;
-    const p = [f(rec, 'x'), f(rec, 'y'), f(rec, 'z')];
-    const dc = layout === 'splat-f_dc' ? [f(rec, 'f_dc_0'), f(rec, 'f_dc_1'), f(rec, 'f_dc_2')] : null;
-    if (!p.every(Number.isFinite) || (dc && !dc.every(Number.isFinite))) {
-      nonFinite++;
+  return { off, layout, stride: h.stride, rawCount, positions: new Float32Array(rawCount * 3), colors: new Uint8Array(rawCount * 3), j: 0, nonFinite: 0 };
+}
+
+const clamp8 = (v) => Math.round(Math.min(1, Math.max(0, v)) * 255);
+
+/** buf[base ..] 에서 n 개 레코드를 plan 출력에 이어 붙인다. 점마다 배열·객체를 만들지 않는다. */
+function decodeRecords(buf, base, n, plan) {
+  const { off, layout, stride, positions, colors } = plan;
+  const rx = TYPE_READ[off.x.type];
+  const ry = TYPE_READ[off.y.type];
+  const rz = TYPE_READ[off.z.type];
+  const ax = off.x.at;
+  const ay = off.y.at;
+  const az = off.z.at;
+  const splat = layout === 'splat-f_dc';
+  const rd = splat ? TYPE_READ[off.f_dc_0.type] : null;
+  const g = splat ? TYPE_READ[off.f_dc_1.type] : null;
+  const b = splat ? TYPE_READ[off.f_dc_2.type] : null;
+  let j = plan.j;
+  for (let i = 0; i < n; i++) {
+    const rec = base + i * stride;
+    const x = buf[rx](rec + ax);
+    const y = buf[ry](rec + ay);
+    const z = buf[rz](rec + az);
+    let d0 = 0;
+    let d1 = 0;
+    let d2 = 0;
+    if (splat) {
+      d0 = buf[rd](rec + off.f_dc_0.at);
+      d1 = buf[g](rec + off.f_dc_1.at);
+      d2 = buf[b](rec + off.f_dc_2.at);
+    }
+    if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) && Number.isFinite(d0) && Number.isFinite(d1) && Number.isFinite(d2))) {
+      plan.nonFinite++;
       continue;
     }
-    positions.set(p, j * 3);
-    if (dc) {
-      for (let c = 0; c < 3; c++) colors[j * 3 + c] = clamp8(0.5 + SH_C0 * dc[c]);
+    positions[j * 3] = x;
+    positions[j * 3 + 1] = y;
+    positions[j * 3 + 2] = z;
+    if (splat) {
+      colors[j * 3] = clamp8(0.5 + SH_C0 * d0);
+      colors[j * 3 + 1] = clamp8(0.5 + SH_C0 * d1);
+      colors[j * 3 + 2] = clamp8(0.5 + SH_C0 * d2);
     } else {
       colors[j * 3] = buf[rec + off.red.at];
       colors[j * 3 + 1] = buf[rec + off.green.at];
@@ -294,11 +327,85 @@ export function decodePly(buf, name = '<buffer>') {
     }
     j++;
   }
+  plan.j = j;
+}
+
+function finishPly(plan) {
+  const { j, nonFinite, rawCount, layout, stride } = plan;
   return {
-    positions: nonFinite ? positions.slice(0, j * 3) : positions,
-    colors: nonFinite ? colors.slice(0, j * 3) : colors,
-    count: j, rawCount, nonFinite, layout, stride: h.stride,
+    positions: nonFinite ? plan.positions.subarray(0, j * 3) : plan.positions,
+    colors: nonFinite ? plan.colors.subarray(0, j * 3) : plan.colors,
+    count: j, rawCount, nonFinite, layout, stride,
   };
+}
+
+function headerOf(buf, name) {
+  try {
+    return parsePlyHeader(buf.subarray(0, Math.min(buf.length, HEADER_MAX)));
+  } catch (e) {
+    throw new Error(`${name}: ${e.message}`);
+  }
+}
+
+function sizeError(name, size, h) {
+  const expect = h.headerBytes + h.stride * h.vertexCount;
+  return size === expect ? null : new Error(`${name}: 크기 ${size} B 가 헤더 ${h.headerBytes} + ${h.stride}×${h.vertexCount} = ${expect} B 와 다르다`);
+}
+
+/**
+ * binary_little_endian PLY 버퍼를 읽어 {positions, colors, count, layout, stride, nonFinite, rawCount} 로 돌려준다.
+ * 좌표·f_dc 중 하나라도 비유한인 레코드는 제외하고 nonFinite 에 센다(색을 조용히 바꾸지 않는다).
+ * name 은 오류 메시지용 파일 이름. 헤더가 모자라거나 크기가 어긋나면 파일 이름을 넣어 throw 한다.
+ * 큰 파일은 버퍼 전체를 만들지 말고 decodePlyFile 을 쓴다.
+ */
+export function decodePly(buf, name = '<buffer>') {
+  const h = headerOf(buf, name);
+  const err = sizeError(name, buf.length, h);
+  if (err) throw err;
+  const plan = planPly(h, name);
+  decodeRecords(buf, h.headerBytes, h.vertexCount, plan);
+  return finishPly(plan);
+}
+
+/**
+ * decodePly 와 같은 결과를 파일에서 청크(chunkRecords 레코드)씩 읽어 만든다. 파일 전체를 한 버퍼로 올리지 않으므로
+ * 2 GiB 를 넘는 PLY 도 읽을 수 있고, 메모리는 점당 15 B(위치 12 + 색 3)와 청크 하나다.
+ */
+export async function decodePlyFile(path, name = path, { chunkRecords = DEFAULT_CHUNK_RECORDS } = {}) {
+  if (!Number.isInteger(chunkRecords) || chunkRecords <= 0) throw new Error(`${name}: chunkRecords 는 양의 정수여야 한다`);
+  const fh = await open(path, 'r');
+  try {
+    const { size } = await fh.stat();
+    const head = Buffer.alloc(Math.min(size, HEADER_MAX));
+    let got = 0;
+    while (got < head.length) {
+      const { bytesRead } = await fh.read(head, got, head.length - got, got);
+      if (bytesRead === 0) break;
+      got += bytesRead;
+    }
+    const h = headerOf(head.subarray(0, got), name);
+    const err = sizeError(name, size, h);
+    if (err) throw err;
+    const plan = planPly(h, name);
+    const buf = Buffer.allocUnsafe(Math.min(chunkRecords, Math.max(1, h.vertexCount)) * h.stride);
+    let pos = h.headerBytes;
+    for (let done = 0; done < h.vertexCount;) {
+      const n = Math.min(chunkRecords, h.vertexCount - done);
+      const want = n * h.stride;
+      let have = 0;
+      while (have < want) {
+        const { bytesRead } = await fh.read(buf, have, want - have, pos + have);
+        if (bytesRead === 0) throw new Error(`${name}: 파일이 읽는 도중 끝났다 (${pos + have} B 에서)`);
+        have += bytesRead;
+      }
+      decodeRecords(buf, 0, n, plan);
+      pos += want;
+      done += n;
+    }
+    return finishPly(plan);
+  } finally {
+    await fh.close();
+  }
 }
 
 export function encodePPM(rgb, width, height) {
@@ -321,15 +428,27 @@ export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
   }
   assertSceneFrame(json.sceneFrame, name);
   if (!Array.isArray(json.viewpoints) || json.viewpoints.length === 0) throw new Error(`${name}: viewpoints 가 비어 있다`);
-  for (const vp of json.viewpoints) {
+  const ids = new Set();
+  const names = new Set();
+  json.viewpoints.forEach((vp, i) => {
+    if (!vp || typeof vp !== 'object' || Array.isArray(vp)) throw new Error(`${name}: viewpoints[${i}] 는 객체여야 한다 (현재 ${JSON.stringify(vp)})`);
+    if (!Number.isInteger(vp.id)) throw new Error(`${name}: viewpoints[${i}].id 는 정수여야 한다 (현재 ${JSON.stringify(vp.id)})`);
+    if (typeof vp.name !== 'string' || !/^[\w-]+$/.test(vp.name)) throw new Error(`${name}: 시점 ${vp.id}: name 은 /^[\\w-]+$/ 이어야 한다 (파일 이름에 쓰인다; 현재 ${JSON.stringify(vp.name)})`);
+    if (ids.has(vp.id)) throw new Error(`${name}: 시점 id ${vp.id} 가 중복이다`);
+    if (names.has(vp.name)) throw new Error(`${name}: 시점 name ${vp.name} 이 중복이다`);
+    ids.add(vp.id);
+    names.add(vp.name);
     try {
       assertView(vp);
     } catch (e) {
       throw new Error(`${name}: 시점 ${vp.id} ${vp.name}: ${e.message}`);
     }
-  }
+  });
   return { viewpoints: json.viewpoints, sceneFrame: json.sceneFrame };
 }
+
+// 측정 기준 문서(renderer_basis §7-4)의 점 레코드(27 B)와 이 도구가 읽는 형식의 차이. method 에 항상 싣는다.
+export const BASIS_NOTE = 'renderer_basis §7-4 27 B 와 다름: 56 B 스플랫, 법선 없음, 중심점만 사용';
 
 const fmt = (v) => Number(v.toPrecision(10));
 
@@ -337,7 +456,7 @@ const fmt = (v) => Number(v.toPrecision(10));
  * 시점마다 PPM(P6)을 outDir 에 쓴다. 파일 이름 viewpoint_<id>_<name>.ppm.
  * inputs.pointsPath(PLY)와 inputs.anchor 가 필수다. 없으면 throw (합성 대체 없음).
  * 틀은 <skylensDir>/<sceneFrame.framePly> 에서 구한다. 없으면 throw.
- * 어느 시점이든 drawn == 0, 점유율 < MIN_COVERAGE, 카메라 퇴화, fov·해상도 부적합이면 throw 한다(파일은 쓰기 전에 모두 검사).
+ * 어느 시점이든 점유율 < MIN_COVERAGE(찍힌 픽셀 0 포함), 카메라 퇴화, fov·해상도 부적합이면 throw 한다(파일은 쓰기 전에 모두 검사).
  * viewpointsPath 는 테스트용 덮어쓰기이고 기본은 fixtures/viewpoints/viewpoints.json.
  */
 export async function run({ skylensDir, outDir, commit, inputs, viewpointsPath = VIEWPOINTS_PATH }) {
@@ -346,8 +465,8 @@ export async function run({ skylensDir, outDir, commit, inputs, viewpointsPath =
   const { viewpoints: vps, sceneFrame } = loadViewpoints(JSON.parse(await readFile(viewpointsPath, 'utf8')), anchor, viewpointsPath);
   if (typeof skylensDir !== 'string' || skylensDir === '') throw new Error('ref_images: skylensDir 가 없다 (틀 PLY 를 찾을 수 없다)');
   const framePath = join(skylensDir, sceneFrame.framePly);
-  const fr = computeSceneFrame(decodePly(await readFile(framePath), framePath), sceneFrame, framePath);
-  const raw = decodePly(await readFile(pointsPath), pointsPath);
+  const fr = computeSceneFrame(await decodePlyFile(framePath, framePath), sceneFrame, framePath);
+  const raw = await decodePlyFile(pointsPath, pointsPath);
   const pts = applyFrameTransform(raw, fr);
   const device = 'cpu-node-point-raster';
   const frameNote = `앱 틀 적용(틀 PLY ${sceneFrame.framePly} ${fr.total}점·표본 stride ${fr.sampleStride}, rotate ${fr.rotate}, `
@@ -355,13 +474,12 @@ export async function run({ skylensDir, outDir, commit, inputs, viewpointsPath =
     + `s=${fmt(fr.s)} P=[${fr.P.map(fmt).join(',')}], 여유 ${sceneFrame.clipMargin} 밖 ${pts.clipped}점 제거, `
     + `비유한 ${raw.nonFinite}점 제외; ${pts.count}/${raw.rawCount}점 사용)`;
   const method = raw.layout === 'splat-f_dc'
-    ? `ref_images: PLY ${raw.stride}B 스플랫 ${raw.rawCount}점, 중심 x y z·f_dc 색(0.5+0.28209479·f_dc) 사용(opacity·scale·rot 무시), 순수 점 투영 z-버퍼, ${frameNote}`
-    : `ref_images: PLY ${raw.stride}B 점 ${raw.rawCount}개, x y z·uchar rgb, 순수 점 투영 z-버퍼, ${frameNote}`;
+    ? `ref_images: PLY ${raw.stride}B 스플랫 ${raw.rawCount}점, 중심 x y z·f_dc 색(0.5+0.28209479·f_dc) 사용(opacity·scale·rot 무시), 순수 점 투영 z-버퍼, ${BASIS_NOTE}, ${frameNote}`
+    : `ref_images: PLY ${raw.stride}B 점 ${raw.rawCount}개, x y z·uchar rgb, 순수 점 투영 z-버퍼, ${BASIS_NOTE}, ${frameNote}`;
   const records = [];
   const rasters = [];
   for (const vp of vps) {
     const r = rasterize(pts, vp);
-    if (!(r.drawn > 0)) throw new Error(`시점 ${vp.id} ${vp.name}: 찍힌 픽셀이 0 이다 (점군과 시점이 맞지 않음)`);
     assertCoverage(vp, r.drawn);
     rasters.push([vp, r]);
   }
