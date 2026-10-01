@@ -1,24 +1,24 @@
 {
-  "coord": "scene (x=east, y=up, z=-north), local ENU 에서 변환, 1 unit = 1 m",
+  "coord": "scene (x=east, y=up, z=-north), 1 unit = 1 m; PLY 원좌표에 sceneFrame(앱이 스플랫을 그리는 틀)을 적용한 뒤의 좌표",
   "anchor": {
     "lat": 36.3685,
     "lon": 127.3475,
     "alt": 30
   },
   "anchor_source": "skylens develop 59edcf9 src/shared/viewer/config.ts:12 (CONFIG.geo.anchor 기본값; GeoAnchor 타입은 src/shared/geo.ts:17). 관제탑(tower)은 런타임에 지도 bbox 에서 앵커를 따로 유도하므로(config.ts:8-10, skylens_core/geoFrame.ts:44) tower 시점에 실데이터를 맞출 때는 해당 앵커로 교체 확인 필요.",
-  "note": "변환: ENU(e,n,u) -> scene (e,u,-n) (geo.ts enuToScene). 이 파일은 GL 규약(y-up, 카메라는 -z 를 봄)이며 renderer_basis §2 의 OpenCV 규약(x 우, y 아래, z 전방; d=X_c.z)과 다르다. OpenCV 카메라 좌표 <-> GL 카메라 좌표 변환은 diag(1,-1,-1).",
+  "note": "변환: ENU(e,n,u) -> scene (e,u,-n) (geo.ts enuToScene). 점군은 sceneFrame 을 적용해 최대 변 44 m, XZ 중심 원점, 바닥 y=0 인 틀로 옮긴 뒤 시점으로 그린다. 시점은 이 틀(약 ±22 m, 높이 0..44 m)에 맞춰 잡았다. 이 파일은 GL 규약(y-up, 카메라는 -z 를 봄)이며 renderer_basis §2 의 OpenCV 규약(x 우, y 아래, z 전방; d=X_c.z)과 다르다. OpenCV 카메라 좌표 <-> GL 카메라 좌표 변환은 diag(1,-1,-1).",
   "viewpoints": [
     {
       "id": 1,
       "name": "status_overview",
       "eye": [
         0,
-        120,
-        300
+        30,
+        75
       ],
       "target": [
         0,
-        0,
+        16,
         0
       ],
       "up": [
@@ -34,13 +34,13 @@
       "id": 2,
       "name": "status_close",
       "eye": [
-        10,
-        25,
-        60
+        8,
+        18,
+        40
       ],
       "target": [
         0,
-        5,
+        12,
         0
       ],
       "up": [
@@ -56,13 +56,13 @@
       "id": 3,
       "name": "status_low",
       "eye": [
-        -40,
-        8,
-        90
+        -18,
+        4,
+        45
       ],
       "target": [
         0,
-        6,
+        12,
         0
       ],
       "up": [
@@ -79,12 +79,12 @@
       "name": "tower_high",
       "eye": [
         0,
-        400,
-        500
+        85,
+        85
       ],
       "target": [
         0,
-        0,
+        10,
         0
       ],
       "up": [
@@ -100,13 +100,13 @@
       "id": 5,
       "name": "tower_mid",
       "eye": [
-        150,
-        150,
-        250
+        45,
+        40,
+        65
       ],
       "target": [
         0,
-        10,
+        12,
         0
       ],
       "up": [
@@ -122,31 +122,9 @@
       "id": 6,
       "name": "tower_street",
       "eye": [
-        60,
-        12,
-        120
-      ],
-      "target": [
-        0,
-        8,
-        0
-      ],
-      "up": [
-        0,
-        1,
-        0
-      ],
-      "width": 1280,
-      "height": 720,
-      "fov_y_deg": 50
-    },
-    {
-      "id": 7,
-      "name": "tower_edge_west",
-      "eye": [
-        -300,
-        80,
-        200
+        25,
+        3,
+        50
       ],
       "target": [
         0,
@@ -163,16 +141,38 @@
       "fov_y_deg": 50
     },
     {
-      "id": 8,
-      "name": "tower_far",
+      "id": 7,
+      "name": "tower_edge_west",
       "eye": [
-        500,
-        250,
-        700
+        -70,
+        25,
+        45
       ],
       "target": [
         0,
+        12,
+        0
+      ],
+      "up": [
         0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 8,
+      "name": "tower_far",
+      "eye": [
+        80,
+        50,
+        95
+      ],
+      "target": [
+        0,
+        10,
         0
       ],
       "up": [
@@ -184,5 +184,13 @@
       "height": 720,
       "fov_y_deg": 50
     }
-  ]
+  ],
+  "sceneFrame": {
+    "rotate": "x180",
+    "targetExtent": 44,
+    "percentileLo": 0.05,
+    "percentileHi": 0.95,
+    "clipMargin": 0.15,
+    "source": "skylens src/shared/viewer/sources/sceneSource.ts:350-385,95 (x180 회전, TARGET_EXTENT=44, 5~95 % 분위 상자, XZ 중심·바닥 y=0). 같은 변환이 main 의 src/skylens_client/data/sceneSource.ts:54,226-297 에도 있다."
+  }
 }
