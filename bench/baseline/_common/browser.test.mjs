@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveEntryPath, DEFAULT_ENTRY_PATH, serveDist, launchBrowser, measureFirstFrame, unavailableReason, CHROMIUM_ARGS, DEVICE } from './browser.mjs';
+import { resolveEntryPath, assertOptionalInputKeys, DEFAULT_CANVAS_SELECTOR, CONTROL_CANVAS_SELECTOR, DEFAULT_ENTRY_PATH, serveDist, launchBrowser, measureFirstFrame, unavailableReason, CHROMIUM_ARGS, DEVICE } from './browser.mjs';
 
 async function page(html) {
   const dir = await mkdtemp(join(tmpdir(), 'bc-'));
@@ -81,4 +81,18 @@ test('양성: 500 ms 뒤 그리는 2D 캔버스는 500 ms 이상 2500 ms 미만'
 test('양성: 바로 그리는 페이지는 2500 ms 미만에 감지', opts, async () => {
   const { ms } = await measure(GL(false, 0), { timeoutMs: 10000 });
   assert.ok(ms > 0 && ms < 2500, `ms ${ms}`);
+});
+
+test('assertOptionalInputKeys: 정확한 키와 다른 모듈용 키는 통과, 오타 키는 거부', () => {
+  assertOptionalInputKeys({ distDir: 'd', entryPath: '/a', canvasSelector: '#a', anchor: {} });
+  assertOptionalInputKeys(undefined);
+  for (const k of ['entrypath', 'entry_path', 'canvasselector', 'canvas-selector', 'canvasSelecter']) {
+    assert.throws(() => assertOptionalInputKeys({ [k]: 'x' }), /알 수 없는 inputs 키/, k);
+  }
+  assert.throws(() => resolveEntryPath({ entrypath: '/a.html' }), /entryPath/);
+});
+
+test('기본 캔버스 선택자: 상황판 #status-view, 관제탑 #control-view', () => {
+  assert.equal(DEFAULT_CANVAS_SELECTOR, '#status-view');
+  assert.equal(CONTROL_CANVAS_SELECTOR, '#control-view');
 });
