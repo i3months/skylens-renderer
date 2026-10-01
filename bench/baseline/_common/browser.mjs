@@ -112,6 +112,11 @@ export async function serveDist(distDir, { entryPath = DEFAULT_ENTRY_PATH } = {}
   return { port, url: `http://127.0.0.1:${port}${entryPath}${entryPath === DEFAULT_ENTRY_PATH ? `?${DEAD_RELAY_QUERY}` : ''}`, close: () => new Promise((r) => { server.close(r); server.closeAllConnections?.(); }) };
 }
 
+/** 상황판 3D 뷰 캔버스 선택자(skylens recon.html 의 WebGL 캔버스). 2D 미니맵(.minimap__canvas)·영상 패널 캔버스는 대상이 아니다. */
+export const DEFAULT_CANVAS_SELECTOR = '#view2';
+/** measureFirstFrame 의 하위 호환 기본값(모든 canvas). 3D 뷰만 판정하려면 canvasSelector 를 넘긴다. */
+export const ANY_CANVAS_SELECTOR = 'canvas';
+
 // 첫 프레임 판정 상수. 캔버스를 128x128 로 줄여 가장 흔한 색(배경)과 채널 차이가 8 초과인 픽셀이 0.1% 이상이면 "그려짐".
 export const DIFF_RATIO = 0.001;
 export const DIFF_TOLERANCE = 8;
@@ -121,7 +126,10 @@ export const DIFF_TOLERANCE = 8;
  * 비어 있는(배경색 하나로만 채워진) 캔버스는 그려진 것으로 치지 않는다. alpha:false WebGL 의 불투명 clear 도 마찬가지.
  * WebGL 캔버스를 읽을 수 있도록 preserveDrawingBuffer 를 켠다.
  */
-export const DETECT_SCRIPT = `(() => {
+export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
+  if (typeof selector !== 'string' || !selector.trim()) throw new Error('canvasSelector 는 비어 있지 않은 CSS 선택자 문자열이어야 함');
+  return `(() => {
+  const SEL = ${JSON.stringify(selector)};
   const DIFF_RATIO = ${DIFF_RATIO}, TOL = ${DIFF_TOLERANCE};
   const origGet = HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext = function (type, attrs) {
@@ -148,28 +156,38 @@ export const DETECT_SCRIPT = `(() => {
   };
   const tick = () => {
     if (window.__ffMs !== undefined) return;
-    if ([...document.querySelectorAll('canvas')].some(drawn)) { window.__ffMs = performance.now(); return; }
+    let hit = null;
+    try { hit = [...document.querySelectorAll(SEL)].find((e) => e instanceof HTMLCanvasElement && drawn(e)) || null; } catch (e) { hit = null; }
+    if (hit) {
+      window.__ffMs = performance.now();
+      window.__ffCanvas = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/).join('.') : '');
+      return;
+    }
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
 })();`;
+}
+export const DETECT_SCRIPT = buildDetectScript();
 
 /**
  * 새 컨텍스트에서 url 을 열고 첫 프레임 시각(ms, 탐색 시작 기준)을 반환한다. 시간 안에 감지하지 못하면 throw.
- * after(page) 가 있으면 첫 프레임 감지 직후 호출해 그 결과를 { ms, after } 로 돌려준다.
+ * canvasSelector 로 판정 대상 캔버스를 한정한다(기본 'canvas' = 모든 캔버스, 하위 호환). 반환의 canvas 는 판정한 요소 표기(예 canvas#view2).
+ * after(page) 가 있으면 첫 프레임 감지 직후 호출해 그 결과를 { ms, canvas, after } 로 돌려준다.
  */
-export async function measureFirstFrame(browser, url, { timeoutMs = 30000, after } = {}) {
+export async function measureFirstFrame(browser, url, { timeoutMs = 30000, after, canvasSelector = ANY_CANVAS_SELECTOR } = {}) {
+  const script = buildDetectScript(canvasSelector);
   const ctx = await browser.newContext(); // 캐시 없는 새 컨텍스트
   try {
     const page = await ctx.newPage();
-    await page.addInitScript(DETECT_SCRIPT);
+    await page.addInitScript(script);
     await page.goto(url, { waitUntil: 'commit' });
     try {
       await page.waitForFunction(() => window.__ffMs !== undefined, null, { timeout: timeoutMs, polling: 10 });
     } catch {
-      throw new Error(`첫 프레임 미감지(${timeoutMs} ms 안에 배경색과 다른 픽셀이 그려지지 않음): ${url}`);
+      throw new Error(`첫 프레임 미감지(${timeoutMs} ms 안에 선택자 ${canvasSelector} 캔버스에 배경색과 다른 픽셀이 그려지지 않음): ${url}`);
     }
-    const ms = await page.evaluate(() => window.__ffMs);
-    return after ? { ms, after: await after(page) } : { ms };
+    const { ms, canvas } = await page.evaluate(() => ({ ms: window.__ffMs, canvas: window.__ffCanvas }));
+    return after ? { ms, canvas, after: await after(page) } : { ms, canvas };
   } finally { await ctx.close(); }
 }
