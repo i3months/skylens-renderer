@@ -70,7 +70,7 @@ export function processTreeMemory(tag, { procRoot = '/proc' } = {}) {
       const fields = readFileSync(`${procRoot}/${p}/statm`, 'utf8').trim().split(/\s+/);
       if (fields.length < 2 || !/^\d+$/.test(fields[1])) continue; // statm 형식이 깨졌으면 이 프로세스를 건너뛴다
       const rss = Number(fields[1]) * page;
-      if (!Number.isFinite(rss) || rss < 0) continue; // 음수면 합산하지 않고 이 프로세스를 건너뛴다
+      if (!Number.isSafeInteger(rss)) continue; // 매우 큰 수면 안전하지 않아 건너뛴다
       bytes += rss; rssProcs++;
     } catch { /* 사라진 프로세스 */ }
   }
