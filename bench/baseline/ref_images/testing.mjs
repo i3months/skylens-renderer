@@ -1,4 +1,4 @@
-// 테스트 전용 도우미: 합성 점군과 56 B 스플랫 PLY 작성기. run() 경로에서는 쓰지 않는다.
+// 테스트 전용 도우미: 합성 점군과 PLY 작성기(56 B 스플랫, 임의 속성 배치). run() 경로에서는 쓰지 않는다.
 // mulberry32 PRNG: Tommy Ettinger 의 알고리즘, 공개 도메인(public domain).
 import { SH_C0 } from './index.mjs';
 
@@ -77,4 +77,44 @@ export function syntheticScene({ spacing = 0.12, seed = 7 } = {}) {
   const floaters = Math.max(20, Math.floor(pts.length * 0.01));
   for (let k = 0; k < floaters; k++) put((rnd() - 0.5) * 600, rnd() * 400, (rnd() - 0.5) * 600, [255, 0, 255]);
   return pts;
+}
+
+const WRITE = {
+  float: (b, v, o) => b.writeFloatLE(v, o), double: (b, v, o) => b.writeDoubleLE(v, o),
+  uchar: (b, v, o) => b.writeUInt8(v, o), int: (b, v, o) => b.writeInt32LE(v, o), ushort: (b, v, o) => b.writeUInt16LE(v, o),
+};
+const BYTES = { float: 4, double: 8, uchar: 1, int: 4, ushort: 2 };
+
+/** 자주 쓰는 속성 배치. [type, name] 목록이다. */
+export const LAYOUTS = {
+  // renderer_basis §7-4 의 dense.ply 27 B: x y z float32, nx ny nz float32, r g b uint8
+  dense27: [['float', 'x'], ['float', 'y'], ['float', 'z'], ['float', 'nx'], ['float', 'ny'], ['float', 'nz'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue']],
+  rgb15: [['float', 'x'], ['float', 'y'], ['float', 'z'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue']],
+  // double 좌표 + 앞·중간·뒤 패딩 속성(색 오프셋이 레코드 앞이 아니다)
+  doublePadded: [['int', 'pad0'], ['double', 'x'], ['double', 'y'], ['ushort', 'pad1'], ['double', 'z'], ['uchar', 'blue'], ['uchar', 'green'], ['uchar', 'red'], ['uchar', 'alpha'], ['float', 'pad2']],
+};
+
+/**
+ * 임의 속성 배치의 binary_little_endian PLY 를 만든다. layout 은 [type, name] 목록.
+ * 값: x y z ← p, red green blue ← rgb, nx ny nz ← n(없으면 0,0,1), 그 밖의 속성은 (점 번호 + 1)·7 을 형에 맞게 자른 값(패딩).
+ * headerComment 를 주면 그 문자열을 comment 줄로 헤더에 넣는다(헤더 크기 시험용).
+ */
+export function encodePly(points, layout, { headerComment } = {}) {
+  const stride = layout.reduce((a, [t]) => a + BYTES[t], 0);
+  const comment = headerComment === undefined ? '' : `comment ${headerComment}\n`;
+  const head = Buffer.from(`ply\nformat binary_little_endian 1.0\n${comment}element vertex ${points.length}\n${layout.map(([t, n]) => `property ${t} ${n}\n`).join('')}end_header\n`, 'latin1');
+  const body = Buffer.alloc(points.length * stride);
+  points.forEach((q, i) => {
+    let o = i * stride;
+    for (const [t, n] of layout) {
+      let v;
+      if (n === 'x' || n === 'y' || n === 'z') v = q.p['xyz'.indexOf(n)];
+      else if (n === 'red' || n === 'green' || n === 'blue') v = q.rgb[['red', 'green', 'blue'].indexOf(n)];
+      else if (n === 'nx' || n === 'ny' || n === 'nz') v = (q.n ?? [0, 0, 1])[['nx', 'ny', 'nz'].indexOf(n)];
+      else v = ((i + 1) * 7) % (t === 'uchar' ? 256 : 65536);
+      WRITE[t](body, v, o);
+      o += BYTES[t];
+    }
+  });
+  return Buffer.concat([head, body]);
 }
