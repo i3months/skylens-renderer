@@ -3,24 +3,39 @@
 // 녹화 한 줄: {url, kind:'building'|'dem'|'imagery'|'other', status, bytes, body?}
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { requireInput } from '../../../contracts/inputs/index.mjs';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
 
 const DEVICE = 'recorded';
 const METHOD = 'har-jsonl-aggregate';
 
-/** JSON Lines 텍스트를 항목 배열로 바꾼다. 빈 줄은 건너뛴다. */
-export function parseRecording(text) {
-  return text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l, i) => {
-      try {
-        return JSON.parse(l);
-      } catch {
-        throw new Error(`녹화 ${i + 1}번째 줄이 JSON 이 아니다`);
-      }
-    });
+const KINDS = ['building', 'dem', 'imagery', 'other'];
+
+/** 녹화 한 항목을 검사한다. 원래 줄 번호(빈 줄 포함)를 오류에 넣는다. */
+function validateEntry(e, lineNo, name) {
+  const where = `${name} ${lineNo}번째 줄`;
+  if (e === null || typeof e !== 'object' || Array.isArray(e)) throw new Error(`${where}: 항목이 객체가 아니다`);
+  if (!KINDS.includes(e.kind)) throw new Error(`${where}: kind 가 허용값(${KINDS.join('|')})이 아니다: ${JSON.stringify(e.kind)}`);
+  if (!Number.isInteger(e.bytes) || e.bytes < 0) throw new Error(`${where}: bytes 가 0 이상 정수가 아니다: ${JSON.stringify(e.bytes)}`);
+}
+
+/** JSON Lines 텍스트를 항목 배열로 바꾼다. 빈 줄은 건너뛰되 줄 번호는 원본 기준. 항목 0개면 throw. */
+export function parseRecording(text, name = '녹화') {
+  const entries = [];
+  text.split('\n').forEach((raw, idx) => {
+    const l = raw.trim();
+    if (!l) return;
+    let e;
+    try {
+      e = JSON.parse(l);
+    } catch {
+      throw new Error(`${name} ${idx + 1}번째 줄이 JSON 이 아니다`);
+    }
+    validateEntry(e, idx + 1, name);
+    entries.push(e);
+  });
+  if (entries.length === 0) throw new Error(`${name}: 항목이 0개다`);
+  return entries;
 }
 
 function featuresOf(body) {
@@ -42,7 +57,8 @@ export function countBuildings(entries) {
   for (const e of entries) {
     if (e.kind !== 'building') continue;
     for (const f of featuresOf(e.body)) {
-      const id = f && (f.id ?? (f.properties && f.properties.id));
+      if (f === null || f === undefined) continue; // null feature 는 건물이 아니다
+      const id = (f.id ?? (f.properties && f.properties.id));
       if (id === undefined || id === null) anonymous += 1;
       else ids.add(String(id));
     }
@@ -52,7 +68,7 @@ export function countBuildings(entries) {
 
 /** 종류별 요청 수·바이트와 건물 수를 집계한다. */
 export function summarize(entries) {
-  const bytesOf = (e) => (Number.isFinite(e.bytes) ? e.bytes : 0);
+  const bytesOf = (e) => e.bytes;
   const sumBytes = (kind) => entries.filter((e) => e.kind === kind).reduce((s, e) => s + bytesOf(e), 0);
   return {
     request_count: entries.length,
@@ -66,9 +82,10 @@ export function summarize(entries) {
   };
 }
 
-export async function run({ skylensDir, outDir, commit, recording } = {}) {
-  const path = recording ?? join(skylensDir ?? '.', 'recordings', 'tower.jsonl');
-  const entries = parseRecording(await readFile(path, 'utf8'));
+export async function run({ outDir, commit, inputs } = {}) {
+  // 녹화는 필수 입력이다. 없으면 throw, 합성으로 대체하지 않는다.
+  const path = requireInput(inputs, 'towerRecording');
+  const entries = parseRecording(await readFile(path, 'utf8'), path);
   const s = summarize(entries);
   const rec = (metric, value, unit) => ({ metric: `tower_bytes.${metric}`, value, unit, device: DEVICE, method: METHOD, commit });
   const records = assertRecords([
