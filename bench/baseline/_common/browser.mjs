@@ -231,7 +231,7 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
       if (typeof orig !== 'function') continue;
       const wrapped = function (...a) {
         if (window.__ffMs !== undefined) return orig.apply(this, a); // 감지 뒤 남아 있는 래퍼(페이지가 원본을 캡처한 경우)는 해시 없이 위임
-        // 이 조기 반환(:233·:250)을 지워도 테스트가 실패하지 않는다(F-055 ②, 미해결): 해시 경로가 감지 뒤에도 값만 갱신할 뿐 결과가 같아 관측 가능한 차이가 없다. 성능 주장만 한다.
+        // 이 조기 반환(:233·:250)을 지워도 테스트가 실패하지 않는다(미해결): 해시 경로가 감지 뒤에도 값만 갱신할 뿐 결과가 같아 관측 가능한 차이가 없다. 성능 주장만 한다.
         const r = orig.apply(this, a);
         const st = sig.get(this.canvas);
         if (st) st.cur = (st.cur * 17 + name.length + (typeof a[0] === 'number' ? a[0] : 0)) | 0;

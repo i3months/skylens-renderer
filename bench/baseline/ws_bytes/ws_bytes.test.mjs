@@ -748,9 +748,9 @@ test('변이(j) 이어 붙인 회차를 프레임 수-1 로 세면 실패: [r40,
 const fin = (f) => ({ ...f, final: true });
 const perms = (a) => (a.length <= 1 ? [a] : a.flatMap((x, i) => perms([...a.slice(0, i), ...a.slice(i + 1)]).map((p) => [x, ...p])));
 
-// F-053 사본 규칙: 끊긴 같은 최고 수준 원본은 늦게 온 사본이라 바이트·final·뒤 분할 조각이 모두 stale.
+// 사본 규칙: 끊긴 같은 최고 수준 원본은 늦게 온 사본이라 바이트·final·뒤 분할 조각이 모두 stale.
 // 완결 판정과 segments 합은 같은 프레임 집합(stale 아닌 원본)을 근거로 한다.
-test('사본 규칙(F-053): [L2 5, L1 3, L2 5 final] 은 끊긴 연속의 final 이 사본이라 미완, stale_bytes 8', async () => {
+test('사본 규칙: [L2 5, L1 3, L2 5 final] 은 끊긴 연속의 final 이 사본이라 미완, stale_bytes 8', async () => {
   const s = summarize([F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))]);
   assert.deepEqual(s.segment_ids, []);
   assert.deepEqual(s.segments, []);
@@ -761,7 +761,7 @@ test('사본 규칙(F-053): [L2 5, L1 3, L2 5 final] 은 끊긴 연속의 final 
   await assert.rejects(runText(BASE + fr(1, 2, 5) + fr(1, 1, 3) + fr(1, 2, 5, ',"final":true')), /미완 구간만/);
 });
 
-test('사본 규칙(F-053): [L2 5, rL2 5, L2 5 final] 은 미완, [L2 5 final, rL2 5, L2 5] 는 완결 [5] (순서 의존)', () => {
+test('사본 규칙: [L2 5, rL2 5, L2 5 final] 은 미완, [L2 5 final, rL2 5, L2 5] 는 완결 [5] (순서 의존)', () => {
   // final 을 실은 프레임이 원본 연속(L2 5) 밖의 사본이라 완결 근거가 아니다
   const a = summarize([F(1, 2, 5), F(1, 2, 5, true), fin(F(1, 2, 5))]);
   assert.deepEqual(a.segment_ids, []);
@@ -777,7 +777,7 @@ test('사본 규칙(F-053): [L2 5, rL2 5, L2 5 final] 은 미완, [L2 5 final, r
   assert.equal(b.resend_bytes, 5);
 });
 
-test('사본 규칙(F-053) 순서 의존 고정: final 이 원본 연속 밖(끊긴 뒤)이면 미완, 안이면 완결 (손계산 값)', () => {
+test('사본 규칙 순서 의존 고정: final 이 원본 연속 밖(끊긴 뒤)이면 미완, 안이면 완결 (손계산 값)', () => {
   // {L2 5, L1 3, L2 5 final}: final 이 끊긴 연속 뒤에 오는 [L2, L1, L2f] 하나만 미완
   const A = [F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))];
   const [L2, L1, L2f] = A;
@@ -839,8 +839,8 @@ test('final 필드가 resend 프레임에만 있으면 method 는 "final 필드 
   assert.equal(summarize([fin(F(1, 2, 4))]).final_resend_only, false);
 });
 
-// ---- F-053 보충: 끊긴 같은 최고 수준 원본은 사본 규칙 ----
-test('사본 규칙(F-053) 변이(l) stale 프레임이 분할 연속을 다시 시작하면 실패: [L2 40, rL2 40, L2 7, L2 9] 는 [40], stale 2·16', async () => {
+// ---- 끊긴 같은 최고 수준 원본은 사본 규칙 ----
+test('사본 규칙 변이(l) stale 프레임이 분할 연속을 다시 시작하면 실패: [L2 40, rL2 40, L2 7, L2 9] 는 [40], stale 2·16', async () => {
   // 끊긴 뒤의 L2 7 과 그 뒤 조각 L2 9 가 같은 판정(stale)을 받는다
   const s = summarize([F(1, 2, 40), F(1, 2, 40, true), F(1, 2, 7), F(1, 2, 9)]);
   assert.deepEqual(s.segment_ids, [1]);
@@ -856,7 +856,7 @@ test('사본 규칙(F-053) 변이(l) stale 프레임이 분할 연속을 다시 
   assert.equal(get(r, 'ws_bytes.stale_levels').value, 2);
 });
 
-test('사본 규칙(F-053) 변이(l): [L0 10, rL0 10, L0 7, L0 9 final] 은 final 도 사본 조각이라 미완 (바이트와 같은 판정)', () => {
+test('사본 규칙 변이(l): [L0 10, rL0 10, L0 7, L0 9 final] 은 final 도 사본 조각이라 미완 (바이트와 같은 판정)', () => {
   const s = summarize([F(1, 0, 10), F(1, 0, 10, true), F(1, 0, 7), fin(F(1, 0, 9))]);
   assert.deepEqual(s.segment_ids, []);
   assert.deepEqual(s.incomplete_segments, [{ id: 1, bytes: 10, levels: [1] }]);
@@ -869,7 +869,7 @@ test('사본 규칙(F-053) 변이(l): [L0 10, rL0 10, L0 7, L0 9 final] 은 fina
   assert.equal(ok.stale_levels, 0);
 });
 
-test('사본 규칙(F-053): 완결 근거와 segments 합은 같은 프레임 집합 (final 프레임이 stale 이면 미완, 아니면 합에 포함)', () => {
+test('사본 규칙: 완결 근거와 segments 합은 같은 프레임 집합 (final 프레임이 stale 이면 미완, 아니면 합에 포함)', () => {
   const sumOf = (a) => a.reduce((x, y) => x + y, 0);
   const cases = [
     [F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))],
@@ -892,7 +892,7 @@ test('사본 규칙(F-053): 완결 근거와 segments 합은 같은 프레임 �
   }
 });
 
-// ---- F-055 ①: final 이 resend 에만 있으면 wsTopLevel 을 무시하지 않는다 ----
+// ---- final 이 resend 에만 있으면 wsTopLevel 을 무시하지 않는다 ----
 test('변이(m) top_level_ignored 가 anyFinalField 기준이면 실패: final 이 resend 에만 있고 wsTopLevel 을 주면 무시 아님', async () => {
   const s = summarize([F(1, 0, 1), F(1, 1, 2), fin(F(2, 1, 4, true))], { topLevel: 1 });
   assert.equal(s.top_level_ignored, false);
@@ -903,7 +903,7 @@ test('변이(m) top_level_ignored 가 anyFinalField 기준이면 실패: final �
   for (const x of r) assert.doesNotMatch(x.method, /무시/);
 });
 
-// ---- F-056 ①: 더 높은 수준 resend 에 추월당한 원본의 final ----
+// ---- 더 높은 수준 resend 에 추월당한 원본의 final ----
 test('변이(n) final 의 추월 기준이 원본 최고 수준(hi)이면 실패: [L1 5, rL2 5, L1 3 final] 미완, [L1 5, L1 3 final] 완결', () => {
   const s = summarize([F(1, 1, 5), F(1, 2, 5, true), fin(F(1, 1, 3))]);
   assert.deepEqual(s.segment_ids, []);
