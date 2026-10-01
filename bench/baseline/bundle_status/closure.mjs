@@ -56,13 +56,16 @@ export function classify3d(rel, buf, evidence = null) {
 /** 옆의 sourcemap 판정: 'sourcemap-3d' | 'sourcemap-app'(sources 가 있으나 3D 패키지 없음) | 'sourcemap-parse-error'(JSON 파싱 실패) | null(없음·깨짐·sources 비어 있음). */
 export function mapEvidence(abs) {
   try {
-    const mapText = readFileSync(`${abs}.map`, 'utf8');
-    let sources;
+    // UTF-8 BOM 으로 시작하는 맵도 유효하므로 제거 후 파싱한다.
+    const mapText = readFileSync(`${abs}.map`, 'utf8').replace(/^\uFEFF/, '');
+    let parsed;
     try {
-      sources = JSON.parse(mapText).sources;
+      parsed = JSON.parse(mapText);
     } catch (e) {
       return `sourcemap-parse-error:${e.message}`;
     }
+    // JSON 은 유효하지만 객체가 아닌 경우(null 등)는 파싱 오류가 아니라 sources 없음으로 본다.
+    const sources = parsed?.sources;
     if (!Array.isArray(sources) || !sources.some((x) => typeof x === 'string')) return null;
     return sources.some((x) => typeof x === 'string' && PKG_3D_SOURCE.test(x.replace(/\\/g, '/'))) ? 'sourcemap-3d' : 'sourcemap-app';
   } catch {
@@ -84,7 +87,7 @@ export function basisSummary(bases) {
     }
   }
   const parseErrorText = n.parseError ? ` (${n.parseError} sourcemap parse error(s): ${errors.slice(0, 3).join(', ')}${errors.length > 3 ? '...' : ''})` : '';
-  return `3D basis: package ${n.package}, sourcemap ${n.sourcemap}, code-marker heuristic ${n.heuristic} JS files${n.heuristic ? ' (no usable sourcemap; heuristic may misclassify)' : ''}${parseErrorText}`;
+  return `3D basis: package ${n.package}, sourcemap ${n.sourcemap}, code-marker heuristic ${n.heuristic} JS files${n.heuristic || n.parseError ? ' (no usable sourcemap; heuristic may misclassify)' : ''}${parseErrorText}`;
 }
 export function outsideWarning(outside) {
   return outside.length ? `WARNING: ${outside.length} dist JS file(s) outside the entry closure were not measured (${outside.slice(0, 5).join(', ')}); entry closure may be incomplete` : '';

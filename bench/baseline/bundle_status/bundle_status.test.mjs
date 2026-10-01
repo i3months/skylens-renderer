@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from './index.mjs';
+import { basisSummary, mapEvidence } from './closure.mjs';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
 
 const COMMIT = 'abcdef1234567';
@@ -290,7 +291,7 @@ test('dist: 깨진 sourcemap·sources 가 빈 맵은 앱 판정이 아니라 코
   const dist = await mockDist();
   const out = await mkdtemp(join(tmpdir(), 'skylens-out-'));
   try {
-    await put(dist, 'assets/status-A.js', FILES['status-A.js'] + 'import"./broken-1.js";import"./empty-2.js";import"./nonjson-3.js";import"./plain-4.js";\n');
+    await put(dist, 'assets/status-A.js', FILES['status-A.js'] + 'import"./broken-1.js";import"./empty-2.js";import"./nonjson-3.js";import"./plain-4.js";import"./html-5.js";\n');
     await put(dist, 'assets/broken-1.js', 'const w=new WebGLRenderer();\n');
     await put(dist, 'assets/broken-1.js.map', '{"version":3,"sources":[');
     await put(dist, 'assets/empty-2.js', 'const g=new BufferGeometry();\n');
@@ -299,6 +300,8 @@ test('dist: 깨진 sourcemap·sources 가 빈 맵은 앱 판정이 아니라 코
     await put(dist, 'assets/nonjson-3.js.map', JSON.stringify({ version: 3, sources: [1, null] }));
     await put(dist, 'assets/plain-4.js', 'const t="three splat";\n');
     // plain-4.js 는 .map 파일 없음 (맵 파일이 없으면 null 반환)
+    await put(dist, 'assets/html-5.js', 'const t="three splat";\n');
+    await put(dist, 'assets/html-5.js.map', '<html>404</html>');
     await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
     const m = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8')).manifest;
     const f = (n) => m.find((x) => x.file === `assets/${n}`);
@@ -310,10 +313,31 @@ test('dist: 깨진 sourcemap·sources 가 빈 맵은 앱 판정이 아니라 코
     assert.deepEqual([f('nonjson-3.js').is_3d, f('nonjson-3.js').basis], [true, 'heuristic']);
     // 맵 파일 없음: 코드 표지 폴백
     assert.deepEqual([f('plain-4.js').is_3d, f('plain-4.js').basis], [false, 'heuristic']);
+    // HTML 이 맵 자리에 온 경우: parse error basis, is_3d 는 코드 표지(문자열 three splat 은 표지 아님 → false)로 판정
+    assert.ok(f('html-5.js').basis.startsWith('sourcemap-parse-error:'), 'html-5.js basis');
+    assert.equal(f('html-5.js').is_3d, false);
   } finally {
     await rm(dist, { recursive: true, force: true });
     await rm(out, { recursive: true, force: true });
   }
+});
+
+test('mapEvidence: BOM 붙은 맵은 파싱되고, 내용이 null 인 맵은 parse error 가 아니다', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'skylens-map-'));
+  try {
+    await put(dir, 'bom.js.map', '\uFEFF' + JSON.stringify({ version: 3, sources: ['../node_modules/three/src/core/Object3D.js'] }));
+    assert.equal(mapEvidence(join(dir, 'bom.js')), 'sourcemap-3d');
+    await put(dir, 'nul.js.map', 'null');
+    assert.equal(mapEvidence(join(dir, 'nul.js')), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('basisSummary: 근거가 전부 parse error 여도 휴리스틱 경고 문구가 붙는다', () => {
+  const m = basisSummary(['sourcemap-parse-error:Unexpected end']);
+  assert.ok(m.includes('(no usable sourcemap; heuristic may misclassify)'), m);
+  assert.ok(m.includes('1 sourcemap parse error(s)'), m);
 });
 
 test('dist: 폐포 밖 JS 가 있으면 경고가 method 와 manifest 에 남는다', async () => {
