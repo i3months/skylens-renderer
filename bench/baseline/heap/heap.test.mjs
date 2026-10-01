@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
@@ -32,7 +32,8 @@ const BLANK = HOLD.replace('new Float32Array(26214400).fill(1.5)', '[]');
 
 async function measure(html) {
   const dist = await mkdtemp(join(tmpdir(), 'heap-'));
-  await writeFile(join(dist, 'index.html'), html);
+  await mkdir(join(dist, 'res/static'), { recursive: true });
+  await writeFile(join(dist, 'res/static/status.html'), html);
   const recs = await run({ commit: 'abcdef1', inputs: { distDir: dist }, runs: 3, timeoutMs: 15000 });
   assertRecords(recs);
   return Object.fromEntries(recs.map((r) => [r.metric, r]));
@@ -51,4 +52,17 @@ test('브라우저: 100 MiB Float32Array 픽스처의 프로세스 메모리 >= 
     `delta ${hold['heap.process_rss'].value - blank['heap.process_rss'].value}`);
   // TypedArray 는 V8 힙 밖이므로 js_used 는 50 MiB 미만.
   assert.ok(hold['heap.js_used'].value < 50 * MIB, `js ${hold['heap.js_used'].value}`);
+});
+
+test('run: entryPath 파일이 dist 에 없으면 throw', async () => {
+  const dist = await mkdtemp(join(tmpdir(), 'heap-'));
+  await writeFile(join(dist, 'index.html'), '<p>landing</p>');
+  await assert.rejects(() => run({ commit: 'abcdef1', inputs: { distDir: dist } }), /entryPath.*\/res\/static\/status\.html/);
+});
+
+// 실제 skylens dist 로 도는 선택적 테스트. SKYLENS_DIST_DIR 가 있을 때만 실행한다.
+test('실제 dist(SKYLENS_DIST_DIR): 상황판 js_used 가 양수이고 method 에 entryPath 가 있다', { skip: process.env.SKYLENS_DIST_DIR ? (reason ?? false) : 'SKYLENS_DIST_DIR 없음' }, async () => {
+  const recs = await run({ commit: 'abcdef1', inputs: { distDir: process.env.SKYLENS_DIST_DIR }, runs: 2, timeoutMs: 30000 });
+  assert.ok(recs[0].value > 1024 * 1024, `js ${recs[0].value}`);
+  assert.match(recs[0].method, /\/res\/static\/status\.html/);
 });

@@ -1,9 +1,9 @@
-// 첫 프레임 시간 기준선 (T01.6). inputs.distDir(이미 빌드된 dist)를 http 로 서빙해 헤드리스 Chromium(소프트웨어 렌더)으로 5회 측정한다. 결과는 참고값이다.
+// 첫 프레임 시간 기준선 (T01.6). inputs.distDir(이미 빌드된 dist)의 inputs.entryPath(기본 상황판)를 http 로 서빙해 헤드리스 Chromium(소프트웨어 렌더)으로 5회 측정한다. 결과는 참고값이다.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { requireInput } from '../../../contracts/inputs/index.mjs';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
-import { launchBrowser, serveDist, measureFirstFrame, DEVICE } from '../_common/browser.mjs';
+import { launchBrowser, serveDist, measureFirstFrame, resolveEntryPath, DEAD_RELAY_QUERY, DEVICE } from '../_common/browser.mjs';
 
 export const RUNS = 5;
 
@@ -25,13 +25,14 @@ export function stddev(xs) {
 
 export async function run({ outDir, commit, inputs, runs = RUNS, timeoutMs = 30000 } = {}) {
   const distDir = requireInput(inputs, 'distDir');
-  const server = await serveDist(distDir);
+  const entryPath = resolveEntryPath(inputs);
+  const server = await serveDist(distDir, { entryPath });
   let browser;
   try {
     browser = await launchBrowser();
     const samples = [];
     for (let i = 0; i < runs; i++) samples.push((await measureFirstFrame(browser, server.url, { timeoutMs })).ms);
-    const how = `playwright ${runs}회, 새 컨텍스트, dist 를 http 로 서빙, 캔버스의 배경색과 다른 픽셀이 0.1% 이상 그려진 첫 rAF 시각(탐색 시작 기준), 소프트웨어 렌더라 참고값`;
+    const how = `playwright ${runs}회, 새 컨텍스트, dist 를 http 로 서빙해 ${entryPath}?${DEAD_RELAY_QUERY} 를 연다(ws 스트림 없이 부팅해 스캐폴드가 처음 그려지는 시점이며 접속→첫 프레임의 하한 참고값, 스트림 재생은 범위 밖), 캔버스의 배경색과 다른 픽셀이 0.1% 이상 그려진 첫 rAF 시각(탐색 시작 기준), 소프트웨어 렌더라 참고값`;
     const records = assertRecords([
       { metric: 'first_frame.median', value: median(samples), unit: 'ms', device: DEVICE, method: `${how}; 중앙값`, commit, samples },
       { metric: 'first_frame.stddev', value: stddev(samples), unit: 'ms', device: DEVICE, method: `${how}; 표본 표준편차(n-1)`, commit, samples },

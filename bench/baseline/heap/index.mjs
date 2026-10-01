@@ -5,7 +5,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { requireInput } from '../../../contracts/inputs/index.mjs';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
-import { launchBrowser, serveDist, measureFirstFrame, DEVICE } from '../_common/browser.mjs';
+import { launchBrowser, serveDist, measureFirstFrame, resolveEntryPath, DEAD_RELAY_QUERY, DEVICE } from '../_common/browser.mjs';
 
 export const RUNS = 5;
 export const METRIC = 'heap.js_used';
@@ -63,7 +63,8 @@ async function measureOnce(browser, url, tag, timeoutMs) {
 
 export async function run({ commit, inputs, runs = RUNS, timeoutMs = 30000 } = {}) {
   const distDir = requireInput(inputs, 'distDir');
-  const server = await serveDist(distDir);
+  const entryPath = resolveEntryPath(inputs);
+  const server = await serveDist(distDir, { entryPath });
   const tag = `--skylens-bench-tag=${randomUUID()}`;
   let browser;
   try {
@@ -76,7 +77,7 @@ export async function run({ commit, inputs, runs = RUNS, timeoutMs = 30000 } = {
       if (r.rss !== null) rss.push(r.rss);
     }
     const base = { unit: 'B', device: DEVICE, commit };
-    const how = `playwright ${runs}회, dist 를 http 로 서빙, 첫 프레임 뒤 측정`;
+    const how = `playwright ${runs}회, dist 를 http 로 서빙해 ${entryPath}?${DEAD_RELAY_QUERY} 를 연다(ws 스트림 없이 부팅한 스캐폴드, 스트림 재생은 범위 밖), 첫 프레임 뒤 측정`;
     const records = [{ ...base, metric: METRIC, value: median(js), method: `${how}; CDP JSHeapUsedSize(GC 후) 중앙값. V8 힙만이며 TypedArray·WebGL 버퍼 제외`, samples: js }];
     if (rss.length === runs) {
       records.push({ ...base, metric: METRIC_RSS, value: median(rss), method: `${how}; 브라우저 프로세스 트리 RSS 합(/proc) 중앙값`, samples: rss });
