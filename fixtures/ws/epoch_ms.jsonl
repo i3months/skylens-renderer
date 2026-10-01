@@ -1,0 +1,10 @@
+{"t_ms":1700000000000,"dir":"tx","bytes":120,"kind":"hello"}
+{"t_ms":1700000000200,"dir":"rx","bytes":400,"kind":"first_frame"}
+{"t_ms":1700000000300,"dir":"rx","bytes":1000,"kind":"points","segment":3,"level":0}
+{"t_ms":1700000000900,"dir":"rx","bytes":2000,"kind":"points","segment":7,"level":0}
+{"t_ms":1700000001500,"dir":"rx","bytes":4000,"kind":"points","segment":3,"level":1}
+{"t_ms":1700000002600,"dir":"rx","bytes":8000,"kind":"points","segment":7,"level":1}
+{"t_ms":1700000003100,"dir":"rx","bytes":16000,"kind":"points","segment":3,"level":2}
+{"t_ms":1700000004200,"dir":"rx","bytes":32000,"kind":"points","segment":7,"level":2}
+{"t_ms":1700000005000,"dir":"rx","bytes":64000,"kind":"points","segment":3,"level":3}
+{"t_ms":1700000006800,"dir":"rx","bytes":128000,"kind":"points","segment":7,"level":3}
