@@ -40,17 +40,18 @@ export function parsePss(text) {
 }
 
 /** /proc 로 tag 를 명령행에 가진 프로세스와 그 자손의 메모리 합. /proc 이 없으면 null.
- *  { bytes, pssProcs, rssProcs }: 프로세스마다 Pss 를 쓰고 읽지 못하면 RSS(statm × 페이지 크기)로 폴백한다. */
-export function processTreeMemory(tag) {
+ *  { bytes, pssProcs, rssProcs }: 프로세스마다 Pss 를 쓰고 읽지 못하면 RSS(statm × 페이지 크기)로 폴백한다.
+ *  procRoot 는 /proc 대신 읽을 디렉터리(테스트가 smaps·statm 을 읽을 수 없는 프로세스를 주입하는 용도). */
+export function processTreeMemory(tag, { procRoot = '/proc' } = {}) {
   let pids;
-  try { pids = readdirSync('/proc').filter((d) => /^\d+$/.test(d)); } catch { return null; }
+  try { pids = readdirSync(procRoot).filter((d) => /^\d+$/.test(d)); } catch { return null; }
   const ppid = new Map();
   let root = null;
   for (const p of pids) {
     try {
-      const st = readFileSync(`/proc/${p}/stat`, 'utf8');
+      const st = readFileSync(`${procRoot}/${p}/stat`, 'utf8');
       ppid.set(p, st.slice(st.lastIndexOf(')') + 2).split(' ')[1]);
-      if (root === null && readFileSync(`/proc/${p}/cmdline`, 'utf8').includes(tag)) root = p;
+      if (root === null && readFileSync(`${procRoot}/${p}/cmdline`, 'utf8').includes(tag)) root = p;
     } catch { /* 사라진 프로세스 */ }
   }
   if (root === null) return null;
@@ -63,9 +64,9 @@ export function processTreeMemory(tag) {
   let bytes = 0, pssProcs = 0, rssProcs = 0;
   for (const p of tree) {
     let pss = null;
-    try { pss = parsePss(readFileSync(`/proc/${p}/smaps_rollup`, 'utf8')); } catch { /* 읽기 불가 → RSS 폴백 */ }
+    try { pss = parsePss(readFileSync(`${procRoot}/${p}/smaps_rollup`, 'utf8')); } catch { /* 읽기 불가 → RSS 폴백 */ }
     if (pss !== null) { bytes += pss; pssProcs++; continue; }
-    try { bytes += Number(readFileSync(`/proc/${p}/statm`, 'utf8').split(' ')[1]) * page; rssProcs++; } catch { /* 사라진 프로세스 */ }
+    try { bytes += Number(readFileSync(`${procRoot}/${p}/statm`, 'utf8').split(' ')[1]) * page; rssProcs++; } catch { /* 사라진 프로세스 */ }
   }
   if (pssProcs + rssProcs === 0) return null; // 하나도 읽지 못했으면 0 B 를 값으로 내지 않는다
   return { bytes, pssProcs, rssProcs };
@@ -84,7 +85,7 @@ export function memoryMethodText({ pssProcs, rssProcs }) {
   return `경고: PSS·RSS 방식이 섞임 — ${pssProcs}개 프로세스는 Pss, ${rssProcs}개는 RSS(statm × 페이지 ${systemPageSize()} B)로 폴백. 공유 페이지 중복 계산 정도가 달라 다른 기록과 직접 비교하지 말 것`;
 }
 
-async function measureOnce(browser, url, tag, timeoutMs, canvasSelector) {
+async function measureOnce(browser, url, tag, timeoutMs, canvasSelector, readMemory = processTreeMemory) {
   const { after } = await measureFirstFrame(browser, url, {
     timeoutMs,
     canvasSelector,
@@ -95,13 +96,15 @@ async function measureOnce(browser, url, tag, timeoutMs, canvasSelector) {
       const { metrics } = await cdp.send('Performance.getMetrics');
       const js = metrics.find((m) => m.name === 'JSHeapUsedSize')?.value;
       if (!Number.isFinite(js)) throw new Error('JSHeapUsedSize 를 얻지 못함');
-      return { js, mem: processTreeMemory(tag) };
+      return { js, mem: readMemory(tag) };
     },
   });
   return after;
 }
 
-export async function run({ commit, inputs, runs = RUNS, timeoutMs = 30000 } = {}) {
+/** deps 는 테스트 주입용: launch(브라우저 실행), measureOnce(1회 측정, 마지막 인자로 메모리 읽기 함수를 받는다), readMemory(tag → processTreeMemory 형 결과). */
+export async function run({ commit, inputs, runs = RUNS, timeoutMs = 30000, deps = {} } = {}) {
+  const { launch = launchBrowser, measureOnce: measure = measureOnce, readMemory = processTreeMemory } = deps;
   const distDir = requireInput(inputs, 'distDir');
   const entryPath = resolveEntryPath(inputs);
   assertOptionalInputKeys(inputs);
@@ -111,13 +114,13 @@ export async function run({ commit, inputs, runs = RUNS, timeoutMs = 30000 } = {
   const tag = `--skylens-bench-tag=${randomUUID()}`;
   let browser;
   try {
-    browser = await launchBrowser([tag]);
+    browser = await launch([tag]);
     const js = [];
     const pss = [];
     const mems = [];
-    await measureOnce(browser, server.url, tag, timeoutMs, canvasSelector.trim()); // 워밍업 1회는 버린다(첫 부팅의 캐시·프로세스 구성 영향)
+    await measure(browser, server.url, tag, timeoutMs, canvasSelector.trim(), readMemory); // 워밍업 1회는 버린다(첫 부팅의 캐시·프로세스 구성 영향)
     for (let i = 0; i < runs; i++) {
-      const r = await measureOnce(browser, server.url, tag, timeoutMs, canvasSelector.trim());
+      const r = await measure(browser, server.url, tag, timeoutMs, canvasSelector.trim(), readMemory);
       js.push(r.js);
       if (r.mem !== null) { pss.push(r.mem.bytes); mems.push(r.mem); }
     }
