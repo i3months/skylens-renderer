@@ -217,13 +217,96 @@ test('processTreeMemory: statm 이 연속 공백(100  5)이어도 trim·split(/\
   assert.deepEqual(m, { bytes: 5 * systemPageSize(), pssProcs: 0, rssProcs: 1 });
 });
 
-test('processTreeMemory: statm 이 개행으로 끝나면(100 \\n) trim 으로 처리해 올바르게 파싱', () => {
+test('processTreeMemory: statm 이 앞공백을 가지면( 100 5) trim 으로 처리해 올바르게 파싱', () => {
   const tag = `--tag-${randomUUID()}`;
-  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-newline-')));
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-leading-space-')));
   mkdirSync(join(procRoot, '100'));
   writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
   writeFileSync(join(procRoot, '100', 'cmdline'), tag);
-  writeFileSync(join(procRoot, '100', 'statm'), '100 5\n');
+  writeFileSync(join(procRoot, '100', 'statm'), ' 100 5');
   const m = processTreeMemory(tag, { procRoot });
   assert.deepEqual(m, { bytes: 5 * systemPageSize(), pssProcs: 0, rssProcs: 1 });
+});
+
+test('processTreeMemory: statm 두 번째 필드가 과학 표기법(1 1e3)이면 정규식 검사로 제외', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-scientific-')));
+  mkdirSync(join(procRoot, '100'));
+  writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
+  writeFileSync(join(procRoot, '100', 'cmdline'), tag);
+  writeFileSync(join(procRoot, '100', 'statm'), '1 1e3');
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m, null);
+});
+
+test('processTreeMemory: statm 두 번째 필드가 16진수(1 0x10)이면 정규식 검사로 제외', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-hex-')));
+  mkdirSync(join(procRoot, '100'));
+  writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
+  writeFileSync(join(procRoot, '100', 'cmdline'), tag);
+  writeFileSync(join(procRoot, '100', 'statm'), '1 0x10');
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m, null);
+});
+
+test('processTreeMemory: statm 두 번째 필드가 소수(1 5.5)이면 정규식 검사로 제외', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-decimal-')));
+  mkdirSync(join(procRoot, '100'));
+  writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
+  writeFileSync(join(procRoot, '100', 'cmdline'), tag);
+  writeFileSync(join(procRoot, '100', 'statm'), '1 5.5');
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m, null);
+});
+
+test('processTreeMemory: statm 두 번째 필드가 양수 기호(1 +5)이면 정규식 검사로 제외', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-positive-sign-')));
+  mkdirSync(join(procRoot, '100'));
+  writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
+  writeFileSync(join(procRoot, '100', 'cmdline'), tag);
+  writeFileSync(join(procRoot, '100', 'statm'), '1 +5');
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m, null);
+});
+
+test('processTreeMemory: statm 두 번째 필드가 매우 크면(900000000000000000) unsafe 정수라 제외', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-large-')));
+  mkdirSync(join(procRoot, '100'));
+  writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
+  writeFileSync(join(procRoot, '100', 'cmdline'), tag);
+  writeFileSync(join(procRoot, '100', 'statm'), '1 900000000000000000');
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m, null);
+});
+
+test('processTreeMemory: 정상 statm + 음수 statm 혼합 → 음수는 제외, 정상만 센다', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-mixed-normal-negative-')));
+  for (const [pid, ppid, statm] of [['100', '1', '100 50 10'], ['101', '100', '1 -5']]) {
+    mkdirSync(join(procRoot, pid));
+    writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`);
+    writeFileSync(join(procRoot, pid, 'cmdline'), pid === '100' ? tag : 'child');
+    writeFileSync(join(procRoot, pid, 'statm'), statm);
+  }
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m.rssProcs, 1, 'only normal process counted');
+  assert.equal(m.bytes, 50 * systemPageSize(), 'bytes from normal process only');
+});
+
+test('processTreeMemory: 정상 + 0 RSS 혼합 → 0 RSS 도 유효해서 세어진다', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-normal-zero-')));
+  for (const [pid, ppid, statm] of [['100', '1', '100 50 10'], ['101', '100', '1 0']]) {
+    mkdirSync(join(procRoot, pid));
+    writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`);
+    writeFileSync(join(procRoot, pid, 'cmdline'), pid === '100' ? tag : 'child');
+    writeFileSync(join(procRoot, pid, 'statm'), statm);
+  }
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m.rssProcs, 2, 'both processes counted including zero RSS');
+  assert.equal(m.bytes, 50 * systemPageSize(), 'bytes = 50 (from first) + 0 (from second)');
 });
