@@ -1,0 +1,18 @@
+#!/bin/sh
+# 스테이징된 변경의 추가 줄에 생성 도구 흔적이 있으면 커밋을 막는다.
+# .githooks/ 아래는 패턴 정의 자체라 검사에서 뺀다.
+. "$(dirname "$0")/_patterns.sh"
+hits=$(git diff --cached --no-color -U0 --diff-filter=ACMR -- . ':(exclude).githooks/' \
+  | grep -E '^\+' | grep -Ev '^\+\+\+ ' | grep -E "$TRACE_RE")
+if [ -n "$hits" ]; then
+  echo "pre-commit: 추가된 내용에 금지된 흔적이 있다:" >&2
+  echo "$hits" >&2
+  exit 1
+fi
+# 바뀐 파일 이름도 본다.
+names=$(git diff --cached --name-only --diff-filter=ACMR | grep -E "$TRACE_RE")
+if [ -n "$names" ]; then
+  echo "pre-commit: 파일 이름에 금지된 흔적이 있다: $names" >&2
+  exit 1
+fi
+exit 0

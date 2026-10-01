@@ -1,0 +1,9 @@
+#!/bin/sh
+# 커밋 메시지에 생성 도구 흔적이 있으면 커밋을 막는다.
+. "$(dirname "$0")/_patterns.sh"
+if grep -Eq "$TRACE_RE" "$1"; then
+  echo "commit-msg: 커밋 메시지에 금지된 흔적이 있다:" >&2
+  grep -En "$TRACE_RE" "$1" >&2
+  exit 1
+fi
+exit 0
