@@ -1,13 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { serveDist, launchBrowser, measureFirstFrame, unavailableReason, CHROMIUM_ARGS, DEVICE } from './browser.mjs';
+import { resolveEntryPath, DEFAULT_ENTRY_PATH, serveDist, launchBrowser, measureFirstFrame, unavailableReason, CHROMIUM_ARGS, DEVICE } from './browser.mjs';
 
 async function page(html) {
   const dir = await mkdtemp(join(tmpdir(), 'bc-'));
-  await writeFile(join(dir, 'index.html'), html);
+  await mkdir(join(dir, 'res/static'), { recursive: true });
+  await writeFile(join(dir, 'res/static/status.html'), html);
   return dir;
 }
 
@@ -18,17 +19,27 @@ const draw = () => { gl.enable(gl.SCISSOR_TEST); gl.scissor(40, 40, 80, 80); gl.
 ${drawDelayMs === null ? '' : `setTimeout(draw, ${drawDelayMs});`}
 </script>`;
 
-test('serveDist: distDir 없음/ index.html 없음은 오류', async () => {
+test('serveDist: distDir 없음/ entryPath 파일 없음은 오류', async () => {
   await assert.rejects(() => serveDist(undefined), /distDir/);
   const empty = await mkdtemp(join(tmpdir(), 'bc-'));
-  await assert.rejects(() => serveDist(empty), /index\.html/);
+  await writeFile(join(empty, 'index.html'), '<p>landing</p>');
+  await assert.rejects(() => serveDist(empty), /\/res\/static\/status\.html/);
+  await assert.rejects(() => serveDist(empty, { entryPath: '/../x.html' }), /entryPath|없음/);
+});
+
+test('resolveEntryPath: 기본값과 형식 검증', () => {
+  assert.equal(DEFAULT_ENTRY_PATH, '/res/static/status.html');
+  assert.equal(resolveEntryPath({}), '/res/static/status.html');
+  assert.equal(resolveEntryPath(undefined), '/res/static/status.html');
+  assert.equal(resolveEntryPath({ entryPath: '/index.html' }), '/index.html');
+  for (const bad of ['index.html', '//evil/x', '/a.html?x=1', '', 5]) assert.throws(() => resolveEntryPath({ entryPath: bad }), /entryPath/);
 });
 
 test('serveDist: http 로 서빙하고 없는 파일은 404', async () => {
   const dir = await page('<p>hi</p>');
   const s = await serveDist(dir);
   try {
-    assert.match(s.url, /^http:\/\/127\.0\.0\.1:\d+\/index\.html$/);
+    assert.match(s.url, /^http:\/\/127\.0\.0\.1:\d+\/res\/static\/status\.html\?splat=off&relay=ws:\/\/127\.0\.0\.1:9\/stream$/);
     assert.equal(await (await fetch(s.url)).text(), '<p>hi</p>');
     assert.equal((await fetch(`http://127.0.0.1:${s.port}/nope.js`)).status, 404);
   } finally { await s.close(); }

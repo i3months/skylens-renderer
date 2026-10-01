@@ -68,11 +68,35 @@ export async function launchBrowser(extraArgs = []) {
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.wasm': 'application/wasm', '.png': 'image/png', '.svg': 'image/svg+xml', '.ply': 'application/octet-stream' };
 
-/** 이미 빌드된 dist 를 http 로 서빙한다. distDir 가 없거나 index.html 이 없으면 throw. */
-export async function serveDist(distDir) {
+/** 측정 대상 기본 페이지(dist 루트 기준 URL 경로). 랜딩(index.html)이 아니라 상황판이다. */
+export const DEFAULT_ENTRY_PATH = '/res/static/status.html';
+/**
+ * 기본 상황판 진입 쿼리. relay 는 죽은 주소(ws 오류가 나도 페이지는 계속 부팅, smoke.spec.ts 의 기대 소음)이고,
+ * splat=off 는 dist 에 데모 PLY(res/static/demo, vite publicDir 밖)가 없어 기본 splat 요청이 404 로 부팅이 멈추는 것을 피한다.
+ */
+export const DEAD_RELAY_QUERY = 'splat=off&relay=ws://127.0.0.1:9/stream';
+
+/** inputs.entryPath 를 검증해 돌려준다(없으면 기본값). '/' 로 시작하는 경로여야 한다. */
+export function resolveEntryPath(inputs) {
+  const p = inputs?.entryPath ?? DEFAULT_ENTRY_PATH;
+  if (typeof p !== 'string' || !p.startsWith('/') || p.startsWith('//') || /[?#]/.test(p)) {
+    throw new Error(`inputs.entryPath 는 '/' 로 시작하는 URL 경로여야 함(쿼리·해시 불가): ${String(p)}`);
+  }
+  return p;
+}
+
+/**
+ * 이미 빌드된 dist 를 http 로 서빙한다. distDir 가 없거나 entryPath 파일이 dist 에 없으면 throw.
+ * 반환 url 은 entryPath 를 가리키며, 기본 상황판 경로면 죽은 relay 쿼리를 붙인다.
+ */
+export async function serveDist(distDir, { entryPath = DEFAULT_ENTRY_PATH } = {}) {
   if (!distDir) throw new Error('input missing: distDir');
   const root = resolve(distDir);
-  if (!existsSync(join(root, 'index.html'))) throw new Error(`distDir 에 index.html 이 없음: ${root}`);
+  resolveEntryPath({ entryPath });
+  const entryFile = resolve(join(root, normalize(entryPath)));
+  if (!entryFile.startsWith(root + sep) || !(await stat(entryFile).catch(() => null))?.isFile()) {
+    throw new Error(`distDir 에 entryPath 파일이 없음: ${entryPath} (dist: ${root})`);
+  }
   const server = createServer(async (req, res) => {
     try {
       const p = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname));
@@ -85,7 +109,7 @@ export async function serveDist(distDir) {
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
-  return { port, url: `http://127.0.0.1:${port}/index.html`, close: () => new Promise((r) => { server.close(r); server.closeAllConnections?.(); }) };
+  return { port, url: `http://127.0.0.1:${port}${entryPath}${entryPath === DEFAULT_ENTRY_PATH ? `?${DEAD_RELAY_QUERY}` : ''}`, close: () => new Promise((r) => { server.close(r); server.closeAllConnections?.(); }) };
 }
 
 // 첫 프레임 판정 상수. 캔버스를 128x128 로 줄여 가장 흔한 색(배경)과 채널 차이가 8 초과인 픽셀이 0.1% 이상이면 "그려짐".
