@@ -53,13 +53,9 @@ export function classify3d(rel, buf, evidence = null) {
 export function mapEvidence(abs) {
   try {
     const mapText = readFileSync(`${abs}.map`, 'utf8');
-    // .map 전체를 JSON.parse 하지 않고, sources 필드만 추출해 파싱 비용을 줄인다.
-    const sourcesMatch = mapText.match(/"sources"\s*:\s*\[([^\]]*)\]/);
-    if (!sourcesMatch) return null;
-    const sourcesStr = `[${sourcesMatch[1]}]`;
     let sources;
     try {
-      sources = JSON.parse(sourcesStr);
+      sources = JSON.parse(mapText).sources;
     } catch {
       return null;
     }

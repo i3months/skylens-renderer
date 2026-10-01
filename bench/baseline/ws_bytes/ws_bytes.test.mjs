@@ -529,3 +529,88 @@ test('bytes 가 safe integer 가 아니면 오류 (1e300)', async () => {
   await assert.rejects(runText(BASE + '{"t_ms":0,"dir":"rx","bytes":1e300,"kind":"p"}\n'), /bad\.jsonl:2: .*bytes/);
   assert.equal(summarize([F(1, 2, Number.MAX_SAFE_INTEGER)]).segments[0], Number.MAX_SAFE_INTEGER);
 });
+
+// ---- 추월된 수준의 재전송·resend 전용 완결·재전송 뒤 분할 끊김 ----
+test('원본 최고 수준보다 낮은 resend 전용 수준은 추월된 수준: 합·받은 수준에서 빼고 건너뜀', async () => {
+  // [수준2 원본 final 10 B, 수준0 resend 99 B]: 받은 수준은 3 하나, 1·2 건너뜀, 99 B 는 재전송
+  const frames = [{ ...F(1, 2, 10), final: true }, F(1, 0, 99, true)];
+  const s = summarize(frames);
+  assert.deepEqual(s.segment_ids, [1]);
+  assert.deepEqual(s.segments, [10]);
+  assert.deepEqual(s.segment_levels, [[3]]);
+  assert.deepEqual(s.segment_levels_skipped, [[1, 2]]);
+  assert.equal(s.resend_bytes, 99);
+  assert.equal(s.stale_levels, 0);
+  assert.equal(s.total_bytes, 109);
+  const r = await runText(BASE + fr(1, 2, 10, ',"final":true') + fr(1, 0, 99, ',"resend":true'));
+  assert.deepEqual(get(r, 'ws_bytes.segment_total').samples, [10]);
+  assert.deepEqual(get(r, 'ws_bytes.levels_skipped').samples, [2]);
+  assert.equal(get(r, 'ws_bytes.resend_bytes').value, 99);
+  // final 필드가 없어도 같다
+  const t = summarize([F(1, 2, 10), F(1, 0, 99, true)]);
+  assert.deepEqual(t.segments, [10]);
+  assert.deepEqual(t.segment_levels_skipped, [[1, 2]]);
+  assert.equal(t.resend_bytes, 99);
+  // 원본 최고 수준이 오르기 전에 온 resend 전용 낮은 수준은 추월 전 수신이라 받은 수준 (원본 [0, 2] 와 같은 취급)
+  const before = summarize([F(1, 0, 99, true), F(1, 2, 10)]);
+  assert.deepEqual(before.segments, [109]);
+  assert.deepEqual(before.segment_levels, [[1, 3]]);
+  assert.deepEqual(before.segment_levels_skipped, [[2]]);
+  assert.equal(before.resend_bytes, 0);
+  // 추월 전 회차가 있으면 그것이 사본, 추월 뒤 회차는 재전송
+  const both = summarize([F(1, 0, 5, true), F(1, 2, 10), F(1, 0, 5, true)]);
+  assert.deepEqual(both.segments, [15]);
+  assert.equal(both.resend_bytes, 5);
+});
+
+test('원본 없이 final resend 프레임만 있으면 완결이 아니다 (완결은 원본 final 로만)', async () => {
+  const s = summarize([{ ...F(1, 2, 99, true), final: true }]);
+  assert.deepEqual(s.segment_ids, []);
+  assert.deepEqual(s.segments, []);
+  assert.equal(s.incomplete_segments.length, 1);
+  assert.deepEqual(s.incomplete_segments[0], { id: 1, bytes: 99, levels: [3] });
+  assert.deepEqual(s.resend_only_segments, [1]);
+  await assert.rejects(runText(BASE + fr(1, 2, 99, ',"resend":true,"final":true')), /미완 구간만/);
+  // 같은 구간에 final 원본이 오면 완결
+  const t = summarize([{ ...F(1, 2, 99, true), final: true }, { ...F(1, 2, 99), final: true }]);
+  assert.deepEqual(t.segments, [99]);
+  assert.equal(t.resend_bytes, 99);
+  assert.deepEqual(t.resend_only_segments, []);
+});
+
+test('resend 프레임 뒤의 같은 수준 원본은 분할 연속이 끊겨 stale', () => {
+  // [L1 7, rL1 7, L1 7, L2 1]: 원본 L1 7 + L2 1 = 8, 셋째 프레임은 stale 7, 둘째는 재전송 7
+  const s = summarize([F(1, 1, 7), F(1, 1, 7, true), F(1, 1, 7), F(1, 2, 1)]);
+  assert.deepEqual(s.segments, [8]);
+  assert.equal(s.stale_levels, 1);
+  assert.equal(s.stale_bytes, 7);
+  assert.equal(s.resend_bytes, 7);
+  assert.equal(s.total_bytes, 22);
+  assert.deepEqual(s.segment_levels, [[2, 3]]);
+  // 다른 구간 resend 는 끊지 않는다 (구간별 분할: 7+7+1 = 15)
+  const o = summarize([F(1, 1, 7), F(2, 1, 7, true), F(1, 1, 7), F(1, 2, 1)]);
+  assert.equal(o.stale_levels, 0);
+  assert.deepEqual(o.segment_ids, [1]);
+  assert.deepEqual(o.segments, [15]);
+});
+
+test('[r40, r40] 은 한 회차 분할로 80 이지만 단일 구간 relay 반복 재생과 구분 불가라 method 에 적는다', async () => {
+  const s = summarize([F(1, 2, 40, true), F(1, 2, 40, true)]);
+  assert.deepEqual(s.segments, [80]);
+  assert.equal(s.resend_merged_rounds, 1);
+  assert.deepEqual(s.resend_only_segments, [1]);
+  const r = await runText(BASE + fr(1, 2, 40, ',"resend":true') + fr(1, 2, 40, ',"resend":true'));
+  const seg = get(r, 'ws_bytes.segment_total');
+  assert.deepEqual(seg.samples, [80]);
+  assert.match(seg.method, /한 회차의 분할로 합산.*구분 불가/);
+  assert.match(seg.method, /resend 전용 구간 1개/);
+  // 사이에 다른 프레임이 끼면 다른 회차라 모호성 없음 (40, 재전송 40)
+  const apart = await runText(BASE + fr(1, 2, 40, ',"resend":true') + fr(2, 2, 3) + fr(1, 2, 40, ',"resend":true'));
+  assert.deepEqual(get(apart, 'ws_bytes.segment_total').samples, [40, 3]);
+  assert.equal(get(apart, 'ws_bytes.resend_bytes').value, 40);
+  assert.doesNotMatch(get(apart, 'ws_bytes.segment_total').method, /구분 불가/);
+  // 원본이 있는 수준의 연속 resend 는 모두 재전송이라 모호성 표기 없음
+  const orig = await runText(BASE + fr(1, 2, 10) + fr(1, 2, 4, ',"resend":true') + fr(1, 2, 4, ',"resend":true'));
+  assert.equal(get(orig, 'ws_bytes.resend_bytes').value, 8);
+  for (const x of orig) assert.doesNotMatch(x.method, /구분 불가|resend 전용/);
+});

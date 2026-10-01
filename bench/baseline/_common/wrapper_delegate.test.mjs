@@ -1,53 +1,92 @@
-// 감지 후 래퍼 위임(wrapper delegation) 단위 테스트.
-// 첫 프레임 감지 직후 WebGL 메서드 래퍼가 원본 함수로 복원되는지 확인한다.
+// 감지 후 래퍼 복원 테스트. 실제 chromium 페이지에서, 첫 프레임 감지 전에는 WebGL 메서드·getContext 가 래퍼이고
+// 감지 뒤에는 모두 원본(__ffOrig 없음, 네이티브 함수)으로 복원되며 페이지의 그리기 호출이 계속 동작하는지를 동작으로 확인한다.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDetectScript } from './browser.mjs';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { serveDist, launchBrowser, measureFirstFrame, buildDetectScript, unavailableReason } from './browser.mjs';
 
-test('래퍼 위임: 감지 후 원본 함수로 복원', () => {
-  const script = buildDetectScript('#test-canvas');
+const reason = process.platform !== 'linux' ? 'linux 전용(swiftshader 인자)' : await unavailableReason();
+if (reason) console.log(`# 브라우저 테스트 skip 사유: ${reason}`);
+const opts = { skip: reason ?? false };
 
-  // 스크립트가 __ffOrig 를 사용해 원본 함수를 저장하는지 확인.
-  assert.ok(script.includes('__ffOrig'), '원본 함수 저장 로직(__ffOrig)이 포함되어야 함');
+const WRAPPED = ['scissor', 'clearColor', 'bufferData', 'bufferSubData', 'texImage2D', 'texSubImage2D', 'useProgram', 'bindFramebuffer', 'blendFunc', 'enable', 'disable',
+  'clear', 'drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements'];
 
-  // 감지 후 래퍼 제거 로직이 있는지 확인.
-  assert.ok(script.includes('proto[name] = proto[name].__ffOrig'), '감지 후 원본 함수로 복원하는 로직이 포함되어야 함');
+// drawDelayMs 가 null 이면 그리지 않는다(감지되지 않음).
+const GL = (drawDelayMs, pre = '') => `<!doctype html><body style="margin:0"><canvas id=c width=200 height=200></canvas><script>${pre}
+const gl = document.getElementById('c').getContext('webgl', { alpha: false });
+gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+window.draw = () => { gl.enable(gl.SCISSOR_TEST); gl.scissor(40, 40, 80, 80); gl.clearColor(1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); };
+${drawDelayMs === null ? '' : `setTimeout(window.draw, ${drawDelayMs});`}
+</script>`;
 
-  // 감지 후 found 함수에서 복원이 일어나는지 확인.
-  assert.ok(script.includes('const found = (hit)'), 'found 함수 정의가 있어야 함');
-  assert.ok(script.match(/const found.*?proto\[name\] = proto\[name\]\.__ffOrig/s), 'found 함수 안에서 복원이 일어나야 함');
-});
-
-test('래퍼 위임: 스크립트가 state wrapper 와 원본 함수를 모두 포함', () => {
-  const script = buildDetectScript('canvas');
-
-  // 감지 전: state wrapper 로 hash 갱신.
-  assert.ok(script.includes('st.cur = (st.cur * 17'), '감지 전에 상태 래퍼로 hash 를 갱신해야 함');
-  assert.ok(script.includes('st.cur = (st.cur * 31'), '감지 전에 draw 서명 hash 를 갱신해야 함');
-
-  // 감지 후: 원본 함수로 즉시 위임(wrapped.__ffOrig 로 저장된 원본).
-  assert.ok(script.includes('wrapped.__ffOrig = orig'), '래퍼가 원본 함수를 __ffOrig 에 저장해야 함');
-});
-
-test('래퍼 위임: 폴링 비용 설명 주석 확인', () => {
-  // 이 테스트는 browser.mjs 파일의 JSDoc 에 폴링 비용 설명이 있는지 확인한다.
-  // buildDetectScript 함수의 반환 스크립트에 감지 후 복원 로직이 포함되므로,
-  // 폴링 비용 설명이 주석에 있어야 한다.
-  const script = buildDetectScript('#c');
-
-  // 감지 후 복원 로직이 있는지 확인.
-  assert.ok(script.includes('감지 후 래퍼를 제거해 원본 함수로 복원'),
-    '감지 후 래퍼 복원 로직 주석이 있어야 함');
-});
-
-test('래퍼 위임: 여러 선택자로도 wrapper 구조가 일관됨', () => {
-  const selectors = ['#status-view', '#control-view', 'canvas', '.webgl-canvas'];
-
-  for (const sel of selectors) {
-    const script = buildDetectScript(sel);
-
-    // 모든 선택자에 대해 래퍼 복원 로직이 있어야 함.
-    assert.ok(script.includes('__ffOrig'), `선택자 '${sel}' 에도 __ffOrig 로직이 있어야 함`);
-    assert.ok(script.includes('wrapped.__ffOrig = orig'), `선택자 '${sel}' 에도 원본 저장 로직이 있어야 함`);
+// 페이지 안에서 래퍼 상태를 조사한다. 래퍼는 __ffOrig 를 가지며, 복원된 원본은 네이티브 함수다.
+const inspect = (names) => {
+  const isNative = (f) => /\[native code\]/.test(Function.prototype.toString.call(f));
+  const out = { methods: {}, getContext: null };
+  for (const [pn, C] of Object.entries({ WebGLRenderingContext, WebGL2RenderingContext })) {
+    for (const n of names) {
+      const f = C.prototype[n];
+      if (typeof f === 'function') out.methods[`${pn}.${n}`] = { wrapped: f.__ffOrig !== undefined, native: isNative(f) };
+    }
   }
+  const g = HTMLCanvasElement.prototype.getContext;
+  out.getContext = { wrapped: g.__ffOrig !== undefined, native: isNative(g) };
+  return out;
+};
+
+async function withPage(html, fn) {
+  const dist = await mkdtemp(join(tmpdir(), 'wd-'));
+  await mkdir(join(dist, 'res/static'), { recursive: true });
+  await writeFile(join(dist, 'res/static/status.html'), html);
+  const s = await serveDist(dist);
+  const b = await launchBrowser();
+  try { return await fn(b, s.url); } finally { await b.close(); await s.close(); }
+}
+
+test('감지 뒤: 모든 WebGL 메서드와 getContext 가 원본으로 복원되고 그리기는 계속 동작', opts, async () => {
+  const { after } = await withPage(GL(0), (b, url) => measureFirstFrame(b, url, {
+    timeoutMs: 10000,
+    after: async (page) => ({
+      state: await page.evaluate(inspect, WRAPPED),
+      glError: await page.evaluate(() => { window.draw(); return document.getElementById('c').getContext('webgl').getError(); }),
+      newCtx: await page.evaluate(() => document.createElement('canvas').getContext('2d') !== null),
+    }),
+  }));
+  assert.ok(Object.keys(after.state.methods).length >= WRAPPED.length, '검사한 메서드가 너무 적음');
+  for (const [n, st] of Object.entries(after.state.methods)) {
+    assert.equal(st.wrapped, false, `${n} 가 감지 뒤에도 래퍼(__ffOrig 존재)`);
+    assert.equal(st.native, true, `${n} 가 네이티브 함수가 아님`);
+  }
+  assert.deepEqual(after.state.getContext, { wrapped: false, native: true });
+  assert.equal(after.glError, 0); // gl.NO_ERROR
+  assert.equal(after.newCtx, true);
+});
+
+test('감지 전(대조): 그리지 않으면 같은 메서드들이 래퍼 상태로 남는다', opts, async () => {
+  // 래퍼가 실제로 설치돼 있음을 보여, 위 테스트가 처음부터 래퍼가 없어서 통과하는 일을 막는다.
+  await withPage(GL(null), async (b, url) => {
+    const ctx = await b.newContext();
+    try {
+      const page = await ctx.newPage();
+      await page.addInitScript(buildDetectScript('#c'));
+      await page.goto(url, { waitUntil: 'load' });
+      await page.waitForTimeout(500);
+      assert.equal(await page.evaluate(() => window.__ffMs), undefined);
+      const st = await page.evaluate(inspect, WRAPPED);
+      for (const [n, m] of Object.entries(st.methods)) assert.equal(m.wrapped, true, `${n} 는 감지 전에 래퍼여야 함`);
+      assert.equal(st.getContext.wrapped, true);
+    } finally { await ctx.close(); }
+  });
+});
+
+test('페이지가 먼저 덮어쓴 getContext 는 감지 뒤 복원이 건드리지 않는다', opts, async () => {
+  const pre = 'setTimeout(() => { const g = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function (...a) { window.pageWrapped = true; return g.apply(this, a); }; }, 100);';
+  const { after } = await withPage(GL(400, pre), (b, url) => measureFirstFrame(b, url, {
+    timeoutMs: 10000,
+    after: (page) => page.evaluate(() => { document.createElement('canvas').getContext('2d'); return window.pageWrapped === true; }),
+  }));
+  assert.equal(after, true);
 });

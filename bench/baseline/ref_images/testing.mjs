@@ -89,6 +89,8 @@ const BYTES = { float: 4, double: 8, uchar: 1, int: 4, ushort: 2 };
 export const LAYOUTS = {
   // renderer_basis §7-4 의 dense.ply 27 B: x y z float32, nx ny nz float32, r g b uint8
   dense27: [['float', 'x'], ['float', 'y'], ['float', 'z'], ['float', 'nx'], ['float', 'ny'], ['float', 'nz'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue']],
+  // 크기는 27 B 지만 기준 형식이 아니다: x y z double, 법선 없음, r g b uint8
+  double27: [['double', 'x'], ['double', 'y'], ['double', 'z'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue']],
   rgb15: [['float', 'x'], ['float', 'y'], ['float', 'z'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue']],
   // double 좌표 + 앞·중간·뒤 패딩 속성(색 오프셋이 레코드 앞이 아니다)
   doublePadded: [['int', 'pad0'], ['double', 'x'], ['double', 'y'], ['ushort', 'pad1'], ['double', 'z'], ['uchar', 'blue'], ['uchar', 'green'], ['uchar', 'red'], ['uchar', 'alpha'], ['float', 'pad2']],

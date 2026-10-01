@@ -732,9 +732,39 @@ test('index.mjs 머리에 skylens(MIT) 출처·라이선스와 GeoAnchor 원점 
 });
 
 // ---- 비대칭 시점 투영 대조 ----
-// 픽스처 시점은 모두 x 이동항 t[0] = 0 이라 X_c = R·X_w + t 의 t[0] 부호·누락을 잡지 못한다. eye 가 축 위에 있지 않은 시점에서
-// rasterize(스칼라 경로)가 찍은 픽셀을 worldToCamera → projectCamera(벡터 경로)의 floor(u), floor(v) 와 점마다 대조한다.
-test('비대칭 시점(eye [5,3,10], target [2,1,0]): rasterize 픽셀이 worldToCamera→projectCamera 결과와 점마다 같다', () => {
+// 픽스처 시점은 모두 x 이동항 t[0] = 0 이라 골든이 X_c = R·X_w + t 의 t[0] 부호·누락을 잡지 못한다.
+// 아래 첫 테스트는 cameraExtrinsics 와 무관한 손계산 정답으로 R·t 자체를 시험한다.
+// 둘째 테스트는 같은 cameraExtrinsics 의 R·t 를 양쪽에 쓰므로 R·t 오류는 잡지 못하고, rasterize 의 스칼라 전개가
+// worldToCamera → projectCamera(벡터 경로)의 floor(u), floor(v)·최소 깊이와 같은지만 본다.
+test('비대칭 시점(eye [5,3,10], target [2,1,0]): 투영이 cameraExtrinsics 와 무관한 손계산 값과 같다', () => {
+  const view = { eye: [5, 3, 10], target: [2, 1, 0], up: [0, 1, 0], width: 320, height: 240, fov_y_deg: 60 };
+  const { R, t } = cameraExtrinsics(view);
+  const K = intrinsics(view);
+  // 손계산: 시선 eye − target = (3,2,10), 거리 d = √113. 카메라 축(GL, 시선은 −z_c):
+  //   z_c = (3,2,10)/√113, x_c = up × z_c = (10,0,−3)/√109, y_c = z_c × x_c = (−6,109,−20)/√12317.
+  //   f = (H/2)/tan(fov/2) = 120/tan 30° = 120√3, (cx, cy) = (160, 120).
+  const d = Math.sqrt(113);
+  const f = 120 * Math.sqrt(3);
+  const xc = [10 / Math.sqrt(109), 0, -3 / Math.sqrt(109)];
+  const yc = [-6 / Math.sqrt(12317), 109 / Math.sqrt(12317), -20 / Math.sqrt(12317)];
+  const at = (a, b) => [2 + a * xc[0] + b * yc[0], 1 + a * xc[1] + b * yc[1], a * xc[2] + b * yc[2]];
+  const proj = (p) => projectCamera(K, worldToCamera(R, t, p));
+  const near = (q, u, v, depth, msg) => {
+    assert.ok(q, `${msg}: 눈 뒤로 판정됐다`);
+    assert.ok(Math.abs(q.u - u) < 1e-9 && Math.abs(q.v - v) < 1e-9 && Math.abs(q.depth - depth) < 1e-9, `${msg}: (${q.u}, ${q.v}, ${q.depth}) ≠ (${u}, ${v}, ${depth})`);
+  };
+  // target 은 주점 (W/2, H/2), 깊이 d
+  near(proj([2, 1, 0]), 160, 120, d, 'target');
+  // x_c 로 1 → u = cx + f/d, y_c 로 1 → v = cy − f/d (화면 v 는 아래로 증가)
+  near(proj(at(1, 0)), 160 + f / d, 120, d, 'target + x_c');
+  near(proj(at(0, 1)), 160, 120 - f / d, d, 'target + y_c');
+  near(proj(at(-2, 0.5)), 160 - (2 * f) / d, 120 - (0.5 * f) / d, d, 'target − 2x_c + 0.5y_c');
+  // 같은 정답을 rasterize 픽셀로도: (1, 0.3) → u = 179.553…, v = 114.134…; (−2, 0.5) → u = 120.893…, v = 110.223…
+  assert.deepEqual(whitePixels(rasterize(one(at(1, 0.3)), view)), [[179, 114]]);
+  assert.deepEqual(whitePixels(rasterize(one(at(-2, 0.5)), view)), [[120, 110]]);
+});
+
+test('비대칭 시점(eye [5,3,10], target [2,1,0]): rasterize 스칼라 전개의 픽셀이 worldToCamera→projectCamera 결과와 점마다 같다', () => {
   const view = { eye: [5, 3, 10], target: [2, 1, 0], up: [0, 1, 0], width: 320, height: 240, fov_y_deg: 60 };
   const { R, t } = cameraExtrinsics(view);
   const K = intrinsics(view);
@@ -812,7 +842,7 @@ test('decodePlyFile 은 rgb 배치(27 B·double+패딩)에서도 decodePly 와 �
   const pts = syntheticPoints(5).slice(0, 3000);
   for (const [name, layout] of [['dense27', LAYOUTS.dense27], ['doublePadded', LAYOUTS.doublePadded]]) {
     const buf = encodePly(pts, layout);
-    const h = buf.length - (buf.length - buf.indexOf('end_header\n') - 11);
+    const h = buf.indexOf('end_header\n') + 11;
     const stride = (buf.length - h) / pts.length;
     // 두 번째 레코드의 x 를 NaN 으로(27 B 는 오프셋 0 float, doublePadded 는 오프셋 4 double)
     if (name === 'dense27') buf.writeFloatLE(NaN, h + stride);
@@ -833,9 +863,10 @@ test('decodePlyFile 은 rgb 배치(27 B·double+패딩)에서도 decodePly 와 �
 
 // rgb 입력으로 run 한 결과가 같은 점·같은 색의 56 B 스플랫 골든과 바이트까지 같아야 한다(색 채널·오프셋·좌표 형 모두 시험).
 for (const [name, layout, stride, noteRe] of [
-  ['27 B(법선 있음)', LAYOUTS.dense27, 27, /renderer_basis §7-4 27 B 와 같은 크기: 27 B 점\(x y z·uchar rgb\), 법선 nx ny nz 있음·무시, 중심점만 사용/],
-  ['15 B(법선 없음)', LAYOUTS.rgb15, 15, /renderer_basis §7-4 27 B 와 다름: 15 B 점\(x y z·uchar rgb\), 법선 없음, 중심점만 사용/],
-  ['38 B(double 좌표·패딩)', LAYOUTS.doublePadded, 38, /renderer_basis §7-4 27 B 와 다름: 38 B 점\(x y z·uchar rgb\), 법선 없음, 중심점만 사용/],
+  ['27 B(법선 있음)', LAYOUTS.dense27, 27, /renderer_basis §7-4 27 B 와 같은 형식: 27 B 점\(x y z float·uchar rgb\), 법선 nx ny nz float 있음·무시, 중심점만 사용/],
+  ['27 B(double 좌표·법선 없음)', LAYOUTS.double27, 27, /renderer_basis §7-4 27 B 와 크기만 같고 형식은 다름: 27 B 점\(x y z double·uchar rgb\), 법선 없음, 중심점만 사용/],
+  ['15 B(법선 없음)', LAYOUTS.rgb15, 15, /renderer_basis §7-4 27 B 와 다름: 15 B 점\(x y z float·uchar rgb\), 법선 없음, 중심점만 사용/],
+  ['38 B(double 좌표·패딩)', LAYOUTS.doublePadded, 38, /renderer_basis §7-4 27 B 와 다름: 38 B 점\(x y z double·uchar rgb\), 법선 없음, 중심점만 사용/],
 ]) {
   test(`run: uchar rgb ${name} 입력이 스플랫 골든과 같은 PPM 을 내고 method 가 형식을 바르게 적는다`, async (t) => {
     const { dir, ply } = await setup(t, encodePly(syntheticScene(), layout));
@@ -847,7 +878,8 @@ for (const [name, layout, stride, noteRe] of [
       assert.doesNotMatch(r.method, /56 ?B/);
       assert.doesNotMatch(r.method, /스플랫/);
     }
-    if (stride === 27) assert.match(recs[0].method, /27.*법선.*무시/);
+    if (layout === LAYOUTS.dense27) assert.match(recs[0].method, /27.*법선.*무시/);
+    if (layout === LAYOUTS.double27) assert.doesNotMatch(recs[0].method, /같은 형식|x y z float/);
     for (const f of (await readdir(join(dir, 'o'))).sort()) {
       const id = Number(f.match(/^viewpoint_(\d+)_/)[1]);
       assert.equal(sha(await readFile(join(dir, 'o', f))), GOLDEN[id], `${name} v${id}`);
@@ -865,7 +897,29 @@ test('basisNote: 스플랫은 실제 레코드 크기와 헤더의 법선 유무
   const d = decodePly(withN, 'n.ply');
   assert.equal(d.layout, 'splat-f_dc');
   assert.equal(d.normals, true);
-  assert.match(basisNote(d), /36 B 스플랫, 법선 nx ny nz 있음·무시/);
+  assert.match(basisNote(d), /36 B 스플랫, 법선 nx ny nz float 있음·무시/);
+});
+
+test('basisNote: rgb 점은 크기가 아니라 좌표 형·법선 형으로 기준 형식과 비교한다 (double 좌표 27 B 는 "double")', () => {
+  const dec = (layout) => decodePly(encodePly([{ p: [1, 2, 3], rgb: [4, 5, 6] }], layout), 'f.ply');
+  const d27 = dec(LAYOUTS.double27);
+  assert.equal(d27.stride, 27);
+  assert.equal(d27.coordType, 'double');
+  assert.equal(basisNote(d27), 'renderer_basis §7-4 27 B 와 크기만 같고 형식은 다름: 27 B 점(x y z double·uchar rgb), 법선 없음, 중심점만 사용');
+  const dense = dec(LAYOUTS.dense27);
+  assert.deepEqual([dense.coordType, dense.normalType], ['float', 'float']);
+  assert.equal(basisNote(dense), 'renderer_basis §7-4 27 B 와 같은 형식: 27 B 점(x y z float·uchar rgb), 법선 nx ny nz float 있음·무시, 중심점만 사용');
+  // uchar 법선: 형을 적고 기준 형식과 같다고 하지 않는다
+  const u8n = dec([['float', 'x'], ['float', 'y'], ['float', 'z'], ['uchar', 'nx'], ['uchar', 'ny'], ['uchar', 'nz'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue']]);
+  assert.equal(u8n.normalType, 'uchar');
+  assert.equal(basisNote(u8n), 'renderer_basis §7-4 27 B 와 다름: 18 B 점(x y z float·uchar rgb), 법선 nx ny nz uchar 있음·무시, 중심점만 사용');
+  // 좌표 형이 섞이면 x/y/z 순서로 적는다
+  const mixed = dec([['float', 'x'], ['double', 'y'], ['float', 'z'], ['uchar', 'nx'], ['uchar', 'ny'], ['uchar', 'nz'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue']]);
+  assert.equal(mixed.stride, 22);
+  assert.match(basisNote(mixed), /22 B 점\(x y z float\/double\/float·uchar rgb\), 법선 nx ny nz uchar 있음·무시/);
+  assert.match(basisNote({ layout: 'rgb-u8', stride: 27, normals: true, coordType: 'float', normalType: 'uchar' }), /27 B 와 크기만 같고 형식은 다름: .*법선 nx ny nz uchar/);
+  // 형 정보가 없으면 같은 형식이라 하지 않는다
+  assert.doesNotMatch(basisNote({ layout: 'rgb-u8', stride: 27, normals: true }), /같은 형식/);
 });
 
 // ---- 축별 clip 경계 ----
