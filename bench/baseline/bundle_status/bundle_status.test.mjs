@@ -298,11 +298,17 @@ test('dist: 깨진 sourcemap·sources 가 빈 맵은 앱 판정이 아니라 코
     await put(dist, 'assets/nonjson-3.js', 'const g=new SplatMesh();\n');
     await put(dist, 'assets/nonjson-3.js.map', JSON.stringify({ version: 3, sources: [1, null] }));
     await put(dist, 'assets/plain-4.js', 'const t="three splat";\n');
-    await put(dist, 'assets/plain-4.js.map', '<html>404</html>');
+    // plain-4.js 는 .map 파일 없음 (맵 파일이 없으면 null 반환)
     await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
     const m = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8')).manifest;
     const f = (n) => m.find((x) => x.file === `assets/${n}`);
-    for (const n of ['broken-1.js', 'empty-2.js', 'nonjson-3.js']) assert.deepEqual([f(n).is_3d, f(n).basis], [true, 'heuristic'], n);
+    // JSON 파싱 실패: parse error basis로 폴백하되 is_3d 는 코드 표지로 판정
+    assert.ok(f('broken-1.js').is_3d === true && f('broken-1.js').basis.startsWith('sourcemap-parse-error:'), 'broken-1.js');
+    // sources 빔: 코드 표지 폴백
+    assert.deepEqual([f('empty-2.js').is_3d, f('empty-2.js').basis], [true, 'heuristic']);
+    // sources에 문자열 아닌 항목: 코드 표지 폴백
+    assert.deepEqual([f('nonjson-3.js').is_3d, f('nonjson-3.js').basis], [true, 'heuristic']);
+    // 맵 파일 없음: 코드 표지 폴백
     assert.deepEqual([f('plain-4.js').is_3d, f('plain-4.js').basis], [false, 'heuristic']);
   } finally {
     await rm(dist, { recursive: true, force: true });
@@ -344,6 +350,25 @@ test('dist: sources 경로에 ] 가 있어도 sourcemap 으로 3D 판정된다',
     const m = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8')).manifest;
     const e = m.find((x) => x.file === 'assets/bracket-5.js');
     assert.deepEqual([e.is_3d, e.basis], [true, 'sourcemap']);
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test('dist: sourcemap JSON 파싱 실패하면 오류가 basis 와 method 에 기록된다', async () => {
+  const dist = await mockDist();
+  const out = await mkdtemp(join(tmpdir(), 'skylens-out-'));
+  try {
+    await put(dist, 'assets/status-A.js', FILES['status-A.js'] + 'import"./badjson-6.js";\n');
+    await put(dist, 'assets/badjson-6.js', 'new WebGLRenderer();\n');
+    await put(dist, 'assets/badjson-6.js.map', '{broken json no closing');
+    const r = await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const m = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8')).manifest;
+    const e = m.find((x) => x.file === 'assets/badjson-6.js');
+    assert.ok(typeof e.basis === 'string');
+    assert.ok(e.basis.startsWith('sourcemap-parse-error:'));
+    assert.match(r[0].method, /sourcemap parse error\(s\):/);
   } finally {
     await rm(dist, { recursive: true, force: true });
     await rm(out, { recursive: true, force: true });

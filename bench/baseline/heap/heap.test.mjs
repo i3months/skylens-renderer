@@ -1,7 +1,7 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
@@ -10,6 +10,11 @@ import { randomUUID } from 'node:crypto';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
 import { median, run, processTreeRss, processTreeMemory, parsePss, memoryMethodText, systemPageSize } from './index.mjs';
 import { unavailableReason, DEVICE } from '../_common/browser.mjs';
+
+// 테스트가 만든 임시 디렉터리는 파일 끝에서 모두 지운다(실행마다 tmp 에 쌓이지 않게).
+const made = [];
+const track = (d) => { made.push(d); return d; };
+after(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
 
 test('median: 기준 숫자', () => {
   assert.equal(median([5, 1, 3]), 3);
@@ -35,7 +40,7 @@ const HOLD = '<!doctype html><canvas id=status-view width=100 height=100></canva
 const BLANK = HOLD.replace('new Float32Array(26214400).fill(1.5)', '[]');
 
 async function measure(html) {
-  const dist = await mkdtemp(join(tmpdir(), 'heap-'));
+  const dist = track(await mkdtemp(join(tmpdir(), 'heap-')));
   await mkdir(join(dist, 'res/static'), { recursive: true });
   await writeFile(join(dist, 'res/static/status.html'), html);
   const recs = await run({ commit: 'abcdef1', inputs: { distDir: dist }, runs: 5, timeoutMs: 15000 });
@@ -82,7 +87,7 @@ test('processTreeRss: 자손 프로세스의 메모리까지 합산한다(루트
 });
 
 test('run: entryPath 파일이 dist 에 없으면 throw', async () => {
-  const dist = await mkdtemp(join(tmpdir(), 'heap-'));
+  const dist = track(await mkdtemp(join(tmpdir(), 'heap-')));
   await writeFile(join(dist, 'index.html'), '<p>landing</p>');
   await assert.rejects(() => run({ commit: 'abcdef1', inputs: { distDir: dist } }), /entryPath.*\/res\/static\/status\.html/);
 });
@@ -116,7 +121,7 @@ test('memoryMethodText: PSS 사용·폴백·혼합을 구분해 기록', () => {
 
 // 가짜 /proc: 태그를 명령행에 가진 루트(pid 100)와 자식(pid 101). readable 이 true 면 statm 이 있고, false 면 smaps_rollup·statm 둘 다 없다(읽을 수 없는 프로세스).
 async function fakeProc(tag, readable) {
-  const root = await mkdtemp(join(tmpdir(), 'proc-'));
+  const root = track(await mkdtemp(join(tmpdir(), 'proc-')));
   for (const [pid, ppid] of [['100', '1'], ['101', '100']]) {
     await mkdir(join(root, pid));
     await writeFile(join(root, pid, 'stat'), `${pid} (chromium) S ${ppid} 0 0 0`);
@@ -137,13 +142,13 @@ test('processTreeMemory: smaps·statm 을 읽을 수 없는 프로세스만 있�
 
 // 브라우저 없이 run 의 기록 구성만 본다: 브라우저 실행·1회 측정은 주입하고 메모리 읽기는 가짜 /proc 으로 한다.
 async function runWithProc(readable) {
-  const dist = await mkdtemp(join(tmpdir(), 'heap-'));
+  const dist = track(await mkdtemp(join(tmpdir(), 'heap-')));
   await mkdir(join(dist, 'res/static'), { recursive: true });
   await writeFile(join(dist, 'res/static/status.html'), '<p>x</p>');
   const deps = {
     launch: async () => ({ close: async () => {} }),
     measureOnce: async (_b, _u, tag, _t, _s, readMemory) => ({ js: 1234, mem: readMemory(tag) }),
-    readMemory: (tag) => { const procRoot = mkdtempSync(join(tmpdir(), 'proc-')); for (const [pid, ppid] of [['100', '1']]) { mkdirSync(join(procRoot, pid)); writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`); writeFileSync(join(procRoot, pid, 'cmdline'), tag); if (readable) writeFileSync(join(procRoot, pid, 'statm'), '100 50 10'); } return processTreeMemory(tag, { procRoot }); },
+    readMemory: (tag) => { const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-'))); for (const [pid, ppid] of [['100', '1']]) { mkdirSync(join(procRoot, pid)); writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`); writeFileSync(join(procRoot, pid, 'cmdline'), tag); if (readable) writeFileSync(join(procRoot, pid, 'statm'), '100 50 10'); } return processTreeMemory(tag, { procRoot }); },
   };
   return run({ commit: 'abcdef1', inputs: { distDir: dist }, runs: 3, deps });
 }
@@ -163,4 +168,16 @@ test('run: 대조 — 읽을 수 있는 프로세스가 있으면 heap.process_p
 test('systemPageSize: 양의 2의 거듭제곱(getconf PAGESIZE)', () => {
   const n = systemPageSize();
   assert.ok(Number.isInteger(n) && n >= 4096 && (n & (n - 1)) === 0, `page ${n}`);
+});
+
+test('processTreeMemory: smaps 를 읽을 수 없고 statm 이 깨졌으면(1 abc) NaN 을 합산하지 않고 null', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-garbled-')));
+  mkdirSync(join(procRoot, '100'));
+  writeFileSync(join(procRoot, '100', 'stat'), '100 (c) S 1 0');
+  writeFileSync(join(procRoot, '100', 'cmdline'), tag);
+  writeFileSync(join(procRoot, '100', 'statm'), '1 abc');
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m, null);
+  assert.ok(m === null || Number.isFinite(m.bytes));
 });
