@@ -230,6 +230,7 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
       const orig = proto[name];
       if (typeof orig !== 'function') continue;
       const wrapped = function (...a) {
+        if (window.__ffMs !== undefined) return orig.apply(this, a); // 감지 뒤 남아 있는 래퍼(페이지가 원본을 캡처한 경우)는 해시 없이 위임
         const r = orig.apply(this, a);
         const st = sig.get(this.canvas);
         if (st) st.cur = (st.cur * 17 + name.length + (typeof a[0] === 'number' ? a[0] : 0)) | 0;
@@ -246,6 +247,7 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
       const orig = proto[name];
       if (typeof orig !== 'function') continue;
       const wrapped = function (...a) {
+        if (window.__ffMs !== undefined) return orig.apply(this, a); // 감지 뒤 남아 있는 래퍼(페이지가 원본을 캡처한 경우)는 해시 없이 위임
         const r = orig.apply(this, a);
         onDraw(this, name === 'clear' ? a[0] : name === 'drawRangeElements' ? a[4] : a[name.startsWith('drawArrays') ? 2 : 1]);
         return r;
