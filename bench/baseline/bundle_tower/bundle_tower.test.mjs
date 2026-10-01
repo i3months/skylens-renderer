@@ -46,6 +46,7 @@ function mockDist() {
   for (const [n, t] of Object.entries(FILES)) put(root, `assets/${n}`, t);
   put(root, 'res/static/status.html', html('status-A.js', 'status-D.css'));
   put(root, 'res/static/control.html', html('control-G.js', 'control-H.css'));
+  put(root, 'assets/math-C.js.map', JSON.stringify({ sources: ['../../node_modules/three/src/math/Matrix4.js'] }));
   return root;
 }
 
@@ -59,7 +60,7 @@ test('dist: control.html 폐포의 raw/gzip 합이 박아 둔 숫자와 같다',
     assert.equal(val(r, 'bundle_tower.3d.gzip_bytes'), 84);
     assert.equal(val(r, 'bundle_tower.3d.raw_bytes'), 5622);
     assert.ok(val(r, 'bundle_tower.3d.gzip_bytes') < val(r, 'bundle_tower.gzip_bytes'));
-    assert.match(r[0].method, /three\/splat\/renderer/);
+    assert.match(r[0].method, /sourcemap/);
     const d3 = JSON.parse(readFileSync(join(out, 'bundle_tower.json'), 'utf8')).files.filter((f) => f.is_3d);
     assert.deepEqual(d3.map((f) => f.path), ['assets/math-C.js']);
     assert.equal(d3.some((f) => f.path.endsWith('.css')), false);
@@ -81,9 +82,9 @@ test('이름이 three/controlview 같은 무관 청크·변형을 추가해도 �
     put(dist, 'assets/three-ZZ.js', 'k'.repeat(9000));
     put(dist, 'assets/controlview-QQ.js', 'k'.repeat(9000));
     put(dist, 'assets/terrain-loader-9.js', 'k'.repeat(9000));
-    put(dist, 'assets/math-C.js.map', 'm'.repeat(9000));
+    put(dist, 'assets/unrelated-C.js.map', 'm'.repeat(9000));
     put(dist, 'index.html', '<html></html>');
-    assert.deepEqual(await run({ skylensDir: '/x', commit: COMMIT, inputs }), a);
+    assert.deepEqual((await run({ skylensDir: '/x', commit: COMMIT, inputs })).map((x) => x.value), a.map((x) => x.value)); // method 에는 폐포 밖 JS 경고가 붙는다
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }
@@ -227,6 +228,29 @@ test('dist: CSS 에 3D 표지 문구가 있어도 3D 합계에서 빠진다', as
     await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
     const f = JSON.parse(readFileSync(join(out, 'bundle_tower.json'), 'utf8')).files;
     assert.equal(f.find((x) => x.path === 'assets/control-H.css').is_3d, false);
+  } finally {
+    rmSync(dist, { recursive: true, force: true });
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test('dist: 문구에 three·Splat 만 있는 청크는 3D 가 아니고 sourcemap three 청크는 3D 이며, 폐포 밖 JS 경고가 남는다', async () => {
+  const dist = mockDist();
+  const out = mkdtempSync(join(tmpdir(), 'sky-out-'));
+  try {
+    put(dist, 'assets/control-G.js', FILES['control-G.js'] + 'import"./ui-5.js";import"./three-7.js";\n');
+    put(dist, 'assets/ui-5.js', 'const t="Loading three.js splat Splat Gaussian";\n');
+    put(dist, 'assets/three-7.js', 'const q=1;\n');
+    put(dist, 'assets/three-7.js.map', JSON.stringify({ sources: ['../node_modules/three/src/core/Object3D.js'] }));
+    put(dist, 'assets/stray-9.js', 'const s=1;\n');
+    const r = await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const d = JSON.parse(readFileSync(join(out, 'bundle_tower.json'), 'utf8'));
+    const f = (n) => d.files.find((x) => x.path === `assets/${n}`);
+    assert.deepEqual([f('ui-5.js').is_3d, f('ui-5.js').basis], [false, 'heuristic']);
+    assert.deepEqual([f('three-7.js').is_3d, f('three-7.js').basis], [true, 'sourcemap']);
+    assert.match(r[0].method, /3D basis: package 0, sourcemap 2, code-marker heuristic \d+ JS files/);
+    assert.match(r[0].method, /WARNING: \d+ dist JS file\(s\) outside the entry closure.*stray-9\.js/);
+    assert.ok(d.warnings.some((w) => /stray-9\.js/.test(w)));
   } finally {
     rmSync(dist, { recursive: true, force: true });
     rmSync(out, { recursive: true, force: true });

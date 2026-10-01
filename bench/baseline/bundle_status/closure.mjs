@@ -18,9 +18,9 @@ const PKG_3D_SOURCE = /node_modules\/(?:three|@mkkellogg\/gaussian-splats-3d)\//
 const MAP_DEPS_ARRAY = /\.f\s*=\s*\[([^\]]*)\]/g;
 const QUOTED = /(["'])([^"'\n]+)\1/g;
 
-// 3D 청크 판별 근거: JS 내용에 three·splat·렌더러 식별자가 들어 있는가(이름이 아니라 내용으로 본다).
-export const MARKER_3D = /WebGLRenderer|WebGL2?RenderingContext|BufferGeometry|Matrix4|[Ss]plat|[Gg]aussian|\bthree\b|\bTHREE\b|WebGPURenderer|GPUDevice|getContext\(\s*["'`](?:experimental-)?webgl|getContext\(\s*["'`]webgpu/;
-export const MARKER_DESC = 'JS chunk whose content has three/splat/renderer identifiers (WebGLRenderer, WebGL(2)RenderingContext, BufferGeometry, Matrix4, Splat*, Gaussian*, three, getContext("webgl"/`webgl2`/"webgpu"), WebGPURenderer) or a sourcemap listing node_modules/three or gaussian-splats-3d; CSS, wasm and other assets excluded';
+// 코드 표지 휴리스틱(sourcemap 이 없을 때만 쓴다): 렌더러·지오메트리 식별자와 getContext 변형. 'three'·'Splat' 같은 일반 단어는 앱 문구에도 있어 뺐다.
+export const MARKER_3D = /WebGLRenderer|WebGL2?RenderingContext|BufferGeometry|Matrix4|SplatMesh|GaussianSplat|WebGPURenderer|GPUDevice|getContext\(\s*["'`](?:experimental-)?(?:webgl2?|webgpu)["'`]/;
+export const MARKER_DESC = 'basis per JS file, in order: package (source mode: three/gaussian-splats-3d package) > sourcemap (.map sources list node_modules/three or gaussian-splats-3d => 3D, a non-empty map without them => not 3D) > code-marker heuristic when no usable sourcemap (WebGLRenderer, WebGL(2)RenderingContext, BufferGeometry, Matrix4, SplatMesh, GaussianSplat, WebGPURenderer, GPUDevice, getContext("webgl"|"webgl2"|"webgpu", any quote or backtick)); CSS, wasm and other assets excluded';
 
 /** JS 소스에서 정적 import, 동적 import(), vite mapDeps 항목을 뽑는다. [{spec, kind}] kind: static|dynamic|mapdeps */
 export function importsOf(src) {
@@ -34,20 +34,38 @@ export function importsOf(src) {
   return out;
 }
 
-/** 3D 청크인가: JS 이고 내용에 표지가 있다. forced 는 패키지 경로처럼 외부에서 3D 로 확정한 경우. */
-export function is3d(rel, buf, forced = false) {
-  if (!isJs(rel)) return false;
-  return forced || MARKER_3D.test(buf.toString('utf8').replace(PATH_LITERAL, '""'));
+/**
+ * 3D 청크인가와 그 근거. evidence: 'package'(외부 확정) | 'sourcemap-3d' | 'sourcemap-app' | null(sourcemap 없음).
+ * sourcemap 이 있으면 그것이 우선이고(앱 문구가 표지에 걸려도 뒤집지 않는다), 없을 때만 코드 표지로 폴백한다.
+ * 반환 {is3d, basis}: basis 는 package|sourcemap|heuristic|none(JS 아님).
+ */
+export function classify3d(rel, buf, evidence = null) {
+  if (!isJs(rel)) return { is3d: false, basis: 'none' };
+  if (evidence === 'package') return { is3d: true, basis: 'package' };
+  if (evidence === 'sourcemap-3d') return { is3d: true, basis: 'sourcemap' };
+  if (evidence === 'sourcemap-app') return { is3d: false, basis: 'sourcemap' };
+  return { is3d: MARKER_3D.test(buf.toString('utf8').replace(PATH_LITERAL, '""')), basis: 'heuristic' };
 }
 
-/** 옆의 sourcemap 이 three·gaussian-splats-3d 패키지 경로를 소스로 나열하는가(없거나 깨졌으면 false). */
-export function mapIs3d(abs) {
+/** 옆의 sourcemap 판정: 'sourcemap-3d' | 'sourcemap-app'(sources 가 있으나 3D 패키지 없음) | null(없음·깨짐·sources 비어 있음). */
+export function mapEvidence(abs) {
   try {
     const sources = JSON.parse(readFileSync(`${abs}.map`, 'utf8')).sources;
-    return Array.isArray(sources) && sources.some((x) => typeof x === 'string' && PKG_3D_SOURCE.test(x.replace(/\\/g, '/')));
+    if (!Array.isArray(sources) || !sources.some((x) => typeof x === 'string')) return null;
+    return sources.some((x) => typeof x === 'string' && PKG_3D_SOURCE.test(x.replace(/\\/g, '/'))) ? 'sourcemap-3d' : 'sourcemap-app';
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** 근거별 파일 수 요약 문구와 경고(폐포 밖 JS)를 method 에 넣을 문자열로 만든다. */
+export function basisSummary(bases) {
+  const n = { package: 0, sourcemap: 0, heuristic: 0 };
+  for (const b of bases) if (b in n) n[b]++;
+  return `3D basis: package ${n.package}, sourcemap ${n.sourcemap}, code-marker heuristic ${n.heuristic} JS files${n.heuristic ? ' (no usable sourcemap; heuristic may misclassify)' : ''}`;
+}
+export function outsideWarning(outside) {
+  return outside.length ? `WARNING: ${outside.length} dist JS file(s) outside the entry closure were not measured (${outside.slice(0, 5).join(', ')}); entry closure may be incomplete` : '';
 }
 
 /** dist 아래 JS 파일 중 폐포(rel 집합)에 없는 것의 경로 목록(경로순). 심볼릭 링크는 따라가지 않는다. */
@@ -110,7 +128,7 @@ function htmlAssets(label, distDir, htmlAbs) {
 /**
  * 진입 HTML 에서 출발해 참조 자산, JS 정적 import, 동적 import(), mapDeps 청크를 따라간 폐포.
  * 정적 참조 파일이 없으면 throw, 동적·mapDeps 대상이 없으면(선택 청크) 건너뛰되 report.unresolved 에 [{from, spec}] 로 남긴다.
- * 경로순 [{rel, abs, forced3d}]. forced3d 는 sourcemap 으로 three·splat 패키지가 확인된 JS.
+ * 경로순 [{rel, abs, evidence}]. evidence 는 mapEvidence 결과.
  */
 export function distClosure(label, distDir, entryName, report = {}) {
   report.unresolved = [];
@@ -138,7 +156,7 @@ export function distClosure(label, distDir, entryName, report = {}) {
     }
   }
   if (!seen.size) throw new Error(`${label}: ${entryName} 가 참조하는 자산이 없다`);
-  return [...seen.keys()].sort().map((rel) => ({ rel, abs: seen.get(rel), forced3d: isJs(rel) && mapIs3d(seen.get(rel)) }));
+  return [...seen.keys()].sort().map((rel) => ({ rel, abs: seen.get(rel), evidence: isJs(rel) ? mapEvidence(seen.get(rel)) : null }));
 }
 
 function resolveSourceSpec(fromAbs, spec) {
