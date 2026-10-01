@@ -213,3 +213,10 @@ test('문자열 feature 는 건물에서 제외', () => {
   const body = { type: 'FeatureCollection', features: ['1', { type: 'Feature', id: 1 }, '2', { type: 'Feature', id: 2 }] };
   assert.equal(countBuildings([{ kind: 'building', bytes: 1, body }]), 2);
 });
+
+test('배열 feature 는 건물에서 제외(id 속성이 있어도 세지 않는다)', () => {
+  const arr = [1, 2];
+  arr.id = 99;
+  const body = { type: 'FeatureCollection', features: [[], arr, [{ id: 5 }], { type: 'Feature', id: 1 }] };
+  assert.equal(countBuildings([{ kind: 'building', bytes: 1, body }]), 1);
+});

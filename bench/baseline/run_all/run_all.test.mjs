@@ -284,14 +284,26 @@ test('CLI: 빈 필터(--only , / --skip ,)는 종료코드 2', () => {
   }
 });
 
-async function hangingCli(tag, { killWith }) {
+test('runAll: only:[] 는 throw, 실행 대상이 0개면 exitCode 2', async () => {
+  await assert.rejects(runAll({ ...opts(join(root, 'only_empty')), only: [] }), /only/);
+  const r = await runAll({ ...opts(join(root, 'all_skipped')), skip: ['alpha', 'beta', 'gamma', 'delta'] });
+  assert.equal(r.exitCode, 2);
+  assert.equal(r.summary.ok.length + r.summary.failed.length, 0);
+});
+
+test('CLI: 모듈을 전부 건너뛰면 종료코드 2', () => {
+  const r = spawnSync(process.execPath, [CLI, '--skylens-dir', root, '--out', join(root, 'cli_allskip'), '--commit', COMMIT, '--modules-dir', modulesDir, '--skip', MODULES.join(',')], { encoding: 'utf8' });
+  assert.equal(r.status, 2);
+});
+
+async function hangingCli(tag, { killWith, sync = false }) {
   const dir = await mkdtemp(join(tmpdir(), `ra-${tag}-`));
   await mkdir(join(dir, 'asset_bytes'), { recursive: true });
   const pidFile = join(dir, 'worker.pid');
   await writeFile(join(dir, 'asset_bytes', 'index.mjs'), `import { writeFileSync, appendFileSync } from 'node:fs';
 export async function run({ outDir }) {
   writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
-  setInterval(() => appendFileSync(outDir + '/tick.txt', 'x'), 50);
+  ${sync ? "for (;;) appendFileSync(outDir + '/tick.txt', 'x');" : "setInterval(() => appendFileSync(outDir + '/tick.txt', 'x'), 50);"}
   return new Promise(() => {});
 }`);
   const child = spawn(process.execPath, [CLI, '--skylens-dir', dir, '--out', join(dir, 'o'), '--commit', COMMIT, '--modules-dir', dir, '--only', 'asset_bytes'], { stdio: 'ignore' });
@@ -325,4 +337,9 @@ test('CLI: 부모가 SIGKILL 로 죽어도 worker 는 1 s 안에 사라지고 ou
 test('CLI: 부모가 SIGHUP 을 받아도 worker 는 1 s 안에 사라진다', async () => {
   const r = await hangingCli('hup', { killWith: 'SIGHUP' });
   assert.ok(r.gone && r.ms < 1000, `worker 잔존 또는 지연 ${r.ms}ms`);
+});
+
+test('CLI: 모듈이 동기 루프로 막혀 있어도 부모 SIGKILL 뒤 3 s 안에 worker 가 사라진다', { skip: process.platform !== 'linux' }, async () => {
+  const r = await hangingCli('sync', { killWith: 'SIGKILL', sync: true });
+  assert.ok(r.gone && r.ms < 3000, `worker 잔존 또는 지연 ${r.ms}ms`);
 });

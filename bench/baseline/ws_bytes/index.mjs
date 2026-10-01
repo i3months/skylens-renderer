@@ -5,6 +5,8 @@
 //   segment·level 은 점 프레임에만, 둘이 함께. resend 는 재접속 스냅샷 등으로 같은 (구간,수준)을 다시 보낸 프레임 표시.
 //   final 은 splat-chunk 의 final(그 수준이 사다리 최고 수준) 을 그대로 옮긴 값이며 segment 프레임에만 쓸 수 있다.
 //   같은 (구간,수준) 의 resend 표시 없는 프레임은 그 구간의 다른 수준 프레임이 끼기 전까지 연속일 때만 분할 프레임으로 합산한다.
+//   resend 프레임 하나는 재전송 한 회차다. 단 녹화 전체에서 바로 앞 프레임이 같은 (구간,수준) resend 이면 같은 회차로 이어 붙인다
+//   (relay 재생은 재생 1회에 구간당 메시지 1개라 다른 구간 프레임이 사이에 끼면 다른 회차).
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -52,15 +54,18 @@ const asc = (a, b) => a - b;
  * - segments: 구간 ID 별로 실제 받은 수준의 바이트 합 (ID 오름차순). 빠진 수준은 오류가 아니라 기록 대상이다.
  * - segment_levels: 구간별 받은 수준 (프로토콜 번호). segment_levels_skipped: 원본으로 받은 최고 수준보다 낮은데
  *   받지 못한 수준 (프로토콜 번호). 재전송 프레임만으로 생긴 최고 수준 때문에 생기는 공백은 건너뜀이 아니다.
- * - stale_levels: 도착 순서상 그 구간에서 이미 받은 최고 수준 이하가 resend 표시 없이 다시 온 프레임 수.
+ * - stale_levels: 도착 순서상 그 구간에서 원본(resend 아닌) 프레임으로 이미 받은 최고 수준 이하가 resend 표시 없이 다시 온 프레임 수.
+ *   resend 프레임은 이 최고 수준에 들어가지 않으므로 재전송 뒤에 온 원본은 stale 이 아니다.
  *   같은 수준이 다른 수준 프레임 없이 연속으로 오면 분할 프레임이라 세지 않는다.
  * - 같은 (구간,수준)의 resend 프레임은 원본이 녹화에 있으면 합에 넣지 않고 resend_bytes 로 센다.
- *   원본이 없으면 첫 회차(다른 수준 프레임이 끼기 전까지 연속한 재전송 프레임들)만 유일한 사본으로 합에 넣고
+ *   원본이 없으면 첫 회차(녹화 전체에서 바로 이어진 같은 (구간,수준) 재전송 프레임들)만 유일한 사본으로 합에 넣고
  *   나머지 회차는 resend_bytes.
+ * - 모든 바이트 합은 total_bytes 의 부분합이므로 total_bytes 가 safe integer 를 넘으면 오류를 던진다.
  *   total_bytes·by_kind·windows 에는 항상 포함한다.
  * - stale 프레임 바이트는 total·windows·stale_bytes 에만 넣고 구간 합·받은 수준·건너뜀 계산에서는 뺀다.
  * - incomplete_segments: 위치와 무관한 모든 미완 구간(도착 순서). segments 에는 완결 구간만 남는다.
  * - top_level_assumed: final 필드 없이 topLevel 기본값을 썼는지(run 이 method 에 경고로 남김).
+ * - top_level_ignored: final 필드가 있어 주어진 topLevel 을 완결 판정에 쓰지 않았는지(run 이 method 에 남김).
  * - 완결 판정: 녹화에 final 필드가 하나라도 있으면 구간에 final 프레임이 있을 때, 없으면 받은 수준이 topLevel 이상일 때.
  *   도착 순서상 끝에서부터 이어지는 미완 구간은 trailing_segments 로도 낸다
  *   (trailing_segment 는 그중 마지막 도착 구간, 없으면 null). 구간 도착 순서는 원본(resend 아닌) 프레임의 마지막 도착 기준이다.
@@ -78,12 +83,14 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
   let staleBytes = 0;
   let anyFinal = false;
   const byKind = Object.create(null);
-  // 구간 ID -> { perLevel: 수준 -> { orig, resend: [회차별 프레임 바이트 배열] }, hi(받은 최고 수준), last(마지막 원본 수준), order, final }
+  // 구간 ID -> { perLevel: 수준 -> { orig, resend: [회차별 프레임 바이트 배열] }, hi(원본으로 받은 최고 수준), last(마지막 원본 수준), order, final }
   const segMap = new Map();
   const winMap = new Map(); // 창 번호 -> 합
+  let prevResendKey = null; // 바로 앞 프레임이 resend 였으면 그 (구간,수준), 아니면 null
   frames.forEach((f, i) => {
     checkFrame(f, `frame ${i}`);
     totalBytes += f.bytes;
+    if (!Number.isSafeInteger(totalBytes)) throw new Error(`frame ${i}: 바이트 합이 safe integer 범위를 넘음`);
     byKind[f.kind] = (byKind[f.kind] ?? 0) + f.bytes;
     if (initialBytes === null) {
       initialSum += f.bytes;
@@ -91,18 +98,20 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
     }
     const w = Math.floor(f.t_ms / windowMs);
     winMap.set(w, (winMap.get(w) ?? 0) + f.bytes);
+    const key = f.segment === undefined || f.resend !== true ? null : `${f.segment}:${f.level}`;
+    const continuesRound = key !== null && key === prevResendKey;
+    prevResendKey = key;
     if (f.segment === undefined) return;
     if (f.final !== undefined) anyFinal = true;
-    const s = segMap.get(f.segment) ?? { perLevel: new Map(), hi: -1, last: -1, order: -1, lastIdx: -1, final: false, prev: -1 };
+    const s = segMap.get(f.segment) ?? { perLevel: new Map(), hi: -1, last: -1, order: -1, lastIdx: -1, final: false };
     segMap.set(f.segment, s);
     const v = s.perLevel.get(f.level) ?? { orig: { n: 0, bytes: 0 }, resend: [] };
     s.perLevel.set(f.level, v);
     if (f.final === true) s.final = true;
     if (f.resend === true) {
-      // 같은 수준 재전송이 다른 수준 프레임 없이 이어지면 한 회차.
-      if (s.prev === f.level && v.resend.length > 0) v.resend[v.resend.length - 1].push(f.bytes);
+      // 녹화 전체에서 바로 앞 프레임이 같은 (구간,수준) resend 일 때만 같은 회차. stale 판정 최고 수준(hi)에는 넣지 않는다.
+      if (continuesRound) v.resend[v.resend.length - 1].push(f.bytes);
       else v.resend.push([f.bytes]);
-      s.hi = Math.max(s.hi, f.level);
     } else {
       const isStale = f.level < s.hi || (f.level === s.hi && s.last !== f.level);
       s.hi = Math.max(s.hi, f.level);
@@ -117,13 +126,12 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
         v.orig.bytes += f.bytes;
       }
     }
-    s.prev = f.level;
     s.lastIdx = i;
   });
   // 원본이 없는 구간의 도착 순서는 마지막 프레임 위치.
   for (const s of segMap.values()) if (s.order < 0) s.order = s.lastIdx;
   const allIds = [...segMap.keys()].sort(asc);
-  // (구간,수준) 별 최종 바이트: 원본이 있으면 원본 합, 없으면 첫 재전송 프레임.
+  // (구간,수준) 별 최종 바이트: 원본이 있으면 원본 합, 없으면 첫 재전송 회차.
   const effective = (id) => {
     const out = new Map();
     let resend = 0;
@@ -184,6 +192,7 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
     stale_levels: stale,
     stale_bytes: staleBytes,
     top_level_assumed: !anyFinal && topLevelOpt === undefined,
+    top_level_ignored: anyFinal && topLevelOpt !== undefined,
     incomplete_segments: incompleteList,
     resend_bytes: resendBytes,
     trailing_segment: trailingList.length ? trailingList[trailingList.length - 1] : null,
@@ -232,7 +241,12 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
   const device = 'replay';
   const rec = (metric, value, unit, method, extra = {}) => ({ metric, value, unit, device, method, commit, ...extra });
   // final 필드가 없는 녹화에서 기본 topLevel 을 쓰면 완결 판정이 가정임을 method 에 남긴다.
-  const warn = s.top_level_assumed ? ` 경고: final 필드 없음, topLevel 가정(기본 ${DEFAULT_TOP_LEVEL}, inputs.wsTopLevel 로 지정)` : '';
+  // final 필드가 있으면 inputs.wsTopLevel 은 완결 판정에 쓰이지 않으므로 그 사실도 남긴다.
+  const warn = s.top_level_assumed
+    ? ` 경고: final 필드 없음, topLevel 가정(기본 ${DEFAULT_TOP_LEVEL}, inputs.wsTopLevel 로 지정)`
+    : s.top_level_ignored
+      ? ` 참고: final 필드로 완결 판정, inputs.wsTopLevel=${topLevel} 무시`
+      : '';
   const mSeg = `ws_recording_replay by_segment_id${warn}`;
   const mWin = `ws_recording_replay window_ms=${DEFAULT_WINDOW_MS}${warn}`;
   const mAll = `ws_recording_replay${warn}`;

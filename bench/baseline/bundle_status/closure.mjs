@@ -19,6 +19,8 @@ const MAP_DEPS_ARRAY = /\.f\s*=\s*\[([^\]]*)\]/g;
 const QUOTED = /(["'])([^"'\n]+)\1/g;
 
 // 코드 표지 휴리스틱(sourcemap 이 없을 때만 쓴다): 렌더러·지오메트리 식별자와 getContext 변형. 'three'·'Splat' 같은 일반 단어는 앱 문구에도 있어 뺐다.
+// 주의: Matrix4 는 three.js 의 흔한 식별자지만, 앱 코드나 타입 선언에서도 나타날 수 있어 거짓 양성(false positive)이 가능하다.
+// sourcemap 이 없을 때만 이 휴리스틱을 쓰므로, 정확도는 sourcemap 검사보다 낮다.
 export const MARKER_3D = /WebGLRenderer|WebGL2?RenderingContext|BufferGeometry|Matrix4|SplatMesh|GaussianSplat|WebGPURenderer|GPUDevice|getContext\(\s*["'`](?:experimental-)?(?:webgl2?|webgpu)["'`]/;
 export const MARKER_DESC = 'basis per JS file, in order: package (source mode: three/gaussian-splats-3d package) > sourcemap (.map sources list node_modules/three or gaussian-splats-3d => 3D, a non-empty map without them => not 3D) > code-marker heuristic when no usable sourcemap (WebGLRenderer, WebGL(2)RenderingContext, BufferGeometry, Matrix4, SplatMesh, GaussianSplat, WebGPURenderer, GPUDevice, getContext("webgl"|"webgl2"|"webgpu", any quote or backtick)); CSS, wasm and other assets excluded';
 
@@ -50,7 +52,17 @@ export function classify3d(rel, buf, evidence = null) {
 /** 옆의 sourcemap 판정: 'sourcemap-3d' | 'sourcemap-app'(sources 가 있으나 3D 패키지 없음) | null(없음·깨짐·sources 비어 있음). */
 export function mapEvidence(abs) {
   try {
-    const sources = JSON.parse(readFileSync(`${abs}.map`, 'utf8')).sources;
+    const mapText = readFileSync(`${abs}.map`, 'utf8');
+    // .map 전체를 JSON.parse 하지 않고, sources 필드만 추출해 파싱 비용을 줄인다.
+    const sourcesMatch = mapText.match(/"sources"\s*:\s*\[([^\]]*)\]/);
+    if (!sourcesMatch) return null;
+    const sourcesStr = `[${sourcesMatch[1]}]`;
+    let sources;
+    try {
+      sources = JSON.parse(sourcesStr);
+    } catch {
+      return null;
+    }
     if (!Array.isArray(sources) || !sources.some((x) => typeof x === 'string')) return null;
     return sources.some((x) => typeof x === 'string' && PKG_3D_SOURCE.test(x.replace(/\\/g, '/'))) ? 'sourcemap-3d' : 'sourcemap-app';
   } catch {

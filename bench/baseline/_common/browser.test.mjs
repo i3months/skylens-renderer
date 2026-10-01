@@ -50,7 +50,7 @@ test('공용 인자: swiftshader 와 device 라벨', () => {
   assert.match(DEVICE, /swiftshader/);
 });
 
-const reason = await unavailableReason();
+const reason = process.platform !== 'linux' ? 'linux 전용(swiftshader 인자)' : await unavailableReason();
 if (reason) console.log(`# 브라우저 테스트 skip 사유: ${reason}`);
 const opts = { skip: reason ?? false };
 
@@ -110,10 +110,18 @@ test('감지 스크립트는 preserveDrawingBuffer 를 강제하지 않는다(�
   } finally { await b.close(); await s.close(); }
 });
 
-test('감지 스크립트 소스: preserveDrawingBuffer 를 켜지 않고 WebGL 은 draw·clear 후보 프레임에서만 읽는다', () => {
-  const src = buildDetectScript('#c');
-  assert.doesNotMatch(src, /preserveDrawingBuffer\s*:\s*true/);
-  assert.match(src, /queueMicrotask/);
+test('음성: 같은 불투명 색으로 clear 만 반복하는 WebGL 루프는 미감지(그리기 없음)', opts, async () => {
+  const html = `<!doctype html><canvas id=c width=200 height=200></canvas><script>
+const gl = document.getElementById('c').getContext('webgl', { alpha: false });
+const frame = () => { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); requestAnimationFrame(frame); };
+frame();
+</script>`;
+  await assert.rejects(() => measure(html, { timeoutMs: 2000 }), /첫 프레임 미감지/);
+});
+
+test('buildDetectScript 는 선택자를 받아 실행 가능한 스크립트 문자열을 만든다', () => {
+  assert.equal(typeof buildDetectScript('#c'), 'string');
+  assert.doesNotThrow(() => new Function(buildDetectScript('#c')));
 });
 
 test('assertOptionalInputKeys: 정확한 키와 다른 모듈용 키는 통과, 오타 키는 거부', () => {

@@ -53,6 +53,7 @@ async function mockDist() {
 }
 
 const val = (recs, m) => recs.find((r) => r.metric === m).value;
+const noMethod = ({ method, ...rest }) => rest;
 
 test('dist: status.html 폐포의 raw/gzip 합이 박아 둔 숫자와 같다', async () => {
   const dist = await mockDist();
@@ -82,7 +83,7 @@ test('무관 청크·변형·동적 import 대상을 추가해도 값 불변', a
     await put(dist, 'assets/statusview-RR.js', 'k'.repeat(9000));
     await put(dist, 'assets/drone-Z.js', 'k'.repeat(9000));
     await put(dist, 'assets/unrelated-C.js.map', 'm'.repeat(9000));
-    assert.deepEqual((await run({ skylensDir: '/x', outDir: null, commit: COMMIT, inputs })).map((x) => x.value), a.map((x) => x.value)); // method 에는 폐포 밖 JS 경고가 붙는다
+    assert.deepEqual((await run({ skylensDir: '/x', outDir: null, commit: COMMIT, inputs })).map(noMethod), a.map(noMethod)); // method 에는 폐포 밖 JS 경고가 붙으므로 method 만 뺀 나머지 필드를 모두 비교한다
   } finally {
     await rm(dist, { recursive: true, force: true });
   }
@@ -279,6 +280,30 @@ test('dist: 문구에 three·Splat 만 있는 앱 청크는 3D 가 아니고, so
     assert.deepEqual([f('three-7.js').is_3d, f('three-7.js').basis], [true, 'sourcemap']);
     assert.deepEqual([f('math-C.js').is_3d, f('math-C.js').basis], [true, 'sourcemap']);
     assert.match(r[0].method, /3D basis: package 0, sourcemap 3, code-marker heuristic \d+ JS files/);
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test('dist: 깨진 sourcemap·sources 가 빈 맵은 앱 판정이 아니라 코드 표지 폴백으로 간다', async () => {
+  const dist = await mockDist();
+  const out = await mkdtemp(join(tmpdir(), 'skylens-out-'));
+  try {
+    await put(dist, 'assets/status-A.js', FILES['status-A.js'] + 'import"./broken-1.js";import"./empty-2.js";import"./nonjson-3.js";import"./plain-4.js";\n');
+    await put(dist, 'assets/broken-1.js', 'const w=new WebGLRenderer();\n');
+    await put(dist, 'assets/broken-1.js.map', '{"version":3,"sources":[');
+    await put(dist, 'assets/empty-2.js', 'const g=new BufferGeometry();\n');
+    await put(dist, 'assets/empty-2.js.map', JSON.stringify({ version: 3, sources: [] }));
+    await put(dist, 'assets/nonjson-3.js', 'const g=new SplatMesh();\n');
+    await put(dist, 'assets/nonjson-3.js.map', JSON.stringify({ version: 3, sources: [1, null] }));
+    await put(dist, 'assets/plain-4.js', 'const t="three splat";\n');
+    await put(dist, 'assets/plain-4.js.map', '<html>404</html>');
+    await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const m = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8')).manifest;
+    const f = (n) => m.find((x) => x.file === `assets/${n}`);
+    for (const n of ['broken-1.js', 'empty-2.js', 'nonjson-3.js']) assert.deepEqual([f(n).is_3d, f(n).basis], [true, 'heuristic'], n);
+    assert.deepEqual([f('plain-4.js').is_3d, f('plain-4.js').basis], [false, 'heuristic']);
   } finally {
     await rm(dist, { recursive: true, force: true });
     await rm(out, { recursive: true, force: true });
