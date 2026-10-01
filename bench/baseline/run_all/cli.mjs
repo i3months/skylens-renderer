@@ -63,6 +63,8 @@ try {
   console.log(`성공 ${summary.ok.length}, 실패 ${summary.failed.length}, 건너뜀 ${summary.skipped.length}, 레코드 ${summary.totalRecords}`);
   for (const f of summary.failed) console.error(`실패: ${f.module} (${f.stage}) ${f.error}`);
   process.exitCode = exitCode;
+  // 타임아웃으로 버린 모듈이 이벤트 루프를 붙잡고 있어도 끝나도록 한다.
+  if (summary.failed.some((f) => f.stage === 'timeout')) process.exit(exitCode);
 } catch (e) {
   console.error(e.message);
   process.exitCode = 2;

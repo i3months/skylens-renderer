@@ -21,6 +21,9 @@ export const MODULES = [
   'ref_images',
 ];
 
+/** 모듈 하나(import 포함)의 기본 타임아웃(ms). */
+export const DEFAULT_MODULE_TIMEOUT_MS = 30 * 60 * 1000;
+
 /** 모듈 폴더들이 있는 기본 위치 (bench/baseline). */
 const DEFAULT_MODULES_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -46,10 +49,11 @@ function checkNames(label, names) {
  * @param {string[]} [o.only] 지정하면 이 모듈만 실행
  * @param {string[]} [o.skip] 이 모듈은 건너뜀
  * @param {string} [o.modulesDir] <모듈명>/index.mjs 를 찾을 폴더 (테스트에서 가짜 모듈 주입용)
+ * @param {number} [o.moduleTimeoutMs] 모듈별 타임아웃. 초과 시 그 모듈만 failed(stage 'timeout')
  * @param {string[]} [o.modules] 모듈 이름 목록 재정의 (테스트용, 기본 MODULES)
  * @returns {Promise<{summary: object, records: object[], exitCode: number}>}
  */
-export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, skip, modulesDir = DEFAULT_MODULES_DIR, modules = MODULES, buildDist = defaultBuildDist } = {}) {
+export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, skip, modulesDir = DEFAULT_MODULES_DIR, modules = MODULES, buildDist = defaultBuildDist, moduleTimeoutMs = DEFAULT_MODULE_TIMEOUT_MS } = {}) {
   if (!outDir) throw new Error('outDir 이 필요하다');
   // 이름 검증은 기본 MODULES 를 쓸 때만 한다 (재정의 시에는 재정의한 목록 기준).
   const known = new Set(modules);
@@ -67,12 +71,14 @@ export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, sk
 
   // dist 가 필요한 모듈이 하나라도 실행 대상이면 빌드한다. 빌드가 실패하면 그 모듈들만 failed.
   let buildError = null;
+  let buildStage = 'build';
   const wantsDist = modules.some((n) => DIST_MODULES.includes(n) && !(onlySet && !onlySet.has(n)) && !skipSet.has(n));
   if (wantsDist && !inputs.distDir) {
     try {
       inputs = { ...inputs, distDir: await buildDist({ skylensDir, workDir: join(outDir, '_build') }) };
     } catch (e) {
       buildError = errText(e);
+      buildStage = e?.stage === 'timeout' ? 'timeout' : 'build';
     }
   }
 
@@ -82,27 +88,35 @@ export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, sk
       continue;
     }
     if (buildError && DIST_MODULES.includes(name)) {
-      failed.push({ module: name, stage: 'build', error: buildError });
+      failed.push({ module: name, stage: buildStage, error: buildError });
       continue;
     }
-    let mod;
-    try {
-      mod = await import(pathToFileURL(join(modulesDir, name, 'index.mjs')).href);
+    const timeout = new Error(`모듈 타임아웃(${moduleTimeoutMs}ms 초과)`);
+    let timer;
+    const timedOut = new Promise((_, rej) => {
+      timer = setTimeout(() => rej(timeout), moduleTimeoutMs);
+    });
+    let stage = 'import';
+    const work = (async () => {
+      const mod = await import(pathToFileURL(join(modulesDir, name, 'index.mjs')).href);
       if (typeof mod.run !== 'function') throw new Error('run 함수를 export 하지 않음');
-    } catch (e) {
-      failed.push({ module: name, stage: 'import', error: errText(e) });
-      continue;
-    }
-    try {
+      stage = 'run';
       const moduleOut = join(outDir, name);
       await mkdir(moduleOut, { recursive: true });
       const list = await mod.run({ skylensDir, outDir: moduleOut, commit, inputs });
       if (!Array.isArray(list)) throw new Error('run 이 배열을 반환하지 않음');
       assertRecords(list);
+      return list;
+    })();
+    work.catch(() => {}); // 타임아웃 뒤 늦게 실패해도 처리되지 않은 거부로 남기지 않는다
+    try {
+      const list = await Promise.race([work, timedOut]);
       records.push(...list);
       ok.push({ module: name, records: list.length });
     } catch (e) {
-      failed.push({ module: name, stage: 'run', error: errText(e) });
+      failed.push({ module: name, stage: e === timeout ? 'timeout' : stage, error: errText(e) });
+    } finally {
+      clearTimeout(timer);
     }
   }
 
