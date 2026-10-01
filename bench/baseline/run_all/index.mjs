@@ -1,4 +1,4 @@
-// 베이스라인 측정 모듈 8개를 순차 실행하고 결과를 하나의 records.json 으로 모은다 (T01.10).
+// 베이스라인 측정 모듈 8개를 순차 실행하고 결과를 하나의 records.json 으로 모은다.
 // 모듈 계약은 contracts/metrics/index.mjs 하단 'Bench module contract' 주석을 따른다.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';

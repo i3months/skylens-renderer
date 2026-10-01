@@ -1,4 +1,4 @@
-// Measurement record validation (contract T01.0). Shared by every bench/baseline/* module.
+// Measurement record validation. Shared by every bench/baseline/* module.
 export const UNITS = ['B', 'count', 'ms', 'fps', 'MB', 'ratio', 'px'];
 const REQUIRED = ['metric', 'value', 'unit', 'device', 'method', 'commit'];
 const ALLOWED = new Set([...REQUIRED, 'samples']);
