@@ -5,7 +5,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,10 +20,8 @@ const VIEWPOINTS = JSON.parse(await readFile(join(ROOT, 'fixtures', 'viewpoints'
 const COMMIT = 'abc1234';
 const BROWSER_MODULES = ['first_frame', 'heap'];
 
-// 브라우저 모듈은 chromium 이 있을 때만 포함한다.
-const browserReason = !existsSync('/opt/pw-browsers/chromium')
-  ? '/opt/pw-browsers/chromium 이 없음'
-  : await unavailableReason();
+// 브라우저 모듈은 chromium 을 찾을 수 있을 때만 포함한다(탐색 경로는 browser.mjs 가 환경 변수로 결정).
+const browserReason = await unavailableReason();
 if (browserReason) console.log(`# 브라우저 모듈(${BROWSER_MODULES.join(', ')}) 제외 사유: ${browserReason}`);
 
 // 기준값: 합성 입력에서 성공해야 하는 모듈 수.
@@ -36,6 +33,7 @@ const INPUT_KEY_ERROR = /input missing|inputs\.\w+|distDir|pointsPath|wsRecordin
 
 let root;
 let outDir;
+let baseArgs;
 let result;
 
 function ply(n, scale) {
@@ -104,6 +102,7 @@ before(async () => {
     '--dist-dir', dist,
     '--anchor-lat', String(a.lat), '--anchor-lon', String(a.lon), '--anchor-alt', String(a.alt),
   ];
+  baseArgs = [...args];
   if (browserReason) args.push('--skip', BROWSER_MODULES.join(','));
   const r = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 300000 });
   const summary = JSON.parse(await readFile(join(outDir, 'summary.json'), 'utf8'));
@@ -160,4 +159,16 @@ test('합성 입력의 알려진 값이 레코드에 반영된다', () => {
   assert.ok(val('bundle_tower.gzip_bytes') > 0);
   // ref_images: 시점마다 찍힌 픽셀 지표
   for (const vp of VIEWPOINTS.viewpoints) assert.ok(val(`ref_images.drawn_pixels.v${vp.id}`) > 0, `v${vp.id}`);
+});
+
+test('선택 입력 entryPath 키 이름이 바뀌면 브라우저 모듈이 이를 알아채지 못해 이 테스트가 깨진다', { skip: browserReason || false }, async () => {
+  // 존재하지 않는 진입 경로를 CLI 로 주면 모듈은 그 경로를 문제 삼으며 실패해야 한다.
+  // 모듈이 다른 키 이름을 읽으면 기본 상황판으로 조용히 성공해 아래 단언이 깨진다.
+  const missing = '/res/static/no_such_entry.html';
+  const out2 = join(root, 'out-entry');
+  const r = spawnSync(process.execPath, [...baseArgs.map((x) => (x === outDir ? out2 : x)), '--only', BROWSER_MODULES.join(','), '--entry-path', missing], { encoding: 'utf8', timeout: 120000 });
+  const summary = JSON.parse(await readFile(join(out2, 'summary.json'), 'utf8'));
+  assert.equal(r.status, 1, r.stderr);
+  assert.deepEqual(summary.failed.map((f) => f.module).sort(), [...BROWSER_MODULES].sort(), JSON.stringify(summary));
+  for (const f of summary.failed) assert.ok(f.error.includes(missing), `${f.module}: ${f.error}`);
 });

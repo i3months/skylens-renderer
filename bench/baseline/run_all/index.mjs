@@ -2,9 +2,10 @@
 // 모듈 계약은 contracts/metrics/index.mjs 하단 'Bench module contract' 주석을 따른다.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { assertRecords, serialize } from '../../../contracts/metrics/index.mjs';
-import { buildDist as defaultBuildDist } from '../_common/build.mjs';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+import { serialize } from '../../../contracts/metrics/index.mjs';
+import { buildDist as defaultBuildDist, killGroup, trackChild } from '../_common/build.mjs';
 
 /** dist(빌드된 skylens)가 필요한 모듈. inputs.distDir 가 없으면 복사본에서 한 번 빌드해 넘긴다. */
 export const DIST_MODULES = ['bundle_status', 'bundle_tower', 'first_frame', 'heap'];
@@ -25,6 +26,8 @@ export const MODULES = [
 export const DEFAULT_MODULE_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** 모듈 폴더들이 있는 기본 위치 (bench/baseline). */
+const STARTUP_CAP_MS = 30 * 1000;
+const WORKER = join(dirname(fileURLToPath(import.meta.url)), 'worker.mjs');
 const DEFAULT_MODULES_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function errText(e) {
@@ -35,6 +38,45 @@ function checkNames(label, names) {
   for (const n of names) {
     if (!MODULES.includes(n)) throw new Error(`${label}: unknown module ${n}`);
   }
+}
+
+// 모듈 하나를 별도 프로세스 그룹의 자식 프로세스(worker.mjs)에서 실행한다.
+// 타임아웃·종료 시 그룹 전체를 죽이므로 늦게 도는 모듈이 outDir 에 더는 쓰지 못한다.
+function runModule({ modulesDir, name, skylensDir, outDir, commit, inputs, timeoutMs }) {
+  return new Promise((res, rej) => {
+    const p = spawn(process.execPath, [WORKER], { detached: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    const untrack = trackChild(p);
+    let msg = null;
+    let done = false;
+    const finish = (fn, v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      killGroup(p);
+      untrack();
+      fn(v);
+    };
+    // 프로세스 기동 시간은 모듈 시간에 넣지 않는다: worker 가 ready 를 보내면 그때부터 timeoutMs 를 잰다.
+    let timer;
+    const arm = (ms) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        finish(rej, Object.assign(new Error(`모듈 타임아웃(${timeoutMs}ms 초과)`), { stage: 'timeout' }));
+      }, ms);
+    };
+    arm(STARTUP_CAP_MS + timeoutMs);
+    p.on('message', (m) => {
+      if (m?.ready) return arm(timeoutMs);
+      msg = m;
+    });
+    p.on('error', (e) => finish(rej, Object.assign(new Error(`모듈 프로세스 실패: ${e.message}`), { stage: 'import' })));
+    p.on('close', (code, sig) => {
+      if (msg?.ok) return finish(res, msg.list);
+      if (msg) return finish(rej, Object.assign(new Error(msg.error), { stage: msg.stage }));
+      finish(rej, Object.assign(new Error(`모듈 프로세스가 결과 없이 종료됨(code ${code}, signal ${sig})`), { stage: 'run' }));
+    });
+    p.send({ modulesDir, name, args: { skylensDir, outDir, commit, inputs } });
+  });
 }
 
 /**
@@ -91,32 +133,12 @@ export async function runAll({ skylensDir, outDir, commit, inputs = {}, only, sk
       failed.push({ module: name, stage: buildStage, error: buildError });
       continue;
     }
-    const timeout = new Error(`모듈 타임아웃(${moduleTimeoutMs}ms 초과)`);
-    let timer;
-    const timedOut = new Promise((_, rej) => {
-      timer = setTimeout(() => rej(timeout), moduleTimeoutMs);
-    });
-    let stage = 'import';
-    const work = (async () => {
-      const mod = await import(pathToFileURL(join(modulesDir, name, 'index.mjs')).href);
-      if (typeof mod.run !== 'function') throw new Error('run 함수를 export 하지 않음');
-      stage = 'run';
-      const moduleOut = join(outDir, name);
-      await mkdir(moduleOut, { recursive: true });
-      const list = await mod.run({ skylensDir, outDir: moduleOut, commit, inputs });
-      if (!Array.isArray(list)) throw new Error('run 이 배열을 반환하지 않음');
-      assertRecords(list);
-      return list;
-    })();
-    work.catch(() => {}); // 타임아웃 뒤 늦게 실패해도 처리되지 않은 거부로 남기지 않는다
     try {
-      const list = await Promise.race([work, timedOut]);
+      const list = await runModule({ modulesDir, name, skylensDir, outDir: join(outDir, name), commit, inputs, timeoutMs: moduleTimeoutMs });
       records.push(...list);
       ok.push({ module: name, records: list.length });
     } catch (e) {
-      failed.push({ module: name, stage: e === timeout ? 'timeout' : stage, error: errText(e) });
-    } finally {
-      clearTimeout(timer);
+      failed.push({ module: name, stage: e.stage ?? 'run', error: errText(e) });
     }
   }
 

@@ -1,9 +1,9 @@
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readdir, readFile, stat, access, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readdir, readFile, stat, access, symlink, copyFile, chmod, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { buildDist } from './build.mjs';
 
@@ -107,18 +107,23 @@ test('workDir 가 원본과 같거나 심볼릭 링크로 원본을 가리켜도
   assert.ok((await stat(join(src, 'index.html'))).isFile());
 });
 
+// 이 테스트만의 고유 이름으로 sleep 을 복사해 쓴다. 무관한 sleep 프로세스와 섞이지 않는다.
+const MARK_SLEEP = join(tmpdir(), `bd-mark-sleep-${process.pid}-${Date.now()}`);
+before(async () => { await copyFile(spawnSync('which', ['sleep']).stdout.toString().trim(), MARK_SLEEP); await chmod(MARK_SLEEP, 0o755); });
+after(() => rm(MARK_SLEEP, { force: true }));
+
 test('build 단계 타임아웃: stage timeout 으로 throw, sleep 프로세스 그룹 정리', async () => {
   const { src, work } = await mockTree();
   const t0 = Date.now();
   await assert.rejects(
-    buildDist({ skylensDir: src, workDir: work, installCmd: null, buildCmd: 'sleep 30 & sleep 31; echo x', stepTimeoutMs: 400 }),
+    buildDist({ skylensDir: src, workDir: work, installCmd: null, buildCmd: `${MARK_SLEEP} 30 & ${MARK_SLEEP} 31; echo x`, stepTimeoutMs: 400 }),
     (e) => e.stage === 'timeout' && e.failedStage === 'build',
   );
   assert.ok(Date.now() - t0 < 10000);
   // 종료된 자식이 init 에 의해 회수될 때까지 잠시 기다린다.
   let left = '';
   for (let i = 0; i < 40; i++) {
-    left = spawnSync('pgrep', ['-x', 'sleep']).stdout.toString().trim();
+    left = spawnSync('pgrep', ['-f', MARK_SLEEP]).stdout.toString().trim();
     if (!left) break;
     await new Promise((r) => setTimeout(r, 100));
   }
@@ -144,4 +149,34 @@ test('실제 skylens 트리 빌드', { skip: process.env.SKYLENS_BUILD !== '1', 
   assert.ok((await stat(join(dist, 'index.html'))).size > 0);
   assert.ok((await readdir(join(dist, 'assets'))).length > 0);
   assert.equal(await hashTree(src), before);
+});
+
+test('build 성공 종료 후에도 백그라운드 자식은 남지 않는다', async () => {
+  const { src, work } = await mockTree();
+  await buildDist({ skylensDir: src, workDir: work, installCmd: null, buildCmd: `${MARK_SLEEP} 33 & ${COPY_CMD}` });
+  let left = '';
+  for (let i = 0; i < 40; i++) {
+    left = spawnSync('pgrep', ['-f', MARK_SLEEP]).stdout.toString().trim();
+    if (!left) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.equal(left, '');
+});
+
+test('SIGTERM 을 받으면 빌드 자식 그룹을 정리하고 종료', async () => {
+  const { src, work } = await mockTree();
+  const script = `import { buildDist } from ${JSON.stringify(new URL('./build.mjs', import.meta.url).href)};
+buildDist({ skylensDir: ${JSON.stringify(src)}, workDir: ${JSON.stringify(work)}, installCmd: null, buildCmd: ${JSON.stringify(`${MARK_SLEEP} 34`)} }).catch(() => {});`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: 'ignore' });
+  const exited = new Promise((r) => child.on('exit', (code, sig) => r(sig)));
+  for (let i = 0; i < 50 && !spawnSync('pgrep', ['-f', MARK_SLEEP]).stdout.toString().trim(); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(spawnSync('pgrep', ['-f', MARK_SLEEP]).stdout.toString().trim(), '자식이 떠 있어야 한다');
+  child.kill('SIGTERM');
+  assert.equal(await exited, 'SIGTERM');
+  let left = 'x';
+  for (let i = 0; i < 40 && left; i++) {
+    left = spawnSync('pgrep', ['-f', MARK_SLEEP]).stdout.toString().trim();
+    if (left) await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.equal(left, '');
 });
