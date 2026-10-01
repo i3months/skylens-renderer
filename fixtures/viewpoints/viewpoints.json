@@ -1,5 +1,12 @@
 {
-  "coord": "ENU, x=east y=up z=-north, 1 unit = 1 m",
+  "coord": "scene (x=east, y=up, z=-north), local ENU 에서 변환, 1 unit = 1 m",
+  "anchor": {
+    "lat": 36.3685,
+    "lon": 127.3475,
+    "alt": 30
+  },
+  "anchor_source": "skylens develop 59edcf9 src/shared/viewer/config.ts:12 (CONFIG.geo.anchor 기본값; GeoAnchor 타입은 src/shared/geo.ts:17). 관제탑(tower)은 런타임에 지도 bbox 에서 앵커를 따로 유도하므로(config.ts:8-10, skylens_core/geoFrame.ts:44) tower 시점에 실데이터를 맞출 때는 해당 앵커로 교체 확인 필요.",
+  "note": "변환: ENU(e,n,u) -> scene (e,u,-n) (geo.ts enuToScene). 이 파일은 GL 규약(y-up, 카메라는 -z 를 봄)이며 renderer_basis §2 의 OpenCV 규약(x 우, y 아래, z 전방; d=X_c.z)과 다르다. OpenCV 카메라 좌표 <-> GL 카메라 좌표 변환은 diag(1,-1,-1).",
   "viewpoints": [
     {
       "id": 1,
