@@ -1,5 +1,5 @@
 // 번들 측정 공통 로직(현황판·관제탑이 함께 쓴다): 정적 import·동적 import()·vite mapDeps 추적과 3D 청크 판별.
-import { existsSync, statSync, readFileSync } from 'node:fs';
+import { existsSync, statSync, readFileSync, readdirSync, lstatSync } from 'node:fs';
 import { join, relative, sep, resolve, dirname, isAbsolute } from 'node:path';
 
 export const posix = (p) => p.split(sep).join('/');
@@ -10,19 +10,24 @@ const isJs = (p) => /\.m?js$/i.test(p);
 const ASSET_TAG = /<(script|link)\b[^>]*>/gi;
 const ATTR = (tag, name) => new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i').exec(tag);
 const STATIC_IMPORT = [/\bfrom\s*(["'])([^"'\n]+)\1/g, /\bimport\s*(["'])([^"'\n]+)\1/g];
-const DYNAMIC_IMPORT = /\bimport\s*\(\s*(["'])([^"'\n]+)\1\s*\)/g;
+const DYNAMIC_IMPORT = /\bimport\s*\(\s*(["'`])([^"'`\n$]+)\1\s*(?:,[^)]*)?\)/g;
+const URL_REF = /\bnew\s+URL\(\s*(["'`])([^"'`\n$]+)\1\s*,\s*import\.meta\.url\s*\)/g;
+// 청크 파일명 문자열("assets/three-a.js" 같은 mapDeps·import 지정자)은 표지 판별에서 뺀다.
+const PATH_LITERAL = /(["'`])[^"'`\n]*\.(?:m?js|css)(?:\?[^"'`\n]*)?\1/g;
+const PKG_3D_SOURCE = /node_modules\/(?:three|@mkkellogg\/gaussian-splats-3d)\//;
 const MAP_DEPS_ARRAY = /\.f\s*=\s*\[([^\]]*)\]/g;
 const QUOTED = /(["'])([^"'\n]+)\1/g;
 
 // 3D 청크 판별 근거: JS 내용에 three·splat·렌더러 식별자가 들어 있는가(이름이 아니라 내용으로 본다).
-export const MARKER_3D = /WebGLRenderer|WebGL2?RenderingContext|BufferGeometry|Matrix4|[Ss]plat|[Gg]aussian|\bthree\b|\bTHREE\b|getContext\(\s*["']webgl/;
-export const MARKER_DESC = 'JS chunk whose content has three/splat/renderer identifiers (WebGLRenderer, WebGL(2)RenderingContext, BufferGeometry, Matrix4, Splat*, Gaussian*, three, getContext("webgl")); CSS, wasm and other assets excluded';
+export const MARKER_3D = /WebGLRenderer|WebGL2?RenderingContext|BufferGeometry|Matrix4|[Ss]plat|[Gg]aussian|\bthree\b|\bTHREE\b|WebGPURenderer|GPUDevice|getContext\(\s*["'`](?:experimental-)?webgl|getContext\(\s*["'`]webgpu/;
+export const MARKER_DESC = 'JS chunk whose content has three/splat/renderer identifiers (WebGLRenderer, WebGL(2)RenderingContext, BufferGeometry, Matrix4, Splat*, Gaussian*, three, getContext("webgl"/`webgl2`/"webgpu"), WebGPURenderer) or a sourcemap listing node_modules/three or gaussian-splats-3d; CSS, wasm and other assets excluded';
 
 /** JS 소스에서 정적 import, 동적 import(), vite mapDeps 항목을 뽑는다. [{spec, kind}] kind: static|dynamic|mapdeps */
 export function importsOf(src) {
   const out = [];
   for (const re of STATIC_IMPORT) for (const m of src.matchAll(re)) out.push({ spec: m[2], kind: 'static' });
   for (const m of src.matchAll(DYNAMIC_IMPORT)) out.push({ spec: m[2], kind: 'dynamic' });
+  for (const m of src.matchAll(URL_REF)) out.push({ spec: m[2], kind: 'dynamic' });
   if (src.includes('__vite__mapDeps')) {
     for (const a of src.matchAll(MAP_DEPS_ARRAY)) for (const q of a[1].matchAll(QUOTED)) out.push({ spec: q[2], kind: 'mapdeps' });
   }
@@ -32,7 +37,36 @@ export function importsOf(src) {
 /** 3D 청크인가: JS 이고 내용에 표지가 있다. forced 는 패키지 경로처럼 외부에서 3D 로 확정한 경우. */
 export function is3d(rel, buf, forced = false) {
   if (!isJs(rel)) return false;
-  return forced || MARKER_3D.test(buf.toString('utf8'));
+  return forced || MARKER_3D.test(buf.toString('utf8').replace(PATH_LITERAL, '""'));
+}
+
+/** 옆의 sourcemap 이 three·gaussian-splats-3d 패키지 경로를 소스로 나열하는가(없거나 깨졌으면 false). */
+export function mapIs3d(abs) {
+  try {
+    const sources = JSON.parse(readFileSync(`${abs}.map`, 'utf8')).sources;
+    return Array.isArray(sources) && sources.some((x) => typeof x === 'string' && PKG_3D_SOURCE.test(x.replace(/\\/g, '/')));
+  } catch {
+    return false;
+  }
+}
+
+/** dist 아래 JS 파일 중 폐포(rel 집합)에 없는 것의 경로 목록(경로순). 심볼릭 링크는 따라가지 않는다. */
+export function outsideJs(distDir, closureRels) {
+  const out = [];
+  const walkDir = (dir) => {
+    for (const n of readdirSync(dir).sort()) {
+      const p = join(dir, n);
+      const st = lstatSync(p);
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walkDir(p);
+      else if (st.isFile() && isJs(p)) {
+        const rel = posix(relative(distDir, p));
+        if (!closureRels.has(rel)) out.push(rel);
+      }
+    }
+  };
+  walkDir(distDir);
+  return out;
 }
 
 /** 참조를 dist 안 절대 경로로 푼다. 루트('/x')는 distDir 기준, 상대는 참조한 파일 기준. */
@@ -44,10 +78,11 @@ function resolveRef(label, distDir, fromAbs, spec) {
   return abs;
 }
 
-/** mapDeps 항목은 base 기준 경로(assets/x.js)다. dist 루트 기준을 먼저, 없으면 참조한 파일 기준으로 푼다. */
-function resolveMapDep(distDir, fromAbs, spec) {
+/** mapDeps 항목은 base 기준 경로(assets/x.js)다. dist 루트 기준, 진입 HTML 디렉터리 기준, 참조한 파일 기준 순으로 푼다. */
+function resolveMapDep(distDir, htmlAbs, fromAbs, spec) {
   const noQuery = spec.split(/[?#]/)[0];
-  for (const abs of [join(distDir, noQuery.replace(/^\.?\//, '')), resolve(dirname(fromAbs), noQuery)]) {
+  const bare = noQuery.replace(/^\.?\//, '');
+  for (const abs of [join(distDir, bare), join(dirname(htmlAbs), bare), resolve(dirname(fromAbs), noQuery)]) {
     const rel = relative(distDir, abs);
     if (!rel.startsWith('..') && !isAbsolute(rel) && isFile(abs)) return abs;
   }
@@ -74,33 +109,36 @@ function htmlAssets(label, distDir, htmlAbs) {
 
 /**
  * 진입 HTML 에서 출발해 참조 자산, JS 정적 import, 동적 import(), mapDeps 청크를 따라간 폐포.
- * 정적 참조 파일이 없으면 throw, 동적·mapDeps 대상이 없으면(선택 청크) 건너뛴다. 경로순 [{rel, abs}].
+ * 정적 참조 파일이 없으면 throw, 동적·mapDeps 대상이 없으면(선택 청크) 건너뛰되 report.unresolved 에 [{from, spec}] 로 남긴다.
+ * 경로순 [{rel, abs, forced3d}]. forced3d 는 sourcemap 으로 three·splat 패키지가 확인된 JS.
  */
-export function distClosure(label, distDir, entryName) {
+export function distClosure(label, distDir, entryName, report = {}) {
+  report.unresolved = [];
   const cands = [join(distDir, 'res', 'static', entryName), join(distDir, entryName)];
   const htmlAbs = cands.find(isFile);
   if (!htmlAbs) throw new Error(`${label}: 진입 HTML 이 없다: ${cands[0]}`);
   const seen = new Map();
-  const queue = htmlAssets(label, distDir, htmlAbs).map((abs) => ({ abs, optional: false }));
+  const queue = htmlAssets(label, distDir, htmlAbs).map((abs) => ({ abs, optional: false, from: '' }));
   while (queue.length) {
-    const { abs, optional } = queue.shift();
+    const { abs, optional, from } = queue.shift();
     const rel = posix(relative(distDir, abs));
     if (seen.has(rel)) continue;
     if (!isFile(abs)) {
-      if (optional) continue;
+      if (optional) { report.unresolved.push({ from: from, spec: rel }); continue; }
       throw new Error(`${label}: ${entryName} 가 참조하는 파일이 없다: ${rel}`);
     }
     seen.set(rel, abs);
     if (!isJs(abs)) continue;
     for (const { spec, kind } of importsOf(readFileSync(abs, 'utf8'))) {
       if (kind === 'mapdeps') {
-        const dep = resolveMapDep(distDir, abs, spec);
-        if (dep) queue.push({ abs: dep, optional: true });
-      } else if (isLocalSpec(spec)) queue.push({ abs: resolveRef(label, distDir, abs, spec), optional: kind === 'dynamic' });
+        const dep = resolveMapDep(distDir, htmlAbs, abs, spec);
+        if (dep) queue.push({ abs: dep, optional: true, from: posix(relative(distDir, abs)) });
+        else report.unresolved.push({ from: posix(relative(distDir, abs)), spec });
+      } else if (isLocalSpec(spec)) queue.push({ abs: resolveRef(label, distDir, abs, spec), optional: kind === 'dynamic', from: posix(relative(distDir, abs)) });
     }
   }
   if (!seen.size) throw new Error(`${label}: ${entryName} 가 참조하는 자산이 없다`);
-  return [...seen.keys()].sort().map((rel) => ({ rel, abs: seen.get(rel) }));
+  return [...seen.keys()].sort().map((rel) => ({ rel, abs: seen.get(rel), forced3d: isJs(rel) && mapIs3d(seen.get(rel)) }));
 }
 
 function resolveSourceSpec(fromAbs, spec) {
