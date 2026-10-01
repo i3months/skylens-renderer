@@ -20,6 +20,9 @@ SkyLens 의 3D 표시(현황판·관제탑)를 브라우저 렌더링에서 서�
 ### 사용법
 아직 없다. 스택이 정해지면 빌드·실행·테스트 방법을 여기에 적는다.
 
+### 기준값 측정 도구
+현재 three.js 구현의 기준값을 재는 도구가 `bench/baseline/` 에 있다(번들 크기·자산 바이트·웹소켓 바이트·관제탑 요청·첫 프레임·JS 힙·기준 영상). `bench/baseline/run_all/cli.mjs` 가 한 번에 돌리고, `tools/baseline_report/cli.mjs` 가 결과를 표로 바꾼다. 테스트는 `npm test`(Node 22 이상, 헤드리스 브라우저 테스트는 `PLAYWRIGHT_BROWSERS_PATH` 필요).
+
 ### 개발 설정
 ```
 git config core.hooksPath .githooks
@@ -45,6 +48,9 @@ The control tower uses B. The status board uses A on low-end devices and B on hi
 
 ### Usage
 Not yet available. Build, run and test instructions will be added here once the stack is chosen.
+
+### Baseline measurement tools
+`bench/baseline/` holds tools that measure the current three.js implementation (bundle size, asset bytes, WebSocket bytes, control-tower requests, first frame, JS heap, reference images). `bench/baseline/run_all/cli.mjs` runs them all and `tools/baseline_report/cli.mjs` turns the results into a table. Tests run with `npm test` (Node 22+; headless-browser tests need `PLAYWRIGHT_BROWSERS_PATH`).
 
 ### Development setup
 ```
