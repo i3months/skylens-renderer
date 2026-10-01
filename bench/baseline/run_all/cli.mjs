@@ -28,6 +28,7 @@ try {
       'ws-recording': { type: 'string' },
       'tower-recording': { type: 'string' },
       'dist-dir': { type: 'string' },
+      'entry-path': { type: 'string' },
       'anchor-lat': { type: 'string' },
       'anchor-lon': { type: 'string' },
       'anchor-alt': { type: 'string' },
@@ -42,6 +43,7 @@ try {
   const inputs = {};
   const paths = [['points', 'pointsPath'], ['ws-recording', 'wsRecording'], ['tower-recording', 'towerRecording'], ['dist-dir', 'distDir']];
   for (const [opt, key] of paths) if (values[opt]) inputs[key] = resolve(values[opt]);
+  if (values['entry-path']) inputs.entryPath = values['entry-path'];
   const an = ['anchor-lat', 'anchor-lon', 'anchor-alt'].map((k) => values[k]);
   if (an.some((v) => v !== undefined)) {
     if (an.some((v) => v === undefined)) throw new Error('--anchor-lat, --anchor-lon, --anchor-alt 는 셋 다 함께 줘야 한다');

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "scripts": {
     "test": "node --test \"**/*.test.mjs\""
   }
