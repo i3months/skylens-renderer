@@ -70,6 +70,9 @@ const asc = (a, b) => a - b;
  *   쓰지 않으므로, 완결 판정과 segments 합은 언제나 같은 프레임 집합(stale 아닌 원본)을 근거로 한다.
  *   근거: 분할 전송은 같은 수준 연속 프레임이고(끊긴 뒤의 조각은 그 메시지의 일부가 될 수 없다), 딜레이 패턴은 수준을
  *   교체하므로 원본이 (구간,수준)에 두 번째 메시지를 보낼 일이 없어 끊긴 뒤 같은 수준은 새 메시지가 아니라 사본이다.
+ *   다만 "원본이 (구간,수준)에 두 번째 메시지를 보내지 않는다" 는 skylens 송신 코드를 대조해 확인한 사실이 아니라 가정이다.
+ *   그 가정의 대가로, 추월된 낮은 수준의 stale 프레임이 끼어 연속이 끊긴 [L2 5, L1 3, L2 5 final] 도 미완이 된다
+ *   (뒤의 L2 가 정말 새 메시지였더라도 사본으로 본다). 완결을 놓치는 쪽을 택한 설계상 선택이다.
  *   새 메시지로 보면 [L2 5, rL2 5, L2 5 final] 이 한 수준을 두 번 더한 10 이 된다. 또 도착하지 않은 것을 메우지 않는다:
  *   원본 연속이 final 없이 끝났으면 사본의 final 로 그 원본이 끝났다고 채우지 않는다.
  *   대가로 완결이 순서에 의존한다: [L2 5, rL2 5, L2 5 final] 은 미완, [L2 5 final, rL2 5, L2 5] 는 완결 [5]
@@ -86,6 +89,7 @@ const asc = (a, b) => a - b;
  * - resend_only_segments: 원본 프레임이 하나도 없는 구간 ID (오름차순).
  * - 모든 바이트 합은 total_bytes 의 부분합이므로 total_bytes 가 safe integer 를 넘으면 오류를 던진다.
  *   total_bytes·by_kind·windows 에는 항상 포함한다.
+ * - copy_frames: stale 중 사본 규칙(끊긴 같은 최고 수준)으로 판정된 프레임 수. 추월당한 낮은 수준은 세지 않는다.
  * - stale 프레임 바이트는 total·windows·stale_bytes 에만 넣고 구간 합·받은 수준·건너뜀 계산에서는 뺀다.
  * - incomplete_segments: 위치와 무관한 모든 미완 구간(도착 순서). segments 에는 완결 구간만 남는다.
  * - top_level_assumed: 원본 final 필드 없이 topLevel 기본값을 썼는지(run 이 method 에 경고로 남김).
@@ -110,6 +114,7 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
   let initialSum = 0;
   let stale = 0;
   let staleBytes = 0;
+  let copyFrames = 0; // 사본 규칙(끊긴 같은 최고 수준)으로 stale 판정된 원본 프레임 수
   let anyFinal = false; // 원본 프레임에 final 필드가 있음
   let anyFinalField = false; // 어떤 segment 프레임에든 final 필드가 있음
   const byKind = Object.create(null);
@@ -160,6 +165,7 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
       // 사본 규칙: final 은 바이트와 같은 프레임 집합으로 본다. stale 프레임(추월당한 수준이든 끊긴 같은 최고 수준이든)의
       // final 은 완결 근거가 아니다.
       if (f.final === true && !isStale) s.final = true;
+      const byCopyRule = isStale && f.level >= s.rhi;
       s.hi = Math.max(s.hi, f.level);
       s.rhi = Math.max(s.rhi, f.level);
       // stale 프레임은 분할 연속을 잇지도 새로 시작하지도 않는다. 끊긴 뒤의 같은 수준 조각은 모두 stale 로 남는다.
@@ -168,6 +174,7 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
         // 추월된 수준의 뒤늦은 프레임: total·windows·stale_bytes 에만 센다.
         stale += 1;
         staleBytes += f.bytes;
+        if (byCopyRule) copyFrames += 1;
       } else {
         s.order = i;
         v.orig.n += 1;
@@ -259,6 +266,7 @@ export function summarize(frames, { windowMs = DEFAULT_WINDOW_MS, topLevel: topL
     segment_levels_skipped: segSkipped,
     stale_levels: stale,
     stale_bytes: staleBytes,
+    copy_frames: copyFrames,
     top_level_assumed: !anyFinal && topLevelOpt === undefined,
     final_resend_only: !anyFinal && anyFinalField,
     top_level_ignored: anyFinal && topLevelOpt !== undefined,
@@ -327,7 +335,9 @@ export async function run({ skylensDir, outDir, commit, inputs }) {
   const doneIds = new Set(s.segment_ids);
   const onlyDone = s.resend_only_segments.filter((id) => doneIds.has(id)).length;
   const resendOnly = onlyDone ? ` 참고: 원본 없는 resend 전용 구간 ${onlyDone}개를 재전송 사본으로 집계` : '';
-  const mSeg = `ws_recording_replay by_segment_id${warn}${ambiguous}${resendOnly}`;
+  // 끊긴 같은 수준 원본을 사본으로 판정해 stale 처리했으면 그 사실과 프레임 수를 남긴다(없으면 변화 없음).
+  const copies = s.copy_frames ? ` 참고: 끊긴 같은 수준 사본 판정 ${s.copy_frames}프레임을 stale 로 처리 (사본 규칙, 완결 근거에서 제외)` : '';
+  const mSeg = `ws_recording_replay by_segment_id${warn}${ambiguous}${resendOnly}${copies}`;
   const mWin = `ws_recording_replay window_ms=${DEFAULT_WINDOW_MS}${warn}`;
   const mAll = `ws_recording_replay${warn}`;
   // 받은 수준 지표는 교체된 낮은 수준까지 포함한 전체 수신 수준임을 method 에 밝힌다.
