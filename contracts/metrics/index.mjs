@@ -36,3 +36,12 @@ export function serialize(list) {
 export function parse(text) {
   return assertRecords(JSON.parse(text));
 }
+
+/*
+ * Bench module contract (every bench/baseline/<name>/index.mjs):
+ *   export async function run({ skylensDir, outDir, commit }) -> Record[]
+ *   - skylensDir: checkout of skylens `develop` (read-only; never modify it, copy if a build is needed)
+ *   - outDir: where to write artifacts; commit: skylens commit hash (7-40 hex)
+ *   - returned records must pass assertRecords(); no network calls except the package registry.
+ * Tests live next to the module as <name>.test.mjs and read SKYLENS_DIR from the environment.
+ */
