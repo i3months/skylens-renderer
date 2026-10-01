@@ -203,3 +203,13 @@ test('객체 id 는 [object Object] 로 합쳐지지 않고 JSON 키로 구분',
   const body = { type: 'FeatureCollection', features: [f({ a: 1 }), f({ a: 2 }), f({ a: 1 }), f('[object Object]')] };
   assert.equal(countBuildings([{ kind: 'building', bytes: 1, body }]), 3);
 });
+
+test('숫자 id 1 과 문자열 id "1" 은 병합되지 않음', () => {
+  const body = { type: 'FeatureCollection', features: [{ type: 'Feature', id: 1 }, { type: 'Feature', id: '1' }] };
+  assert.equal(countBuildings([{ kind: 'building', bytes: 1, body }]), 2);
+});
+
+test('문자열 feature 는 건물에서 제외', () => {
+  const body = { type: 'FeatureCollection', features: ['1', { type: 'Feature', id: 1 }, '2', { type: 'Feature', id: 2 }] };
+  assert.equal(countBuildings([{ kind: 'building', bytes: 1, body }]), 2);
+});

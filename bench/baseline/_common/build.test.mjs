@@ -133,9 +133,17 @@ test('build 단계 타임아웃: stage timeout 으로 throw, sleep 프로세스 
 test('install 단계 타임아웃도 timeout', async () => {
   const { src, work } = await mockTree();
   await assert.rejects(
-    buildDist({ skylensDir: src, workDir: work, installCmd: 'sleep 31', buildCmd: COPY_CMD, stepTimeoutMs: 300 }),
+    buildDist({ skylensDir: src, workDir: work, installCmd: `${MARK_SLEEP} 36 & ${MARK_SLEEP} 37`, buildCmd: COPY_CMD, stepTimeoutMs: 300 }),
     (e) => e.stage === 'timeout' && e.failedStage === 'install',
   );
+  // 고유 이름 sleep 만 센다: 무관한 sleep 이 있어도 영향받지 않고, 우리 것이 남으면 실패한다.
+  let left = '';
+  for (let i = 0; i < 40; i++) {
+    left = spawnSync('pgrep', ['-f', MARK_SLEEP]).stdout.toString().trim();
+    if (!left) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.equal(left, '');
 });
 
 // 실제 트리 빌드: SKYLENS_BUILD=1 일 때만 (네트워크·수 분 소요)

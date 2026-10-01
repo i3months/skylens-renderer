@@ -48,6 +48,7 @@ async function mockDist() {
   for (const [n, t] of Object.entries(FILES)) await put(d, `assets/${n}`, t);
   await put(d, 'res/static/status.html', html('status-A.js', 'status-D.css'));
   await put(d, 'res/static/control.html', html('control-G.js', 'control-H.css'));
+  await put(d, 'assets/math-C.js.map', JSON.stringify({ sources: ['../../node_modules/three/src/math/Matrix4.js'] }));
   return d;
 }
 
@@ -63,7 +64,7 @@ test('dist: status.html 폐포의 raw/gzip 합이 박아 둔 숫자와 같다', 
     assert.equal(val(r, 'bundle_status.3d.gzip_bytes'), 84);
     assert.equal(val(r, 'bundle_status.3d.raw_bytes'), 5622);
     assert.ok(val(r, 'bundle_status.3d.gzip_bytes') < val(r, 'bundle_status.gzip_bytes'));
-    assert.match(r[0].method, /three\/splat\/renderer/);
+    assert.match(r[0].method, /sourcemap/);
     assert.match(r[0].method, /dist/);
     assert.match(r[0].method, /shared chunks/);
   } finally {
@@ -80,8 +81,8 @@ test('무관 청크·변형·동적 import 대상을 추가해도 값 불변', a
     await put(dist, 'assets/gaussian-splats-3d-QQ.js', 'k'.repeat(9000));
     await put(dist, 'assets/statusview-RR.js', 'k'.repeat(9000));
     await put(dist, 'assets/drone-Z.js', 'k'.repeat(9000));
-    await put(dist, 'assets/math-C.js.map', 'm'.repeat(9000));
-    assert.deepEqual(await run({ skylensDir: '/x', outDir: null, commit: COMMIT, inputs }), a);
+    await put(dist, 'assets/unrelated-C.js.map', 'm'.repeat(9000));
+    assert.deepEqual((await run({ skylensDir: '/x', outDir: null, commit: COMMIT, inputs })).map((x) => x.value), a.map((x) => x.value)); // method 에는 폐포 밖 JS 경고가 붙는다
   } finally {
     await rm(dist, { recursive: true, force: true });
   }
@@ -234,7 +235,7 @@ test('dist: 못 푼 참조가 없으면 method 에 0 으로 기록된다', async
   try {
     const r = await run({ skylensDir: '/x', outDir: null, commit: COMMIT, inputs: { distDir: dist } });
     assert.match(r[0].method, /unresolved dynamic\/mapDeps refs: 0(?:;|$)/);
-    assert.doesNotMatch(r[0].method, /WARNING/);
+    assert.doesNotMatch(r[0].method, /WARNING: 3D total may be understated/);
   } finally {
     await rm(dist, { recursive: true, force: true });
   }
@@ -254,6 +255,46 @@ test('dist: CSS 에 3D 표지 문구가 있어도 3D 합계에서 빠지고, web
     const m = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8')).manifest;
     assert.equal(m.find((f) => f.file === 'assets/status-D.css').is_3d, false);
     assert.deepEqual(m.filter((f) => f.is_3d).map((f) => f.file), ['assets/gl-2.js', 'assets/gpu-3.js', 'assets/mapped-4.js', 'assets/math-C.js']);
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test('dist: 문구에 three·Splat 만 있는 앱 청크는 3D 가 아니고, sourcemap 이 앱 소스면 표지가 있어도 3D 가 아니다', async () => {
+  const dist = await mockDist();
+  const out = await mkdtemp(join(tmpdir(), 'skylens-out-'));
+  try {
+    await put(dist, 'assets/status-A.js', FILES['status-A.js'] + 'import"./ui-5.js";import"./lib-6.js";import"./three-7.js";\n');
+    await put(dist, 'assets/ui-5.js', 'const t="Loading three.js splat Splat Gaussian view";const THREE_LABEL=\'three\';\n');
+    await put(dist, 'assets/lib-6.js', 'const w=new WebGLRenderer();\n');
+    await put(dist, 'assets/lib-6.js.map', JSON.stringify({ sources: ['../src/app/lib.js'] }));
+    await put(dist, 'assets/three-7.js', 'const q=1;\n');
+    await put(dist, 'assets/three-7.js.map', JSON.stringify({ sources: ['..\\node_modules\\three\\src\\core\\Object3D.js'] }));
+    const r = await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    const m = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8')).manifest;
+    const f = (n) => m.find((x) => x.file === `assets/${n}`);
+    assert.deepEqual([f('ui-5.js').is_3d, f('ui-5.js').basis], [false, 'heuristic']);
+    assert.deepEqual([f('lib-6.js').is_3d, f('lib-6.js').basis], [false, 'sourcemap']);
+    assert.deepEqual([f('three-7.js').is_3d, f('three-7.js').basis], [true, 'sourcemap']);
+    assert.deepEqual([f('math-C.js').is_3d, f('math-C.js').basis], [true, 'sourcemap']);
+    assert.match(r[0].method, /3D basis: package 0, sourcemap 3, code-marker heuristic \d+ JS files/);
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test('dist: 폐포 밖 JS 가 있으면 경고가 method 와 manifest 에 남는다', async () => {
+  const dist = await mockDist();
+  const out = await mkdtemp(join(tmpdir(), 'skylens-out-'));
+  try {
+    await put(dist, 'assets/stray-9.js', 'new WebGLRenderer();\n');
+    const r = await run({ skylensDir: '/x', outDir: out, commit: COMMIT, inputs: { distDir: dist } });
+    assert.match(r[0].method, /WARNING: \d+ dist JS file\(s\) outside the entry closure.*assets\/stray-9\.js/);
+    const j = JSON.parse(await readFile(join(out, 'bundle_status.manifest.json'), 'utf8'));
+    assert.ok(j.warnings.some((w) => /stray-9\.js/.test(w)));
+    assert.ok(j.outside_closure_js.includes('assets/stray-9.js'));
   } finally {
     await rm(dist, { recursive: true, force: true });
     await rm(out, { recursive: true, force: true });

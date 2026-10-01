@@ -172,10 +172,15 @@ test('원본 없이 재전송만 있으면 그것이 유일한 사본이라 합�
   const one = summarize([F(1, 2, 40, true)]);
   assert.deepEqual(one.segments, [40]);
   assert.equal(one.resend_bytes, 0);
-  const two = summarize([F(1, 2, 40, true), F(1, 2, 40, true)]);
-  assert.deepEqual(two.segments, [40]);
+  // 다른 수준 프레임이 끼면 별개 회차: 첫 회차만 합, 둘째 회차는 resend_bytes
+  const two = summarize([F(1, 2, 40, true), F(1, 3, 7), F(1, 2, 40, true)]);
+  assert.deepEqual(two.segments, [47]);
   assert.equal(two.resend_bytes, 40);
-  assert.equal(two.total_bytes, 80);
+  assert.equal(two.total_bytes, 87);
+  // 끼는 프레임이 없으면 한 회차 (두 프레임 합 80)
+  const run1 = summarize([F(1, 2, 40, true), F(1, 2, 40, true)]);
+  assert.deepEqual(run1.segments, [80]);
+  assert.equal(run1.resend_bytes, 0);
 });
 
 test('resend 형식 위반은 오류', () => {
@@ -193,8 +198,11 @@ const T3 = { topLevel: 3 };
 test('[3, 1(표시 없음)] 은 stale 1, [1, 3] 은 stale 0 이고 건너뜀은 같다', () => {
   const late = summarize([F(1, 3, 80), F(1, 1, 20)], T3);
   assert.equal(late.stale_levels, 1);
-  assert.deepEqual(late.segment_levels_skipped, [[1, 3]]);
-  assert.deepEqual(late.segments, [100]);
+  // stale 프레임(20 B)은 받은 수준이 아니므로 수준 1 은 건너뜀 [1,2,3] (프로토콜 번호)
+  assert.deepEqual(late.segment_levels_skipped, [[1, 2, 3]]);
+  assert.deepEqual(late.segments, [80]);
+  assert.equal(late.stale_bytes, 20);
+  assert.equal(late.total_bytes, 100);
   const ok = summarize([F(1, 1, 20), F(1, 3, 80)], T3);
   assert.equal(ok.stale_levels, 0);
   assert.deepEqual(ok.segment_levels_skipped, [[1, 3]]);
@@ -229,11 +237,12 @@ test('구간 ID 와 도착 순서가 다르면 trailing 은 마지막 도착 구
   assert.deepEqual(a.trailing_segment, { id: 2, bytes: 8, levels: [1] });
   assert.deepEqual(a.segment_ids, [9]);
   assert.deepEqual(a.segments, [7]);
-  // ID 5 가 수준 0 만이라도 먼저 도착하고 ID 2 가 완결로 마지막이면 trailing 없음
+  // ID 5 가 수준 0 만이고 먼저 도착, ID 2 가 완결로 마지막이면 trailing 없음, 5 는 미완이라 segments 에서 빠짐
   const b = summarize([F(5, 0, 3), F(2, 0, 1), F(2, 1, 2), F(2, 2, 4)]);
   assert.equal(b.trailing_segment, null);
-  assert.deepEqual(b.segment_ids, [2, 5]);
-  assert.deepEqual(b.segments, [7, 3]);
+  assert.deepEqual(b.segment_ids, [2]);
+  assert.deepEqual(b.segments, [7]);
+  assert.deepEqual(b.incomplete_segments, [{ id: 5, bytes: 3, levels: [1] }]);
 });
 
 test('3수준 녹화에서 0~2 를 다 받은 마지막 구간은 완결 (trailing null)', async () => {
@@ -297,11 +306,13 @@ test('inputs.wsTopLevel 이 완결 판정에 쓰인다', async () => {
 });
 
 // ---- 건너뜀 ----
-test('가운데 구간이 {0,1} 만 받아도 최고 수준 위쪽은 건너뜀이 아님', () => {
+test('가운데 구간이 {0,1} 만 받으면 미완이라 segments 에서 빠지고, 완결 구간만 건너뜀 계산', () => {
   const s = summarize([F(1, 0, 1), F(1, 1, 2), F(1, 2, 4), F(1, 3, 8), F(2, 0, 16), F(2, 1, 32), F(3, 3, 64)], T3);
-  assert.deepEqual(s.segment_ids, [1, 2, 3]);
-  assert.deepEqual(s.segment_levels_skipped, [[], [], [1, 2, 3]]);
-  assert.deepEqual(s.segments, [15, 48, 64]);
+  assert.deepEqual(s.segment_ids, [1, 3]);
+  assert.deepEqual(s.segment_levels_skipped, [[], [1, 2, 3]]);
+  assert.deepEqual(s.segments, [15, 64]);
+  assert.deepEqual(s.incomplete_segments, [{ id: 2, bytes: 48, levels: [1, 2] }]);
+  assert.deepEqual(s.trailing_segments.map((t) => t.id), []);
 });
 
 test('건너뜀 표본은 구간별 [1,2,0] 이고 지표 value 는 합 3, 마지막 표본이 아님', async () => {
@@ -365,4 +376,67 @@ test('픽스처 three_level_out_of_order: 손계산 값', async () => {
   assert.equal(get(r, 'ws_bytes.trailing_segment_bytes').value, 8);
   assert.equal(get(r, 'ws_bytes.stale_levels').value, 0);
   assert.equal(get(r, 'ws_bytes.total').value, 1 + 70 + 7 + 8);
+});
+
+// ---- F-022 재오픈 ①~④, F-030 ----
+test('① 구간 1·2 가 수준 0 만이고 구간 3 이 완결이면 segments 는 구간 3 하나', async () => {
+  // 손계산: 구간 3 = 2+4+12 = 18, 미완 1 = 10, 2 = 10
+  const frames = [F(1, 0, 10), F(2, 0, 10), F(3, 0, 2), F(3, 1, 4), F(3, 2, 12)];
+  const s = summarize(frames);
+  assert.deepEqual(s.segment_ids, [3]);
+  assert.deepEqual(s.segments, [18]);
+  assert.deepEqual(s.incomplete_segments.map((t) => [t.id, t.bytes]), [[1, 10], [2, 10]]);
+  assert.deepEqual(s.trailing_segments, []);
+  assert.equal(s.trailing_segment, null);
+  assert.equal(s.total_bytes, 38);
+  const r = await runText(BASE + frames.map((f) => fr(f.segment, f.level, f.bytes)).join(''));
+  assert.deepEqual(get(r, 'ws_bytes.segment_total').samples, [18]);
+  assert.equal(get(r, 'ws_bytes.incomplete_segment_bytes').value, 20);
+  assert.equal(get(r, 'ws_bytes.trailing_segment_bytes').value, 0);
+});
+
+test('② 원본 없는 20 B resend 4개 두 회차 + 수준2 5 B: segments [45], resend_bytes 40', () => {
+  // 회차 1 = 수준 1 resend 20+20, 사이에 수준 2 원본 5, 회차 2 = 20+20
+  const s = summarize([F(1, 1, 20, true), F(1, 1, 20, true), F(1, 2, 5), F(1, 1, 20, true), F(1, 1, 20, true)]);
+  assert.deepEqual(s.segments, [45]);
+  assert.equal(s.resend_bytes, 40);
+  assert.equal(s.total_bytes, 85);
+  assert.deepEqual(s.segment_levels, [[2, 3]]);
+});
+
+test('③ 수준2 뒤 수준0 stale: segment_levels 에 0 없음, stale 바이트는 total·windows·stale_bytes 에만', () => {
+  const s = summarize([F(1, 2, 8), F(1, 0, 3)]);
+  assert.deepEqual(s.segments, [8]);
+  assert.deepEqual(s.segment_levels, [[3]]);
+  assert.equal(s.stale_levels, 1);
+  assert.equal(s.stale_bytes, 3);
+  assert.equal(s.total_bytes, 11);
+  assert.deepEqual(s.windows, [11]);
+  assert.deepEqual(s.segment_levels_skipped, [[1, 2]]);
+  // 수준 1·2 를 받은 뒤 수준 0 이 늦게 오면 0 은 받은 수준이 아니라 건너뜀 [1]
+  const t = summarize([F(1, 1, 4), F(1, 2, 8), F(1, 0, 3)]);
+  assert.deepEqual(t.segments, [12]);
+  assert.deepEqual(t.segment_levels, [[2, 3]]);
+  assert.deepEqual(t.segment_levels_skipped, [[1]]);
+  assert.equal(t.stale_bytes, 3);
+});
+
+test('④ final 필드 없는 녹화에서 topLevel 기본값을 쓰면 method 에 topLevel 가정 경고', async () => {
+  const r = await runText(BASE + fr(1, 0, 1) + fr(1, 1, 2) + fr(1, 2, 4));
+  for (const x of r) assert.match(x.method, /topLevel 가정/);
+  assert.equal(summarize([F(1, 2, 1)]).top_level_assumed, true);
+  // wsTopLevel 을 주면 가정이 아님
+  const r2 = await runText(BASE + fr(1, 2, 4), { topLevel: 2 });
+  for (const x of r2) assert.doesNotMatch(x.method, /topLevel 가정/);
+  // final 필드가 있으면 가정이 아님
+  assert.equal(summarize([{ ...F(1, 2, 1), final: true }]).top_level_assumed, false);
+  const r3 = await runText(BASE + fr(1, 2, 4, ',"final":true'));
+  for (const x of r3) assert.doesNotMatch(x.method, /topLevel 가정/);
+});
+
+test('F-030: bytes 가 safe integer 가 아니면 오류 (1e300)', async () => {
+  assert.throws(() => summarize([{ ...F(1, 0, 1e300) }]), /bytes/);
+  assert.throws(() => summarize([{ ...F(1, 0, 2 ** 53) }]), /bytes/);
+  await assert.rejects(runText(BASE + '{"t_ms":0,"dir":"rx","bytes":1e300,"kind":"p"}\n'), /bad\.jsonl:2: .*bytes/);
+  assert.equal(summarize([F(1, 2, Number.MAX_SAFE_INTEGER)]).segments[0], Number.MAX_SAFE_INTEGER);
 });

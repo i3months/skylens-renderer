@@ -7,7 +7,12 @@ import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { runAll } from './index.mjs';
 
-const list = (s) => (s ? s.split(',').map((x) => x.trim()).filter(Boolean) : undefined);
+const list = (s, label) => {
+  if (s === undefined) return undefined;
+  const items = s.split(',').map((x) => x.trim()).filter(Boolean);
+  if (!items.length) throw new Error(`--${label} 에 모듈 이름이 없다`);
+  return items;
+};
 
 try {
   // 음수 값(`--anchor-lon -127.2`)을 parseArgs 가 옵션으로 오해하지 않게 `=` 형태로 합친다.
@@ -56,8 +61,8 @@ try {
     outDir: resolve(values.out),
     commit: values.commit,
     inputs,
-    only: list(values.only),
-    skip: list(values.skip),
+    only: list(values.only, 'only'),
+    skip: list(values.skip, 'skip'),
     ...(values['modules-dir'] ? { modulesDir: resolve(values['modules-dir']) } : {}),
   });
   console.log(`성공 ${summary.ok.length}, 실패 ${summary.failed.length}, 건너뜀 ${summary.skipped.length}, 레코드 ${summary.totalRecords}`);

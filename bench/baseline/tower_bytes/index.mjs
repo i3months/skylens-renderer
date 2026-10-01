@@ -67,10 +67,10 @@ export function countBuildings(entries) {
   for (const e of entries) {
     if (e.kind !== 'building' || isFailed(e)) continue; // 실패 응답은 건물을 더하지 않는다
     for (const f of featuresOf(e)) {
-      if (f === null || f === undefined) continue; // null feature 는 건물이 아니다
+      if (!f || typeof f !== 'object' || Array.isArray(f)) continue; // null, 비객체, 배열 feature 는 건물이 아니다
       const id = (f.id ?? (f.properties && f.properties.id));
       if (id === undefined || id === null) anonymous += 1;
-      else ids.add(typeof id === 'object' ? `json:${JSON.stringify(id)}` : String(id)); // 객체 id 는 JSON 키로 구분한다
+      else ids.add(typeof id === 'object' ? `json:${JSON.stringify(id)}` : `${typeof id}:${id}`); // 객체 id 는 JSON 키로, 숫자/문자열 id 는 타입으로 구분한다
     }
   }
   return ids.size + anonymous;

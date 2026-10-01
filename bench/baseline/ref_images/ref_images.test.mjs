@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { assertRecords } from '../../../contracts/metrics/index.mjs';
 import {
-  run, rasterize, cameraExtrinsics, intrinsics, worldToCamera, cameraToWorld, projectCamera, decodePly, loadViewpoints,
+  run, rasterize, cameraExtrinsics, intrinsics, worldToCamera, cameraToWorld, projectCamera, decodePly, decodePlyFile, loadViewpoints,
   applySceneFrame, assertSceneFrame, assertCoverage, MIN_COVERAGE, computeSceneFrame, applyFrameTransform,
 } from './index.mjs';
 import { syntheticPoints, syntheticScene, encodeSplatPly } from './testing.mjs';
@@ -274,10 +274,35 @@ test('computeSceneFrame 는 앱 알고리즘 이식 결과와 1e-6 안에서 같
   // 70만 점: stride = floor(700000/60000) = 11 이 되도록 큰 합성 점군을 만든다.
   const n = 700_000;
   const positions = new Float32Array(n * 3);
+  // mulberry32(Math.imul 기반): 32 비트 정수 연산만 쓰므로 곱이 2^53 을 넘어 값이 겹치는 일이 없다.
   let a = 9;
-  const rnd = () => ((a = (a * 1103515245 + 12345) >>> 0) / 4294967296);
+  const rnd = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
   for (let i = 0; i < n * 3; i++) positions[i] = (rnd() - 0.5) * (i % 3 === 0 ? 300 : i % 3 === 1 ? 14 : 40) + (i % 3 === 0 ? -20 : 3);
   const big = { positions, colors: new Uint8Array(n * 3), count: n };
+  // 분위 색인 q·(n−1) 의 소수부가 0.5 이상이면 round 와 floor 가 다른 칸을 고른다. 그 이웃 값이 같으면 변형을 못 잡으므로
+  // 표본이 그 칸에서 서로 달라야 하고, 이 조건이 깨지면(표본 구성이 바뀌면) 여기서 먼저 실패한다.
+  {
+    const stride = Math.floor(n / 60_000);
+    const m = Math.ceil(n / stride);
+    const frac = (q) => (q * (m - 1)) % 1;
+    assert.ok(frac(0.05) >= 0.5 || frac(0.95) >= 0.5, `표본 ${m}개에서 분위 색인 소수부가 모두 0.5 미만이다`);
+    for (let axis = 0; axis < 3; axis++) {
+      const vals = [];
+      for (let i = 0; i < n; i += stride) vals.push(positions[i * 3 + axis]);
+      vals.sort((p, q) => p - q);
+      for (const q of [0.05, 0.95]) {
+        if (frac(q) < 0.5) continue;
+        const k = Math.floor(q * (m - 1));
+        assert.notEqual(vals[k], vals[k + 1], `축 ${axis} q=${q}: floor/round 이웃 값이 같다`);
+      }
+    }
+  }
   for (const rotate of ['none', 'x180']) {
     const fr = computeSceneFrame(big, { ...FIXTURE.sceneFrame, rotate });
     const ap = appDerive(big, rotate);
@@ -411,6 +436,11 @@ test('(3) 시점 8곳 PPM 8장, 모두 점유율 5 % 이상, 시점별 sha256 �
   assertRecords(rec1);
   assert.deepEqual(rec1, rec2);
   assert.ok(rec1.every((r) => r.method.includes('f_dc') && r.method.includes('56B') && r.method.includes('앱 틀')));
+  for (const r of rec1) {
+    assert.match(r.method, /§7-4/);
+    assert.match(r.method, /법선/);
+    assert.match(r.method, /renderer_basis §7-4 27 B 와 다름: 56 B 스플랫, 법선 없음, 중심점만 사용/);
+  }
   const f1 = (await readdir(d1)).sort();
   assert.equal(f1.length, 8);
   assert.deepEqual(f1, (await readdir(d2)).sort());
@@ -503,7 +533,8 @@ test('run 음성: 아무것도 안 찍히는 시점, 퇴화 시점이 있으면 
   const inputs = { pointsPath: ply, anchor: INPUT_ANCHOR };
   const v0 = FIXTURE.viewpoints[0];
   const away = await mk('away.json', [{ ...v0, id: 9, name: 'away', eye: [0, 30, 500], target: [0, 30, 600] }]);
-  await assert.rejects(run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: away }), /시점 9.*0/);
+  // 찍힌 픽셀 0 은 점유율 검사(assertCoverage)가 맡는다: 시점 id·name 과 0 % 가 메시지에 들어 있어야 한다.
+  await assert.rejects(run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: away }), /시점 9 away: 점유율 0\.000 % .*보다 낮다/);
   const vertical = await mk('vert.json', [{ ...v0, id: 10, name: 'down', eye: [0, 300, 0], target: [0, 0, 0], up: [0, 1, 0] }]);
   await assert.rejects(run({ skylensDir: dir, outDir: join(dir, 'o'), commit: 'c', inputs, viewpointsPath: vertical }), /퇴화/);
 });
@@ -574,4 +605,99 @@ test('(4) 역투영 X_w = Rᵀ(X_c − t) 왕복 오차 < 1e-6', () => {
       }
     }
   }
+});
+
+// ---- F-030: 시점 id·name 검증 ----
+const ANCHOR_OK = { lat: FIXTURE.anchor.lat, lon: FIXTURE.anchor.lon, alt: FIXTURE.anchor.alt };
+const withVps = (vps) => ({ ...FIXTURE, viewpoints: vps });
+const v0 = FIXTURE.viewpoints[0];
+
+test('loadViewpoints: name 에 경로 구분자·점·공백이 있으면 거부 (파일 이름으로 outDir 밖에 쓰지 못한다)', () => {
+  for (const bad of ['x/../../escaped', '../a', 'a/b', 'a b', 'a.b', '', 5, null]) {
+    assert.throws(() => loadViewpoints(withVps([{ ...v0, name: bad }]), ANCHOR_OK, 'n.json'), /n\.json.*name/, JSON.stringify(bad));
+  }
+  assert.doesNotThrow(() => loadViewpoints(withVps([{ ...v0, name: 'ok-name_1' }]), ANCHOR_OK));
+});
+
+test('loadViewpoints: id 는 정수여야 하고 id·name 중복은 거부', () => {
+  for (const bad of ['1', 1.5, null, undefined, NaN]) {
+    assert.throws(() => loadViewpoints(withVps([{ ...v0, id: bad }]), ANCHOR_OK, 'i.json'), /i\.json.*id/, String(bad));
+  }
+  assert.throws(() => loadViewpoints(withVps([v0, { ...v0, name: 'other' }]), ANCHOR_OK), /id 1 .*중복/);
+  assert.throws(() => loadViewpoints(withVps([v0, { ...v0, id: 2 }]), ANCHOR_OK), /name status_overview .*중복/);
+});
+
+test('loadViewpoints: null·비객체 시점은 TypeError 가 아니라 명확한 오류', () => {
+  for (const bad of [null, 3, 'x', [1]]) {
+    assert.throws(() => loadViewpoints(withVps([v0, bad]), ANCHOR_OK, 'z.json'), (e) => !(e instanceof TypeError) && /z\.json.*viewpoints\[1\].*객체/.test(e.message), JSON.stringify(bad));
+  }
+});
+
+test('run 음성: name 이 x/../../escaped 인 시점은 파일을 쓰기 전에 실패하고 outDir 밖에 아무것도 만들지 않는다', async (t) => {
+  const { dir, ply } = await setup(t);
+  const p = join(dir, 'esc.json');
+  await writeFile(p, JSON.stringify(withVps([{ ...v0, name: 'x/../../escaped' }])));
+  const out = join(dir, 'a', 'b');
+  await assert.rejects(run({ skylensDir: dir, outDir: out, commit: 'c', inputs: { pointsPath: ply, anchor: INPUT_ANCHOR }, viewpointsPath: p }), /name/);
+  assert.deepEqual((await readdir(dir)).sort(), ['res', 'syn.ply', 'esc.json'].sort());
+});
+
+// ---- F-028: 청크 읽기 ----
+test('decodePlyFile 은 decodePly 와 같은 결과를 청크 경계와 무관하게 낸다 (비유한 포함, rgb 배치 포함)', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'chunk-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const pts = syntheticPoints(3).slice(0, 5000);
+  const buf = encodeSplatPly(pts);
+  // 비유한 레코드 두 개: 첫 레코드 x, 마지막 레코드 f_dc_1
+  const head = buf.length - 56 * pts.length;
+  buf.writeFloatLE(NaN, head);
+  buf.writeFloatLE(Infinity, head + 56 * (pts.length - 1) + 16);
+  const f = join(dir, 'a.ply');
+  await writeFile(f, buf);
+  const ref = decodePly(buf, 'a.ply');
+  assert.equal(ref.nonFinite, 2);
+  for (const chunkRecords of [1, 7, 4999, 5000, 5001, 1 << 16]) {
+    const d = await decodePlyFile(f, 'a.ply', { chunkRecords });
+    assert.equal(d.count, ref.count, `chunk ${chunkRecords}`);
+    assert.equal(d.nonFinite, 2);
+    assert.ok(Buffer.from(d.positions.buffer, d.positions.byteOffset, d.positions.byteLength).equals(Buffer.from(ref.positions.buffer, ref.positions.byteOffset, ref.positions.byteLength)));
+    assert.deepEqual([...d.colors], [...ref.colors]);
+  }
+  await writeFile(join(dir, 'cut.ply'), buf.subarray(0, buf.length - 1));
+  await assert.rejects(decodePlyFile(join(dir, 'cut.ply'), 'cut.ply'), /cut\.ply.*크기/);
+  await writeFile(join(dir, 'bad.ply'), 'garbage');
+  await assert.rejects(decodePlyFile(join(dir, 'bad.ply'), 'bad.ply'), /bad\.ply.*end_header/);
+  await assert.rejects(decodePlyFile(f, 'a.ply', { chunkRecords: 0 }), /chunkRecords/);
+});
+
+// 대형 PLY(기본 건너뜀): REF_IMAGES_BIG_POINTS=점수 로 합성 PLY 를 만들어 완료와 피크 RSS 를 확인한다. 점수는 예: 1000000.
+test('대형 합성 PLY 청크 읽기 (REF_IMAGES_BIG_POINTS 로 켠다)', { skip: !process.env.REF_IMAGES_BIG_POINTS && '환경변수 REF_IMAGES_BIG_POINTS 없음' }, async (t) => {
+  const n = Number(process.env.REF_IMAGES_BIG_POINTS);
+  const dir = await mkdtemp(join(tmpdir(), 'big-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const names = ['x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
+  const f = join(dir, 'big.ply');
+  const { createWriteStream } = await import('node:fs');
+  const ws = createWriteStream(f);
+  ws.write(`ply\nformat binary_little_endian 1.0\nelement vertex ${n}\n${names.map((q) => `property float ${q}\n`).join('')}end_header\n`, 'latin1');
+  const blk = Buffer.alloc(56 * 65536);
+  for (let w = 0; w < n; w += 65536) {
+    const m = Math.min(65536, n - w);
+    for (let i = 0; i < m; i++) blk.writeFloatLE((w + i) % 1000, i * 56);
+    ws.write(blk.subarray(0, m * 56));
+  }
+  await new Promise((r) => ws.end(r));
+  const d = await decodePlyFile(f, 'big.ply');
+  assert.equal(d.count, n);
+});
+
+// ---- F-031: 출처·라이선스 표기 ----
+test('index.mjs 머리에 skylens(MIT) 출처·라이선스와 GeoAnchor 원점 아님 설명이 있다', async () => {
+  const head = (await readFile(join(here, 'index.mjs'), 'utf8')).split('\n').slice(0, 14).join('\n');
+  assert.match(head, /skylens\(MIT/);
+  assert.match(head, /sceneSource\.ts.*deriveFromSplat/);
+  assert.match(head, /재구현/);
+  assert.match(head, /sceneFrame 정규화 중심/);
+  assert.match(head, /GeoAnchor 의 ENU 원점이 아니다/);
+  assert.doesNotMatch(head, /원점의 GeoAnchor/);
 });
