@@ -39,7 +39,11 @@ export function parsePss(text) {
   return m ? Number(m[1]) * 1024 : null;
 }
 
-/** /proc 로 tag 를 명령행에 가진 프로세스와 그 자손의 메모리 합. /proc 이 없으면 null.
+/** /proc 로 tag 를 명령행에 가진 프로세스와 그 자손의 메모리 합. null 이 되는 조건:
+ *  - /proc 이 없음
+ *  - tag 를 가진 루트 프로세스가 없음
+ *  - 센 프로세스 0개
+ *  - 합산 뒤 unsafe 정수(개별 unsafe 는 건너뛰고 합 unsafe 는 전체를 버림)
  *  { bytes, pssProcs, rssProcs }: 프로세스마다 Pss 를 쓰고 읽지 못하면 RSS(statm × 페이지 크기)로 폴백한다.
  *  procRoot 는 /proc 대신 읽을 디렉터리(테스트가 smaps·statm 을 읽을 수 없는 프로세스를 주입하는 용도). */
 export function processTreeMemory(tag, { procRoot = '/proc' } = {}) {
@@ -65,7 +69,11 @@ export function processTreeMemory(tag, { procRoot = '/proc' } = {}) {
   for (const p of tree) {
     let pss = null;
     try { pss = parsePss(readFileSync(`${procRoot}/${p}/smaps_rollup`, 'utf8')); } catch { /* 읽기 불가 → RSS 폴백 */ }
-    if (pss !== null) { bytes += pss; pssProcs++; continue; }
+    if (pss !== null && Number.isSafeInteger(pss)) {
+      bytes += pss; pssProcs++;
+      if (!Number.isSafeInteger(bytes)) return null; // 합산 뒤 unsafe 정수면 안전하지 않은 합이다
+      continue; // PSS 를 썼으면 RSS 폴백은 하지 않는다
+    }
     try {
       const fields = readFileSync(`${procRoot}/${p}/statm`, 'utf8').trim().split(/\s+/);
       if (fields.length < 2 || !/^\d+$/.test(fields[1])) continue; // statm 형식이 깨졌으면 이 프로세스를 건너뛴다

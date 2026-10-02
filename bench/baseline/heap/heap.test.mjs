@@ -315,7 +315,7 @@ test('processTreeMemory: 합산 뒤 unsafe 정수면(두 개 매우 큰 RSS) nul
   const tag = `--tag-${randomUUID()}`;
   const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-sum-unsafe-')));
   const page = systemPageSize();
-  const rssValue = '2000000000000';
+  const rssValue = String(Math.floor(Number.MAX_SAFE_INTEGER / page));
   for (const [pid, ppid] of [['100', '1'], ['101', '100']]) {
     mkdirSync(join(procRoot, pid));
     writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`);
@@ -330,7 +330,7 @@ test('processTreeMemory: 합산 뒤 unsafe 정수면(두 개 매우 큰 RSS) nul
   assert.equal(m, null, 'should return null when sum overflows');
 });
 
-test('processTreeMemory: 정상 RSS + unsafe RSS(대조: continue 이면 정상 RSS만 세어진다)', () => {
+test('processTreeMemory: 정상 RSS + unsafe RSS → unsafe 는 제외하고 정상만 세어진다', () => {
   const tag = `--tag-${randomUUID()}`;
   const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-mixed-normal-unsafe-')));
   for (const [pid, ppid, statm] of [['100', '1', '100 50 10'], ['101', '100', '1 900000000000000000']]) {
@@ -340,7 +340,7 @@ test('processTreeMemory: 정상 RSS + unsafe RSS(대조: continue 이면 정상 
     writeFileSync(join(procRoot, pid, 'statm'), statm);
   }
   const m = processTreeMemory(tag, { procRoot });
-  assert.equal(m.rssProcs, 1, 'only normal process counted (unsafe skipped by continue)');
+  assert.equal(m.rssProcs, 1, 'only normal process counted (unsafe skipped)');
   assert.equal(m.bytes, 50 * systemPageSize(), 'bytes from normal process only');
 });
 
@@ -356,4 +356,37 @@ test('processTreeMemory: 정상 + unsafe RSS + 0 RSS 혼합 → unsafe는 제외
   const m = processTreeMemory(tag, { procRoot });
   assert.equal(m.rssProcs, 2, 'normal process and zero RSS counted, unsafe skipped');
   assert.equal(m.bytes, 50 * systemPageSize(), 'bytes = 50 (normal) + 0 (zero)');
+});
+
+test('processTreeMemory: 합산 뒤 unsafe Pss(smaps_rollup Pss: 6000000000000 kB × 두 프로세스) 면 null 반환', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-pss-sum-unsafe-')));
+  for (const [pid, ppid] of [['100', '1'], ['101', '100']]) {
+    mkdirSync(join(procRoot, pid));
+    writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`);
+    writeFileSync(join(procRoot, pid, 'cmdline'), tag);
+    writeFileSync(join(procRoot, pid, 'smaps_rollup'), 'Pss:   6000000000000 kB\n');
+  }
+  const m = processTreeMemory(tag, { procRoot });
+  const singlePss = 6000000000000 * 1024;
+  const totalPss = 2 * singlePss;
+  assert.ok(Number.isSafeInteger(singlePss), `single PSS ${singlePss} should be safe`);
+  assert.ok(!Number.isSafeInteger(totalPss), `total PSS ${totalPss} should be unsafe`);
+  assert.equal(m, null, 'should return null when PSS sum overflows');
+});
+
+test('processTreeMemory: unsafe 개별 Pss(900000000000000000 × 1024) → skip 후 RSS 폴백(대조: unsafe 합은 버리고 unsafe 개별은 건너뛰고)', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-pss-individual-unsafe-')));
+  for (const [pid, ppid, smaps, statm] of [['100', '1', 'Pss:      50 kB\n', '100 50 10'], ['101', '100', 'Pss:   900000000000000000 kB\n', '1 40 10']]) {
+    mkdirSync(join(procRoot, pid));
+    writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`);
+    writeFileSync(join(procRoot, pid, 'cmdline'), pid === '100' ? tag : 'child');
+    writeFileSync(join(procRoot, pid, 'smaps_rollup'), smaps);
+    writeFileSync(join(procRoot, pid, 'statm'), statm);
+  }
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m.pssProcs, 1, 'normal PSS process counted, unsafe PSS skipped');
+  assert.equal(m.rssProcs, 1, 'unsafe PSS process falls back to RSS');
+  assert.equal(m.bytes, 50 * 1024 + 40 * systemPageSize(), 'bytes = 50 KiB (PSS) + 40*page (RSS)');
 });
