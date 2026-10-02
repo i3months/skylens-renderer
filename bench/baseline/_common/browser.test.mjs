@@ -137,3 +137,10 @@ test('기본 캔버스 선택자: 상황판 #status-view, 관제탑 #control-vie
   assert.equal(DEFAULT_CANVAS_SELECTOR, '#status-view');
   assert.equal(CONTROL_CANVAS_SELECTOR, '#control-view');
 });
+
+test('testMode 옵션이 testHookCode 생성을 제어한다', () => {
+  const scriptFalse = buildDetectScript('#c', { testMode: false });
+  const scriptTrue = buildDetectScript('#c', { testMode: true });
+  assert.ok(!scriptFalse.includes('__ffTestHook'), 'testMode:false 일 때 __ffTestHook 없음');
+  assert.ok(scriptTrue.includes('__ffTestHook'), 'testMode:true 일 때 __ffTestHook 있음');
+});

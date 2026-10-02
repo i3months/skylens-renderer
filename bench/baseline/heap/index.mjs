@@ -43,7 +43,7 @@ export function parsePss(text) {
  *  - /proc 이 없음
  *  - tag 를 가진 루트 프로세스가 없음
  *  - 센 프로세스 0개
- *  - 합산 뒤 unsafe 정수(개별 unsafe 는 건너뛰고 합 unsafe 는 전체를 버림)
+ *  - 개별 unsafe Pss 는 그 프로세스를 RSS 로 폴백, 개별 unsafe RSS 는 건너뜀, 합이 unsafe 면 null
  *  { bytes, pssProcs, rssProcs }: 프로세스마다 Pss 를 쓰고 읽지 못하면 RSS(statm × 페이지 크기)로 폴백한다.
  *  procRoot 는 /proc 대신 읽을 디렉터리(테스트가 smaps·statm 을 읽을 수 없는 프로세스를 주입하는 용도). */
 export function processTreeMemory(tag, { procRoot = '/proc' } = {}) {
@@ -96,7 +96,7 @@ export function processTreeRss(tag) {
 export function memoryMethodText({ pssProcs, rssProcs }) {
   if (pssProcs + rssProcs === 0) return null;
   if (rssProcs === 0) return `PSS 사용(/proc/<pid>/smaps_rollup Pss 합, 공유 페이지 중복 제거, ${pssProcs}개 프로세스)`;
-  if (pssProcs === 0) return `PSS 미사용: smaps_rollup 을 읽지 못해 RSS(statm × 페이지 ${systemPageSize()} B)로 폴백, 공유 페이지가 중복 계산될 수 있음(${rssProcs}개 프로세스)`;
+  if (pssProcs === 0) return `PSS 미사용: smaps_rollup 을 읽지 못했거나 Pss 가 안전 정수가 아니어서 RSS(statm × 페이지 ${systemPageSize()} B)로 폴백, 공유 페이지가 중복 계산될 수 있음(${rssProcs}개 프로세스)`;
   return `경고: PSS·RSS 방식이 섞임 — ${pssProcs}개 프로세스는 Pss, ${rssProcs}개는 RSS(statm × 페이지 ${systemPageSize()} B)로 폴백. 공유 페이지 중복 계산 정도가 달라 다른 기록과 직접 비교하지 말 것`;
 }
 
