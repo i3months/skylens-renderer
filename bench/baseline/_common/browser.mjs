@@ -155,8 +155,9 @@ export const DIFF_TOLERANCE = 8;
  * 그 draw 와 같은 태스크의 마이크로태스크에서 1회 읽는다(그리기 버퍼가 유효한 시점). 2D 캔버스는 CPU 쪽이라 rAF 마다 읽는다.
  * 폴링 비용: 첫 프레임 감지 전에 매 rAF·마이크로태스크마다 선택자 일치 검사와 이미지 판독을 하므로, 감지 후 WebGL 메서드 래퍼와 getContext 래퍼를 원본 함수로 복원해 오버헤드를 제거한다(동작 검증은 wrapper_delegate.test.mjs).
  */
-export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
+export function buildDetectScript(selector = ANY_CANVAS_SELECTOR, { testMode = false } = {}) {
   if (typeof selector !== 'string' || !selector.trim()) throw new Error('canvasSelector 는 비어 있지 않은 CSS 선택자 문자열이어야 함');
+  const testHookCode = testMode ? 'if (window.__ffTestHook) window.__ffTestHook.hash++;' : '';
   return `(() => {
   const SEL = ${JSON.stringify(selector)};
   const DIFF_RATIO = ${DIFF_RATIO}, TOL = ${DIFF_TOLERANCE}, RECHECK_MS = 100;
@@ -190,19 +191,15 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
   const found = (hit) => {
     window.__ffMs = performance.now();
     window.__ffCanvas = hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (hit.className && typeof hit.className === 'string' ? '.' + hit.className.trim().split(/\\s+/).join('.') : '');
-    // 감지 후 래퍼를 제거해 원본 함수로 복원(오버헤드 제거). 감지 뒤에는 getContext 로 WebGL 캔버스를 기록할 필요도 없으므로 같이 복원한다.
-    // 페이지가 이 메서드를 이미 다시 덮어썼다면 래퍼가 아니므로(__ffOrig 없음, getContext 는 동일성 비교) 그 값은 건드리지 않는다.
     if (HTMLCanvasElement.prototype.getContext === getContextWrapper) HTMLCanvasElement.prototype.getContext = origGet;
     for (const proto of [window.WebGLRenderingContext && WebGLRenderingContext.prototype, window.WebGL2RenderingContext && WebGL2RenderingContext.prototype]) {
       if (!proto) continue;
       for (const name of ['scissor', 'clearColor', 'bufferData', 'bufferSubData', 'texImage2D', 'texSubImage2D', 'useProgram', 'bindFramebuffer', 'blendFunc', 'enable', 'disable', 'clear', 'drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'drawRangeElements']) {
-        // 래퍼일 때만(__ffOrig 가 있을 때) 저장된 원본 함수로 직접 복원.
         if (typeof proto[name] === 'function' && proto[name].__ffOrig) proto[name] = proto[name].__ffOrig;
       }
     }
   };
-  // WebGL: draw 호출 서명이 바뀐 프레임에서만 같은 태스크 안에서 1회 판독.
-  const sig = new WeakMap(); // canvas -> { cur, read, queued }
+  const sig = new WeakMap();
   const onDraw = (gl, n) => {
     if (window.__ffMs !== undefined) return;
     const c = gl.canvas;
@@ -217,22 +214,20 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
       if (window.__ffMs !== undefined) return;
       const s = st.cur; st.cur = 0;
       const now = performance.now();
-      if (s === st.read && now - st.at < RECHECK_MS) return; // 서명이 같아도 버퍼 내용만 바뀐 경우를 위해 드물게 재판독
+      if (s === st.read && now - st.at < RECHECK_MS) return;
       st.read = s; st.at = now;
       try { if (!c.matches(SEL)) return; } catch (e) { return; }
       if (drawn(c)) found(c);
     });
   };
-  // 자원·상태 변경(scissor·버퍼·텍스처·프로그램 등)은 draw 서명에 섞어 같은 호출 수라도 내용이 바뀐 프레임을 후보로 만든다(uniform 은 제외, 매 프레임 바뀜).
   for (const proto of [window.WebGLRenderingContext && WebGLRenderingContext.prototype, window.WebGL2RenderingContext && WebGL2RenderingContext.prototype]) {
     if (!proto) continue;
     for (const name of ['scissor', 'clearColor', 'bufferData', 'bufferSubData', 'texImage2D', 'texSubImage2D', 'useProgram', 'bindFramebuffer', 'blendFunc', 'enable', 'disable']) {
       const orig = proto[name];
       if (typeof orig !== 'function') continue;
       const wrapped = function (...a) {
-        if (window.__ffMs !== undefined) return orig.apply(this, a); // 감지 뒤 남아 있는 래퍼(페이지가 원본을 캡처한 경우)는 해시 없이 위임
-        // 테스트용 계수 훅: 페이지가 window.__ffTestHook 을 두었을 때만 해시 경로 진입을 센다(제품 동작 불변). 위 조기 반환은 wrapper_delegate.test.mjs 가 이 계수로 지킨다.
-        if (window.__ffTestHook) window.__ffTestHook.hash++;
+        if (window.__ffMs !== undefined) return orig.apply(this, a);
+        ${testHookCode}
         const r = orig.apply(this, a);
         const st = sig.get(this.canvas);
         if (st) st.cur = (st.cur * 17 + name.length + (typeof a[0] === 'number' ? a[0] : 0)) | 0;
@@ -249,8 +244,8 @@ export function buildDetectScript(selector = ANY_CANVAS_SELECTOR) {
       const orig = proto[name];
       if (typeof orig !== 'function') continue;
       const wrapped = function (...a) {
-        if (window.__ffMs !== undefined) return orig.apply(this, a); // 감지 뒤 남아 있는 래퍼(페이지가 원본을 캡처한 경우)는 해시 없이 위임
-        if (window.__ffTestHook) window.__ffTestHook.hash++;
+        if (window.__ffMs !== undefined) return orig.apply(this, a);
+        ${testHookCode}
         const r = orig.apply(this, a);
         onDraw(this, name === 'clear' ? a[0] : name === 'drawRangeElements' ? a[4] : a[name.startsWith('drawArrays') ? 2 : 1]);
         return r;
@@ -275,9 +270,10 @@ export const DETECT_SCRIPT = buildDetectScript();
  * 새 컨텍스트에서 url 을 열고 첫 프레임 시각(ms, 탐색 시작 기준)을 반환한다. 시간 안에 감지하지 못하면 throw.
  * canvasSelector 로 판정 대상 캔버스를 한정한다(기본 'canvas' = 모든 캔버스, 하위 호환). 반환의 canvas 는 판정한 요소 표기(예 canvas#status-view).
  * after(page) 가 있으면 첫 프레임 감지 직후 호출해 그 결과를 { ms, canvas, after } 로 돌려준다.
+ * testMode 옵션은 test hook (window.__ffTestHook) 지원을 포함한다(테스트 전용).
  */
-export async function measureFirstFrame(browser, url, { timeoutMs = 30000, after, canvasSelector = ANY_CANVAS_SELECTOR } = {}) {
-  const script = buildDetectScript(canvasSelector);
+export async function measureFirstFrame(browser, url, { timeoutMs = 30000, after, canvasSelector = ANY_CANVAS_SELECTOR, testMode = false } = {}) {
+  const script = buildDetectScript(canvasSelector, { testMode });
   const ctx = await browser.newContext(); // 캐시 없는 새 컨텍스트
   try {
     const page = await ctx.newPage();
