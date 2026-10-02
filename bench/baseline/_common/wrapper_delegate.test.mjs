@@ -105,6 +105,7 @@ test('wrapper_delegate: 감지 뒤 캡처된 래퍼를 N회 호출해도 해시 
   const N = 50;
   const { after } = await withPage(GL(0, CAPTURE), (b, url) => measureFirstFrame(b, url, {
     timeoutMs: 10000,
+    testMode: true,
     after: (page) => page.evaluate((n) => {
       const gl = document.getElementById('c').getContext('webgl');
       const before = window.__ffTestHook.hash;
@@ -125,7 +126,7 @@ test('wrapper_delegate(대조): 감지 전에는 같은 호출이 해시 경로�
     const ctx = await b.newContext();
     try {
       const page = await ctx.newPage();
-      await page.addInitScript(buildDetectScript('#c'));
+      await page.addInitScript(buildDetectScript('#c', { testMode: true }));
       await page.goto(url, { waitUntil: 'load' });
       const r = await page.evaluate(() => {
         const gl = document.getElementById('c').getContext('webgl');
