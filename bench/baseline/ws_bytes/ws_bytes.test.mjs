@@ -869,27 +869,45 @@ test('사본 규칙 변이(l): [L0 10, rL0 10, L0 7, L0 9 final] 은 final 도 �
   assert.equal(ok.stale_levels, 0);
 });
 
-test('사본 규칙: 완결 근거와 segments 합은 같은 프레임 집합 (final 프레임이 stale 이면 미완, 아니면 합에 포함)', () => {
-  const sumOf = (a) => a.reduce((x, y) => x + y, 0);
+test('사본 규칙: 완결 근거와 segments 합은 같은 프레임 집합 (손계산 기대값)', () => {
+  // [프레임, 완결 여부, 완결이면 segments[0], 미완이면 incomplete bytes]
   const cases = [
-    [F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))],
-    [F(1, 2, 40), F(1, 2, 40, true), F(1, 2, 7), fin(F(1, 2, 9))],
-    [F(1, 0, 10), F(1, 0, 10, true), F(1, 0, 7), fin(F(1, 0, 9))],
-    [F(1, 2, 5), F(1, 2, 5, true), fin(F(1, 2, 5))],
-    [fin(F(1, 2, 5)), F(1, 2, 5, true), F(1, 2, 5)],
+    // L1 3 는 추월 stale, 그 뒤 L2 final 은 끊긴 연속이라 사본: 근거는 첫 L2 5 뿐
+    [[F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))], false, 5],
+    [[F(1, 2, 40), F(1, 2, 40, true), F(1, 2, 7), fin(F(1, 2, 9))], false, 40],
+    [[F(1, 0, 10), F(1, 0, 10, true), F(1, 0, 7), fin(F(1, 0, 9))], false, 10],
+    [[F(1, 2, 5), F(1, 2, 5, true), fin(F(1, 2, 5))], false, 5],
+    // final 이 먼저 와 완결, 뒤 사본 L2 5 는 stale 이라 합에 안 들어감
+    [[fin(F(1, 2, 5)), F(1, 2, 5, true), F(1, 2, 5)], true, 5],
   ];
-  for (const c of cases) {
+  for (const [c, done, bytes] of cases) {
     const s = summarize(c);
-    // stale 아닌 원본 바이트 = 근거 프레임 집합의 바이트
-    const kept = sumOf(c.filter((f) => f.resend !== true).map((f) => f.bytes)) - s.stale_bytes;
-    const got = s.segment_ids.length ? s.segments[0] : s.incomplete_segments[0].bytes;
-    assert.equal(got, kept, JSON.stringify(c));
-    // final 프레임이 근거 집합에 있으면(= 끊기지 않은 원본) 완결, 아니면 미완
-    const finIdx = c.findIndex((f) => f.final === true);
-    const tail = summarize(c.slice(0, finIdx + 1));
-    const finalKept = tail.stale_bytes === summarize(c.slice(0, finIdx)).stale_bytes;
-    assert.deepEqual(s.segment_ids, finalKept ? [1] : [], JSON.stringify(c));
+    const tag = JSON.stringify(c);
+    if (done) {
+      assert.deepEqual(s.segment_ids, [1], tag);
+      assert.deepEqual(s.segments, [bytes], tag);
+      assert.deepEqual(s.incomplete_segments, [], tag);
+    } else {
+      assert.deepEqual(s.segment_ids, [], tag);
+      assert.deepEqual(s.segments, [], tag);
+      assert.equal(s.incomplete_segments.length, 1, tag);
+      assert.equal(s.incomplete_segments[0].bytes, bytes, tag);
+    }
   }
+});
+
+test('사본 규칙: [L2 5, rL2 5, L2 5 final] 녹화를 run 하면 method 에 사본 판정과 개수가 남고, 사본이 없으면 변화 없음', async () => {
+  const dupe = BASE + fr(1, 2, 5) + fr(1, 2, 5, ',"resend":true') + fr(1, 2, 5, ',"final":true') + fr(2, 2, 4, ',"final":true');
+  const r = await runText(dupe);
+  assert.deepEqual(get(r, 'ws_bytes.segment_total').samples, [4]);
+  assert.equal(get(r, 'ws_bytes.incomplete_segment_bytes').value, 5);
+  assert.match(get(r, 'ws_bytes.segment_total').method, /끊긴 같은 수준 사본 판정 1프레임/);
+  // 대조군: 사본 없는 녹화의 method 에는 사본 표기가 없다
+  const clean = await runText(BASE + fr(1, 2, 5, ',"final":true') + fr(2, 2, 4, ',"final":true'));
+  for (const x of clean) assert.doesNotMatch(x.method, /사본/);
+  // 추월당한 낮은 수준 stale 은 사본 판정이 아니므로 세지 않는다
+  const low = await runText(BASE + fr(1, 2, 5, ',"final":true') + fr(1, 1, 3) + fr(2, 2, 4, ',"final":true'));
+  for (const x of low) assert.doesNotMatch(x.method, /사본/);
 });
 
 // ---- final 이 resend 에만 있으면 wsTopLevel 을 무시하지 않는다 ----

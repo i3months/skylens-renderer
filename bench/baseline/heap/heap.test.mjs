@@ -310,3 +310,50 @@ test('processTreeMemory: 정상 + 0 RSS 혼합 → 0 RSS 도 유효해서 세어
   assert.equal(m.rssProcs, 2, 'both processes counted including zero RSS');
   assert.equal(m.bytes, 50 * systemPageSize(), 'bytes = 50 (from first) + 0 (from second)');
 });
+
+test('processTreeMemory: 합산 뒤 unsafe 정수면(두 개 매우 큰 RSS) null 반환', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-sum-unsafe-')));
+  const page = systemPageSize();
+  const rssValue = '2000000000000';
+  for (const [pid, ppid] of [['100', '1'], ['101', '100']]) {
+    mkdirSync(join(procRoot, pid));
+    writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`);
+    writeFileSync(join(procRoot, pid, 'cmdline'), tag);
+    writeFileSync(join(procRoot, pid, 'statm'), `1 ${rssValue}`);
+  }
+  const m = processTreeMemory(tag, { procRoot });
+  const singleRss = Number(rssValue) * page;
+  const totalRss = 2 * singleRss;
+  assert.ok(Number.isSafeInteger(singleRss), `single RSS ${singleRss} should be safe`);
+  assert.ok(!Number.isSafeInteger(totalRss), `total RSS ${totalRss} should be unsafe`);
+  assert.equal(m, null, 'should return null when sum overflows');
+});
+
+test('processTreeMemory: 정상 RSS + unsafe RSS(대조: continue 이면 정상 RSS만 세어진다)', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-mixed-normal-unsafe-')));
+  for (const [pid, ppid, statm] of [['100', '1', '100 50 10'], ['101', '100', '1 900000000000000000']]) {
+    mkdirSync(join(procRoot, pid));
+    writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`);
+    writeFileSync(join(procRoot, pid, 'cmdline'), pid === '100' ? tag : 'child');
+    writeFileSync(join(procRoot, pid, 'statm'), statm);
+  }
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m.rssProcs, 1, 'only normal process counted (unsafe skipped by continue)');
+  assert.equal(m.bytes, 50 * systemPageSize(), 'bytes from normal process only');
+});
+
+test('processTreeMemory: 정상 + unsafe RSS + 0 RSS 혼합 → unsafe는 제외, 정상·0은 세어진다', () => {
+  const tag = `--tag-${randomUUID()}`;
+  const procRoot = track(mkdtempSync(join(tmpdir(), 'proc-mixed-normal-unsafe-zero-')));
+  for (const [pid, ppid, statm] of [['100', '1', '100 50 10'], ['101', '100', '1 900000000000000000'], ['102', '100', '1 0']]) {
+    mkdirSync(join(procRoot, pid));
+    writeFileSync(join(procRoot, pid, 'stat'), `${pid} (c) S ${ppid} 0`);
+    writeFileSync(join(procRoot, pid, 'cmdline'), pid === '100' ? tag : 'child');
+    writeFileSync(join(procRoot, pid, 'statm'), statm);
+  }
+  const m = processTreeMemory(tag, { procRoot });
+  assert.equal(m.rssProcs, 2, 'normal process and zero RSS counted, unsafe skipped');
+  assert.equal(m.bytes, 50 * systemPageSize(), 'bytes = 50 (normal) + 0 (zero)');
+});
