@@ -497,9 +497,8 @@ export function basisNote({ layout, stride, normals, coordType, normalType, colo
   const same = stride === 27 && coordType === 'float' && colorType === 'uchar' && normals && normalType === 'float' && propertyOrderCorrect;
   const rel = same ? '와 같은 형식' : stride === 27 ? '와 크기만 같고 형식은 다름' : '와 다름';
   const xyz = coordType ? `x y z ${coordType}` : 'x y z';
-  // rgb-u8 레이아웃에서는 planPly 의 rgb-u8 검사로 colorType 이 항상 uchar 이므로
-  // colorType 은 색 형 허용을 넓힐 때를 대비한 것이다. 형 정보가 없으면 형을 적지 않는다.
-  const rgb = colorType ? `${colorType} rgb` : 'uchar rgb';
+  // 형 정보가 없으면 색 형을 적지 않는다(planPly 의 rgb-u8 검사를 지난 입력은 colorType 이 항상 uchar 다).
+  const rgb = colorType ? `${colorType} rgb` : 'rgb';
   return `renderer_basis §7-4 27 B ${rel}: ${stride} B 점(${xyz}·${rgb}), ${n}, 중심점만 사용`;
 }
 
