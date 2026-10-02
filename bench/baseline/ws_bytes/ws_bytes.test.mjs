@@ -902,6 +902,7 @@ test('사본 규칙: [L2 5, rL2 5, L2 5 final] 녹화를 run 하면 method 에 �
   assert.deepEqual(get(r, 'ws_bytes.segment_total').samples, [4]);
   assert.equal(get(r, 'ws_bytes.incomplete_segment_bytes').value, 5);
   assert.match(get(r, 'ws_bytes.segment_total').method, /끊긴 같은 수준 사본 판정 1프레임/);
+  assert.match(get(r, 'ws_bytes.segment_total').method, /미검증 가정에 따른 판정/);
   // 대조군: 사본 없는 녹화의 method 에는 사본 표기가 없다
   const clean = await runText(BASE + fr(1, 2, 5, ',"final":true') + fr(2, 2, 4, ',"final":true'));
   for (const x of clean) assert.doesNotMatch(x.method, /사본/);
@@ -935,4 +936,21 @@ test('변이(n) final 의 추월 기준이 원본 최고 수준(hi)이면 실패
   const d = summarize([F(1, 0, 5), F(1, 2, 5, true), fin(F(1, 1, 3))]);
   assert.deepEqual(d.segment_ids, []);
   assert.equal(d.stale_bytes, 3);
+});
+
+test('copy_frames 는 summarize 반환값으로 직접 단언: 사본 판정 프레임마다 1씩, 추월당한 낮은 수준은 제외', () => {
+  // 끊긴 뒤의 L2 5 두 개가 모두 사본 판정
+  const a = summarize([F(1, 2, 5), F(1, 2, 5, true), F(1, 2, 5), F(1, 2, 5)]);
+  assert.equal(a.copy_frames, 2);
+  assert.equal(a.stale_levels, 2);
+  // 뒤의 L1 3 은 rL2 에 추월당한 stale 이지 사본 판정이 아니다
+  const b = summarize([F(1, 1, 3), F(1, 2, 4, true), F(1, 1, 3)]);
+  assert.equal(b.copy_frames, 0);
+  assert.equal(b.stale_levels, 1);
+  // 추월 stale 1 + 사본 판정 1
+  const c = summarize([F(1, 2, 5), F(1, 1, 3), fin(F(1, 2, 5))]);
+  assert.equal(c.copy_frames, 1);
+  assert.equal(c.stale_levels, 2);
+  // 대조군: 사본 상황이 없으면 0
+  assert.equal(summarize([F(1, 2, 5), F(1, 2, 5)]).copy_frames, 0);
 });

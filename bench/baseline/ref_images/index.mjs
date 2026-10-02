@@ -288,7 +288,7 @@ function planPly(h, name) {
   const normals = Boolean(off.nx && off.ny && off.nz);
   const coordType = typeName(['x', 'y', 'z'].map((k) => off[k].type));
   const normalType = normals ? typeName(['nx', 'ny', 'nz'].map((k) => off[k].type)) : null;
-  // rgb-u8 레이아웃이면 color 속성들의 type을 읽고, 그렇지 않으면 null. rgb-u8 검증(line 282)에서
+  // rgb-u8 레이아웃이면 color 속성들의 type을 읽고, 그렇지 않으면 null. planPly 의 rgb-u8 검사에서
   // color 속성이 uchar임이 보장되므로 colorType 은 현재 늘 uchar 이다. 색 형 허용을 넓힐 때 쓰임.
   const colorType = layout === 'rgb-u8' ? typeName(['red', 'green', 'blue'].map((k) => off[k].type)) : null;
   // 속성 순서 검사: rgb-u8 + normals 일 때 x y z nx ny nz red green blue 순서가 정확히 맞는지
@@ -493,13 +493,12 @@ export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
 export function basisNote({ layout, stride, normals, coordType, normalType, colorType, propertyOrderCorrect }) {
   const n = normals ? `법선 nx ny nz${normalType ? ` ${normalType}` : ''} 있음·무시` : '법선 없음';
   if (layout === 'splat-f_dc') return `renderer_basis §7-4 27 B 와 다름: ${stride} B 스플랫, ${n}, 중심점만 사용`;
-  // propertyOrderCorrect 이 true 면 정확히 9개 속성이므로 stride === 27 는 방어적 검사 (길이 조건과 겹침).
-  const same = stride === 27 && coordType === 'float' && normals && normalType === 'float' && propertyOrderCorrect;
+  // propertyOrderCorrect 이 true 이고 정확히 9개 속성(x y z nx ny nz red green blue)일 때만 stride === 27 이다(planPly 의 rgb-u8 검사로 보증).
+  const same = stride === 27 && coordType === 'float' && colorType === 'uchar' && normals && normalType === 'float' && propertyOrderCorrect;
   const rel = same ? '와 같은 형식' : stride === 27 ? '와 크기만 같고 형식은 다름' : '와 다름';
   const xyz = coordType ? `x y z ${coordType}` : 'x y z';
-  // rgb-u8 레이아웃에서는 color 속성 검증(line 282)으로 colorType 이 항상 uchar 이므로
-  // 'uchar rgb' 가 출력된다. colorType 은 색 형 허용을 넓힐 때를 대비한 것이다.
-  const rgb = colorType ? `${colorType} rgb` : 'uchar rgb';
+  // 형 정보가 없으면 색 형을 적지 않는다(planPly 의 rgb-u8 검사를 지난 입력은 colorType 이 항상 uchar 다).
+  const rgb = colorType ? `${colorType} rgb` : 'rgb';
   return `renderer_basis §7-4 27 B ${rel}: ${stride} B 점(${xyz}·${rgb}), ${n}, 중심점만 사용`;
 }
 

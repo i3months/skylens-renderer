@@ -900,6 +900,13 @@ test('basisNote: 스플랫은 실제 레코드 크기와 헤더의 법선 유무
   assert.match(basisNote(d), /36 B 스플랫, 법선 nx ny nz float 있음·무시/);
 });
 
+test('basisNote: colorType 이 없으면 색 형을 적지 않고 기준 형식과 같다고도 하지 않는다', () => {
+  const dense = decodePly(encodePly([{ p: [1, 2, 3], rgb: [4, 5, 6] }], LAYOUTS.dense27), 'f.ply');
+  const { colorType, ...noColor } = dense;
+  assert.equal(colorType, 'uchar');
+  assert.equal(basisNote(noColor), 'renderer_basis §7-4 27 B 와 크기만 같고 형식은 다름: 27 B 점(x y z float·rgb), 법선 nx ny nz float 있음·무시, 중심점만 사용');
+});
+
 test('basisNote: rgb 점은 크기가 아니라 좌표 형·법선 형으로 기준 형식과 비교한다 (double 좌표 27 B 는 "double")', () => {
   const dec = (layout) => decodePly(encodePly([{ p: [1, 2, 3], rgb: [4, 5, 6] }], layout), 'f.ply');
   const d27 = dec(LAYOUTS.double27);
