@@ -13,10 +13,13 @@ function writeDelta(out, off, r, g, b, n) {
   }
 }
 
-// QUANT2 복원 값: ((v>>2)<<2)+2 를 255 로 상한.
-const quant2 = (v) => Math.min(255, ((v >> 2) << 2) + 2);
+// QUANT2 복원 값: ((v>>2)<<2)+2. v ≤ 255 이면 최대 254 라 255 상한은 도달하지 않는다.
+const quant2 = (v) => ((v >> 2) << 2) + 2;
 
 export function encodeColorStream(r, g, b, opts = {}) {
+  if (!(r instanceof Uint8Array) || !(g instanceof Uint8Array) || !(b instanceof Uint8Array)) {
+    throw new CodecError('stream', '색 채널은 Uint8Array 여야 한다');
+  }
   const n = r.length;
   if (g.length !== n || b.length !== n) throw new CodecError('stream', '색 채널 길이가 다르다');
   if (opts.lossy) {
