@@ -31,12 +31,19 @@ const STAT_KEY = Object.freeze({ frustum: 'removedFrustum', backface: 'removedBa
 export const DEFAULT_STAGES = CULL_STAGES;
 
 // 계층마다 법선 원뿔은 한 번만 만든다. 호출(loadDefaultImpls)마다 새로 만들지 않도록 모듈 수준에 둔다(계층 객체가 사라지면 같이 사라진다).
+// 계층 객체만 키로 쓰면 같은 객체의 levels[0].normals·leafStart·리프 수를 바꿔 끼웠을 때 낡은 원뿔을 쓴다.
+// 그래서 입력 참조(normals·leafStart)와 리프 수 L 을 함께 저장하고, 하나라도 다르면 다시 계산한다(tightBoxes 와 같은 방식).
 const coneCache = new WeakMap();
-/** 계층의 법선 원뿔을 캐시해서 돌려준다. compute 는 처음 한 번만 불린다(주입은 시험용). */
+/** 계층의 법선 원뿔을 캐시해서 돌려준다. 입력(normals·leafStart·L)이 같은 동안 compute 는 한 번만 불린다(주입은 시험용). */
 export function cachedNormalCones(hierarchy, compute) {
-  let c = coneCache.get(hierarchy);
-  if (c === undefined) { c = compute(hierarchy); coneCache.set(hierarchy, c); }
-  return c;
+  const normals = hierarchy.levels?.[0]?.normals;
+  const leafStart = hierarchy.levels?.[0]?.leafStart;
+  const L = hierarchy.octree?.leafCount;
+  const c = coneCache.get(hierarchy);
+  if (c !== undefined && c.normals === normals && c.leafStart === leafStart && c.L === L) return c.cones;
+  const cones = compute(hierarchy);
+  coneCache.set(hierarchy, { cones, normals, leafStart, L });
+  return cones;
 }
 
 const repoUrl = (rel) => new URL(`../../../${rel}`, import.meta.url).href;

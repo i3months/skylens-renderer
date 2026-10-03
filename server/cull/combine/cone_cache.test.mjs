@@ -54,3 +54,42 @@ test('stats.kept = chunks.length = mask 1 이면서 NOT_DRAWN 이 아닌 리프 
   assert.equal(r.cull.stats.kept, r.cull.chunks.length);
   assert.equal(r.cull.stats.kept, drawn);
 });
+
+// F-135: 캐시 키가 계층 객체뿐이면 levels[0].normals·leafStart·리프 수를 바꿔 끼운 뒤에도 낡은 원뿔을 쓴다. 입력 참조가 다르면 다시 계산한다.
+test('cachedNormalCones: normals 만 교체하면 다시 계산하고 새 객체로 처음 계산한 결과와 같다', () => {
+  const mk = () => ({ octree: { leafCount: 2 }, levels: [{ normals: new Float32Array([0, 0, 1, 0, 0, 1]), leafStart: new Uint32Array([0, 1, 2]) }] });
+  const compute = (h) => { calls++; return Array.from(h.levels[0].normals); };
+  let calls = 0;
+  const h = mk();
+  cachedNormalCones(h, compute);
+  h.levels[0].normals = new Float32Array([0, 1, 0, 0, 1, 0]);
+  const got = cachedNormalCones(h, compute);
+  assert.equal(calls, 2);
+  const fresh = mk(); fresh.levels[0].normals = h.levels[0].normals;
+  assert.deepEqual(got, compute(fresh));
+  assert.deepEqual(got, [0, 1, 0, 0, 1, 0]);
+});
+
+test('cachedNormalCones: 리프 수(leafStart/L)를 교체하면 다시 계산하고 새 객체로 처음 계산한 결과와 같다', () => {
+  let calls = 0;
+  const compute = (h) => { calls++; return { n: h.octree.leafCount, starts: Array.from(h.levels[0].leafStart) }; };
+  const normals = new Float32Array(9);
+  const h = { octree: { leafCount: 2 }, levels: [{ normals, leafStart: new Uint32Array([0, 1, 2]) }] };
+  cachedNormalCones(h, compute);
+  // leafStart 만 교체(L 같음)
+  h.levels[0].leafStart = new Uint32Array([0, 2, 3]);
+  assert.deepEqual(cachedNormalCones(h, compute), { n: 2, starts: [0, 2, 3] });
+  assert.equal(calls, 2);
+  // leafStart 와 L 함께 교체
+  h.octree = { leafCount: 3 };
+  h.levels[0].leafStart = new Uint32Array([0, 1, 2, 3]);
+  assert.deepEqual(cachedNormalCones(h, compute), { n: 3, starts: [0, 1, 2, 3] });
+  assert.equal(calls, 3);
+  // L 만 교체
+  h.octree = { leafCount: 4 };
+  assert.equal(cachedNormalCones(h, compute).n, 4);
+  assert.equal(calls, 4);
+  // 같은 입력 재호출은 캐시
+  cachedNormalCones(h, compute);
+  assert.equal(calls, 4);
+});

@@ -45,3 +45,28 @@ test('F-130 backface: 배열을 바꿔 끼운 같은 객체의 결과가 새 객
   assert.ok(fresh.includes(0), '시험 장면에서 제거가 있어야 의미가 있다');
   assert.equal(diff(got, fresh), 0);
 });
+
+// F-138 ④: positions만 교체(leafStart는 그대로)하는 사례
+// 딱 맞는 상자 캐시가 positions 참조를 확인하지 않으면 캐시가 제거되지 않아 잘못된 결과가 생긴다.
+function staleVsFreshPositionsOnly(cull, dz) {
+  const { cloud } = genFlat({ seed: 1, count: 200000 });
+  const fresh = cull(buildHierarchy(shifted(cloud, dz), OPTS));
+  const h = buildHierarchy(cloud, OPTS);
+  cull(h);
+  // 새 계층을 만들지만 positions만 교체한다 (leafStart와 다른 properties는 유지)
+  const hNew = buildHierarchy(shifted(cloud, dz), OPTS);
+  h.levels[0].positions = hNew.levels[0].positions;
+  return { fresh, got: cull(h) };
+}
+
+test('F-138 ④ occlusion: positions만 교체했을 때 결과가 새 객체와 같다', () => {
+  const { fresh, got } = staleVsFreshPositionsOnly(occ, 3);
+  assert.ok(fresh.includes(0), '시험 장면에서 제거가 있어야 의미가 있다');
+  assert.equal(diff(got, fresh), 0);
+});
+
+test('F-138 ④ backface: positions만 교체했을 때 결과가 새 객체와 같다', () => {
+  const { fresh, got } = staleVsFreshPositionsOnly(bface, 3);
+  assert.ok(fresh.includes(0), '시험 장면에서 제거가 있어야 의미가 있다');
+  assert.equal(diff(got, fresh), 0);
+});

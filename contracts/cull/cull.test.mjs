@@ -22,6 +22,15 @@ test('andMasks·chunksOfMask', () => {
   assert.equal(chunksOfMask(new Uint8Array(3)).length, 0);
 });
 
+test('andMasks: 3 개 마스크의 AND 결과', () => {
+  const m = andMasks([new Uint8Array([1, 1, 0, 1]), new Uint8Array([1, 0, 0, 1]), new Uint8Array([0, 1, 0, 1])], 4);
+  assert.deepEqual([...m], [0, 0, 0, 1]);
+});
+
+test('andMasks: 두 번째 마스크가 Uint8Array 아니면 throws', () => {
+  assert.throws(() => andMasks([new Uint8Array([1, 1, 0, 1]), [1, 0, 0, 1]], 4), /^Error: cull:/);
+});
+
 test('andMasks: 다른 길이는 오류', () => {
   assert.throws(() => andMasks([new Uint8Array([1, 1, 0, 1])], 3), /^Error: cull:/);
   assert.throws(() => andMasks([new Uint8Array([1, 1])], 4), /^Error: cull:/);

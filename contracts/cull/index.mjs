@@ -64,7 +64,7 @@ export const COMBINE_MIN_SSIM = 0.95;
 
 /** 함수 서명. 이름과 모듈 위치는 이 표가 기준이다. 모든 마스크 함수의 첫 인자는 hierarchy. */
 export const CULL_API = Object.freeze({
-  degenerate: { module: 'server/cull/degenerate/index.mjs', fn: 'isDegenerateView(camera) -> boolean ; emptyMask(hierarchy) -> LeafMask(전부 0) ; assertHierarchyForCull(hierarchy) -> void ("cull:" 오류)' },
+  degenerate: { module: 'server/cull/degenerate/index.mjs', fn: 'isDegenerateView(camera) -> boolean ; assertCameraShape(camera) -> void ("cull:" 오류) ; degenerateCamera(camera) -> boolean ; emptyMask(hierarchy) -> LeafMask(전부 0) ; assertHierarchyForCull(hierarchy) -> void ("cull:" 오류)' },
   frustum: { module: 'server/cull/frustum/index.mjs', fn: 'frustumCull(hierarchy, camera, {pointSizeM?}) -> LeafMask   리프 상자의 점이 지름 pointSizeM(m) 원판으로 그려져도 화면에 확실히 안 걸칠 때만 0(좌·우·위·아래 평면을 원판 반경 fx·pointSizeM/(2z) px 만큼 바깥으로 민다). pointSizeM 이 없으면 좌·우·위·아래로는 제거 없음(앞 z > 0 만). 퇴화 시점이면 전부 0' },
   backface: { module: 'server/cull/backface/index.mjs', fn: 'leafNormalCones(hierarchy) -> NormalCones ; backfaceCull(hierarchy, camera, cones, {pointSizeM?, requireCover?, marginDeg?}) -> LeafMask   리프의 모든 점이 카메라를 등지는 것이 확실할 때만 0. pointSizeM 이 없으면 덮임 판정 지름을 모르므로 2단계 후보를 전부 남김(제거 0)' },
   occlusion: { module: 'server/cull/occlusion/index.mjs', fn: 'buildDepthPyramid(hierarchy, camera, {size=64, pointSizeM?=0.05, maxOccluderPoints?=262144, occluderLevel?, occluderMask?}) -> {size, levels:Float32Array[], pointSizeM, occluderPoints}   CPU 거친 깊이 피라미드(칸마다 가장 가까운 깊이의 보수적 하한이 아닌 "가림막" 깊이 = 칸 안 모든 픽셀이 이보다 가깝게 채워진 깊이의 최댓값) ; occlusionCull(hierarchy, camera, pyramid?) -> LeafMask   리프 상자 전체가 가림막 뒤일 때만 0' },

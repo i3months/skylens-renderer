@@ -27,11 +27,8 @@ test('R 희소 배열 일부 구멍은 퇴화', () => {
   assert.equal(isDegenerateView(c), true);
 });
 
-test('t 희소 배열 구멍(undefined)은 퇴화', () => {
+test('t 배열에 명시적 undefined이 있으면 퇴화', () => {
   const c = good();
-  c.t = new Array(3);
-  c.t[0] = 0; c.t[1] = 0; c.t[2] = 0; // 빈 배열에 할당 = 구멍 없음, 하지만...
-  // 실제로는 new Array(3) 은 구멍만 있다. 명시적 할당을 해야 한다.
   c.t = [0, 0, undefined];
   assert.equal(isDegenerateView(c), true);
 });
@@ -107,7 +104,7 @@ test('width*height = 2^26 경계는 정상', () => {
   assert.equal(isDegenerateView(c), false);
 });
 
-test('width*height = 2^26 - 1 은 정상', () => {
+test('width*height = 8191*8192 는 2^26 보다 작아 정상', () => {
   const c = good();
   c.width = 8191;
   c.height = 8192; // 8191 * 8192 = 67100672 < 67108864
