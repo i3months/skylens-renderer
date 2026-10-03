@@ -222,7 +222,8 @@ test('상한: 움직이는 카메라의 예측 마스크 ⊆ (표본 시점들�
 });
 
 test('음성: 장면 밖(시선이 장면 반대쪽)을 향해 천천히 움직이면 마스크는 전부 0', () => {
-  const cam = lookAt([0, 60, 0], [0, 300, 0]); // 위쪽 하늘을 본다
+  const cam = lookAt([0, 200, 0], [1, 500, 0]); // 장면(y<=115) 위에서 위쪽 하늘을 본다(시선이 위쪽 축과 정확히 평행이면 lookAt 이 퇴화하므로 약간 비튼다)
+  assert.equal(isDegenerateView(cam), false, '전제: 비퇴화 카메라(퇴화 처리 때문에 0 이 되는 것이 아님)');
   assert.equal(visibleSet(cam).size, 0, '전제: 현재 보이는 리프 없음');
   const m = predictiveMask(h, { camera: cam, velocityMps: [0, 2, 0], angularRadPerS: [0, 0.05, 0] }, { horizonS: 2, steps: 4, pointSizeM: 0 });
   assert.equal(m.length, oc.leafCount);
@@ -246,15 +247,33 @@ test('고속·시선에 수직 이동: 해석적 평행이동 시점(눈·목표
   assert.ok(allowed.size < oc.leafCount);
 });
 
-test('잘게 나눈 직선 이동: 마스크는 해석적 시점 합집합을 덮고, 부풀림 여유 안에 머문다(과잉 부풀림 없음)', () => {
-  const eye = [-60, 40, 0], tgt = [0, 0, 0], v = [6, 0, 8], horizonS = 4, steps = 80; // 구간 반폭 h = 0.025 s, 부풀림 0.25 m
+test('잘게/성기게 나눈 직선 이동: 마스크는 해석적 시점 합집합을 덮고, 기하 상한(|v|·구간 반폭) 안에 머문다(과잉 부풀림 없음)', () => {
+  const horizonS = 4;
+  // 느린 이동(5 mm/s: 4 s 동안 2 cm)은 고정 가산 여유(예: +0.2 m)를, 빠른 이동은 배율 부풀림을 드러낸다.
+  for (const [eye, tgt, v] of [[[-60, 40, 0], [0, 0, 0], [6, 0, 8]], [[-60, 40, 0], [0, 0, 0], [0.003, 0, 0.004]], [[20, 70, -50], [-10, 0, 10], [0.003, -0.001, 0.004]],
+    [[-60, 30, -60], [-60, 45, -10], [0.003, 0, 0.004]], [[-30, 30, 30], [20, 40, 30], [0.003, 0, 0.004]]]) { // 뒤의 둘은 0.2 m 부풀림이 리프 경계에 걸리는 시점(탐색으로 고름)
   const camAt = (tau) => lookAt([eye[0] + v[0] * tau, eye[1] + v[1] * tau, eye[2] + v[2] * tau], [tgt[0] + v[0] * tau, tgt[1] + v[1] * tau, tgt[2] + v[2] * tau]);
-  const m = predictiveMask(h, { camera: camAt(0), velocityMps: v }, { horizonS, steps, pointSizeM: 0 });
-  const exact = allowedUnion(camAt, horizonS, steps, 0, 0, 0);
-  for (const k of exact) assert.equal(m[k], 1, `정확한 합집합의 리프 ${k} 가 빠짐`);
-  const allowed = allowedUnion(camAt, horizonS, steps * 4, Math.hypot(...v), 0, horizonS / steps / 2);
-  for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(allowed.has(k), `허용 밖 리프 ${k}`);
-  assert.ok(sum(m) <= allowed.size, '마스크가 허용 집합을 넘음');
+  // steps=80: 구간 반폭 0.025 s -> 부풀림 0.25 m. steps=4: 반폭 0.5 s -> 5 m(작은 계수 오차도 리프 경계에 걸리도록 크게).
+  for (const steps of [80, 4]) {
+    const hh = horizonS / steps / 2;
+    const m = predictiveMask(h, { camera: camAt(0), velocityMps: v }, { horizonS, steps, pointSizeM: 0 });
+    const exact = allowedUnion(camAt, horizonS, steps, 0, 0, 0);
+    for (const k of exact) assert.equal(m[k], 1, `steps=${steps}: 정확한 합집합의 리프 ${k} 가 빠짐`);
+    // 구현 식과 독립인 기하 상한: 이동만 있으므로 한 표본이 덮는 구간 반폭 동안 카메라는 |v|·hh 이상 움직일 수 없다.
+    // 표본을 4배 촘촘히 잡고 상자를 정확히 그 거리(+1e-3 m 수치 여유)만 부풀려 보이는 리프의 합집합이 상한이다(계수·덧셈 여유 없음).
+    const M = Math.hypot(...v) * hh + 1e-3;
+    const bound = new Set();
+    for (let i = 0; i <= steps * 4; i++) {
+      const cam = camAt((horizonS * i) / (steps * 4));
+      for (let k = 0; k < oc.leafCount; k++) {
+        const [a, b] = boxOf(k);
+        if (boxMayBeVisibleSplat(cam, a.map((x) => x - M), b.map((x) => x + M), 0)) bound.add(k);
+      }
+    }
+    for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(bound.has(k), `steps=${steps}: 기하 상한 밖 리프 ${k}`);
+    assert.ok(sum(m) >= exact.size);
+  }
+  }
 });
 
 // ---- F-134: 유한하지만 극단적인 입력 ----
