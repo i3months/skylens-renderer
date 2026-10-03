@@ -52,6 +52,12 @@ export function readHeaderClient(bytes) {
   checkLength(u8.length, headerSize, bodyBytes);
   const segLevel = dv.getUint32(OFFSETS.segLevel, true);
   const f64 = (o) => dv.getFloat64(o, true);
+  // 서버 unpack 과 같게 bbox 6값이 유한해야 한다
+  for (const o of [OFFSETS.bboxMin, OFFSETS.bboxMax]) {
+    for (let k = 0; k < 3; k++) {
+      if (!Number.isFinite(f64(o + 8 * k))) throw new AssetFormatError('bbox', 'bbox not finite');
+    }
+  }
   return {
     versionMajor,
     versionMinor: dv.getUint16(OFFSETS.versionMinor, true),

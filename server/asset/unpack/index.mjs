@@ -117,7 +117,7 @@ function readPlanes(fileBytes) {
     throw new AssetFormatError('field', `quantExp ${header.quantExp}`);
   }
   if (header.pointCount < 1) throw new AssetFormatError('field', 'pointCount 0');
-  if (!header.bboxMin.every(Number.isFinite)) throw new AssetFormatError('bbox', 'bboxMin not finite');
+  if (!header.bboxMin.every(Number.isFinite) || !header.bboxMax.every(Number.isFinite)) throw new AssetFormatError('bbox', 'bbox not finite');
   const n = header.pointCount;
   const layout = bodyLayout(header.format, n);
   if (header.bodyBytes < layout.requiredBytes) {
@@ -144,8 +144,8 @@ function readPlanes(fileBytes) {
 
 /**
  * 조각을 원본 형식 필드로 되돌린다(명세 §6). codec 0 만 안다. 체크섬은 검사하지 않는다.
- * 의미 검사 범위: 헤더 파싱·codec·quantExp·pointCount≥1·bboxMin 유한·본문 길이만 본다.
- * lod·tileSizeM·bboxMax·타일/bbox 일치는 검사하지 않는다(필요하면 readHeaderStrict 로 먼저 검증).
+ * 의미 검사 범위: 헤더 파싱·codec·quantExp·pointCount≥1·bbox 6값 유한·복원 위치 유한·본문 길이만 본다.
+ * lod·tileSizeM·타일/bbox 일치는 검사하지 않는다(필요하면 readHeaderStrict 로 먼저 검증).
  * @param {Uint8Array} fileBytes
  * @returns {{header: AssetHeader, fields: Point27Fields | Gauss56Fields}}
  */
@@ -159,6 +159,10 @@ export function unpackChunk(fileBytes) {
     const min = header.bboxMin[a];
     const qa = posPlanes[a];
     for (let i = 0; i < n; i++) positions[3 * i + a] = min + qa[i] * step;
+  }
+  // f32 로 내린 복원 위치가 비유한이면 거부(bboxMin 이 1e308 같은 경우)
+  for (let i = 0; i < positions.length; i++) {
+    if (!Number.isFinite(positions[i])) throw new AssetFormatError('bbox', 'restored position not finite');
   }
   const cr = planes.color_r, cg = planes.color_g, cb = planes.color_b;
 
