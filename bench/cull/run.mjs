@@ -20,7 +20,8 @@ export async function runBench(cases = CASES, { repeats = 3, log = console.log }
     const { hierarchy, pointCount, leafCount } = buildBenchHierarchy(points, maxLeafPoints);
     const result = await measureScene(hierarchy, cameras, { repeats });
     rows.push(tableRow(pointCount, leafCount, result));
-    records.push({ pointCount, leafCount, maxLeafPoints, ...result });
+    const { calls, ...rest } = result; // 호출 기록은 표·JSON 에 싣지 않는다
+    records.push({ pointCount, leafCount, maxLeafPoints, ...rest });
     log(rows[rows.length - 1].join('\t'));
   }
   return { rows, records, table: formatTable(rows) };
