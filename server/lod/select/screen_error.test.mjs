@@ -5,12 +5,15 @@
 //   그래도 칸이 리프 상자 밖으로 나가는 부분(닻 점의 칸 등)은 점이 없으므로 칸을 리프 상자로 잘라 잰다.
 // 카메라: R = I, t = 0(카메라 = 세계 원점, +z 를 봄). 정육면체 중심을 화면 왼쪽 위 모서리 광선(u = 0, v = 0) 위에 둔다.
 // 두 설정(F-097 의 축 1a·2): ① 320×180·세로 화각 90°(fx = fy = 90), ② 960×540·fx = fy = 754.32.
+// 세 번째 설정(F-102 ②): 회전(yaw 30°·pitch 20°)·t ≠ 0·fy = 2·fx·주점 cx, cy 가 화면 가운데가 아닌 카메라. 정육면체를 화면 모서리 광선 위(모서리 리프),
+//   광축 위(광축을 걸친 리프), 카메라 평면 위(평면을 걸친 리프, 별도 시험)에 둔다. R = I 만 쓰면 minCosToAxis 의 꼭짓점 처리와
+//   cameraCenter 의 Rᵀ 가 시험되지 않는다.
 // 판별력: 같은 장면에서 옛 규칙(f = fx, d = 유클리드 최소 거리, cos² 보정 없음)으로 고른 단계는 칸 변이 τ 를 넘는 리프가 있음을 함께 단언한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NOT_DRAWN, edgeOfLevel } from '../../../contracts/lod/index.mjs';
 import { buildHierarchy, selectLevels } from './index.mjs';
-import { screenErrorRule, screenFocalPx, cameraCenter, boxDistanceM } from './screen_error.mjs';
+import { screenErrorRule, screenFocalPx, cameraCenter, boxDistanceM, minCosToAxis } from './screen_error.mjs';
 import { leafTargets, selectWithBudget } from '../budget/index.mjs';
 import { progressiveChunks } from '../progressive/index.mjs';
 import { buildDistanceTable, levelForDistance } from '../distance_table/index.mjs';
@@ -40,12 +43,25 @@ const camera = (width, height, fx, fy = fx) => ({
   width, height, K: { fx, fy, cx: width / 2, cy: height / 2 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0],
 });
 
-/** 화면 왼쪽 위 모서리(u = 0, v = 0) 광선 위 거리 D 의 점. */
-function cornerPoint(cam, D) {
+/** R = Rx(pitch)·Ry(yaw) (행 우선), X_c = R·X_w + t. 주점 (cx, cy) 는 화면 가운데가 아니다. */
+function generalCamera() {
+  const yaw = (30 * Math.PI) / 180, pitch = (20 * Math.PI) / 180;
+  const cy_ = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const Ry = [cy_, 0, sy, 0, 1, 0, -sy, 0, cy_];
+  const Rx = [1, 0, 0, 0, cp, -sp, 0, sp, cp];
+  const R = new Array(9).fill(0);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) R[3 * i + j] += Rx[3 * i + k] * Ry[3 * k + j];
+  return { width: 640, height: 360, K: { fx: 500, fy: 1000, cx: 400, cy: 120 }, R, t: [0.7, -1.3, 2.1] };
+}
+
+/** 화면 픽셀 (u, v) 광선 위 카메라에서 거리 D 인 점의 세계 좌표: X_w = Rᵀ·(D·d̂ − t). 기본은 왼쪽 위 모서리 (0, 0). */
+function cornerPoint(cam, D, [u, v] = [0, 0]) {
   const { fx, fy, cx, cy } = cam.K;
-  const d = [-cx / fx, -cy / fy, 1];
+  const d = [(u - cx) / fx, (v - cy) / fy, 1];
   const n = Math.hypot(...d);
-  return d.map((v) => (v / n) * D);
+  const Xc = d.map((c, i) => (c / n) * D - cam.t[i]);
+  const { R } = cam;
+  return [0, 1, 2].map((a) => R[a] * Xc[0] + R[3 + a] * Xc[1] + R[6 + a] * Xc[2]);
 }
 
 function project(cam, X) {
@@ -82,6 +98,16 @@ function maxCellEdgePx(h, cam, node, k, l) {
   return worst;
 }
 
+/** 리프 상자가 광축 위 거리 [D − S, D + S] 구간의 점 하나라도 포함하는가(광축을 걸친 리프). */
+function containsAxis(h, n, cam, D) {
+  const mn = h.octree.boxMin.subarray(3 * n, 3 * n + 3), mx = h.octree.boxMax.subarray(3 * n, 3 * n + 3);
+  for (let q = -S; q <= S; q += 0.05) {
+    const P = cornerPoint(cam, D + q, [cam.K.cx, cam.K.cy]);
+    if ([0, 1, 2].every((a) => P[a] >= mn[a] && P[a] <= mx[a])) return true;
+  }
+  return false;
+}
+
 function leafNodeOf(h) {
   const m = new Int32Array(h.octree.leafCount);
   for (let n = 0; n < h.octree.nodeCount; n++) if (h.octree.leafIndex[n] >= 0) m[h.octree.leafIndex[n]] = n;
@@ -96,22 +122,27 @@ function oldLevel(h, cam, node) {
   return d > 0 ? levelForDistance(table, d) : 0;
 }
 
+const GEN = generalCamera();
 const SETTINGS = [
   { name: '320×180 세로 화각 90° (fx = fy = 90)', cam: camera(320, 180, 90), D: 150, cosBelow: 0.5 },
   { name: '960×540 fx = fy = 754.32', cam: camera(960, 540, 754.32), D: 700, cosBelow: 0.85 },
+  { name: '회전 yaw 30°·pitch 20°, t ≠ 0, fy = 2fx, 주점 비중심: 모서리 (0, 360)', cam: GEN, D: 700, cosBelow: 0.8, pixel: [0, 360] },
+  { name: '같은 일반 카메라: 광축을 걸친 리프', cam: GEN, D: 400, cosBelow: 1.01, pixel: [400, 120], axis: true },
 ];
 
-for (const { name, cam, D, cosBelow } of SETTINGS) {
+for (const { name, cam, D, cosBelow, pixel, axis } of SETTINGS) {
   test(`화면 모서리 리프의 칸 변 ≤ τ px (실제 투영), ${name}`, (t) => {
-    const h = buildHierarchy(cubeCloud(cornerPoint(cam, D)), { edge0M: EDGE0, levelCount: LEVELS, maxLeafPoints: 64 });
+    const aim = cornerPoint(cam, D, pixel);
+    const h = buildHierarchy(cubeCloud(aim), { edge0M: EDGE0, levelCount: LEVELS, maxLeafPoints: 64 });
     assert.ok(h.octree.leafCount >= 64, `리프 수 ${h.octree.leafCount}`);
     const node = leafNodeOf(h);
     const rule = screenErrorRule(cam, { thresholdPx: TAU, edge0M: EDGE0, levelCount: LEVELS });
     const sel = selectLevels(h, cam, { thresholdPx: TAU });
-    let checked = 0, cornerChecked = 0, oldOver = 0, worstNew = 0, worstOld = 0;
+    let onAxis = 0, checked = 0, cornerChecked = 0, oldOver = 0, worstNew = 0, worstOld = 0;
     for (let k = 0; k < h.octree.leafCount; k++) {
       const l = sel.leafLevel[k];
       if (l === NOT_DRAWN || l === 0) continue; // 단계 0 은 원본(칸 없음)
+      if (axis) onAxis += containsAxis(h, node[k], cam, D) ? 1 : 0;
       const n = node[k];
       const px = maxCellEdgePx(h, cam, n, k, l);
       worstNew = Math.max(worstNew, px);
@@ -128,6 +159,7 @@ for (const { name, cam, D, cosBelow } of SETTINGS) {
     }
     assert.ok(cornerChecked >= 8, `모서리(cos α < ${cosBelow}) 리프 중 단계 ≥ 1 로 검사한 수 ${cornerChecked}`);
     assert.ok(checked >= cornerChecked);
+    if (axis) assert.ok(onAxis >= 1, `광축 선분 위에 상자가 걸친 채 단계 ≥ 1 로 검사한 리프 ${onAxis}`);
     // 판별력: 옛 규칙이면 τ 를 넘는 칸이 생긴다(이 장면이 F-097 ① 을 실제로 드러냄).
     assert.ok(oldOver > 0 && worstOld > TAU, `옛 규칙 최대 ${worstOld.toFixed(3)} px, 넘는 리프 ${oldOver}`);
     assert.ok(worstNew <= TAU);
@@ -147,14 +179,15 @@ test('fy = 2·fx 카메라가 fx = fy 카메라보다 더 고운 단계를 고�
   const pa = lastLevel(progressiveChunks(h, base, { thresholdPx: TAU })), pb = lastLevel(progressiveChunks(h, tall, { thresholdPx: TAU }));
   let both = 0, finer = 0, finerB = 0, finerP = 0;
   for (let k = 0; k < h.octree.leafCount; k++) {
-    if (a[k] === NOT_DRAWN || b[k] === NOT_DRAWN) continue;
+    assert.notEqual(a[k], NOT_DRAWN, `리프 ${k} fx = fy 카메라에서 그려짐`);
+    assert.notEqual(b[k], NOT_DRAWN, `리프 ${k} fy = 2fx 카메라에서 그려짐`);
     both++;
     assert.ok(b[k] <= a[k], `리프 ${k}: fy=2fx 단계 ${b[k]} > ${a[k]}`);
     if (b[k] < a[k]) finer++;
     assert.ok(tb[k] <= ta[k]);
     if (tb[k] < ta[k]) finerB++;
-    // progressive 는 그 단계 대표점이 없는 리프의 조각을 만들지 않는다(칸이 리프 경계를 걸치는 F-097 ②, hierarchy 소관).
-    if (!pa.has(k) || !pb.has(k)) continue;
+    // 칸 키가 (리프, 칸) 이라 어떤 단계든 리프마다 대표점이 있고 progressive 조각이 있다(F-097 ②).
+    assert.ok(pa.has(k) && pb.has(k), `리프 ${k}: progressive 조각 없음`);
     assert.ok(pb.get(k) <= pa.get(k));
     if (pb.get(k) < pa.get(k)) finerP++;
   }
@@ -173,11 +206,82 @@ test('세 모듈이 같은 리프 단계 규칙을 쓴다(모서리 장면, 예�
       assert.equal(bud.leafLevel[k], sel.leafLevel[k], `budget 리프 ${k}`);
       const l = sel.leafLevel[k];
       if (l === NOT_DRAWN) { assert.ok(!prog.has(k)); continue; }
-      // 그 단계 대표점이 0 개인 리프는 progressive 가 목표 조각을 만들지 않는다(F-097 ②, hierarchy 소관) → 비교 제외.
-      if (h.levels[l].leafStart[k + 1] === h.levels[l].leafStart[k]) continue;
+      // 칸 키가 (리프, 칸) 이므로 그려지는 리프는 그 단계에 대표점이 하나 이상 있다(F-097 ②). 비면 빈자리.
+      assert.ok(h.levels[l].leafStart[k + 1] > h.levels[l].leafStart[k], `리프 ${k} 단계 ${l} 대표점 0 개`);
       drawn++;
       assert.equal(prog.get(k), sel.leafLevel[k], `progressive 리프 ${k}`);
     }
     assert.ok(drawn > 0);
+  }
+});
+
+test('카메라 평면(z_c = 0)을 걸친 리프는 원본 단계 0 이고, 앞쪽 리프의 칸 변은 ≤ τ (일반 카메라)', (ctx) => {
+  const cam = GEN;
+  // 카메라 좌표 (300, 0, 0) 가 정육면체 중심: 평면 z_c = 0 이 정육면체를 가른다.
+  const { R, t } = cam;
+  const Xc = [300 - t[0], -t[1], -t[2]];
+  const center = [0, 1, 2].map((a) => R[a] * Xc[0] + R[3 + a] * Xc[1] + R[6 + a] * Xc[2]);
+  const h = buildHierarchy(cubeCloud(center), { edge0M: EDGE0, levelCount: LEVELS, maxLeafPoints: 64 });
+  const node = leafNodeOf(h);
+  const sel = selectLevels(h, cam, { thresholdPx: TAU });
+  const rule = screenErrorRule(cam, { thresholdPx: TAU, edge0M: EDGE0, levelCount: LEVELS });
+  let straddle = 0, front = 0;
+  for (let k = 0; k < h.octree.leafCount; k++) {
+    const n = node[k];
+    const mn = h.octree.boxMin.subarray(3 * n, 3 * n + 3), mx = h.octree.boxMax.subarray(3 * n, 3 * n + 3);
+    let zMin = Infinity, zMax = -Infinity;
+    for (let v = 0; v < 8; v++) {
+      const z = R[6] * (v & 1 ? mx[0] : mn[0]) + R[7] * (v & 2 ? mx[1] : mn[1]) + R[8] * (v & 4 ? mx[2] : mn[2]) + t[2];
+      zMin = Math.min(zMin, z); zMax = Math.max(zMax, z);
+    }
+    const l = sel.leafLevel[k];
+    if (zMin <= 0 && zMax > 0) {
+      straddle++;
+      // 시야 밖이면 select 가 NOT_DRAWN 으로 거르므로, 규칙 자체(rule.leaf)도 따로 본다.
+      assert.equal(rule.leaf(mn, mx).level, 0, `평면을 걸친 리프 ${k}: 규칙 단계 (z_c in [${zMin.toFixed(2)}, ${zMax.toFixed(2)}])`);
+      assert.ok(l === 0 || l === NOT_DRAWN, `평면을 걸친 리프 ${k}: select 단계 ${l}`);
+    } else if (zMin > 0 && l !== NOT_DRAWN && l > 0) {
+      front++;
+      const px = maxCellEdgePx(h, cam, n, k, l);
+      assert.ok(px <= TAU + 1e-9, `앞쪽 리프 ${k} 단계 ${l}: 칸 변 ${px.toFixed(4)} px > tau`);
+    }
+  }
+  assert.ok(straddle >= 1, `평면을 걸친 리프 ${straddle}`);
+  ctx.diagnostic(`걸친 ${straddle}, 앞쪽 단계>0 ${front}`);
+});
+
+/** 구현과 따로 쓴 기준: 상자 8 꼭짓점의 cos α = z_c / |p_c| 최솟값(어느 꼭짓점이든 z_c <= 0 이면 0). */
+function bruteMinCos({ R, t }, mn, mx) {
+  let c = Infinity;
+  for (let v = 0; v < 8; v++) {
+    const X = [v & 1 ? mx[0] : mn[0], v & 2 ? mx[1] : mn[1], v & 4 ? mx[2] : mn[2]];
+    const p = [0, 1, 2].map((r) => R[3 * r] * X[0] + R[3 * r + 1] * X[1] + R[3 * r + 2] * X[2] + t[r]);
+    if (!(p[2] > 0)) return 0;
+    c = Math.min(c, p[2] / Math.hypot(...p));
+  }
+  return c;
+}
+
+test('회전·이동 카메라: cameraCenter 는 카메라 원점의 세계 좌표(R·C + t = 0), minCosToAxis 는 8 꼭짓점 최솟값', () => {
+  for (const { name, cam, D, pixel } of SETTINGS) {
+    const C = cameraCenter(cam);
+    const o = [0, 1, 2].map((r) => cam.R[3 * r] * C[0] + cam.R[3 * r + 1] * C[1] + cam.R[3 * r + 2] * C[2] + cam.t[r]);
+    for (const v of o) assert.ok(Math.abs(v) < 1e-12, `${name}: R·C + t = ${o}`);
+    const h = buildHierarchy(cubeCloud(cornerPoint(cam, D, pixel)), { edge0M: EDGE0, levelCount: LEVELS, maxLeafPoints: 64 });
+    const node = leafNodeOf(h);
+    let positive = 0;
+    for (let k = 0; k < h.octree.leafCount; k++) {
+      const mn = h.octree.boxMin.subarray(3 * node[k], 3 * node[k] + 3), mx = h.octree.boxMax.subarray(3 * node[k], 3 * node[k] + 3);
+      const got = minCosToAxis(cam, mn, mx), want = bruteMinCos(cam, mn, mx);
+      assert.ok(Math.abs(got - want) < 1e-12, `${name} 리프 ${k}: cMin ${got} != ${want}`);
+      // 상자 안 점의 cos α 는 cMin 이상(원뿔의 볼록성).
+      for (let q = 0; q < 8; q++) {
+        const X = [0, 1, 2].map((a) => mn[a] + ((q * 0.37 + a * 0.29 + 0.11) % 1) * (mx[a] - mn[a]));
+        const p = [0, 1, 2].map((r) => cam.R[3 * r] * X[0] + cam.R[3 * r + 1] * X[1] + cam.R[3 * r + 2] * X[2] + cam.t[r]);
+        if (got > 0) assert.ok(p[2] / Math.hypot(...p) >= got - 1e-12);
+      }
+      if (want > 0) positive++;
+    }
+    assert.ok(positive > 0, name);
   }
 });
