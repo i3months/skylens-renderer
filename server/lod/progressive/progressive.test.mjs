@@ -107,31 +107,47 @@ test('조각 순서: 거친 단계 먼저, 한 리프는 최대 2개(교체열)�
 });
 
 test('같은 단계 안에서는 카메라에 가까운 리프 먼저', () => {
-  const cam = camOf(vps[0]);
-  const ch = chunksOf(cam);
-  const { R, t } = cam;
-  const C = [-(R[0] * t[0] + R[3] * t[1] + R[6] * t[2]), -(R[1] * t[0] + R[4] * t[1] + R[7] * t[2]), -(R[2] * t[0] + R[5] * t[1] + R[8] * t[2])];
-  const node = new Map();
-  for (let n = 0; n < h.octree.nodeCount; n++) if (h.octree.leafIndex[n] >= 0) node.set(h.octree.leafIndex[n], n);
-  const dist = (leaf) => {
-    const n = node.get(leaf); let s = 0;
-    for (let a = 0; a < 3; a++) {
-      const lo = h.octree.boxMin[3 * n + a], hi = h.octree.boxMax[3 * n + a];
-      const d = C[a] < lo ? lo - C[a] : C[a] > hi ? C[a] - hi : 0; s += d * d;
+  // 여러 시점에서 단계 >= 2 및 최대 단계 상한을 검증한다
+  const stageReached = new Set();
+
+  // 기본 시점들(TAU=1) + 합성 카메라(tau=3 으로 단계 >= 2 및 최대 단계 도달용)
+  const testCameras = [
+    ...vps.map((vp, i) => ({ label: `vp${i}`, cam: camOf(vp), tau: TAU })),
+    // 합성 카메라: tau=3 으로 단계 0, 1, 2, 3 도달 (단계 >= 2, 최대 단계 3 도달 보증)
+    { label: 'synthetic_stage2plus', cam: { width: W, height: H, K: { fx: 100, fy: 100, cx: 160, cy: 90 }, R: [1, 0, 0, 0, 0, 1, 0, -1, 0], t: [0, 0, 150] }, tau: 3 },
+  ];
+
+  for (const { label, cam, tau } of testCameras) {
+    const ch = progressiveChunks(h, cam, { thresholdPx: tau });
+    const { R, t } = cam;
+    const C = [-(R[0] * t[0] + R[3] * t[1] + R[6] * t[2]), -(R[1] * t[0] + R[4] * t[1] + R[7] * t[2]), -(R[2] * t[0] + R[5] * t[1] + R[8] * t[2])];
+    const node = new Map();
+    for (let n = 0; n < h.octree.nodeCount; n++) if (h.octree.leafIndex[n] >= 0) node.set(h.octree.leafIndex[n], n);
+    const dist = (leaf) => {
+      const n = node.get(leaf); let s = 0;
+      for (let a = 0; a < 3; a++) {
+        const lo = h.octree.boxMin[3 * n + a], hi = h.octree.boxMax[3 * n + a];
+        const d = C[a] < lo ? lo - C[a] : C[a] > hi ? C[a] - hi : 0; s += d * d;
+      }
+      return Math.sqrt(s);
+    };
+    for (let i = 1; i < ch.length; i++) if (ch[i - 1].level === ch[i].level) assert.ok(dist(ch[i - 1].leaf) <= dist(ch[i].leaf) + 1e-9, `${label}: 같은 단계 거리 순서`);
+    // 목표 단계는 거리표와 일치: 목표(마지막 조각 단계)는 거리가 멀수록 작아지지 않는다
+    // F-097 ①·F-104 ②·F-108: 기대 d_eff = max(d·cMin², z_P·c_P) 를 구현 함수 없이 시험 안에서 직접 계산한다. f = max(fx, fy)
+    const table = buildDistanceTable({ fx: Math.max(cam.K.fx, cam.K.fy), thresholdPx: tau, edge0M: h.edge0M, levelCount: LEVELS });
+    for (const [leaf, list] of byLeaf(ch)) {
+      const T = list[list.length - 1].level;
+      stageReached.add(T);
+      const n = node.get(leaf);
+      const dEff = refEffDist(cam, C, h.octree.boxMin.subarray(3 * n, 3 * n + 3), h.octree.boxMax.subarray(3 * n, 3 * n + 3));
+      const expect = dEff > 0 ? Math.min(LEVELS - 1, levelForDistance(table, dEff)) : 0;
+      assert.equal(T, expect, `${label} 리프 ${leaf} 목표 단계`);
     }
-    return Math.sqrt(s);
-  };
-  for (let i = 1; i < ch.length; i++) if (ch[i - 1].level === ch[i].level) assert.ok(dist(ch[i - 1].leaf) <= dist(ch[i].leaf) + 1e-9);
-  // 목표 단계는 거리표와 일치: 목표(마지막 조각 단계)는 거리가 멀수록 작아지지 않는다
-  // F-097 ①·F-104 ②·F-108: 기대 d_eff = max(d·cMin², z_P·c_P) 를 구현 함수 없이 시험 안에서 직접 계산한다. f = max(fx, fy)
-  const table = buildDistanceTable({ fx: Math.max(cam.K.fx, cam.K.fy), thresholdPx: TAU, edge0M: h.edge0M, levelCount: LEVELS });
-  for (const [leaf, list] of byLeaf(ch)) {
-    const T = list[list.length - 1].level;
-    const n = node.get(leaf);
-    const dEff = refEffDist(cam, C, h.octree.boxMin.subarray(3 * n, 3 * n + 3), h.octree.boxMax.subarray(3 * n, 3 * n + 3));
-    const expect = dEff > 0 ? Math.min(LEVELS - 1, levelForDistance(table, dEff)) : 0;
-    assert.equal(T, expect, `리프 ${leaf} 목표 단계`);
   }
+  // 단계 >= 2 에 도달했음을 검증
+  assert.ok([...stageReached].some((s) => s >= 2), `단계 >= 2 달성 필요: 달성된 단계 ${Array.from(stageReached).sort()}`);
+  // 최대 단계(LEVELS - 1 = 3)에 도달했음을 검증
+  assert.ok(stageReached.has(LEVELS - 1), `최대 단계 ${LEVELS - 1} 달성 필요: 달성된 단계 ${Array.from(stageReached).sort()}`);
 });
 
 test('100% 적용 = 선택된 목표 단계 점군과 점 단위로 동일, 모든 k 에서 중복 없음(교체)', () => {

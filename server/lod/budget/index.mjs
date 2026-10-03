@@ -12,7 +12,7 @@
 //  2) 거리 d: 카메라 중심에서 리프 상자까지의 최단 거리(상자 안이면 0). 실효 거리 d_eff = max(d·cMin², z_P·c_P)
 //     (cMin = 상자 꼭짓점의 광축 각 cos 최솟값, 가장자리 투영 확대 1/cos²α 보정, screen_error.mjs 머리 주석).
 //  3) 목표 단계 = 공용 규칙(f = max(fx,fy), τ = thresholdPx, edge0M·levelCount 는 계층 값)으로 d_eff 에서 고른 단계.
-//     d_eff = 0(카메라가 상자 안·상자가 카메라 평면에 걸침)이면 원본 단계 0.
+//     d = 0 이거나, cMin ≤ 0 이고 P 가 비면 단계 0. 걸쳐도 P 가 있으면 d_eff = z_P·c_P.
 //     합이 예산 이하면 그대로 돌려준다.
 //  4) 예산 초과면 탐욕적 거칠게 하기: 리프 k 를 단계 l → l' (> l) 로 올리면
 //       절감 ΔN = count_k(l) − count_k(l'),  화면 오차 증가 ΔE = f·(edgeM(l') − edgeM(l))/d_eff,k  (px)

@@ -4,7 +4,8 @@
 // 단계(level): 0 = 원본 전부. 단계 l 은 한 변 edgeM(l) = edge0M·2^l 인 격자 칸마다 대표점 1개만 남긴다.
 //   칸당 한 점이므로 면 위 점 밀도는 단계마다 약 1/4 로 준다(4^-l).
 // 거리 근거(renderer_basis §3-7 과 SPEC §3 의 Δd ≈ d²/(f·b) 를 화면 공간 오차로 옮긴 것):
-//   카메라와 거리 d 에서 한 칸이 화면에서 차지하는 크기 = f·edgeM/d 픽셀. 허용 오차 thresholdPx(τ) 이하이면 그 단계로 충분하다.
+//   카메라와 거리 d 에서 한 칸이 화면에서 차지하는 크기 = f·edgeM/d 픽셀. 여기서 d 는 d_eff(server/lod/select/screen_error.mjs 의 effectiveDistance), f = max(fx,fy).
+//   허용 오차 thresholdPx(τ) 이하이면 그 단계로 충분하다.
 //   단계 l 이 쓰이기 시작하는 거리(하한) maxDistanceM(l) = f·edgeM(l)/τ — 이름과 달리 '최대' 가 아니다.
 //   단계 l 의 사용 구간은 [maxDistanceM(l), maxDistanceM(l+1)) 이고 마지막 단계는 그 위로 열려 있다. 거리 d 에는 f·edgeM(l)/d ≤ τ 를 만족하는 가장 큰 l 을 쓴다.
 //   edge0M 하한(참고용, 강제 안 함): 깊이 해상도 Δd(d_c, b) = d_c²/(f·b) 보다 촘촘하게 둘 필요 없다(T07.3 이 표로 기록). buildHierarchy 는 이 하한을 적용하지 않는다(결정 0020 ③).
@@ -40,7 +41,7 @@
  * @property {Float32Array} normals   3·count 단위 길이(길이 0 입력은 (0,0,0) 유지)
  * @property {Uint8Array} colors      3·count 칸 안 점들의 평균색
  *
- * @typedef {Object} Hierarchy  server/lod/hierarchy 는 만들지 않는다: 각 하위 모듈의 함수를 buildHierarchy 가 이어 붙인다(T07.4 소유)
+ * @typedef {Object} Hierarchy  server/lod/hierarchy 의 buildHierarchy 가 octree·voxel·normals·colors 를 이어 붙여 만든다(select 는 buildHierarchy 를 다시 내보낼 뿐)
  * @property {Point27Cloud} cloud
  * @property {Octree} octree
  * @property {number} edge0M
@@ -64,13 +65,15 @@ export const VIEW_SCORE_CONSTANTS = Object.freeze({ theta0Deg: 10, sigmaSmallDeg
 export const LOD_API = Object.freeze({
   voxel: { module: 'server/lod/voxel/index.mjs', fn: 'voxelReduce(cloud, edgeM) -> VoxelResult   대표점 = 칸 안에서 칸 중심에 가장 가까운 입력 점(동률이면 번호 작은 점)' },
   octree: { module: 'server/lod/octree/index.mjs', fn: 'buildOctree(cloud, {maxLeafPoints=4096, maxDepth=12}) -> Octree' },
-  distance_table: { module: 'server/lod/distance_table/index.mjs', fn: 'buildDistanceTable({fx, thresholdPx, edge0M, levelCount}) -> {levels:[{level, edgeM, maxDistanceM(단계 l 이 쓰이기 시작하는 거리, 하한)}]} ; levelForDistance(table, d) -> level ; depthResolutionM(d, fx, baselineM) -> number' },
-  normals: { module: 'server/lod/normals/index.mjs', fn: 'representativeNormals(cloud, voxel) -> Float32Array(3·count)   칸 안 법선 합의 정규화, 합이 0 이면 (0,0,0)' },
-  colors: { module: 'server/lod/colors/index.mjs', fn: 'representativeColors(cloud, voxel) -> Uint8Array(3·count)   칸 안 평균색(반올림)' },
-  select: { module: 'server/lod/select/index.mjs', fn: 'buildHierarchy(cloud, {edge0M, levelCount, maxLeafPoints}) -> Hierarchy ; selectLevels(hierarchy, camera, {thresholdPx}) -> Selection ; materialize(hierarchy, selection) -> Point27Cloud' },
-  budget: { module: 'server/lod/budget/index.mjs', fn: 'selectWithBudget(hierarchy, camera, {budgetPoints, thresholdPx}) -> Selection   pointCount ≤ budgetPoints' },
-  view_score: { module: 'server/lod/view_score/index.mjs', fn: 'angleScore(thetaDeg) -> number ; scaleScore(s) -> number ; viewScore(refCam, candCam, points) -> number ; rankViews(refCam, candCams, points) -> ViewScoreEntry[] 점수 내림차순' },
-  progressive: { module: 'server/lod/progressive/index.mjs', fn: 'progressiveChunks(hierarchy, camera, {thresholdPx}) -> {level, leaf, indices:Uint32Array}[]   거친 단계 먼저, 한 리프는 목표 단계 한 번만(교체이지 누적이 아님)' },
+  distance_table: { module: 'server/lod/distance_table/index.mjs', fn: 'buildDistanceTable({fx, thresholdPx, edge0M, levelCount}) -> {levels:[{level, edgeM, maxDistanceM(단계 l 이 쓰이기 시작하는 거리, 하한)}]} ; levelForDistance(table, d) -> level ; depthResolutionM(d, fx, baselineM) -> number ; minEdge0M(dCapture, fx, baselineM) -> number   edge0M 하한(참고용)' },
+  normals: { module: 'server/lod/normals/index.mjs', fn: 'representativeNormals(cloud, voxel) -> Float32Array(3·count)   칸 안 법선 합의 정규화, 합이 0 이면 (0,0,0) ; maxAngleErrorDeg(cloud, voxel, normals) -> number' },
+  colors: { module: 'server/lod/colors/index.mjs', fn: 'representativeColors(cloud, voxel) -> Uint8Array(3·count)   칸 안 평균색(반올림) ; meanColorError(cloud, voxel, colors) -> number' },
+  hierarchy: { module: 'server/lod/hierarchy/index.mjs', fn: 'buildHierarchy(cloud, {edge0M, levelCount, maxLeafPoints}) -> Hierarchy' },
+  select: { module: 'server/lod/select/index.mjs', fn: 'buildHierarchy(재내보냄, hierarchy 와 같음) ; assertHierarchyInput(h) ; selectLevels(hierarchy, camera, {thresholdPx}) -> Selection ; materialize(hierarchy, selection) -> Point27Cloud' },
+  screen_error: { module: 'server/lod/select/screen_error.mjs', fn: 'screenFocalPx(K) ; cameraCenter(camera) ; boxDistanceM(C, mn, mx) ; minCosToAxis(camera, mn, mx) ; viewMinCos(camera) ; visiblePartBound(camera, C, mn, mx) ; effectiveDistance(camera, C, mn, mx) -> {distM, cosMin, visible, effDistM} ; screenErrorRule(camera, {thresholdPx, edge0M, levelCount})' },
+  budget: { module: 'server/lod/budget/index.mjs', fn: 'selectWithBudget(hierarchy, camera, {budgetPoints, thresholdPx}) -> Selection   pointCount ≤ budgetPoints ; leafTargets(hierarchy, camera, thresholdPx) -> {visible, distM, effDistM, target, countAt, levelCount, focalPx} ; assertHierarchyInput(h) 재내보냄' },
+  view_score: { module: 'server/lod/view_score/index.mjs', fn: 'angleScore(thetaDeg) -> number ; scaleScore(s) -> number ; viewScore(refCam, candCam, points) -> number ; cameraCenter(cam) ; rayAngleDeg(camI, camJ, xw) ; rankViews(refCam, candCams, points) -> ViewScoreEntry[] 점수 내림차순' },
+  progressive: { module: 'server/lod/progressive/index.mjs', fn: 'progressiveChunks(hierarchy, camera, {thresholdPx}) -> {level, leaf, indices:Uint32Array}[]   거친 단계 먼저, 한 리프는 목표 단계 한 번만(교체이지 누적이 아님) ; applyChunks(hierarchy, chunks, k) -> 앞 k 개 조각까지 적용한 결과' },
   no_fill: { module: 'server/lod/no_fill/index.mjs', fn: 'emptyRatioPreserved(cloud, selectedCloud, camera, opts?) -> {original, lod, equal, filled, noFill}   빈 픽셀 비율, 원본에서 빈데 LOD 에서 칠해진 픽셀 수(filled)와 filled===0 여부(noFill)(참조 래스터라이저)' },
   bench: { module: 'bench/lod/index.mjs', fn: 'measureSegmentBytes(cloud, opts) -> {points, bytesByLevel}' },
 });

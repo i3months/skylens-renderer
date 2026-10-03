@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { generate } from '../../../fixtures/scenes/flat_boxes/index.mjs';
 import { viewpointToCamera } from '../../../tools/render_views/index.mjs';
 import { buildHierarchy, selectLevels, assertHierarchyInput } from './index.mjs';
+import { NOT_DRAWN } from '../../../contracts/lod/index.mjs';
 import { selectWithBudget, assertHierarchyInput as fromBudget } from '../budget/index.mjs';
 
 const { cloud } = generate({ seed: 1, count: 3000 });
@@ -20,8 +21,6 @@ function mutate(fn) {
 }
 
 const BAD = {
-  'nodeCount 없음': (h) => { delete h.octree.nodeCount; },
-  'nodeCount 가 정수 아님': (h) => { h.octree.nodeCount = 1.5; },
   'leafIndex 길이 불일치': (h) => { h.octree.leafIndex = h.octree.leafIndex.subarray(1); },
   'boxMin 길이 불일치': (h) => { h.octree.boxMin = h.octree.boxMin.subarray(3); },
   'boxMax 길이 불일치': (h) => { h.octree.boxMax = h.octree.boxMax.subarray(0, h.octree.boxMax.length - 3); },
@@ -45,22 +44,59 @@ test('올바른 계층은 통과하고 공용 함수는 같은 것', () => {
 
 for (const [name, fn] of Object.entries(BAD)) {
   test(`잘못된 계층(${name}) 은 selectLevels·selectWithBudget 모두 'lod:' 예외`, () => {
-    let h;
-    try { h = mutate(fn); } catch { h = null; }
+    const h = mutate(fn);
     assert.throws(() => selectLevels(h, camera, OPTS), /^Error: lod:/);
     assert.throws(() => selectWithBudget(h, camera, { ...OPTS, budgetPoints: 100 }), /^Error: lod:/);
     assert.throws(() => assertHierarchyInput(h), /^Error: lod:/);
   });
 }
 
-test('budget: d 가 Infinity 인 리프도 던지지 않고 select 와 같은 빈 결과', () => {
-  // 한 리프 상자를 비유한(Infinity) 좌표로 바꿔 시야 밖으로 만든다.
+// nodeCount 검사(select/index.mjs 의 'leafCount 이상의 정수')를 길이 검사와 구별해 시험한다.
+// 길이 불일치 메시지에는 leafCount 가 없으므로 /nodeCount.*leafCount/ 는 nodeCount 검사에서만 나온다.
+const NODE_COUNT_MSG = /^Error: lod:.*nodeCount.*leafCount/;
+const NODE_COUNT_BAD = {
+  'nodeCount 없음': (h) => { delete h.octree.nodeCount; },
+  'nodeCount 가 정수 아님': (h) => { h.octree.nodeCount = 1.5; },
+  // 배열 길이는 실제 nodeCount 그대로이고 nodeCount 값만 leafCount−1 로 어긋난 경우
+  'nodeCount = leafCount−1 (길이는 일치)': (h) => { h.octree.nodeCount = h.octree.leafCount - 1; },
+};
+for (const [name, fn] of Object.entries(NODE_COUNT_BAD)) {
+  test(`nodeCount 검사 독립 확인(${name}): 세 경로 모두 nodeCount·leafCount 를 말하는 'lod:' 예외`, () => {
+    const h = mutate(fn);
+    assert.throws(() => selectLevels(h, camera, OPTS), NODE_COUNT_MSG);
+    assert.throws(() => selectWithBudget(h, camera, { ...OPTS, budgetPoints: 100 }), NODE_COUNT_MSG);
+    assert.throws(() => assertHierarchyInput(h), NODE_COUNT_MSG);
+  });
+}
+
+test('budget: d 가 비유한(오버플로)인 실제 리프도 던지지 않고 그 리프는 NOT_DRAWN', () => {
+  const { octree, levels } = base;
+  const full = selectLevels(base, camera, OPTS);
+  // 실제 리프(leafIndex ≥ 0)이고 점이 있으며 원래 그려지는 노드를 고른다(루트 아님).
+  let node = -1;
+  for (let n = 0; n < octree.nodeCount; n++) {
+    const k = octree.leafIndex[n];
+    if (k >= 0 && levels[0].leafStart[k + 1] > levels[0].leafStart[k] && full.leafLevel[k] !== NOT_DRAWN) { node = n; break; }
+  }
+  assert.ok(node > 0, '시험할 실제 리프 노드를 찾음');
+  const k = octree.leafIndex[node];
+  // 상자는 유한하게 두고(비유한 상자는 입력 검사가 거부한다) 카메라 이동을 double 최댓값 근처로 키워
+  // 리프까지의 거리 제곱합이 오버플로(Infinity)되게 한다.
+  const far = { ...camera, t: [1.7e308, 1.7e308, 1.7e308] };
+  let s, b;
+  assert.doesNotThrow(() => { s = selectLevels(base, far, OPTS); });
+  assert.doesNotThrow(() => { b = selectWithBudget(base, far, { ...OPTS, budgetPoints: 1e9 }); });
+  assert.equal(s.leafLevel[k], NOT_DRAWN, 'selectLevels: 그 리프는 NOT_DRAWN');
+  assert.equal(b.leafLevel[k], NOT_DRAWN, 'budget: 그 리프는 NOT_DRAWN');
+});
+
+test('비유한 상자는 입력 검사가 두 경로 모두에서 \'lod:\' 로 거부한다', () => {
+  const { octree } = base;
+  let node = -1;
+  for (let n = 1; n < octree.nodeCount; n++) if (octree.leafIndex[n] >= 0) { node = n; break; }
   const h = mutate(() => {});
-  h.octree.boxMin = Float32Array.from(base.octree.boxMin);
-  h.octree.boxMax = Float32Array.from(base.octree.boxMax);
-  for (let a = 0; a < 3; a++) { h.octree.boxMin[a] = Infinity; h.octree.boxMax[a] = Infinity; }
-  const s = (() => { try { return selectLevels(h, camera, OPTS); } catch (e) { return e; } })();
-  const b = (() => { try { return selectWithBudget(h, camera, { ...OPTS, budgetPoints: 1e9 }); } catch (e) { return e; } })();
-  assert.equal(s instanceof Error, b instanceof Error, `select 와 budget 의 던짐 여부 일치: ${String(s)} / ${String(b)}`);
-  if (!(s instanceof Error)) assert.deepEqual(Array.from(b.leafLevel), Array.from(s.leafLevel));
+  h.octree.boxMax = Float32Array.from(octree.boxMax);
+  h.octree.boxMax[3 * node] = Infinity;
+  assert.throws(() => selectLevels(h, camera, OPTS), /^Error: lod:/);
+  assert.throws(() => selectWithBudget(h, camera, { ...OPTS, budgetPoints: 1e9 }), /^Error: lod:/);
 });
