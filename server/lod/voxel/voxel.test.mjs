@@ -98,7 +98,6 @@ test('terrain 250k 점: edge 0.1·0.2·0.4 에서 count 단조 감소, 독립 �
     // 모든 입력 점이 정확히 한 칸: 칸 번호가 범위 안이고 칸별 점 수 합 = n.
     const per = new Uint32Array(r.count);
     for (let i = 0; i < 250000; i++) { assert.ok(r.cellOfPoint[i] < r.count); per[r.cellOfPoint[i]]++; }
-    assert.equal(per.reduce((s, v) => s + v, 0), 250000);
     assert.ok(per.every((v) => v >= 1));
     // rep 은 입력 번호 범위, 중복 없음(부분집합), rep[c] 는 칸 c 에 속한다.
     const seen = new Set();
