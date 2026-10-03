@@ -18,7 +18,7 @@ export const MORTON_BITS = 48;
 export const COLOR_MODE = Object.freeze({
   /** 무손실. 점 순서대로 채널 평면 r,g,b 각각 이전 점과의 차분(mod 256) → 바이트 평면 */
   DELTA: 0,
-  /** 손실. 각 채널 하위 2 비트를 버리고 가운데 값(복원 = (v>>2<<2)+2, 255 초과는 255)으로 복원, 이후 DELTA 와 같음. 평균 절대 오차 ≤ 2/255 */
+  /** 손실. 각 채널 하위 2 비트를 버리고 가운데 값(복원 = (v>>2<<2)+2 로 최대 254, 255는 254로)으로 복원, 이후 DELTA 와 같음. 평균 절대 오차 ≤ 2/255 */
   QUANT2: 1,
   /** 팔레트. 서로 다른 색 ≤ 256 개일 때만. [u8 k-1][k×rgb][점당 u8 인덱스(첫 등장 순서로 번호)]. 무손실 */
   PALETTE: 2,
@@ -42,7 +42,26 @@ export const COLOR_QUANT2_MEAN_ERR_MAX = 2;
 export const BODY_FIXED_BYTES = 16;
 export const BODY_VERSION = 1;
 
-/** entropy 컨테이너: [u8 mode][LEB128 rawLen][payload]. mode 0 = 저장(payload = 원바이트, 길이 rawLen), mode 1 = 적응형 이진 범위 부호화(아래). 부호화가 원본보다 커지면 mode 0 을 쓴다. */
+/** entropy 컨테이너: [u8 mode][LEB128 rawLen][payload]. mode 0 = 저장(payload = 원바이트, 길이 rawLen), mode 1 = 적응형 이진 범위 부호화(아래). 부호화가 원본보다 커지면 mode 0 을 쓴다.
+ *
+ * 복호 엄격 규칙(서버·클라이언트 모두):
+ *   rawLen 최소 표현: LEB128은 비최소 표현 금지(예: 0x80 0x00은 거부, 0x00만 사용).
+ *   LEB128 상한: 7 바이트(49 비트)를 초과하면 거부.
+ *   mode 0 (STORED): payloadLen === rawLen, 아니면 거부.
+ *   mode 1 (RANGE):
+ *     - rawLen === 0 또는 payloadLen > rawLen 이면 거부.
+ *     - payloadLen < 5 이면 거부(최소 헤더).
+ *     - payload[0] !== 0 이면 거부(첫 바이트 반드시 0).
+ *     - 복호 후 code !== 0 이면 거부(끝 상태 검증).
+ *     - 복호 후 읽은 위치 !== payloadLen 이면 거부(payload 정확 소비).
+ *     - 조기 거부: rawLen > 64 × payloadLen + 64 이면 'stream' 거부(payload 모자람 보장).
+ *
+ * 오류 코드 표(CodecError.code):
+ *   'stream': rawLen 최소 표현 위반, LEB128 잘림/상한 초과, mode 0·1 payload 검증 실패, mode 1 code ≠ 0, 범위 복호 실패.
+ *   'mode': mode가 0·1이 아님.
+ *   'limit': rawLen > maxRawBytes(기본 STREAM_RAW_BYTES_MAX) 또는 LEB128 상한 초과.
+ *   'range': 입력 형식 오류(Uint8Array 아님, maxRawBytes가 음이 아닌 정수가 아님).
+ */
 export const ENTROPY_MODE = Object.freeze({ STORED: 0, RANGE: 1 });
 /**
  * mode 1 알고리즘(LZMA 방식 공개 알고리즘): 32 비트 low(64 비트 누적)·range, 확률 11 비트(초기 1024), 적응 이동 5,
@@ -105,12 +124,14 @@ export const CODEC_API = Object.freeze({
  *   entropyEncode(raw: Uint8Array) -> Uint8Array     ENTROPY 컨테이너. 결정적.
  *   entropyDecode(bytes: Uint8Array, maxRawBytes?: number) -> Uint8Array   rawLen > maxRawBytes(기본 STREAM_RAW_BYTES_MAX) 면 CodecError('limit')
  * T09.6 client/codec/
- *   decodeChunkClient(fileBytes: Uint8Array) -> {header: AssetHeader, planes: {pos_e, pos_n, pos_u: Uint16Array, color_r, color_g, color_b: Uint8Array, normal_oct_x, normal_oct_y: Int8Array}}
+ *   decodeChunkClient(fileBytes: Uint8Array) -> {header: AssetHeader, planes: {pos_e, pos_n, pos_u: Uint16Array, color_r, color_g, color_b: Uint8Array, normal_oct_x, normal_oct_y: Int8Array}, colorMode?: number}
  *       codec 1 파일 전체(헤더+본문) → client/asset readPlanesClient 와 같은 평면(모턴 순서). codec 0 이면 readPlanesClient 에 위임.
  *       체크섬·길이·모드 검사, 실패는 CodecError 또는 AssetFormatError 만(그 밖 예외·무한 루프 0). 서버 코드를 import 하지 않는다.
+ *       codec 1 결과에 colorMode 필드 포함(COLOR_MODE 상수, 손실 모드 표시용). codec 0 은 colorMode 필드 없음(무손실 암시).
  * T09.11 server/codec/chunk/
  *   encodeChunk(rawFileBytes: Uint8Array, opts?: {lossyColor?: boolean}) -> Uint8Array   codec 0 형식 1 파일 → codec 1 파일(헤더 codec = 1, 체크섬 재계산)
  *   decodeChunk(fileBytes: Uint8Array) -> Uint8Array   codec 1 파일 → 같은 점 집합의 codec 0 파일(점 순서는 모턴 순, 무손실 색이면 같은 양자화 값)
+ *       decodeChunkInfo(fileBytes: Uint8Array) -> {header: AssetHeader, colorMode: number}   헤더와 색 모드(손실 여부) 추출, codec 검증 없음
  */
 
 /** 점 집합 동일성 비교용: 양자화 값 (qe,qn,qu,r,g,b,nx,ny) 튜플의 정렬된 다중집합. 순서 재배치 후 왕복 시험이 쓴다. */
