@@ -2,7 +2,7 @@
 // 계약상 SceneResult 를 따르므로 cloud 는 건물 지붕 중심점 1개씩(법선 (0,1,0), 색은 높이 기반)이고,
 // 정답은 truth.buildings=[{id, min:[x,z], max:[x,z], height}] 로 기록한다.
 // 배치: 격자 셀 + 셀 안 지터. 각 건물은 자기 셀 안쪽(가장자리 0.5 m 여유)에만 놓이므로 간격 ≥ 1 m, 겹침 0.
-import { mulberry32, subSeed, makeResult } from '../../../contracts/scenes/index.mjs';
+import { mulberry32, subSeed, makeResult, checkCount, normalizeSeed, checkFormat } from '../../../contracts/scenes/index.mjs';
 
 const HALF = 1000; // x,z ∈ [-1000, 1000]
 const SIDE_MIN = 8;
@@ -13,9 +13,10 @@ const GAP = 1;
 const r2 = (v) => Math.round(v * 100) / 100;
 
 /** @param {{seed:number,count?:number,format?:1|2}} opts */
-export function generate(opts) {
-  const seed = opts.seed >>> 0;
-  const n = opts.count ?? 1000;
+export function generate(opts = {}) {
+  const seed = normalizeSeed(opts.seed);
+  const n = checkCount(opts.count, 1000);
+  const format = checkFormat(opts.format);
   const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
   const cell = (2 * HALF) / cols;
   const sideMax = Math.min(SIDE_MAX, cell - GAP);
@@ -64,5 +65,5 @@ export function generate(opts) {
     buildings,
     minGap: GAP,
   };
-  return makeResult('buildings', seed, opts.format ?? 1, cloud27, truth);
+  return makeResult('buildings', seed, format, cloud27, truth);
 }
