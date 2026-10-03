@@ -9,9 +9,13 @@ import { renderPoints } from '../../server/raster_ref/zbuffer/index.mjs';
 const ERR = 'render_views:';
 
 // fov_y_deg 하한(도). 근거: fy = (height/2)/tan(fov/2) 이므로 fov 가 극단적으로 작으면 fy 가 1e302 대로
-// 폭주해 투영이 의미를 잃는다(예: 1e-300 → fy 4.6e302). 0.001° 는 720 px 높이에서 fy ≈ 2e7 px 로
+// 폭주해 투영이 의미를 잃는다(예: 1e-300 → fy 4.6e302). 0.001° 는 720 px 높이에서 fy ≈ 4.1e7 px 로
 // 실제 망원 렌즈(수 도)보다 3 자릿수 이상 좁은 값이라 정상 입력은 막지 않으면서 폭주만 거른다.
 export const MIN_FOV_Y_DEG = 0.001;
+
+// fov_y_deg 상한(도). fy = (height/2)/tan(fov/2) 이므로 fov 가 극단적으로 180에 가까우면 fy 가 0에 가까워
+// 투영이 의미를 잃는다. 179.9° 는 360/(height/2) 에서 fy ≈ 1 px 이상의 합리적 값을 유지한다.
+export const MAX_FOV_Y_DEG = 179.9;
 
 /**
  * GL 규약 시점(eye/target/up/width/height/fov_y_deg)을 OpenCV 카메라로 변환한다.
@@ -39,6 +43,7 @@ export function viewpointToCamera(vp) {
     throw new Error(`${ERR} ${e.message}`);
   }
   if (fov_y_deg < MIN_FOV_Y_DEG) throw new Error(`${ERR} fov_y_deg 는 ${MIN_FOV_Y_DEG} 이상이어야 함(fy 폭주 방지): ${fov_y_deg}`);
+  if (fov_y_deg > MAX_FOV_Y_DEG) throw new Error(`${ERR} fov_y_deg 는 ${MAX_FOV_Y_DEG} 이하여야 함(fy 감소 방지): ${fov_y_deg}`);
 
   // GL 규약에서 외부 행렬(R, t) 구하기
   const { R: R_gl, t: t_gl } = cameraExtrinsics({ eye, target, up });

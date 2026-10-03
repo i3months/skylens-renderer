@@ -36,6 +36,23 @@ test('psnr: 빈 배열 거부', () => {
   assert.throws(() => psnr(a, b), /psnr:/);
 });
 
+test('psnr: 길이 100, 1개 픽셀 10 차이 (MSE=1)', () => {
+  const a = new Uint8Array(100);
+  const b = new Uint8Array(100);
+  a[0] = 100;
+  b[0] = 110;
+  const result = psnr(a, b);
+  // MSE = (100-110)² / 100 = 100/100 = 1
+  const expected = 10 * Math.log10(65025);
+  assert.ok(Math.abs(result - expected) < 1e-4);
+});
+
+test('psnr: 비 Uint8Array 거부', () => {
+  const a = [10, 20, 30];
+  const b = new Uint8Array([11, 21, 31]);
+  assert.throws(() => psnr(a, b), /psnr:/);
+});
+
 test('emptyRatio: 부분적으로 빈 픽셀', () => {
   const result = {
     index: new Int32Array([0, 1, -1, 3, -1, 5, -1, 7])
