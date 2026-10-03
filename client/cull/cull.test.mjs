@@ -137,8 +137,10 @@ test('퇴화 시점: 전부 0, 던지지 않음', () => {
     { ...good, t: [NaN, 0, 0] }, { ...good, t: [Infinity, 0, 0] }, { ...good, R: [NaN, ...good.R.slice(1)] },
     { ...good, width: 0 }, { ...good, height: -1 }, { ...good, K: { ...good.K, fx: 0 } }, { ...good, K: { ...good.K, fy: -3 } },
     { ...good, K: { ...good.K, cx: NaN } }, { ...good, R: good.R.map((v) => v * 2) }, { ...good, R: [1, 0, 0, 0, 1, 0, 0, 0, -1] },
-    null, undefined, {},
   ];
+  // 구조 오류(null·undefined·{}·R 누락)는 퇴화가 아니라 'cull:' 오류(F-132).
+  const { R: _R, ...noR } = good;
+  for (const cam of [null, undefined, {}, noR]) assert.throws(() => clientFrustumCull(boxes, cam, { pointSizeM: 0.5 }), /^Error: cull:/);
   for (const cam of bads) {
     assert.equal(isDegenerateViewClient(cam), true);
     const m = clientFrustumCull(boxes, cam, { pointSizeM: 0.5 });
