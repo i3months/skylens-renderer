@@ -9,6 +9,8 @@
 //   0) 입력 검사(계층·카메라 구조·옵션) — 틀리면 'cull:' 오류.
 //   1) 퇴화 시점(NaN·Infinity, 해상도·초점거리 ≤ 0, R 이 회전이 아님)이면 던지지 않고 빈 결과:
 //      mask 전부 0, chunks 비움, leafLevel 전부 NOT_DRAWN, pointCount 0, stats.degenerate = true.
+//      opts.pointSizeM(래스터 원판 지름 m)은 stageOpts 로 모든 단계에 전달된다. 없으면 거리 단계처럼 가림 단계는 아무것도 버리지 않는다.
+//      (LOD 선택 selectLevels 는 아직 원판 반경을 모르고 중심 규칙을 쓴다.)
 //   2) opts.stages 순서대로 단계 마스크를 구해 AND(andMasks). 통계의 removed<단계> 는 '그 단계가 새로 제거한 수'
 //      (앞 단계까지 남아 있던 리프 중 이 단계가 0 으로 만든 수). 실행하지 않은 단계는 0.
 //   3) selectLevels(원래 LOD 선택; 호출만 하고 고치지 않는다) 결과를 복사해 마스크 0 리프를 NOT_DRAWN 으로 바꾸고
@@ -40,12 +42,15 @@ export async function loadDefaultImpls() {
   );
   const cones = new WeakMap(); // 계층마다 법선 원뿔은 한 번만 만든다
   const stageImpls = {
-    frustum: (h, cam) => fr.frustumCull(h, cam),
+    // pointSizeM 은 래스터 원판 지름(m). 없으면 절두체는 좌·우·위·아래로 버리지 않고, 가림은 아무것도 버리지 않는다(보수적).
+    frustum: (h, cam, o) => fr.frustumCull(h, cam, { pointSizeM: o.pointSizeM }),
     backface: (h, cam) => {
       if (!cones.has(h)) cones.set(h, bf.leafNormalCones(h));
       return bf.backfaceCull(h, cam, cones.get(h));
     },
-    occlusion: (h, cam) => oc.occlusionCull(h, cam),
+    occlusion: (h, cam, o) => (o.pointSizeM === undefined || o.pointSizeM === 0
+      ? new Uint8Array(h.octree.leafCount).fill(1)
+      : oc.occlusionCull(h, cam, oc.buildDepthPyramid(h, cam, { pointSizeM: o.pointSizeM }))),
     // maxDistanceM 이 없으면 거리 단계는 아무것도 버리지 않는다(보수적).
     distance: (h, cam, o) => (o.maxDistanceM === undefined ? new Uint8Array(h.octree.leafCount).fill(1) : di.distanceCull(h, cam, { maxDistanceM: o.maxDistanceM })),
   };
@@ -85,9 +90,10 @@ function localIsDegenerate(camera) {
 
 function assertOpts(opts) {
   if (!opts || typeof opts !== 'object') throw new Error(`${ERR} opts 가 객체가 아님`);
-  const { thresholdPx, maxDistanceM, prioritize } = opts;
+  const { thresholdPx, maxDistanceM, prioritize, pointSizeM } = opts;
   if (!(typeof thresholdPx === 'number' && Number.isFinite(thresholdPx) && thresholdPx > 0)) throw new Error(`${ERR} thresholdPx 는 양의 유한수: ${String(thresholdPx)}`);
   if (maxDistanceM !== undefined && !(typeof maxDistanceM === 'number' && maxDistanceM > 0)) throw new Error(`${ERR} maxDistanceM 은 양수(Infinity 허용): ${String(maxDistanceM)}`);
+  if (pointSizeM !== undefined && !(typeof pointSizeM === 'number' && Number.isFinite(pointSizeM) && pointSizeM >= 0)) throw new Error(`${ERR} pointSizeM 은 0 이상의 유한 수: ${String(pointSizeM)}`);
   if (prioritize !== undefined && typeof prioritize !== 'boolean') throw new Error(`${ERR} prioritize 는 boolean: ${String(prioritize)}`);
   const stages = opts.stages ?? DEFAULT_STAGES;
   if (!Array.isArray(stages)) throw new Error(`${ERR} stages 는 배열이어야 함`);
@@ -115,7 +121,7 @@ function emptyStats(leafCount) {
 /**
  * @param {import('../../../contracts/lod/index.mjs').Hierarchy} hierarchy
  * @param {import('../../../contracts/raster/index.mjs').Camera} camera
- * @param {{thresholdPx:number, stages?:string[], maxDistanceM?:number, prioritize?:boolean,
+ * @param {{thresholdPx:number, stages?:string[], maxDistanceM?:number, pointSizeM?:number, prioritize?:boolean,
  *          stageImpls:Object<string,Function>, orderChunks?:Function, isDegenerateView?:Function}} opts
  * @returns {import('../../../contracts/cull/index.mjs').CombinedResult}
  */
@@ -139,7 +145,7 @@ export function cullAndSelect(hierarchy, camera, opts) {
 
   // 단계 마스크 AND, 단계별로 새로 제거한 수
   const stats = emptyStats(leafCount);
-  const stageOpts = { maxDistanceM: opts.maxDistanceM, thresholdPx: opts.thresholdPx };
+  const stageOpts = { maxDistanceM: opts.maxDistanceM, thresholdPx: opts.thresholdPx, pointSizeM: opts.pointSizeM };
   let mask = new Uint8Array(leafCount).fill(1);
   for (const s of stages) {
     const m = opts.stageImpls[s](hierarchy, camera, stageOpts);

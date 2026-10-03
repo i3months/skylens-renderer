@@ -1,6 +1,6 @@
 // 시점 예측(T08.5): 이동 방향을 앞당겨 보낸다. 현재 시점과 예측 시점들의 절두체 판정을 OR 로 합친다(보수적, 새 점 없음).
-// frustumCull(server/cull/frustum)은 다른 하위 작업의 소유라 여기서는 같은 규칙(boxMayBeVisible)을 직접 쓴다.
-import { boxMayBeVisible } from '../../lod/select/view_check.mjs';
+// frustumCull(server/cull/frustum)은 다른 하위 작업의 소유라 여기서는 같은 규칙(boxMayBeVisibleSplat)을 직접 쓴다.
+import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
 
 const ERR = 'cull:';
@@ -91,13 +91,15 @@ function leafBoxes(h) {
 }
 
 /**
+ * pointSizeM(래스터 원판 지름 m)이 있으면 원판이 화면 가장자리에 걸치는 리프도 남긴다. 없으면 좌·우·위·아래로 버리지 않는다(frustumCull 과 같은 규칙).
  * 현재와 예측 시점들(0..horizonS 를 steps 등분, steps+1 개)의 절두체 판정 합집합.
  * 표본 사이의 시각도 놓치지 않도록 표본마다 상자를 '구간 반폭 h = horizonS/(2·steps)' 동안 카메라가 움직일 수 있는 만큼
  * (이동 |v|·h, 회전 |ω|·h × 거리) 부풀려 판정한다. 속도·각속도가 0 이면 부풀림 0 = 현재 시점 판정과 같다.
  */
-export function predictiveMask(hierarchy, state, { horizonS, steps } = {}) {
+export function predictiveMask(hierarchy, state, { horizonS, steps, pointSizeM } = {}) {
   if (!fin(horizonS) || horizonS < 0) throw new Error(`${ERR} horizonS 는 0 이상의 유한수여야 함: ${String(horizonS)}`);
   if (!Number.isInteger(steps) || steps < 1 || steps > 10000) throw new Error(`${ERR} steps 는 1..10000 의 정수여야 함: ${String(steps)}`);
+  if (pointSizeM !== undefined && pointSizeM !== null && !(fin(pointSizeM) && pointSizeM >= 0)) throw new Error(`${ERR} pointSizeM 은 0 이상의 유한수여야 함: ${String(pointSizeM)}`);
   const { n, mn, mx } = leafBoxes(hierarchy);
   const out = new Uint8Array(n);
   const cam = state?.camera;
@@ -129,7 +131,7 @@ export function predictiveMask(hierarchy, state, { horizonS, steps } = {}) {
         m = 1.0001 * (speed * h + omega * h * (far + speed * h)) + 1e-9;
       }
       for (let a = 0; a < 3; a++) { lo[a] = mn[3 * k + a] - m; hi[a] = mx[3 * k + a] + m; }
-      if (boxMayBeVisible(pc, lo, hi)) out[k] = 1;
+      if (boxMayBeVisibleSplat(pc, lo, hi, pointSizeM)) out[k] = 1;
     }
   }
   return out;

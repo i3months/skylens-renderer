@@ -42,7 +42,7 @@ test('통합: 실제 단계 모듈로 결합 선택(시점 8곳 SSIM·단계 동
   for (const vp of vps) {
     const cam = viewpointToCamera({ ...vp, width: W, height: H });
     const lod = selectLevels(h, cam, { thresholdPx: TAU });
-    const r = await cullAndSelectDefault(h, cam, { thresholdPx: TAU, maxDistanceM: 10000, prioritize: true });
+    const r = await cullAndSelectDefault(h, cam, { thresholdPx: TAU, maxDistanceM: 10000, pointSizeM: POINT_SIZE_M, prioritize: true });
     for (let k = 0; k < h.octree.leafCount; k++) {
       assert.equal(r.selection.leafLevel[k], r.cull.mask[k] ? lod.leafLevel[k] : NOT_DRAWN, `${vp.name} 리프 ${k}`);
     }
