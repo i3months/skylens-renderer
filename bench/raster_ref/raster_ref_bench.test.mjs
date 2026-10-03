@@ -3,12 +3,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { run, makeCamera, median } from './index.mjs';
+import { run, makeCamera, median, measureCase, meanPixelsPerPoint, CASES, RUNS, WARMUP } from './index.mjs';
 import { validateRecord } from '../../contracts/metrics/index.mjs';
 import { generate } from '../../fixtures/scenes/large/index.mjs';
 import { renderPoints } from '../../server/raster_ref/zbuffer/index.mjs';
 
 const COMMIT = 'abc1234567890abcdef';
+const SMALL = 10000; // 작은 입력 시험의 점 수
 
 test('카메라 생성: bounds 를 정면에서 본다', () => {
   const min = [0, 0, 0];
@@ -41,7 +42,7 @@ test('중앙값 계산', () => {
 
 test('작은 입력: 레코드 스키마 검증', async (t) => {
   // 1만 점으로 빠르게 테스트
-  const records = await run({ runs: 1, commit: COMMIT });
+  const records = await run({ runs: 1, count: SMALL, commit: COMMIT });
 
   assert.ok(Array.isArray(records));
   assert.ok(records.length > 0, '최소 1개 레코드 생성');
@@ -53,7 +54,7 @@ test('작은 입력: 레코드 스키마 검증', async (t) => {
 });
 
 test('작은 입력: 측정 값이 유한하고 양수', async (t) => {
-  const records = await run({ runs: 1, commit: COMMIT });
+  const records = await run({ runs: 1, count: SMALL, commit: COMMIT });
 
   for (const record of records) {
     assert.ok(Number.isFinite(record.value), `${record.metric}: 유한 수`);
@@ -68,7 +69,7 @@ test('작은 입력: 측정 값이 유한하고 양수', async (t) => {
 });
 
 test('작은 입력: 샘플이 있으면 유한', async (t) => {
-  const records = await run({ runs: 2, commit: COMMIT });
+  const records = await run({ runs: 2, count: SMALL, commit: COMMIT });
 
   for (const record of records) {
     if (record.samples && Array.isArray(record.samples)) {
@@ -102,4 +103,35 @@ test('큰 입력: 250만 점 측정 실행(정보용)', async (t) => {
     const errors = validateRecord(record);
     assert.equal(errors.length, 0, `${record.metric}: ${errors.join('; ')}`);
   }
+});
+
+test('큰 원판 케이스: mean_pixels_per_point 가 기록되고 작은 원판 케이스보다 크다', async () => {
+  const records = await run({ runs: 1, count: SMALL, commit: COMMIT });
+  const byName = Object.fromEntries(records.map((r) => [r.metric, r]));
+  const small = byName['raster_ref_bench.mean_pixels_per_point'];
+  const large = byName['raster_ref_bench.large_disc.mean_pixels_per_point'];
+  assert.ok(small && large, 'mean_pixels_per_point 두 케이스 모두 기록');
+  assert.equal(large.unit, 'px');
+  assert.ok(large.value >= 8, `큰 원판 경로 측정: 점당 ${large.value} 픽셀`);
+  assert.ok(large.value > 4 * small.value, `큰 케이스 ${large.value} vs 작은 케이스 ${small.value}`);
+  for (const c of CASES) assert.ok(byName[`${c.prefix}.render_time.median`], `${c.name} 시간 지표`);
+});
+
+test('측정 설정: 워밍업 있음, 반복 3 회 초과, 워밍업은 샘플에 들지 않고 마지막 결과를 재사용', () => {
+  assert.ok(WARMUP >= 1);
+  assert.ok(RUNS > 3);
+  const scene = generate({ seed: 1, count: SMALL, format: 1 });
+  const b = scene.truth.bounds;
+  const cam = makeCamera(b.min, b.max, 320, 180);
+  let calls = 0;
+  const probe = { positions: scene.cloud.positions, get colors() { calls += 1; return scene.cloud.colors; }, format: 1 };
+  renderPoints(cam, probe, { pointSizeM: 1.0, validate: false });
+  const perRender = calls; // 렌더 한 번이 colors 를 읽는 횟수
+  assert.ok(perRender > 0);
+  calls = 0;
+  const out = measureCase(cam, probe, 1.0, { runs: 3, warmup: 2 });
+  assert.equal(out.samples.length, 3, '워밍업 렌더는 샘플에 들지 않는다');
+  assert.equal(calls, 5 * perRender, '렌더 정확히 워밍업 2 + 측정 3 = 5 회(추가 렌더 없음)');
+  assert.ok(out.emptyPixelRatio >= 0 && out.emptyPixelRatio <= 1);
+  assert.ok(meanPixelsPerPoint(cam, scene.cloud, 3.0) > meanPixelsPerPoint(cam, scene.cloud, 1.0));
 });

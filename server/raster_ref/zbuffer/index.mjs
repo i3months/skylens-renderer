@@ -3,7 +3,7 @@
 // 이 단계의 색은 점 색 그대로다(셰이딩은 별도 하위 작업).
 import { assertCamera, assertRenderResult, emptyResult } from '../../../contracts/raster/index.mjs';
 import { projectMany } from '../project/index.mjs';
-import { splatRadiusPx, splatPixels } from '../splat/index.mjs';
+import { radiusUnchecked, splatPixels } from '../splat/index.mjs';
 
 const ERR = 'raster:';
 const SH_C0 = 0.28209479177387814;
@@ -41,6 +41,7 @@ export function renderPointsWith(camera, cloud, opts, wins) {
   if (typeof pointSizeM !== 'number' || !Number.isFinite(pointSizeM) || !(pointSizeM > 0)) throw new Error(`${ERR} pointSizeM 은 양의 유한 수여야 함: ${String(pointSizeM)}`);
   const validate = opts?.validate ?? true;
   const { width, height } = camera;
+  const fx = camera.K.fx;
   const res = emptyResult(width, height);
   const n = cloud.positions.length / 3;
   if (n === 0) {
@@ -56,7 +57,7 @@ export function renderPointsWith(camera, cloud, opts, wins) {
     if (!(d > 0) || !Number.isFinite(u) || !Number.isFinite(v)) continue; // 카메라 뒤
     const dStored = Math.fround(d); // 저장되는 값과 같은 정밀도로 비교한다
     if (!(dStored > 0) || !Number.isFinite(dStored)) continue;
-    const r = splatRadiusPx(camera, d, pointSizeM);
+    const r = radiusUnchecked(fx, d, pointSizeM); // 카메라·pointSizeM 은 위에서 한 번 검사했다
     // 원판이 화면과 겹치지 않으면 건너뛴다(중심 칸이 화면 밖이고 원도 밖).
     if (u + r < 0 || v + r < 0 || u - r > width || v - r > height) continue;
     const pix = splatPixels(u, v, r, width, height);
