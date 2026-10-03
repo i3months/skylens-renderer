@@ -131,3 +131,76 @@ test('검증 뒤 배열·객체를 바꿔 끼우거나 길이·수가 달라지�
     assert.throws(() => selectLevels(h, { width: 8, height: 8, K: { fx: 8, fy: 8, cx: 4, cy: 4 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }, { thresholdPx: 1 }), /^Error: lod:/, `${name} (selectLevels)`);
   }
 });
+
+// F-129③: 계층 검사 지문의 항목마다, 검증 통과 뒤 그 항목만 같은 객체에서 잘못된 값으로 바꾸면 다시 검사해 던져야 한다.
+// 지문 항목이 하나라도 빠지면 해당 사례가 캐시 적중으로 통과해 실패한다.
+function validated(mutate, name) {
+  const h = copyOf(base);
+  assert.doesNotThrow(() => assertHierarchyInput(h), `${name}: 바꾸기 전에는 통과`);
+  const before = validationStats();
+  mutate(h);
+  assert.throws(() => assertHierarchyInput(h), /^Error: lod:/, name);
+  assert.equal(validationStats().cached, before.cached, `${name}: 캐시 적중이 아니라 다시 검사`);
+}
+
+test('F-129③ 지문 스칼라 항목(format·count·leafCount·nodeCount): 하나만 바꿔도 다시 검사한다', () => {
+  const cases = {
+    'cloud.format': (h) => { h.cloud.format = 2; },
+    'cloud.count': (h) => { h.cloud.count += 1; },
+    'octree.leafCount': (h) => { h.octree.leafCount += 1; },
+    'octree.nodeCount': (h) => { h.octree.nodeCount += 1; },
+  };
+  for (const [name, fn] of Object.entries(cases)) validated(fn, name);
+});
+
+test('F-129③ 지문 배열 참조 항목: 같은 길이의 잘못된 배열로 바꿔 끼우면 다시 검사한다', () => {
+  const same = (a, T, fill) => { const r = new T(a.length); if (fill) r.fill(fill); return r; };
+  const cases = {
+    'cloud.positions': (h) => { const p = h.cloud.positions.slice(); p[0] = NaN; h.cloud.positions = p; },
+    'cloud.normals': (h) => { h.cloud.normals = same(h.cloud.normals, Float64Array); },
+    'cloud.colors': (h) => { h.cloud.colors = same(h.cloud.colors, Uint16Array); },
+    'octree.leafIndex': (h) => { const a = h.octree.leafIndex.slice(); a[0] = -2; h.octree.leafIndex = a; },
+    'octree.boxMin': (h) => { const a = h.octree.boxMin.slice(); a[0] = NaN; h.octree.boxMin = a; },
+    'octree.boxMax': (h) => { const a = h.octree.boxMax.slice(); a[0] = NaN; h.octree.boxMax = a; },
+  };
+  for (const [name, fn] of Object.entries(cases)) validated(fn, name);
+  for (let l = 0; l < base.levels.length; l++) {
+    const lvCases = {
+      indices: (lv) => { lv.indices = same(lv.indices, Float32Array); },
+      leafStart: (lv) => { const a = lv.leafStart.slice(); a[a.length - 1] += 1; lv.leafStart = a; },
+      positions: (lv) => { lv.positions = same(lv.positions, Float64Array); },
+      normals: (lv) => { lv.normals = same(lv.normals, Float64Array); },
+      colors: (lv) => { lv.colors = same(lv.colors, Uint16Array); },
+    };
+    for (const [name, fn] of Object.entries(lvCases)) validated((h) => fn(h.levels[l]), `levels[${l}].${name}`);
+  }
+});
+
+test('F-129③ 지문 길이 항목: 참조는 그대로 두고 길이만 바뀌어도 다시 검사한다(크기 조절 가능한 버퍼)', () => {
+  // 길이 추적 배열은 버퍼를 줄이면 같은 참조인 채 length 가 줄어든다.
+  const rab = (src) => { const a = new src.constructor(new ArrayBuffer(src.byteLength, { maxByteLength: src.byteLength })); a.set(src); return a; };
+  const shrink = (a) => a.buffer.resize(a.byteLength - a.BYTES_PER_ELEMENT);
+  const build = () => {
+    const h = copyOf(base);
+    h.cloud = { ...h.cloud, positions: rab(h.cloud.positions), normals: rab(h.cloud.normals), colors: rab(h.cloud.colors) };
+    h.octree = { ...h.octree, leafIndex: rab(h.octree.leafIndex), boxMin: rab(h.octree.boxMin), boxMax: rab(h.octree.boxMax) };
+    h.levels = h.levels.map((lv) => ({ ...lv, indices: rab(lv.indices), leafStart: rab(lv.leafStart), positions: rab(lv.positions), normals: rab(lv.normals), colors: rab(lv.colors) }));
+    return h;
+  };
+  const paths = [
+    ['cloud.positions', (h) => h.cloud.positions], ['cloud.normals', (h) => h.cloud.normals], ['cloud.colors', (h) => h.cloud.colors],
+    ['octree.leafIndex', (h) => h.octree.leafIndex], ['octree.boxMin', (h) => h.octree.boxMin], ['octree.boxMax', (h) => h.octree.boxMax],
+  ];
+  for (let l = 0; l < base.levels.length; l++) {
+    for (const f of ['indices', 'leafStart', 'positions', 'normals', 'colors']) paths.push([`levels[${l}].${f}`, (h) => h.levels[l][f]]);
+  }
+  for (const [name, get] of paths) {
+    const h = build();
+    assert.doesNotThrow(() => assertHierarchyInput(h), `${name}: 줄이기 전에는 통과`);
+    const a = get(h), len = a.length;
+    shrink(a);
+    assert.equal(get(h), a, `${name}: 같은 참조`);
+    assert.equal(a.length, len - 1, `${name}: 길이만 줄었음`);
+    assert.throws(() => assertHierarchyInput(h), /^Error: lod:/, `${name} 길이`);
+  }
+});
