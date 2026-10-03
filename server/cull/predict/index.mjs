@@ -123,6 +123,11 @@ export function predictiveMask(hierarchy, state, opts) {
         const dz = Math.max(Math.abs(mn[3 * k + 2] - C[2]), Math.abs(mx[3 * k + 2] - C[2]));
         far = Math.hypot(dx, dy, dz);
         m = 1.0001 * (speed * h + omega * h * (far + speed * h)) + 1e-9;
+        // 부풀림이 유한수로 표현되지 않으면 상한을 잡을 수 없다: 현재 시점(tau=0)은 부풀림 없이 판정하고, 예측 시점은 보수적으로 남긴다(거짓 제거 방지).
+        if (!Number.isFinite(m)) {
+          if (tau === 0) m = 0;
+          else { out[k] = 1; continue; }
+        }
       }
       for (let a = 0; a < 3; a++) { lo[a] = mn[3 * k + a] - m; hi[a] = mx[3 * k + a] + m; }
       if (boxMayBeVisibleSplat(pc, lo, hi, pointSizeM)) out[k] = 1;

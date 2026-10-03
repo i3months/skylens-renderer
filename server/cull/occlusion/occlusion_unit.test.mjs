@@ -266,6 +266,22 @@ test('가림막 점 수 상한: 가까운 리프 우선, 0 이면 가림막 없�
   }
 });
 
+// 상한을 넘기는 리프는 건너뛰고(continue) 뒤의 작은 리프를 계속 본다. 가까운 큰 리프(벽) 뒤에 작은 리프(상자)가 있는 장면.
+test('가림막 점 수 상한: 가까운 큰 리프가 상한을 넘겨도 뒤의 작은 리프는 채운다(중단하지 않는다)', () => {
+  const s = makeScene({ hole: false });
+  const oc = s.h.octree, size = (k) => oc.leafStart[k + 1] - oc.leafStart[k];
+  const wall = [], box = [];
+  for (let k = 0; k < oc.leafCount; k++) (s.boxLeaves.includes(k) ? box : wall).push(size(k));
+  const cap = 250;
+  assert.ok(Math.min(...wall) > cap, '전제: 모든 벽 리프(가까움)가 상한을 넘음');
+  assert.ok(Math.max(...box) <= cap && box.reduce((a, b) => a + b, 0) > cap, '전제: 상자 리프(멂)는 각각 들어가지만 합은 상한을 넘음');
+  const p = buildDepthPyramid(s.h, CAM, { size: 64, pointSizeM: PS, maxOccluderPoints: cap });
+  // 벽 리프는 전부 건너뛰고 상자 리프 하나가 들어간다. 나머지 상자 리프는 남은 예산(≤ 50)에 안 들어간다.
+  assert.ok(box.includes(p.occluderPoints), `투영한 점 수 ${p.occluderPoints} 는 상자 리프 하나의 크기(${box})여야 함`);
+  assert.ok(p.levels[0].some((v) => Number.isFinite(v)), '가림막이 칠해져야 함');
+  assert.ok(p.levels[0].every((v) => !Number.isFinite(v) || v > 15), '벽(깊이 10)이 아니라 상자(깊이 ≥ 20)만 칠해짐');
+});
+
 test("입력 오류는 'cull:' 오류", () => {
   const s = makeScene({ hole: false });
   assert.throws(() => occlusionCull(null, CAM), /^Error: cull:/);
