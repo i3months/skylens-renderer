@@ -8,11 +8,17 @@ import { orderChunks, leafPriority } from './index.mjs';
 
 const CAM = { width: 320, height: 180, K: { fx: 400, fy: 400, cx: 160, cy: 90 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
 // 앞층(z=1.2)은 뒤층(z=1.7)을 일부만 가린다: 앞층은 화면 왼쪽 절반만 덮는다.
+// 카메라 뒤에 점들을 추가해서 score 0인 리프가 실제로 존재하게 함.
 const pos = [];
 for (let i = 0; i < 40; i++) for (let j = 0; j < 24; j++) {
   pos.push((i - 20) * 0.025, (j - 12) * 0.025, 1.7); // 뒤층 전체
   if (i < 20) pos.push((i - 20) * 0.025, (j - 12) * 0.025, 1.2); // 앞층 왼쪽
 }
+// 카메라 뒤의 점들(z < 0)과 화면 밖의 점들로 score 0인 리프를 만듦
+// 카메라 뒤에 있는 점들
+for (let i = 0; i < 20; i++) pos.push((i - 10) * 0.05, (i % 4 - 2) * 0.05, -1.0);
+// 화면 밖의 먼 점들
+for (let i = 0; i < 20; i++) pos.push(100 + i * 0.1, 100 + i * 0.1, 1.5);
 const n = pos.length / 3;
 const cloud = { format: 1, count: n, positions: Float32Array.from(pos), normals: new Float32Array(3 * n), colors: new Uint8Array(3 * n).fill(200) };
 const h = buildHierarchy(cloud, { edge0M: 0.05, levelCount: 2, maxLeafPoints: 16 });
@@ -37,6 +43,12 @@ test('orderChunks: 점수는 mask 와 무관하게 leafPriority 로 정해진다
   const score = leafPriority(h, CAM);
   const mask = new Uint8Array(L);
   for (let k = 0; k < L; k++) mask[k] = score[k] > 0 ? 1 : 0;
+  // 마스크 0 리프가 실제로 존재해야 이 시험이 의미 있음
+  const maskZeroCount = mask.reduce((s, v) => s + (1 - v), 0);
+  assert.ok(maskZeroCount > 0, `마스크 0 리프가 ${maskZeroCount}개 존재해야 함`);
+  // 마스크 0 리프의 일부는 0이 아닌 점수를 가질 수 있음(보조 항에서)
+  const nonZeroMaskZero = Array.from({ length: L }, (_, k) => k).filter((k) => mask[k] === 0 && score[k] !== 0).length;
+  assert.ok(score.some((v, k) => v === 0 && mask[k] === 0), '점수 0인 마스크 0 리프가 존재해야 함');
   const got = Array.from(orderChunks(h, CAM, mask));
   const want = Array.from({ length: L }, (_, k) => k).filter((k) => mask[k]).sort((a, b) => score[b] - score[a] || a - b);
   assert.deepEqual(got, want);
