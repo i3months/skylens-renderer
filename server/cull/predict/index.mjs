@@ -51,7 +51,10 @@ function rodrigues(w, dt) {
  * dtS 초 뒤의 카메라. 중심 C → C + v·dt. 카메라 축(R 의 행)은 세계 좌표 각속도 ω 로 돌므로 R_new = R·Rotᵀ(ω·dt),
  * t = −R_new·C_new. K·width·height 는 그대로. NaN 입력은 던지지 않고 NaN 이 그대로 퍼진다(퇴화 시점).
  */
-export function predictCamera(camera, { velocityMps, angularRadPerS } = {}, dtS) {
+export function predictCamera(camera, motion, dtS) {
+  if (motion !== undefined && (motion === null || typeof motion !== 'object')) throw new Error(`${ERR} motion 은 객체여야 함`);
+  const { velocityMps, angularRadPerS } = motion ?? {};
+  if (!camera || typeof camera !== 'object' || !camera.R || !camera.t) throw new Error(`${ERR} camera 는 R·t 를 가진 객체여야 함`);
   if (typeof dtS !== 'number' || Number.isNaN(dtS)) throw new Error(`${ERR} dtS 는 수여야 함: ${String(dtS)}`);
   const v = vec3(velocityMps, 'velocityMps');
   const w = vec3(angularRadPerS, 'angularRadPerS');
@@ -87,7 +90,15 @@ function leafBoxes(h) {
     found++;
   }
   if (found !== n) throw new Error(`${ERR} 리프 상자 수가 leafCount 와 다름`);
-  return { n, mn, mx };
+  // frustumCull 과 같이 빈 리프(levels[0] 구간이 빈 리프)는 그릴 점이 없으므로 제외한다.
+  const ls = h.levels?.[0]?.leafStart;
+  let empty = null;
+  if (ls !== undefined && ls !== null) {
+    if (ls.length !== n + 1) throw new Error(`${ERR} levels[0].leafStart 길이가 leafCount+1 이 아님`);
+    empty = new Uint8Array(n);
+    for (let k = 0; k < n; k++) if (ls[k + 1] === ls[k]) empty[k] = 1;
+  }
+  return { n, mn, mx, empty };
 }
 
 /**
@@ -96,11 +107,13 @@ function leafBoxes(h) {
  * 표본 사이의 시각도 놓치지 않도록 표본마다 상자를 '구간 반폭 h = horizonS/(2·steps)' 동안 카메라가 움직일 수 있는 만큼
  * (이동 |v|·h, 회전 |ω|·h × 거리) 부풀려 판정한다. 속도·각속도가 0 이면 부풀림 0 = 현재 시점 판정과 같다.
  */
-export function predictiveMask(hierarchy, state, { horizonS, steps, pointSizeM } = {}) {
+export function predictiveMask(hierarchy, state, opts) {
+  if (opts !== undefined && (opts === null || typeof opts !== 'object')) throw new Error(`${ERR} opts 는 객체여야 함`);
+  const { horizonS, steps, pointSizeM } = opts ?? {};
   if (!fin(horizonS) || horizonS < 0) throw new Error(`${ERR} horizonS 는 0 이상의 유한수여야 함: ${String(horizonS)}`);
   if (!Number.isInteger(steps) || steps < 1 || steps > 10000) throw new Error(`${ERR} steps 는 1..10000 의 정수여야 함: ${String(steps)}`);
   if (pointSizeM !== undefined && pointSizeM !== null && !(fin(pointSizeM) && pointSizeM >= 0)) throw new Error(`${ERR} pointSizeM 은 0 이상의 유한수여야 함: ${String(pointSizeM)}`);
-  const { n, mn, mx } = leafBoxes(hierarchy);
+  const { n, mn, mx, empty } = leafBoxes(hierarchy);
   const out = new Uint8Array(n);
   const cam = state?.camera;
   const v = vec3(state?.velocityMps, 'velocityMps'); // 형식 오류는 퇴화 카메라보다 먼저 던진다
@@ -119,7 +132,7 @@ export function predictiveMask(hierarchy, state, { horizonS, steps, pointSizeM }
     const C = cameraCenter(pc);
     const moves = speed > 0 || omega > 0;
     for (let k = 0; k < n; k++) {
-      if (out[k]) continue;
+      if (out[k] || (empty && empty[k])) continue;
       let m = 0;
       if (moves) {
         // 상자 꼭짓점까지 최대 거리로 회전에 의한 변위 상한을 잡는다.

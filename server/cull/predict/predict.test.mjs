@@ -4,8 +4,9 @@ import assert from 'node:assert/strict';
 import { generate } from '../../../fixtures/scenes/terrain/index.mjs';
 import { dronePath } from '../../../fixtures/paths/index.mjs';
 import { buildHierarchy } from '../../lod/hierarchy/index.mjs';
-import { boxMayBeVisible } from '../../lod/select/view_check.mjs';
+import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
+import { frustumCull } from '../frustum/index.mjs';
 import { predictCamera, predictiveMask } from './index.mjs';
 
 const K = { fx: 400, fy: 400, cx: 320, cy: 240 };
@@ -24,7 +25,8 @@ const cloud0 = generate({ seed: 3, count: 20000 });
 const h = buildHierarchy(cloud0.cloud ?? cloud0, { edge0M: 0.4, levelCount: 3, maxLeafPoints: 512 });
 const oc = h.octree;
 const boxOf = (k) => { const n = oc.leafIndex.indexOf(k); return [oc.boxMin.slice(3 * n, 3 * n + 3), oc.boxMax.slice(3 * n, 3 * n + 3)]; };
-const visibleSet = (cam) => { const s = new Set(); for (let k = 0; k < oc.leafCount; k++) { const [a, b] = boxOf(k); if (boxMayBeVisible(cam, a, b)) s.add(k); } return s; };
+// pointSizeM = 0 이면 원판 중심만 보는 규칙(boxMayBeVisible 과 같음), 양수면 같은 지름의 원판 규칙.
+const visibleSet = (cam, pointSizeM = 0) => { const s = new Set(); for (let k = 0; k < oc.leafCount; k++) { const [a, b] = boxOf(k); if (boxMayBeVisibleSplat(cam, a, b, pointSizeM)) s.add(k); } return s; };
 const sum = (m) => m.reduce((a, b) => a + b, 0);
 const ex = (c) => { const e = cameraCenter(c); return e; };
 
@@ -83,7 +85,7 @@ test('단조: 현재 마스크 ⊆ 예측 마스크, horizon 이 커지면 커�
   const cur = visibleSet(cam);
   let prev = -1;
   for (const hz of [0, 1, 3, 6]) {
-    const m = predictiveMask(h, st, { horizonS: hz, steps: 12 });
+    const m = predictiveMask(h, st, { horizonS: hz, steps: 12, pointSizeM: 0 });
     for (const k of cur) assert.equal(m[k], 1);
     assert.ok(sum(m) >= Math.max(prev, cur.size));
     prev = sum(m);
@@ -91,11 +93,11 @@ test('단조: 현재 마스크 ⊆ 예측 마스크, horizon 이 커지면 커�
   assert.ok(prev > cur.size, '움직이면 앞당겨 보낼 리프가 늘어야 함');
 });
 
-function replay(cam0, v, w, horizonS, steps, taus) {
-  const m = predictiveMask(h, { camera: cam0, velocityMps: v, angularRadPerS: w }, { horizonS, steps });
+function replay(cam0, v, w, horizonS, steps, taus, pointSizeM = 0) {
+  const m = predictiveMask(h, { camera: cam0, velocityMps: v, angularRadPerS: w }, { horizonS, steps, pointSizeM });
   let missed = 0, checked = 0;
   for (const tau of taus) {
-    const vis = visibleSet(predictCamera(cam0, { velocityMps: v, angularRadPerS: w }, tau));
+    const vis = visibleSet(predictCamera(cam0, { velocityMps: v, angularRadPerS: w }, tau), pointSizeM);
     for (const k of vis) { checked++; if (!m[k]) missed++; }
   }
   return { missed, checked, kept: sum(m) };
@@ -109,17 +111,51 @@ test('경로 재생(직선·회전·복합): 시각 τ 의 실제 절두체에 �
     [lookAt([30, 35, -40], [0, 0, 0]), [-4, 1, 6], [0.2, -0.6, 0.3]],
   ];
   for (const [c, v, w] of cases) {
-    const r = replay(c, v, w, 4, 8, dense(4, 400));
-    assert.equal(r.missed, 0, `빠진 리프 ${r.missed}/${r.checked}`);
-    assert.ok(r.checked > 0);
+    for (const ps of [0, 0.5]) {
+      const r = replay(c, v, w, 4, 8, dense(4, 400), ps);
+      assert.equal(r.missed, 0, `pointSizeM=${ps} 빠진 리프 ${r.missed}/${r.checked}`);
+      assert.ok(r.checked > 0);
+    }
   }
 });
 
 test('fixtures/paths 시작 프레임 카메라에서도 빠진 조각 0 (등속 직선+회전 합성)', () => {
   const f = dronePath({ seed: 7, frames: 30, center: [0, 0, 0], radius: 60, altitude: 40 }).frames[0];
   const cam = lookAt(f.eye, f.target);
-  const r = replay(cam, [-5, 0, 3], [0, 0.5, 0], 3, 6, dense(3, 300));
-  assert.equal(r.missed, 0);
+  for (const ps of [0, 0.5]) assert.equal(replay(cam, [-5, 0, 3], [0, 0.5, 0], 3, 6, dense(3, 300), ps).missed, 0);
+});
+
+test('양수 지름: 화면 가장자리에 걸친 리프는 살고(중심만 보면 밖), 지름 0 이면 버린다', () => {
+  const cam = lookAt([0, 50, 0], [10, 0, 10]); // 지름 0: 25 개, 지름 2: 27 개
+  const D = 2;
+  const c0 = visibleSet(cam, 0), cD = visibleSet(cam, D);
+  const edge = [...cD].filter((k) => !c0.has(k));
+  assert.ok(edge.length > 0, '가장자리에 걸친 리프가 있어야 함');
+  const mD = predictiveMask(h, { camera: cam }, { horizonS: 3, steps: 3, pointSizeM: D });
+  const m0 = predictiveMask(h, { camera: cam }, { horizonS: 3, steps: 3, pointSizeM: 0 });
+  for (const k of edge) { assert.equal(mD[k], 1); assert.equal(m0[k], 0); }
+  assert.equal(sum(mD), cD.size);
+});
+
+test('빈 리프는 버린다: v=ω=0 이면 frustumCull 과 바이트 단위로 같다(빈 리프 포함 계층, 지름 없음·0·양수)', () => {
+  const ls = Uint32Array.from(h.levels[0].leafStart);
+  const cam = lookAt([0, 60, 0], [10, 0, 10]);
+  const vis = [...visibleSet(cam, 0)];
+  assert.ok(vis.length >= 2);
+  const kEmpty = vis[0];
+  // 리프 kEmpty 를 비운다: 이후 구간을 앞으로 당긴다
+  const cnt = ls[kEmpty + 1] - ls[kEmpty];
+  for (let k = kEmpty + 1; k < ls.length; k++) ls[k] -= cnt;
+  const h2 = { ...h, levels: [{ ...h.levels[0], leafStart: ls }, ...h.levels.slice(1)] };
+  for (const ps of [undefined, 0, 0.5]) {
+    const a = predictiveMask(h2, { camera: cam, velocityMps: [0, 0, 0], angularRadPerS: [0, 0, 0] }, { horizonS: 4, steps: 3, pointSizeM: ps });
+    const b = frustumCull(h2, cam, ps === undefined ? undefined : { pointSizeM: ps });
+    assert.equal(Buffer.compare(Buffer.from(a), Buffer.from(b)), 0, `pointSizeM=${ps}`);
+    assert.equal(a[kEmpty], 0);
+    assert.ok(sum(a) > 0);
+  }
+  const moving = predictiveMask(h2, { camera: cam, velocityMps: [3, 0, 0] }, { horizonS: 4, steps: 3 });
+  assert.equal(moving[kEmpty], 0);
 });
 
 test('퇴화: NaN 카메라·NaN 속도·Infinity 각속도 -> 던지지 않고 빈 마스크', () => {
@@ -144,4 +180,7 @@ test("입력 오류는 'cull:' 로 던진다", () => {
   assert.throws(() => predictiveMask({}, st, { horizonS: 1, steps: 2 }), /^Error: cull:/);
   assert.throws(() => predictCamera(st.camera, {}, 'x'), /^Error: cull:/);
   assert.throws(() => predictCamera(st.camera, { velocityMps: 5 }, 1), /^Error: cull:/);
+  assert.throws(() => predictCamera(null, {}, 1), /^Error: cull:/);
+  assert.throws(() => predictCamera(st.camera, null, 1), /^Error: cull:/);
+  assert.throws(() => predictiveMask(h, st, null), /^Error: cull:/);
 });
