@@ -35,7 +35,7 @@ export function parsePlyHeader(buf, maxHeaderBytes = PLY_HEADER_MAX_BYTES) {
       }
     } else if (t[0] === 'property' && inVertex) {
       if (t[1] === 'list') throw new Error('ply: list property unsupported');
-      if (!(t[1] in SIZES)) throw new Error(`ply: unknown type ${t[1]}`);
+      if (!Object.hasOwn(SIZES, t[1])) throw new Error(`ply: unknown type ${t[1]}`);
       properties.push({ name: t[2], type: t[1] });
     }
   }
