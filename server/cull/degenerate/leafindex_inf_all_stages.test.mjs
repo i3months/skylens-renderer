@@ -1,11 +1,13 @@
+// F-153: leafIndex 가 Int32Array 가 아니거나(Float32Array) 정수가 아닌 값(1.5)을 가져도 'cull:' 오류로 거부한다.
 // F-150: leafIndex 중복(리프 누락 동반)·리프 노드 상자의 ±Infinity 를 모든 컬링 단계가 'cull:' 오류로 거부한다.
-// 표 = 단계 5개(frustum·distance·predict·occlusion·clientFrustumCull) × 입력 3종. 양성 대조로 정상 계층은 던지지 않음을 확인한다.
+// 표 = 단계 6개(frustum·distance·predict·occlusion·priority·clientFrustumCull) × 입력 5종. 양성 대조로 정상 계층은 던지지 않음을 확인한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { frustumCull } from '../frustum/index.mjs';
 import { distanceCull } from '../distance/index.mjs';
 import { buildDepthPyramid, occlusionCull } from '../occlusion/index.mjs';
 import { predictiveMask } from '../predict/index.mjs';
+import { leafPriority } from '../priority/index.mjs';
 import { buildHierarchy } from '../../lod/hierarchy/index.mjs';
 import { generate } from '../../../fixtures/scenes/flat_boxes/index.mjs';
 import { leafBoxesOf, clientFrustumCull } from '../../../client/cull/index.mjs';
@@ -43,6 +45,13 @@ const CASES = [
     mx[3 * leafNodes(h.octree)[0] + 1] = Infinity;
     return withOctree(h, { boxMax: mx });
   }],
+  // Int32Array 는 1.5 를 담을 수 없으므로 비정수 값은 Float32Array leafIndex 로만 만들 수 있다.
+  ['비정수 leafIndex (Float32Array, 1.5)', (h) => {
+    const oc = h.octree, li = Float32Array.from(oc.leafIndex);
+    li[leafNodes(oc)[0]] = 1.5;
+    return withOctree(h, { leafIndex: li });
+  }],
+  ['Float32Array leafIndex (값은 모두 정수)', (h) => withOctree(h, { leafIndex: Float32Array.from(h.octree.leafIndex) })],
 ];
 
 const STAGES = [
@@ -50,6 +59,7 @@ const STAGES = [
   ['distanceCull', (h) => distanceCull(h, good(), { maxDistanceM: 100 })],
   ['predictiveMask', (h) => predictiveMask(h, state(), PRED)],
   ['occlusionCull', (h) => occlusionCull(h, good(), okPyr)],
+  ['leafPriority', (h) => leafPriority(h, good())],
   ['clientFrustumCull', (h) => clientFrustumCull(leafBoxesOf(h.octree), good(), { pointSizeM: 0.1 })],
 ];
 
