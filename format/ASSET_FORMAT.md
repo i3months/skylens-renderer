@@ -81,14 +81,14 @@ f64 필드는 모두 8바이트 정렬 위치에 있다. 헤더 128 B 는 점 �
 ### 3.2 필드 규칙 (엄격 읽기·검증기가 검사)
 1. magic 일치, version_major = 1 (§9).
 2. header_size ≥ 128, 4의 배수, 파일 길이 이하.
-3. format ∈ {1, 2}, codec 은 읽는 쪽이 아는 값(v1.0 은 0 만).
+3. format ∈ {1, 2}, codec 은 읽는 쪽이 아는 값(0, 1). codec 1 은 format 1 만.
 4. level = seg_level & 3 은 자동으로 0..3, segment_id = seg_level >>> 2 는 0..2^30−1.
 5. point_count ≥ 1. 점이 없는 조각은 만들지 않는다("없음"은 전송 규약이 알린다, T11).
 6. tile_size_m = 64, lod ≤ 7, quant_exp ∈ {8, 9, 10}.
 7. bbox_min·bbox_max 유한, 축마다 min ≤ max, (max − min)·2^quant_exp ≤ 65535.
 8. bbox 의 e·n 범위가 (tile_x, tile_y) 타일 안(§1.2).
 9. anchor 세 값 유한.
-10. body_bytes ≥ 필수 평면 합(§4), header_size + body_bytes = 파일 길이.
+10. codec 0: body_bytes ≥ 필수 평면 합(§4). codec 1: body_bytes ≥ 16 이고 §4.3 본문 길이 규칙. 둘 다 header_size + body_bytes = 파일 길이.
 11. version_minor = 0 이면 reserved 12바이트가 모두 0. version_minor > 0 이면 reserved 를 검사하지 않는다(상위 부 버전이 쓸 수 있다).
 12. checksum 일치(§7).
 
@@ -146,6 +146,13 @@ codec 0 은 평면을 그대로 둔다(바이트 분리·차분·엔트로피 �
 - 형식 2: `3·pad4(2n) + 7·pad4(n) + 4n` — n 이 4의 배수면 17n.
 
 골든 확인: 형식 1, n = 32 → 3·64 + 5·32 = 352. 형식 2, n = 21 → 3·44 + 7·24 + 84 = 384.
+
+### 4.3 codec 1 (SKLC1) 압축 본문
+codec 1 은 §5 의 양자화 값(u16 위치·u8 색·snorm8 팔면체 법선)을 **바꾸지 않고** 점 순서 재배치와 스트림 부호화만 더한다. 따라서 §8 오차 상한이 그대로 성립한다(색 손실 모드만 예외). 형식 1(27 B 점)만 받는다.
+- 점 순서: 모턴 키(3 축 × 16 비트 = 48 비트, 키 비트 3i = e, 3i+1 = n, 3i+2 = u 의 i 번 비트) 오름차순, 키가 같으면 원래 인덱스 오름차순. 점은 집합이라 원래 순서는 담지 않는다.
+- 본문 = `[u8 version=1][u8 color_mode][u16 0][u32 posLen][u32 nrmLen][u32 colLen][pos][normal][color]`. 스트림 길이 합 + 16 = body_bytes 이어야 한다. 각 스트림은 엔트로피 컨테이너(`[u8 mode][LEB128 rawLen][payload]`, mode 0 저장 / 1 적응형 이진 범위 부호화).
+- 원스트림 정의(위치 키 차분 LEB128, 법선 차분 지그재그 평면, 색 모드 0 차분·1 하위 2 비트 손실·2 팔레트)와 범위 부호화 상수는 `contracts/codec/index.mjs` 가 단일 출처다.
+- 복호 방어 상한: 점 수 ≤ 2^22, 스트림 원바이트 ≤ 16·2^22. 넘으면 거부.
 
 ## 5. 부호화 식 (원본 → 저장 값)
 
