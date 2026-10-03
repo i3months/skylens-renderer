@@ -1,10 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { measureCullCost } from './index.mjs';
+import { measureCullCost, measureCullCostAsync, getStats } from './index.mjs';
 import { generate as generateTerrain } from '../../fixtures/scenes/terrain/index.mjs';
-import { generate as generateLarge } from '../../fixtures/scenes/large/index.mjs';
 import { buildHierarchy } from '../../server/lod/hierarchy/index.mjs';
-import { boxMayBeVisible } from '../../server/lod/select/view_check.mjs';
+import { buildBenchHierarchy, makeCameras, makeRealStages, measureScene, tableRow, STAGE_NAMES } from './real_stages.mjs';
 
 // 테스트용 카메라 생성
 function createTestCamera(options = {}) {
@@ -41,194 +40,150 @@ test('컬링 비용 측정: 입력 검증 - repeats 오류', () => {
   assert.throws(() => measureCullCost(hierarchy, cameras, { repeats: 1.5 }), /cull:/);
 });
 
-test('컬링 비용 측정: 결과 형태 검증(숫자 유한·양수)', () => {
-  const scene = generateTerrain({ seed: 42, count: 10000 });
-  const hierarchy = buildHierarchy(scene.cloud, { edge0M: 0.3, levelCount: 2 });
-  const cameras = [createTestCamera()];
-
-  const stages = {
-    frustum: (hierarchy, camera) => {
-      const leafCount = hierarchy.octree.leafCount;
-      const mask = new Uint8Array(leafCount);
-      for (let k = 0; k < leafCount; k++) {
-        const level = hierarchy.levels[0];
-        const s = level.leafStart[k], se = level.leafStart[k + 1];
-        if (s < se) {
-          const pos = level.positions;
-          const mn = [pos[3 * s], pos[3 * s + 1], pos[3 * s + 2]];
-          const mx = [pos[3 * s], pos[3 * s + 1], pos[3 * s + 2]];
-          for (let i = s + 1; i < se; i++) {
-            mn[0] = Math.min(mn[0], pos[3 * i]);
-            mn[1] = Math.min(mn[1], pos[3 * i + 1]);
-            mn[2] = Math.min(mn[2], pos[3 * i + 2]);
-            mx[0] = Math.max(mx[0], pos[3 * i]);
-            mx[1] = Math.max(mx[1], pos[3 * i + 1]);
-            mx[2] = Math.max(mx[2], pos[3 * i + 2]);
-          }
-          mask[k] = boxMayBeVisible(camera, mn, mx) ? 1 : 0;
-        }
-      }
-      return mask;
-    },
-  };
-
-  const result = measureCullCost(hierarchy, cameras, { stages, repeats: 2 });
-
-  // perViewMs 형태 검증
-  assert.ok(typeof result.perViewMs === 'object');
-  assert.ok(typeof result.perViewMs.median === 'number');
-  assert.ok(typeof result.perViewMs.p95 === 'number');
-  assert.ok(typeof result.perViewMs.max === 'number');
-  assert.ok(Number.isFinite(result.perViewMs.median) && result.perViewMs.median >= 0);
-  assert.ok(Number.isFinite(result.perViewMs.p95) && result.perViewMs.p95 >= 0);
-  assert.ok(Number.isFinite(result.perViewMs.max) && result.perViewMs.max >= 0);
-
-  // perStageMs 형태 검증
-  assert.ok(typeof result.perStageMs === 'object');
-  assert.ok('frustum' in result.perStageMs);
-  const frustumStats = result.perStageMs.frustum;
-  assert.ok(typeof frustumStats.median === 'number');
-  assert.ok(typeof frustumStats.p95 === 'number');
-  assert.ok(typeof frustumStats.max === 'number');
-  assert.ok(Number.isFinite(frustumStats.median) && frustumStats.median >= 0);
-  assert.ok(Number.isFinite(frustumStats.p95) && frustumStats.p95 >= 0);
-  assert.ok(Number.isFinite(frustumStats.max) && frustumStats.max >= 0);
-
-  // 통계 일관성: median <= p95 <= max
-  assert.ok(result.perViewMs.median <= result.perViewMs.p95);
-  assert.ok(result.perViewMs.p95 <= result.perViewMs.max);
-  assert.ok(frustumStats.median <= frustumStats.p95);
-  assert.ok(frustumStats.p95 <= frustumStats.max);
-
-  console.log(`테스트 통과: perViewMs=${result.perViewMs.median.toFixed(3)}ms, frustum=${frustumStats.median.toFixed(3)}ms`);
-});
-
-test('컬링 비용 측정: 느린 단계 스텁(5ms busy-wait) 감지', () => {
-  const scene = generateTerrain({ seed: 42, count: 10000 });
-  const hierarchy = buildHierarchy(scene.cloud, { edge0M: 0.3, levelCount: 2 });
-  const cameras = [createTestCamera()];
-
-  const stages = {
-    fast: (hierarchy, camera) => new Uint8Array(hierarchy.octree.leafCount).fill(1),
-    slow: (hierarchy, camera) => {
-      // 5ms busy-wait (setTimeout 없이)
-      const deadline = performance.now() + 5;
-      while (performance.now() < deadline);
-      return new Uint8Array(hierarchy.octree.leafCount).fill(1);
-    },
-  };
-
-  const result = measureCullCost(hierarchy, cameras, { stages, repeats: 2 });
-
-  // slow 단계가 5ms 이상으로 감지되어야 함
-  assert.ok(result.perStageMs.slow.median >= 4.5, `느린 단계 median=${result.perStageMs.slow.median}ms, 5ms 이상 예상`);
-  console.log(`테스트 통과: slow 단계=${result.perStageMs.slow.median.toFixed(3)}ms 감지됨`);
-});
-
-test('컬링 비용 측정: 단계 이름 일치 검증', () => {
-  const scene = generateTerrain({ seed: 42, count: 10000 });
-  const hierarchy = buildHierarchy(scene.cloud, { edge0M: 0.3, levelCount: 2 });
-  const cameras = [createTestCamera()];
-
-  const stageNames = ['frustum', 'backface', 'distance'];
+// ---- 결정적 시간 스텁: 단계 함수가 가짜 시계를 정해진 ms 만큼 앞으로 돌린다 ----
+function fakeClock() {
+  let t = 1000;
+  return { now: () => t, advance: (ms) => { t += ms; } };
+}
+// durations[name] = 호출 순서대로 걸리는 ms 목록. 단계는 자기 호출 횟수째 값만큼 시계를 돌린다.
+function scriptedStages(clock, durations) {
+  const calls = {};
   const stages = {};
-  for (const name of stageNames) {
-    stages[name] = (hierarchy, camera) => new Uint8Array(hierarchy.octree.leafCount).fill(1);
+  for (const name of Object.keys(durations)) {
+    calls[name] = 0;
+    stages[name] = () => { clock.advance(durations[name][calls[name]++]); };
   }
+  return stages;
+}
+const dummyHierarchy = { octree: { leafCount: 1 } };
+const oneCam = [createTestCamera()];
 
-  const result = measureCullCost(hierarchy, cameras, { stages, repeats: 1 });
-
-  // 결과의 perStageMs 에 모든 단계 이름이 있어야 함
-  for (const name of stageNames) {
-    assert.ok(name in result.perStageMs, `단계 "${name}" 이 perStageMs 에 없음`);
-  }
-
-  // 정확히 그 이름들만 있어야 함
-  assert.deepEqual(Object.keys(result.perStageMs).sort(), stageNames.sort());
-
-  console.log(`테스트 통과: 단계 이름 확인 [${stageNames.join(', ')}]`);
+test('통계: getStats 는 median·p95·max 를 정확히 낸다', () => {
+  // 홀수 5개: median 은 가운데
+  assert.deepEqual(getStats([5, 1, 4, 2, 3]), { median: 3, p95: 5, max: 5 });
+  // 짝수 4개: median 은 가운데 둘의 평균(2.5), min(1)이 아니다
+  assert.deepEqual(getStats([4, 1, 3, 2]), { median: 2.5, p95: 4, max: 4 });
+  // 20개: p95 = 19번째(올림 순위), max = 20 과 달라야 한다
+  const twenty = Array.from({ length: 20 }, (_, k) => k + 1).reverse();
+  assert.deepEqual(getStats(twenty), { median: 10.5, p95: 19, max: 20 });
+  // 1개
+  assert.deepEqual(getStats([7]), { median: 7, p95: 7, max: 7 });
+  assert.deepEqual(getStats([]), { median: 0, p95: 0, max: 0 });
 });
 
-// 실제 측정: 작은 장면
-test('컬링 비용 측정: 작은 장면(20k 점) 실측', () => {
-  const scene = generateTerrain({ seed: 42, count: 20000 });
-  const hierarchy = buildHierarchy(scene.cloud, { edge0M: 0.3, levelCount: 2 });
-  const leafCount = hierarchy.octree.leafCount;
-
-  // 테스트 카메라 3개
-  const cameras = [
-    createTestCamera({ t: [0, 0, -10] }),
-    createTestCamera({ t: [10, 10, -15] }),
-    createTestCamera({ t: [-10, -10, -20] }),
-  ];
-
-  const stages = {
-    frustum: (hierarchy, camera) => {
-      const mask = new Uint8Array(leafCount).fill(1);
-      for (let k = 0; k < leafCount; k++) {
-        const level = hierarchy.levels[0];
-        const s = level.leafStart[k], se = level.leafStart[k + 1];
-        if (s < se) {
-          const pos = level.positions;
-          const mn = [pos[3 * s], pos[3 * s + 1], pos[3 * s + 2]];
-          const mx = [pos[3 * s], pos[3 * s + 1], pos[3 * s + 2]];
-          for (let i = s + 1; i < se; i++) {
-            mn[0] = Math.min(mn[0], pos[3 * i]); mn[1] = Math.min(mn[1], pos[3 * i + 1]); mn[2] = Math.min(mn[2], pos[3 * i + 2]);
-            mx[0] = Math.max(mx[0], pos[3 * i]); mx[1] = Math.max(mx[1], pos[3 * i + 1]); mx[2] = Math.max(mx[2], pos[3 * i + 2]);
-          }
-          mask[k] = boxMayBeVisible(camera, mn, mx) ? 1 : 0;
-        }
-      }
-      return mask;
-    },
-  };
-
-  const result = measureCullCost(hierarchy, cameras, { stages, repeats: 3 });
-
-  console.log(`\n측정 결과(20k 점, 리프=${leafCount}, 카메라=3, 반복=3):`);
-  console.log(`  perViewMs: median=${result.perViewMs.median.toFixed(3)}ms, p95=${result.perViewMs.p95.toFixed(3)}ms, max=${result.perViewMs.max.toFixed(3)}ms`);
-  console.log(`  frustum: median=${result.perStageMs.frustum.median.toFixed(3)}ms, p95=${result.perStageMs.frustum.p95.toFixed(3)}ms, max=${result.perStageMs.frustum.max.toFixed(3)}ms`);
-
-  // 기본 검증: 메트릭이 있어야 함
-  assert.ok(result.perViewMs.median > 0);
-  assert.ok(result.perStageMs.frustum.median > 0);
+test('측정: 단계 시간은 단계마다 따로, 시점 시간은 모든 단계의 합(누적·마지막 단계만 아님)', () => {
+  const clock = fakeClock();
+  const stages = scriptedStages(clock, { a: [1, 1, 1], b: [2, 2, 2], c: [4, 4, 4] });
+  const r = measureCullCost(dummyHierarchy, oneCam, { stages, repeats: 3, now: clock.now });
+  // 단계 a=1, b=2, c=4 (앞 단계 시간이 쌓이면 b=3·c=7 이 된다)
+  assert.deepEqual(r.perStageMs.a, { median: 1, p95: 1, max: 1 });
+  assert.deepEqual(r.perStageMs.b, { median: 2, p95: 2, max: 2 });
+  assert.deepEqual(r.perStageMs.c, { median: 4, p95: 4, max: 4 });
+  // 시점 = 1+2+4 (마지막 단계만이면 4)
+  assert.deepEqual(r.perViewMs, { median: 7, p95: 7, max: 7 });
 });
 
-// 실제 측정: 큰 장면
-test('컬링 비용 측정: 큰 장면 측정', () => {
-  const scene = generateLarge({ seed: 42, count: 100000 });
-  const hierarchy = buildHierarchy(scene.cloud, { edge0M: 0.5, levelCount: 2 });
-  const leafCount = hierarchy.octree.leafCount;
+test('측정: 시점별·반복별로 따로 기록하고 median·p95·max 가 서로 다르다', () => {
+  const clock = fakeClock();
+  // 20 표본(카메라 2 × 반복 10). 단계 x 는 1..20 ms, 단계 y 는 항상 100 ms.
+  const xs = Array.from({ length: 20 }, (_, k) => k + 1);
+  const stages = scriptedStages(clock, { x: xs, y: new Array(20).fill(100) });
+  const cams = [createTestCamera(), createTestCamera({ t: [1, 2, 3] })];
+  const r = measureCullCost(dummyHierarchy, cams, { stages, repeats: 10, now: clock.now });
+  assert.deepEqual(r.perStageMs.x, { median: 10.5, p95: 19, max: 20 });
+  assert.deepEqual(r.perStageMs.y, { median: 100, p95: 100, max: 100 });
+  // 시점 합: 101..120 → median 110.5, p95 119, max 120
+  assert.deepEqual(r.perViewMs, { median: 110.5, p95: 119, max: 120 });
+});
 
-  const cameras = [createTestCamera(), createTestCamera({ t: [50, 20, -30] })];
+test('측정: 짝수 표본의 median 은 가운데 둘의 평균', () => {
+  const clock = fakeClock();
+  const stages = scriptedStages(clock, { s: [8, 2, 6, 4] });
+  const r = measureCullCost(dummyHierarchy, oneCam, { stages, repeats: 4, now: clock.now });
+  assert.deepEqual(r.perStageMs.s, { median: 5, p95: 8, max: 8 });
+  assert.deepEqual(r.perViewMs, { median: 5, p95: 8, max: 8 });
+});
 
+test('측정: 비동기 변형도 같은 통계를 낸다(await 한 시간만, 단계별·합계)', async () => {
+  const clock = fakeClock();
+  const calls = { slow: 0, fast: 0 };
+  const slowMs = [3, 9, 6];
   const stages = {
-    frustum: (hierarchy, camera) => {
-      const mask = new Uint8Array(leafCount).fill(1);
-      for (let k = 0; k < leafCount; k++) {
-        const level = hierarchy.levels[0];
-        const s = level.leafStart[k], se = level.leafStart[k + 1];
-        if (s < se) {
-          const pos = level.positions;
-          const mn = [pos[3 * s], pos[3 * s + 1], pos[3 * s + 2]];
-          const mx = [pos[3 * s], pos[3 * s + 1], pos[3 * s + 2]];
-          for (let i = s + 1; i < se; i++) {
-            mn[0] = Math.min(mn[0], pos[3 * i]); mn[1] = Math.min(mn[1], pos[3 * i + 1]); mn[2] = Math.min(mn[2], pos[3 * i + 2]);
-            mx[0] = Math.max(mx[0], pos[3 * i]); mx[1] = Math.max(mx[1], pos[3 * i + 1]); mx[2] = Math.max(mx[2], pos[3 * i + 2]);
-          }
-          mask[k] = boxMayBeVisible(camera, mn, mx) ? 1 : 0;
-        }
-      }
-      return mask;
-    },
+    slow: async () => { await Promise.resolve(); clock.advance(slowMs[calls.slow++]); },
+    fast: async () => { await Promise.resolve(); clock.advance(1 + calls.fast++); },
   };
+  const r = await measureCullCostAsync(dummyHierarchy, oneCam, { stages, repeats: 3, now: clock.now });
+  assert.deepEqual(r.perStageMs.slow, { median: 6, p95: 9, max: 9 });
+  assert.deepEqual(r.perStageMs.fast, { median: 2, p95: 3, max: 3 });
+  // 시점 합: 4, 11, 9
+  assert.deepEqual(r.perViewMs, { median: 9, p95: 11, max: 11 });
+});
 
-  const result = measureCullCost(hierarchy, cameras, { stages, repeats: 5 });
+test('측정: now 가 함수가 아니면 오류', () => {
+  assert.throws(() => measureCullCost(dummyHierarchy, oneCam, { now: 5 }), /cull:/);
+});
 
-  console.log(`\n측정 결과(100k 점, 리프=${leafCount}, 카메라=2, 반복=5):`);
-  console.log(`  perViewMs: median=${result.perViewMs.median.toFixed(3)}ms, p95=${result.perViewMs.p95.toFixed(3)}ms, max=${result.perViewMs.max.toFixed(3)}ms`);
-  console.log(`  frustum: median=${result.perStageMs.frustum.median.toFixed(3)}ms, p95=${result.perStageMs.frustum.p95.toFixed(3)}ms, max=${result.perStageMs.frustum.max.toFixed(3)}ms`);
+test('실제 시계: 5ms busy-wait 단계는 4.5ms 이상 5ms 근처 위로 감지', () => {
+  const stages = { slow: () => { const d = performance.now() + 5; while (performance.now() < d); } };
+  const r = measureCullCost(dummyHierarchy, oneCam, { stages, repeats: 2 });
+  assert.ok(r.perStageMs.slow.median >= 4.5, `median=${r.perStageMs.slow.median}`);
+  assert.ok(r.perViewMs.median >= r.perStageMs.slow.median);
+});
 
-  assert.ok(result.perViewMs.median > 0);
-  assert.ok(result.perStageMs.frustum.median > 0);
+test('단계 이름 일치: perStageMs 키가 주어진 단계와 같다', () => {
+  const stages = { frustum: () => {}, backface: () => {}, distance: () => {} };
+  const r = measureCullCost(dummyHierarchy, oneCam, { stages, repeats: 1 });
+  assert.deepEqual(Object.keys(r.perStageMs), ['frustum', 'backface', 'distance']);
+});
+
+// ---- 실제 단계 ----
+test('실제 단계: frustum·backface·occlusion·priority 가 실제 모듈을 부르고 결과가 올바른 모양', () => {
+  const { hierarchy, pointCount, leafCount } = buildBenchHierarchy(20000, 256);
+  assert.equal(pointCount, 20000);
+  assert.ok(leafCount >= 16, `leafCount=${leafCount}`);
+  const cams = makeCameras();
+  const stages = makeRealStages(hierarchy, cams);
+  assert.deepEqual(Object.keys(stages), STAGE_NAMES);
+  for (const cam of cams) {
+    for (const name of ['frustum', 'backface', 'occlusion']) {
+      const mask = stages[name](hierarchy, cam);
+      assert.ok(mask instanceof Uint8Array && mask.length === leafCount, name);
+      for (const v of mask) assert.ok(v === 0 || v === 1);
+    }
+    // frustum 은 가시 리프가 있고(전부 제거도 전부 유지도 아님 없이 최소 하나), priority 는 frustum 마스크의 리프만 정렬
+    const fm = stages.frustum(hierarchy, cam);
+    const kept = fm.reduce((a, b) => a + b, 0);
+    assert.ok(kept > 0, '카메라가 장면을 보지 못함');
+    const order = stages.priority(hierarchy, cam);
+    assert.equal(order.length, kept);
+    assert.ok(order.every((k) => fm[k] === 1));
+  }
+});
+
+test('실제 측정: measureScene 은 단계 4개와 cullAndSelectDefault 를 모두 재고 표 행을 만든다', async () => {
+  const { hierarchy, pointCount, leafCount } = buildBenchHierarchy(20000, 256);
+  const cams = makeCameras();
+  // 가짜 시계: 모든 now() 호출마다 1ms 씩 흘러 각 단계가 정확히 1ms 로 잡힌다(호출 쌍 = t0, 끝)
+  let t = 0;
+  const now = () => { const v = t; t += 1; return v; };
+  const res = await measureScene(hierarchy, cams, { repeats: 2, now });
+  assert.deepEqual(Object.keys(res.staged.perStageMs), STAGE_NAMES);
+  for (const n of STAGE_NAMES) assert.deepEqual(res.staged.perStageMs[n], { median: 1, p95: 1, max: 1 });
+  assert.deepEqual(res.staged.perViewMs, { median: 4, p95: 4, max: 4 });
+  assert.deepEqual(Object.keys(res.combined.perStageMs), ['cullAndSelectDefault']);
+  assert.deepEqual(tableRow(pointCount, leafCount, res), [
+    '20000', String(leafCount), '1.00', '1.00', '1.00', '1.00', '4.00', '4.00', '1.00', '1.00',
+  ]);
+});
+
+test('실제 측정: 실제 시계로 재면 모든 단계가 양의 유한 시간이고 median ≤ p95 ≤ max', async () => {
+  const { hierarchy } = buildBenchHierarchy(50000, 128);
+  const res = await measureScene(hierarchy, makeCameras(), { repeats: 3 });
+  const all = [res.staged.perViewMs, ...Object.values(res.staged.perStageMs), res.combined.perViewMs];
+  for (const s of all) {
+    assert.ok(Number.isFinite(s.max) && s.max > 0);
+    assert.ok(s.median <= s.p95 && s.p95 <= s.max);
+  }
+  // 합은 단계 하나보다 크다
+  assert.ok(res.staged.perViewMs.median > res.staged.perStageMs.occlusion.median);
 });
