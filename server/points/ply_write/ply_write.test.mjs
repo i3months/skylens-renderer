@@ -58,6 +58,32 @@ function readBits(raw) {
   return c;
 }
 
+// 헤더 구조를 줄 단위로 검증하는 헬퍼: 형식 줄, element vertex 줄, 속성 목록·순서, end_header 를 검사한다
+// 주석 변경에 깨지지 않음
+function assertHeaderStructure(bytes, expectedCount, expectedFormat) {
+  const headerEnd = 'end_header\n';
+  const headerStr = Buffer.from(bytes).toString('latin1');
+  const headerEndIdx = headerStr.indexOf(headerEnd);
+  assert.ok(headerEndIdx >= 0, 'end_header 를 찾아야 함');
+
+  const lines = headerStr.slice(0, headerEndIdx).split('\n').filter((l) => l.trim().length > 0);
+  assert.equal(lines[0], 'ply', 'ply 매직');
+
+  // format 줄 검사
+  const formatLine = lines.find((l) => l.startsWith('format'));
+  assert.ok(formatLine, 'format 줄이 있어야 함');
+  assert.equal(formatLine, 'format binary_little_endian 1.0', '형식이 binary_little_endian 1.0 이어야 함');
+
+  // element vertex 줄 검사
+  const elemVertexLine = lines.find((l) => l.startsWith('element vertex'));
+  assert.ok(elemVertexLine, 'element vertex 줄이 있어야 함');
+  assert.equal(elemVertexLine, `element vertex ${expectedCount}`, `element vertex 줄이 ${expectedCount} 을 가져야 함`);
+
+  // 속성 목록·순서 검사
+  const h = parsePlyHeader(bytes);
+  assert.equal(detectFormat(h.properties), expectedFormat, '형식이 일치해야 함');
+}
+
 for (const [name, mk, st, fmt] of [['27', mk27, 27, 1], ['56', mk56, 56, 2]]) {
   test(`헤더·크기 ${name}`, () => {
     const out = writePly(mk(5));
@@ -66,7 +92,7 @@ for (const [name, mk, st, fmt] of [['27', mk27, 27, 1], ['56', mk56, 56, 2]]) {
     assert.equal(h.vertexCount, 5);
     assert.equal(detectFormat(h.properties), fmt);
     assert.equal(out.length, h.headerBytes + st * 5);
-    assert.ok(Buffer.from(out).toString('latin1').startsWith('ply\nformat binary_little_endian 1.0\nelement vertex 5\nproperty float x\n'));
+    assertHeaderStructure(out, 5, fmt);
   });
   test(`왕복 열 배열 동일 ${name}`, () => {
     const c = mk(40);
