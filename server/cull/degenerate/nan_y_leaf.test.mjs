@@ -55,4 +55,7 @@ for (const [name, run] of Object.entries(runs)) {
 test('정상 입력 출력은 NaN 시험 뒤에도 그대로', () => {
   for (const [name, run] of Object.entries(runs)) assert.deepEqual(run(cams[0], 0.1), normalMask[name]);
   assert.ok(frustumCull(hier, cams[0], { pointSizeM: 0.1 }).some((v) => v === 1));
+  // finally 복원 후 boxMin·boxMax 가 변경되지 않았는지 확인
+  assert.deepEqual(oc.boxMin, savedBoxMin, 'boxMin 변경됨');
+  assert.deepEqual(oc.boxMax, savedBoxMax, 'boxMax 변경됨');
 });

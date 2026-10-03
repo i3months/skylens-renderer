@@ -1,23 +1,17 @@
 import { strict as assert } from 'assert';
-import { readFileSync, readdirSync } from 'fs';
+import { test } from 'node:test';
+import { readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url)).replace(/\/$/, '');
 const cullingRootDir = join(__dirname, '..');
 
-/**
- * Test that leaf_check.mjs header comment mentions all production modules that import it.
- *
- * This test intentionally fails until the header of leaf_check.mjs is fixed to list
- * all stages that call it.
- */
-
 // Read all stage directories
 const stageNames = readdirSync(cullingRootDir).filter((name) => {
   const fullPath = join(cullingRootDir, name);
   try {
-    return require('fs').statSync(fullPath).isDirectory() && name !== 'degenerate';
+    return statSync(fullPath).isDirectory() && name !== 'degenerate';
   } catch {
     return false;
   }
@@ -59,6 +53,11 @@ const leafCheckContent = readFileSync(leafCheckPath, 'utf-8');
 const headerEndIndex = leafCheckContent.indexOf('\n\n');
 const header = leafCheckContent.substring(0, headerEndIndex || 500);
 
+// 단계 이름 목록이 비어있지 않음을 확인 (leaf_check.mjs 에서 frustum·distance·predict·occlusion·priority 5개 필요)
+test('stageNames is not empty', () => {
+  assert(stageNames.length >= 5, `Expected at least 5 stage names, but got ${stageNames.length}`);
+});
+
 // Test: each importing module's stage name must be mentioned in the header
 test('leaf_check.mjs header lists all importing stages', () => {
   const missingStages = [];
@@ -77,15 +76,3 @@ test('leaf_check.mjs header lists all importing stages', () => {
     );
   }
 });
-
-// Helper test runner
-function test(name, fn) {
-  try {
-    fn();
-    console.log(`✓ ${name}`);
-  } catch (e) {
-    console.error(`✗ ${name}`);
-    console.error(`  ${e.message}`);
-    throw e;
-  }
-}

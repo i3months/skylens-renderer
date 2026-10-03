@@ -97,14 +97,16 @@ test('직선 이동(해석 배치): 표본 사이에만 보이는 리프는 마�
     // 전제(하한 판별, 해석): 상자 A 는 하한에 있고 표본 시각에는 안 보이며, 정확한 반폭 부풀림으로는 보이고 h/2 부풀림으로는 안 보인다.
     assert.ok(lower.has(0) && !seenAtSamples(0, 0), `전제: 상자 A 는 표본 사이에만 보임 (steps=${steps})`);
     // 전제: wA = 0.1·vdt 인 상자의 경계 거리는
-    //   정확한 반폭 hh 부풀림: 1.0001·v[0]·(hh=dt/2)·KAPPA >= 0.4·v[0]·dt ⟺ 1.0001/KAPPA >= 0.8 (참)
-    //   h/2 부풀림: 1.0001·v[0]·(hh/2)·KAPPA < 0.4·v[0]·dt ⟺ 1.0001/(2·KAPPA) < 0.4 (참)
+    //   정확한 반폭 hh 부풀림: 1.0001·v[0]·(hh=dt/2)·KAPPA >= 0.4·v[0]·dt ⟺ 1.0001·KAPPA >= 0.8 (참)
+    //   h/2 부풀림: 1.0001·v[0]·(hh/2)·KAPPA < 0.4·v[0]·dt ⟺ 1.0001·KAPPA < 1.6 (참)
+    assert.ok(KAPPA * IMPL_REL * v[0] * hh >= 0.4 * vdt && KAPPA * (IMPL_REL * v[0] * hh / 2 + IMPL_ABS) < 0.4 * vdt, '전제: 식으로 본 경계 거리');
     assert.ok(seenAtSamples(0, IMPL_REL * v[0] * hh + IMPL_ABS), `전제: 반폭 hh 부풀림이 상자 A 를 덮음 (steps=${steps})`);
     assert.ok(!seenAtSamples(0, IMPL_REL * v[0] * (hh / 2) + IMPL_ABS), `전제: 반폭 h/2 부풀림은 상자 A 를 놓침 (steps=${steps})`);
     // 전제(상한 판별, 해석): 상자 B 는 하한·상한 밖이고, ×1.2 부풀림이면 마지막 표본에서 보인다.
     const U = v[0] * hh;
     // 전제: edgeBox 의 고정점 반복으로 설정된 xc 에서 상한(1.0001·U·KAPPA)은 G = KAPPA·MID·U 에 못 닿고
     //   (MID=1.1 이므로 1.0001 < 1.1), ×1.2 부풀림은 1.2·1.0001·KAPPA·U >= 1.1·KAPPA·U 로 닿는다
+    assert.ok(KAPPA * (U * (1 + REL) + EPS) < G && KAPPA * 1.2 * (IMPL_REL * U + IMPL_ABS) >= G, '전제: 식으로 본 경계 거리');
     assert.ok(!lower.has(1) && !allowed.has(1), `전제: 상자 B 는 허용 밖 (steps=${steps})`);
     assert.ok(seenAtSamples(1, 1.2 * (IMPL_REL * U + IMPL_ABS)), `전제: ×1.2 부풀림은 상자 B 를 넣음 (steps=${steps})`);
     assert.ok(lower.has(2));

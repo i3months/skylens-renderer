@@ -72,3 +72,44 @@ test('cull: ±Infinity 는 둘 다 거부하고 NaN 은 통과한다', () => {
   const ok = make(); ok.boxMin[4] = NaN;
   assert.doesNotThrow(() => checkLeafIndexOneToOne(ok));
 });
+
+// 노드 100개(> SENTINEL_SAMPLES=32): 0=내부, 1..99=리프 0..98. 표본(step=3: 0,3,6,...,99)이 전수가 아니다.
+const makeBig = () => {
+  const n = 100;
+  const leafIndex = new Int32Array(n);
+  leafIndex[0] = -1;
+  for (let i = 1; i < n; i++) leafIndex[i] = i - 1;
+  return { leafIndex, boxMin: new Float32Array(3 * n), boxMax: new Float32Array(3 * n).fill(1), leafCount: n - 1, nodeCount: n };
+};
+
+test('cull: 표본이 전수가 아닌 계층에서 표본 밖 노드에 Infinity 가 든 새 배열로 바꿔 끼우면 동일성 비교로 다시 검사한다', () => {
+  const oc = makeBig();
+  assert.equal(checkLeafIndexOneToOne(oc), true);
+  // 노드 1·2 는 표본(0,3,6,...,99) 밖이다. 새 배열이므로 값 표본만으로는 못 잡고 boxMin·boxMax 동일성 비교만이 잡는다.
+  const badMin = Float32Array.from(oc.boxMin); badMin[3 * 1 + 1] = Infinity;
+  assert.throws(() => checkLeafIndexOneToOne({ ...oc, boxMin: badMin }), /^Error: cull:.*유한하지 않음/);
+  const badMax = Float32Array.from(oc.boxMax); badMax[3 * 2 + 2] = -Infinity;
+  assert.throws(() => checkLeafIndexOneToOne({ ...oc, boxMax: badMax }), /^Error: cull:.*유한하지 않음/);
+});
+
+test('cull: 캐시 적중 시 표본 밖 노드는 한 번도 읽지 않는다(전체 검사를 실제로 건너뜀)', () => {
+  const oc = makeBig();
+  const reads = { leaf: [], min: [], max: [] };
+  const spy = (arr, log, per) => new Proxy(arr, {
+    get(t, p) {
+      if (typeof p === 'string' && /^\d+$/.test(p)) log.push(Math.floor(Number(p) / per));
+      return Reflect.get(t, p);
+    },
+  });
+  const spied = { ...oc, leafIndex: spy(oc.leafIndex, reads.leaf, 1), boxMin: spy(oc.boxMin, reads.min, 3), boxMax: spy(oc.boxMax, reads.max, 3) };
+  const outside = (n) => !(n % 3 === 0 || n === 99); // 표본 노드: 0,3,...,99 와 마지막
+  const outsideReads = () => [...reads.leaf, ...reads.min, ...reads.max].filter(outside).length;
+  const clear = () => { reads.leaf.length = reads.min.length = reads.max.length = 0; };
+
+  assert.equal(checkLeafIndexOneToOne(spied), true);
+  assert.ok(outsideReads() > 0, '첫 호출은 표본 밖 노드도 읽는 전체 검사여야 한다');
+
+  clear();
+  assert.equal(checkLeafIndexOneToOne(spied), false);
+  assert.equal(outsideReads(), 0, '적중 시 표본 밖 노드를 읽으면 전체 검사를 건너뛴 것이 아니다');
+});

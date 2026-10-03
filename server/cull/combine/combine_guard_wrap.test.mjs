@@ -23,22 +23,35 @@ const RX = /^Error: cull:/;
 
 const SELF = fileURLToPath(import.meta.url);
 const COMBINE_DIR = dirname(SELF) + sep;
-const FRAME_FILE = /\(?((?:file:\/\/)?[^\s()]+?):\d+:\d+\)?$/;
-// 스택 전체를 훑어 첫 프로젝트 프레임이 combine 디렉터리인지 본다(테스트 파일·node 내부·익명 프레임은 건너뜀).
-function directCaller() {
+const SELECT_DIR = fileURLToPath(new URL('../../lod/select/', import.meta.url));
+// 'at 함수 (파일:줄:열)' 또는 'at 파일:줄:열' 형태의 프레임을 풀어 {fn, file, loc} 로 만든다.
+const FRAME_RE = /^at (?:(.*?) \()?((?:file:\/\/)?[^\s()]+?):(\d+):(\d+)\)?$/;
+function parseFrames() {
   const limit = Error.stackTraceLimit;
   Error.stackTraceLimit = Infinity;
-  const frames = String(new Error().stack).split('\n').slice(1);
+  const lines = String(new Error().stack).split('\n').slice(1);
   Error.stackTraceLimit = limit;
-  for (const f of frames) {
-    const m = FRAME_FILE.exec(f.trim());
+  const out = [];
+  for (const raw of lines) {
+    const m = FRAME_RE.exec(raw.trim());
     if (!m) continue;
-    let file = m[1];
+    let file = m[2];
     if (file.startsWith('file://')) { try { file = fileURLToPath(file); } catch { continue; } }
-    if (file === SELF || file.startsWith('node:')) continue;
-    return file.startsWith(COMBINE_DIR) ? 'combine' : 'other';
+    out.push({ fn: m[1] ?? '', file, loc: `${file}:${m[3]}:${m[4]}` });
   }
-  return 'other';
+  return out;
+}
+// 읽은 곳 분류(호출 스택 전체 기준).
+//  - 스택에 select 의 selectLevels 프레임이 있으면 'select' (select 모듈 몫이라 제외).
+//    assertHierarchyInput 같은 select 의 검사 함수는 combine 이 직접 부를 수 있으므로 제외 대상이 아니다.
+//  - 그 밖에 스택에 combine 디렉터리 프레임이 있으면 'combine' (직접 읽기, 헬퍼·assertHierarchyInput 재호출 경유 포함).
+//    site 는 스택에서 가장 안쪽 combine 프레임의 위치(호출 지점)다.
+//  - 둘 다 아니면 'other'.
+function classifyRead() {
+  const frames = parseFrames().filter((f) => f.file !== SELF && !f.file.startsWith('node:'));
+  if (frames.some((f) => f.file.startsWith(SELECT_DIR) && f.fn.replace(/^.*\./, '') === 'selectLevels')) return { kind: 'select' };
+  const inner = frames.find((f) => f.file.startsWith(COMBINE_DIR));
+  return inner ? { kind: 'combine', site: inner.loc } : { kind: 'other' };
 }
 
 function withLeafCount(h, get) {
@@ -61,25 +74,32 @@ test('검사 시점에 첫 읽기부터 던지는 Proxy octree 도 cull: 오류'
 test('leafCount 는 검사 블록에서 읽은 값을 그대로 쓴다(검사 뒤 cullAndSelect 의 재독 금지)', () => {
   const h = scene();
   const real = h.octree.leafCount;
-  // 검사 블록(combine/index.mjs) 안의 leafCount 읽기는 마지막 계층 읽기라서 그 읽기가 검사 완료 시점이다.
-  // 카메라 읽기는 그 뒤라서 쓰지 않는다(검사 블록과 카메라 검사 사이의 재독도 잡기 위해).
-  // 읽은 곳은 호출 스택 전체에서 첫 프로젝트 프레임(이 테스트 파일과 node 내부 프레임 제외)으로 정한다.
-  // 그 프레임이 combine 디렉터리 안이면 combine 이 직접 읽은 것이다(헬퍼·Reflect.get 재독 포함).
-  // selectLevels(select/index.mjs) 안의 읽기는 첫 프로젝트 프레임이 select 라서 real 을 돌려주고 판정에서 뺀다.
-  // 읽기 횟수 상수는 select 쪽에는 쓰지 않으므로 select 쪽의 동작 같은 리팩터에도 깨지지 않는다.
+  // 허용되는 combine 의 읽기는 검사 블록 하나뿐이다: guardHierarchyRead 안에서 assertHierarchyInput 을 한 번 부르고(그 안에서 여러 번 읽힘)
+  // 이어서 hierarchy.octree.leafCount 를 읽는다. 호출 지점(site)으로는 이 둘, 곧 최대 2곳이다.
+  // 규칙: 스택에 selectLevels 프레임이 있으면 제외, 스택에 combine 프레임이 있으면 combine 의 읽기로 센다.
+  //  - assertHierarchyInput 을 한 번 더 부르는 변이(C5)나 contracts 헬퍼로 한 번 더 읽는 변이(C6)는
+  //    combine 안에 새 호출 지점을 만들므로 site 가 3곳 이상이 되어 잡힌다.
+  //  - 단계 구현(stageImpls) 호출 이후의 combine 읽기는 검사 블록 밖이므로 무조건 위반이다(값도 real+1 로 내서 재사용 여부를 드러낸다).
+  const sites = new Set();
   let combineReads = 0;
+  let afterStages = 0;
+  let stagesStarted = false;
   const probe = withLeafCount(h, () => {
-    if (directCaller() !== 'combine') return real;
+    const c = classifyRead();
+    if (c.kind !== 'combine') return real;
     combineReads++;
-    // 첫 읽기는 검사 블록의 읽기(허용). 그 뒤 읽기는 다른 값을 내서 재사용 여부도 드러낸다.
-    return combineReads === 1 ? real : real + 1;
+    sites.add(c.site);
+    if (stagesStarted) { afterStages++; return real + 1; }
+    return real;
   });
-  const cam = CAM;
-  const r = cullAndSelect(probe, cam, OPTS);
+  const opts = { ...OPTS, stageImpls: { distance: (hh, cam, o) => { stagesStarted = true; return OPTS.stageImpls.distance(hh, cam, o); } } };
+  const r = cullAndSelect(probe, CAM, opts);
+  assert.ok(stagesStarted, '단계 구현이 불려야 함');
   assert.ok(combineReads >= 1, '검사 블록의 leafCount 읽기가 combine 에서 일어나야 함');
   assert.equal(r.cull.mask.length, real);
   assert.equal(r.cull.stats.leafCount, real);
-  assert.equal(combineReads, 1, '검사 블록 밖에서 combine 이 leafCount 를 다시 읽음');
+  assert.equal(afterStages, 0, '검사 블록 밖(단계 이후)에서 combine 이 leafCount 를 다시 읽음');
+  assert.ok(sites.size <= 2, `검사 블록 밖에서 combine 이 계층을 다시 읽음(호출 지점 ${sites.size}곳): ${[...sites].join(', ')}`);
 });
 
 test('정상 입력 결과는 그대로', () => {

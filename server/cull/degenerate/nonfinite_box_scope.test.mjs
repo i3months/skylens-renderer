@@ -58,6 +58,8 @@ function withModifiedBox(hierarchy, nodeIndex, coordIndex, value, which) {
 }
 
 const state = () => ({ camera: good(), velocityMps: [0, 0, 0], angularRadPerS: [0, 0, 0] });
+// nan_y_leaf.test.mjs 와 같은 높은 시점(eye [0,120,140]): good() 카메라에서는 boxMin.z 의 NaN 판정이 드러나지 않아 이 카메라 행을 따로 둔다.
+const highCam = () => viewpointToCamera({ eye: [0, 120, 140], target: [0, 5, 0], up: [0, 1, 0], fov_y_deg: 50, width: 64, height: 48 });
 const PRED = { horizonS: 1, steps: 2, pointSizeM: 0.1 };
 
 const baseH = healthy();
@@ -86,6 +88,7 @@ const STAGES = [
   { name: 'occlusionCull', kind: 'mask', run: (h) => occlusionCull(h, good(), okPyr) },
   { name: 'leafPriority', kind: 'score', run: (h) => leafPriority(h, good()) },
   { name: 'predictiveMask', kind: 'mask', run: (h) => predictiveMask(h, state(), PRED) },
+  { name: 'predictiveMask(eye 0,120,140)', kind: 'mask', run: (h) => predictiveMask(h, { camera: highCam(), velocityMps: [0, 0, 0], angularRadPerS: [0, 0, 0] }, PRED) },
   { name: 'orderChunks', kind: 'chunks', run: (h) => orderChunks(h, good(), okMask) },
   { name: 'leafBoxesOf', kind: 'boxes', leafInfPasses: true, run: (h) => leafBoxesOf(h.octree) },
   { name: 'clientFrustumCull', kind: 'mask', run: (h) => clientFrustumCull(leafBoxesOf(h.octree), good(), { pointSizeM: 0.1 }) },
@@ -238,6 +241,27 @@ for (const [label, value] of [['NaN', NaN], ['Inf', Infinity], ['-Inf', -Infinit
       const got = occlusionCull(h, occCam, pyr);
       const broken = new Set(ks);
       for (const k of ks) assert.equal(got[k], 1, `리프 ${k}: 비유한 점 좌표 리프는 남겨야 함`);
+      for (let j = 0; j < base.length; j++) if (!broken.has(j)) assert.equal(got[j], base[j], `다른 리프 ${j} 가 변함`);
+    });
+  }
+}
+
+// 가려진 리프(정상 마스크 0): 점 하나의 좌표가 비유한이면 그 리프는 남아야 한다(빈 상자 = 판정 포기).
+// 비유한 점을 리프의 마지막 점에 두어, 앞쪽 유한 점들로 만든 부분 상자가 남으면(상자 초기화 누락) 여전히 가려진 것으로 판정되어 제거되도록 한다.
+for (const [label, value] of [['NaN', NaN], ['Inf', Infinity], ['-Inf', -Infinity]]) {
+  for (const axis of COORDS) {
+    test(`occlusionCull × ${label} 점 좌표(가려진 리프, ${AXIS[axis]}): 남김 = 1`, () => {
+      const { h: oh, pyr, base } = occlusionScene();
+      const lv0 = oh.levels[0], ls = lv0.leafStart;
+      const ks = [];
+      for (let k = 0; k < base.length; k++) if (base[k] === 0 && ls[k + 1] - ls[k] > 1) ks.push(k);
+      assert.ok(ks.length > 0, '가려진 리프가 없으면 상자 초기화를 변별하지 못함');
+      const positions = new Float32Array(lv0.positions);
+      for (const k of ks) positions[3 * (ls[k + 1] - 1) + axis] = value;
+      const h = { ...oh, levels: [{ ...lv0, positions }, ...oh.levels.slice(1)] };
+      const got = occlusionCull(h, occCam, pyr);
+      const broken = new Set(ks);
+      for (const k of ks) assert.equal(got[k], 1, `리프 ${k}: 가려진 리프라도 비유한 점이 있으면 남겨야 함`);
       for (let j = 0; j < base.length; j++) if (!broken.has(j)) assert.equal(got[j], base[j], `다른 리프 ${j} 가 변함`);
     });
   }
