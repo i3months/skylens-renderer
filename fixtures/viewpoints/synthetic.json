@@ -1,0 +1,183 @@
+{
+  "scene": "flat_boxes",
+  "coord": "ENU (GeoAnchor 기준 로컬: x=동, y=위, z=−북, 1 unit = 1 m). 합성 장면 flat_boxes(바닥 x,z∈[-100,100], y=0, 상자 높이 6~40 m) 전용. 실자산용 viewpoints.json 과 별개.",
+  "convention": "eye/target/up 은 GL 규약(y-up, 카메라는 −z 를 봄). OpenCV 카메라 좌표와는 diag(1,-1,-1). top_down 의 eye.z 1 은 up 과 시선이 평행해지는 것을 피하기 위한 값.",
+  "viewpoints": [
+    {
+      "id": 1,
+      "name": "aerial_overview",
+      "eye": [
+        0,
+        120,
+        140
+      ],
+      "target": [
+        0,
+        5,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 2,
+      "name": "aerial_oblique_ne",
+      "eye": [
+        90,
+        60,
+        -90
+      ],
+      "target": [
+        0,
+        8,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 3,
+      "name": "top_down",
+      "eye": [
+        0,
+        200,
+        1
+      ],
+      "target": [
+        0,
+        0,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 4,
+      "name": "street_level",
+      "eye": [
+        0,
+        1.7,
+        90
+      ],
+      "target": [
+        0,
+        6,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 5,
+      "name": "low_close_box",
+      "eye": [
+        30,
+        3,
+        45
+      ],
+      "target": [
+        20,
+        8,
+        20
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 6,
+      "name": "tower_high",
+      "eye": [
+        0,
+        80,
+        60
+      ],
+      "target": [
+        0,
+        0,
+        -20
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 7,
+      "name": "tower_mid",
+      "eye": [
+        -60,
+        30,
+        70
+      ],
+      "target": [
+        0,
+        5,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    },
+    {
+      "id": 8,
+      "name": "edge_far",
+      "eye": [
+        -95,
+        6,
+        95
+      ],
+      "target": [
+        40,
+        5,
+        -40
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "width": 1280,
+      "height": 720,
+      "fov_y_deg": 50
+    }
+  ]
+}
