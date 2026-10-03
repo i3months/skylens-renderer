@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { cullAndSelectDefault } from '../../server/cull/combine/index.mjs';
 import { measureCullCost, measureCullCostAsync, getStats } from './index.mjs';
 import { generate as generateTerrain } from '../../fixtures/scenes/terrain/index.mjs';
 import { buildHierarchy } from '../../server/lod/hierarchy/index.mjs';
-import { buildBenchHierarchy, makeCameras, makeRealStages, measureScene, tableRow, STAGE_NAMES } from './real_stages.mjs';
+import { buildBenchHierarchy, buildRemovalScene, makeCameras, makeRealStages, measureScene, tableRow, STAGE_NAMES, REAL_MODULES } from './real_stages.mjs';
 
 // 테스트용 카메라 생성
 function createTestCamera(options = {}) {
@@ -172,8 +173,11 @@ test('실제 측정: measureScene 은 단계 4개와 cullAndSelectDefault 를 �
   assert.deepEqual(res.staged.perViewMs, { median: 4, p95: 4, max: 4 });
   assert.deepEqual(Object.keys(res.combined.perStageMs), ['cullAndSelectDefault']);
   assert.deepEqual(tableRow(pointCount, leafCount, res), [
-    '20000', String(leafCount), '1.00', '1.00', '1.00', '1.00', '4.00', '4.00', '1.00', '1.00',
+    '20000', String(leafCount), '1.00', '1.00', '1.00', '1.00', '4.00', '4.00', '1.00', '1.00', '4.00', '1.00',
   ]);
+  // cold(첫 반복)와 warm 을 따로 보고한다
+  assert.deepEqual(res.cold.staged.perViewMs, { median: 4, p95: 4, max: 4 });
+  assert.deepEqual(res.cold.combined.perStageMs.cullAndSelectDefault, { median: 1, p95: 1, max: 1 });
 });
 
 test('실제 측정: 실제 시계로 재면 모든 단계가 양의 유한 시간이고 median ≤ p95 ≤ max', async () => {
@@ -186,4 +190,106 @@ test('실제 측정: 실제 시계로 재면 모든 단계가 양의 유한 시�
   }
   // 합은 단계 하나보다 크다
   assert.ok(res.staged.perViewMs.median > res.staged.perStageMs.occlusion.median);
+});
+
+// ---- 제거가 실제로 일어나는 장면(F-128③) ----
+// 가짜 시계는 now() 호출 수만 세므로 단계가 무엇을 하든 1.00 이다. 그래서 이 장면에서는 시계와 무관한 사실을 단언한다:
+// 뒷면·가림이 실제로 제거를 하고, 각 단계가 정해진 횟수만 불리며, 실제 모듈이 {pointSizeM} 을 받았고, 한 호출이 비정상적으로 오래 걸리지 않는다.
+const CAMERAS_PER_PASS = 4; // REMOVAL_SCENE.viewNames 길이
+const CALL_CEILING_MS = 1000; // 측정 구간 하나의 실제 시간 상한(멈춘 단계·의도치 않은 대기를 잡는 생존 한계)
+
+function spyModules(log) {
+  const spy = (name, optsIndex) => (...args) => { log.push({ fn: name, pointSizeM: args[optsIndex]?.pointSizeM }); return REAL_MODULES[name](...args); };
+  return {
+    ...REAL_MODULES,
+    frustumCull: spy('frustumCull', 2),
+    backfaceCull: spy('backfaceCull', 3),
+    buildDepthPyramid: spy('buildDepthPyramid', 2),
+  };
+}
+
+let removalScene;
+const getRemovalScene = () => (removalScene ??= buildRemovalScene());
+
+test('제거 장면: 뒷면 후보와 가림 제거가 모든 시점에서 0 보다 크다(단계 마스크 직접 확인)', () => {
+  const { hierarchy, cameras, pointSizeM } = getRemovalScene();
+  const stages = makeRealStages(hierarchy, cameras, { pointSizeM });
+  assert.equal(cameras.length, CAMERAS_PER_PASS);
+  for (const cam of cameras) {
+    const fm = stages.frustum(hierarchy, cam);
+    for (const name of ['backface', 'occlusion']) {
+      const m = stages[name](hierarchy, cam);
+      let removed = 0;
+      for (let k = 0; k < m.length; k++) if (fm[k] === 1 && m[k] === 0) removed++;
+      assert.ok(removed > 0, `${name}: 절두체를 통과한 리프 중 제거 0`);
+    }
+  }
+});
+
+test('제거 장면: measureScene 이 모듈 호출·pointSizeM 전달·제거 수·cold/warm 을 모두 보고한다', async () => {
+  const { hierarchy, cameras, pointSizeM, thresholdPx } = getRemovalScene();
+  const modLog = [];
+  let tick = 0;
+  const now = () => tick++; // 호출 수만 세는 시계
+  const res = await measureScene(hierarchy, cameras, { repeats: 2, now, pointSizeM, thresholdPx, modules: spyModules(modLog) });
+
+  // 시계와 무관: 제거가 실제로 일어났다(결합 경로의 단계별 새 제거 합)
+  assert.ok(res.removal.backface > 0, `뒷면 제거 ${res.removal.backface}`);
+  assert.ok(res.removal.occlusion > 0, `가림 제거 ${res.removal.occlusion}`);
+
+  // 결합 경로: 단계 구현 호출마다 opts.pointSizeM 이 cullAndSelect 에 준 값 그대로, 단계마다 (cold 1 + warm 2) × 시점 수 번
+  const passes = (1 + 2) * CAMERAS_PER_PASS;
+  for (const stage of ['frustum', 'backface', 'occlusion', 'distance']) {
+    const c = res.calls.filter((x) => x.stage === stage);
+    assert.equal(c.length, passes, `${stage} 호출 수`);
+    for (const x of c) assert.equal(x.pointSizeM, pointSizeM, `${stage} 가 받은 pointSizeM`);
+  }
+
+  // 단계 경로: 실제 모듈이 {pointSizeM} 을 받았다. frustum 은 준비(마스크 1회)+단계(cold1+warm2) 마다, 가림 피라미드는 단계마다.
+  for (const [fn, n] of [['frustumCull', CAMERAS_PER_PASS * (1 + 1 + 2)], ['backfaceCull', passes], ['buildDepthPyramid', passes]]) {
+    const c = modLog.filter((x) => x.fn === fn);
+    assert.equal(c.length, n, `${fn} 호출 수`);
+    for (const x of c) assert.equal(x.pointSizeM, pointSizeM, `${fn} 가 받은 pointSizeM`);
+  }
+
+  // cold 와 warm 은 따로 보고된다(표본 수가 다르다)
+  assert.deepEqual(Object.keys(res.cold.staged.perStageMs), STAGE_NAMES);
+  assert.deepEqual(Object.keys(res.cold.combined.perStageMs), ['cullAndSelectDefault']);
+  // 가짜 시계에서 단계 하나는 호출 쌍 1틱 = 1
+  for (const n of STAGE_NAMES) assert.deepEqual(res.staged.perStageMs[n], { median: 1, p95: 1, max: 1 });
+  assert.deepEqual(res.combined.perStageMs.cullAndSelectDefault, { median: 1, p95: 1, max: 1 });
+});
+
+test('제거 장면: 결합 경로(기본 구현)의 단계별 제거 수가 pointSizeM 을 직접 넘긴 실제 모듈 결과와 같다', async () => {
+  // 결합 경로가 기본 구현 안에서 모듈에 pointSizeM 을 못 넘기면(기본 지름으로 대체) 제거 수가 달라진다.
+  const { hierarchy, cameras, pointSizeM, thresholdPx } = getRemovalScene();
+  const stages = makeRealStages(hierarchy, cameras, { pointSizeM });
+  for (const cam of cameras) {
+    const r = await cullAndSelectDefault(hierarchy, cam, { thresholdPx, pointSizeM, stages: ['frustum', 'backface', 'occlusion'] });
+    let acc = new Uint8Array(hierarchy.octree.leafCount).fill(1);
+    const expected = {};
+    for (const [name, key] of [['frustum', 'removedFrustum'], ['backface', 'removedBackface'], ['occlusion', 'removedOcclusion']]) {
+      const m = stages[name](hierarchy, cam);
+      let removed = 0;
+      for (let k = 0; k < acc.length; k++) if (acc[k] === 1 && m[k] === 0) removed++;
+      expected[key] = removed;
+      acc = acc.map((v, k) => v & m[k]);
+    }
+    assert.ok(expected.removedBackface > 0 && expected.removedOcclusion > 0);
+    for (const key of Object.keys(expected)) assert.equal(r.cull.stats[key], expected[key], key);
+  }
+});
+
+test('제거 장면: 측정 구간(now 호출 쌍) 하나의 실제 시간이 생존 한계(1000 ms)를 넘지 않는다(가짜 시계가 못 보는 대기 방지)', async () => {
+  const { hierarchy, cameras, pointSizeM, thresholdPx } = getRemovalScene();
+  // 보고는 틱(호출 수), 감시는 실제 시간: now() 호출 (t0, 끝) 쌍마다 실제 경과를 잰다.
+  let tick = 0;
+  const wall = [];
+  const now = () => { wall.push(performance.now()); return tick++; };
+  await measureScene(hierarchy, cameras, { repeats: 1, now, pointSizeM, thresholdPx });
+  assert.equal(wall.length % 2, 0);
+  const spans = [];
+  for (let i = 0; i < wall.length; i += 2) spans.push(wall[i + 1] - wall[i]);
+  assert.ok(spans.length > 0);
+  assert.ok(Math.max(...spans) < CALL_CEILING_MS, `가장 긴 측정 구간 ${Math.max(...spans).toFixed(0)} ms`);
 });
