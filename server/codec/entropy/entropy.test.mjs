@@ -93,17 +93,29 @@ test('골든: 빈 입력·1 바이트는 저장 모드, 헤더 손계산', () =>
   assert.equal(hex(e.subarray(0, 3)), '00ac02');
 });
 
-test('손계산: 0x00 한 바이트의 범위 부호는 정규화 1 번 → payload 6 B', () => {
+test('손계산: 0x00 한 바이트의 범위 부호는 정규화 1 번 → payload 6 B, 그래서 mode 1 로는 못 쓴다', () => {
   // range: ffffffff → 7ffffc00 → 3ffffc00 → 1ffffc00 → 0ffffc00 → 07fffc00 → 03fffc00 → 01fffc00 → 00fffc00(< 2^24, 정규화 1 번)
   // 따라서 payload = 1 + 5 = 6 B. 모두 비트 0 이라 low = 0 → 전부 0x00. 원본 1 B 보다 크므로 부호기는 저장을 고른다.
   assert.equal(hex(referenceRangePayload([0])), '000000000000');
-  assert.equal(hex(entropyDecode(fromHex('0101000000000000'))), '00');
-  // 끝 상태 code 는 0 이어야 한다: 마지막 바이트 01 이면 code = 1 → 거부
-  expectCodecError(() => entropyDecode(fromHex('0101000000000001')), 'stream');
-  // payload 5 B 는 정규화에 쓸 바이트가 모자라다
-  expectCodecError(() => entropyDecode(fromHex('01010000000000')), 'stream');
-  // 7 B 는 1 B 남는다
-  expectCodecError(() => entropyDecode(fromHex('010100000000000000')), 'stream');
+  assert.equal(hex(entropyEncode(Uint8Array.of(0))), '000100');
+  // payload 6 B > rawLen 1 인 mode 1 은 비정규라 복호기가 거부한다(부호기가 만들지 않는 출력)
+  expectCodecError(() => entropyDecode(fromHex('0101000000000000')), 'stream');
+  // 같은 계산을 정규 크기로: 0x00 이 64 개면 정규화가 더 일어나 payload 29 B(≤ 64)이고 mode 1 이 정규다. payload 는 전부 0x00.
+  const z64 = new Uint8Array(64);
+  const payload = referenceRangePayload(z64);
+  assert.equal(hex(payload), '00'.repeat(29));
+  const ok = Uint8Array.from([1, 64, ...payload]);
+  assert.equal(hex(entropyDecode(ok)), hex(z64));
+  // 끝 상태 code 는 0 이어야 한다: 마지막 바이트 01 이면 code ≠ 0 → 거부
+  const badTail = ok.slice(); badTail[badTail.length - 1] = 1;
+  expectCodecError(() => entropyDecode(badTail), 'stream');
+  // payload 가 한 바이트 모자라면 정규화에 쓸 바이트가 없다
+  expectCodecError(() => entropyDecode(ok.subarray(0, ok.length - 1)), 'stream');
+  // payload 가 한 바이트 남으면 거부
+  expectCodecError(() => entropyDecode(Uint8Array.from([...ok, 0])), 'stream');
+  // 첫 바이트 ≠ 0
+  const badHead = ok.slice(); badHead[2] = 1;
+  expectCodecError(() => entropyDecode(badHead), 'stream');
 });
 
 test('골든: 반복 바이트 64 개는 범위 모드(16 진 고정)', () => {
@@ -142,8 +154,10 @@ test('독립 참조 부호기와 무작위 짧은 입력 400 개에서 일치', 
       assert.equal(e.length, head + n);
     }
     assert.equal(hex(entropyDecode(e)), hex(a));
-    // 참조 부호기 출력은 저장 여부와 상관없이 복호된다
-    assert.equal(hex(entropyDecode(Uint8Array.from([1, ...lebBytes(n), ...ref]))), hex(a));
+    // 참조 부호기 출력을 mode 1 로 싸면 payload ≤ rawLen 일 때만 복호되고, 더 크면 비정규라 'stream' 으로 거부된다
+    const wrapped = Uint8Array.from([1, ...lebBytes(n), ...ref]);
+    if (ref.length <= n) assert.equal(hex(entropyDecode(wrapped)), hex(a));
+    else expectCodecError(() => entropyDecode(wrapped), 'stream');
   }
   assert.ok(rangeCount >= 100, `범위 모드 사례 ${rangeCount}`);
 });

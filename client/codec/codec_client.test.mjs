@@ -65,11 +65,22 @@ class RangeEnc {
   }
 }
 
-/** entropy 컨테이너. mode 0 저장 / mode 1 범위 부호(강제). */
+/** entropy 컨테이너. mode 0 저장 / mode 1 범위 부호. 서버 부호기와 같은 규칙: mode 1 은 rawLen > 0 이고 payload ≤ rawLen 일 때만, 아니면 저장 모드로 내려간다. */
 function entropy(raw, mode) {
-  const out = [mode];
+  const out = [0];
   leb(raw.length, out);
-  if (mode === 0) out.push(...raw); else out.push(...RangeEnc.encode(raw));
+  if (mode === 1 && raw.length > 0) {
+    const payload = RangeEnc.encode(raw);
+    if (payload.length <= raw.length) { out[0] = 1; out.push(...payload); return Uint8Array.from(out); }
+  }
+  out.push(...raw);
+  return Uint8Array.from(out);
+}
+/** 손상 시험용: payload 크기와 무관하게 mode 1 로 강제한다(정상 부호기는 이런 출력을 만들지 않는다). */
+function entropyForcedRange(raw) {
+  const out = [1];
+  leb(raw.length, out);
+  out.push(...RangeEnc.encode(raw));
   return Uint8Array.from(out);
 }
 
@@ -135,8 +146,9 @@ const refresh = (file) => { // 체크섬만 다시 계산(내부 손상이 체�
 };
 function encodeFile(pts, { colorMode = 0, ent = 0 } = {}) {
   const st = encodeStreams(pts, colorMode);
-  const file = assemble(pts.length, colorMode, [entropy(st.pos, ent), entropy(st.nrm, ent), entropy(st.col, ent)]);
-  return { file, sorted: st.sorted };
+  const ents = [entropy(st.pos, ent), entropy(st.nrm, ent), entropy(st.col, ent)];
+  const file = assemble(pts.length, colorMode, ents);
+  return { file, sorted: st.sorted, modes: ents.map((e) => e[0]) }; // modes: 스트림별 실제 entropy mode(범위 부호가 실제로 쓰였는지 확인용)
 }
 const rows = (pts, lossy) => pointMultiset({
   pos_e: pts.map((p) => p.e), pos_n: pts.map((p) => p.n), pos_u: pts.map((p) => p.u),
@@ -152,6 +164,16 @@ function randomPoints(n, seed, { palette = 0 } = {}) {
   return Array.from({ length: n }, () => {
     const c = palette ? pal[ri(palette)] : [ri(256), ri(256), ri(256)];
     return { e: ri(65536), n: ri(65536), u: ri(65536), r: c[0], g: c[1], b: c[2], x: ri(255) - 127, y: ri(255) - 127 };
+  });
+}
+
+/** 압축이 잘 되는 점(좁은 격자·좁은 색·좁은 법선)이라 세 스트림 모두 payload ≤ rawLen 이 되어 mode 1 이 실제로 쓰인다. */
+function clusteredPoints(n, seed, { palette = 0, span = 16 } = {}) {
+  const R = rng(seed), ri = (m) => Math.floor(R() * m);
+  const pal = Array.from({ length: palette }, () => [ri(256), ri(256), ri(256)]);
+  return Array.from({ length: n }, () => {
+    const c = palette ? pal[ri(palette)] : [ri(8) * 2, 100 + ri(4), 200 + ri(2)];
+    return { e: ri(span), n: ri(span), u: ri(span), r: c[0], g: c[1], b: c[2], x: ri(5) - 2, y: ri(3) - 1 };
   });
 }
 
@@ -192,21 +214,33 @@ test('골든: 손으로 만든 codec 1 파일(entropy 저장 모드) 복호 값'
 });
 const CRC_GOLD = 0x724101b5; // 이 골든 파일(헤더 포함 194 B)의 CRC-32
 
-// pos 스트림만 범위 부호화(mode 1)한 같은 파일. 범위 부호 13 바이트는 고정 골든이다.
-// 원스트림 00 01 01 02 3B C1 FF FF 07(9 B)를 LZMA 방식(prob 11 비트·초기 1024, 이동 5, 첫 바이트 0, 5 바이트 flush)으로 부호화한 결과.
-const POS_RANGE_PAYLOAD = [0x00, 0x00, 0x01, 0x49, 0x46, 0x34, 0xea, 0xd9, 0x25, 0x72, 0x26, 0x18, 0x1e];
+// 범위 부호 골든. 6 점을 각각 8 번 연속 반복한 48 점(같은 키의 차분은 0)의 pos 원스트림은 손으로 쓴다:
+//   키 차분 0,1,1,2,59,16777153 각각 뒤에 0 이 7 개 → 00 +7×00, 01 +7×00, 01 +7×00, 02 +7×00, 3B +7×00, C1 FF FF 07 +7×00 (51 B).
+// 이 51 B 를 LZMA 방식(prob 11 비트·초기 1024, 이동 5, 첫 바이트 0, 5 바이트 flush)으로 부호화한 payload(압축되어 51 B 이하)를 16 진으로 고정한다.
+const POS_RAW_HEX = '00' + '00'.repeat(7) + '01' + '00'.repeat(7) + '01' + '00'.repeat(7) + '02' + '00'.repeat(7) + '3b' + '00'.repeat(7) + 'c1ffff07' + '00'.repeat(7);
+const POS_RANGE_PAYLOAD_HEX = '00000000000000000901a4a4000d7132823f709eb57b2e4b565dfb15291f000000';
 test('골든: 범위 부호(mode 1) 고정 바이트열 복호', () => {
-  const posStream = [0x01, 0x09, ...POS_RANGE_PAYLOAD]; // mode 1, rawLen 9
-  assert.equal(posStream.length, 15);
-  const body = Uint8Array.from([
-    ...GOLD_BODY.subarray(0, 4), 15, 0, 0, 0, 0x12, 0, 0, 0, 0x15, 0, 0, 0,
-    ...posStream, ...GOLD_BODY.subarray(16 + 11),
-  ]);
-  const file = fileOf(6, body);
-  const { planes } = decodeChunkClient(file);
-  for (const [k, want] of Object.entries(GOLD_EXPECT)) assert.deepEqual(Array.from(planes[k]), want, k);
+  const rawPos = Uint8Array.from(Buffer.from(POS_RAW_HEX, 'hex'));
+  assert.equal(rawPos.length, 51);
+  const payload = Uint8Array.from(Buffer.from(POS_RANGE_PAYLOAD_HEX, 'hex'));
+  assert.ok(payload.length <= rawPos.length, `payload ${payload.length} B 는 rawLen 51 이하여야 mode 1 이 정규`);
   // 시험 부호화기가 같은 바이트열을 만드는지(부호화기·복호기 상호 확인)
-  assert.deepEqual(RangeEnc.encode(Uint8Array.from([0, 1, 1, 2, 0x3b, 0xc1, 0xff, 0xff, 7])), POS_RANGE_PAYLOAD);
+  assert.deepEqual(Array.from(RangeEnc.encode(rawPos)), Array.from(payload));
+  const posStream = Uint8Array.from([0x01, 51, ...payload]); // mode 1, rawLen 51
+  const pts = [];
+  const exp = {};
+  for (const k of Object.keys(GOLD_EXPECT)) exp[k] = GOLD_EXPECT[k].flatMap((v) => Array(8).fill(v));
+  for (let i = 0; i < 6; i++) {
+    for (let r = 0; r < 8; r++) pts.push({ e: GOLD_EXPECT.pos_e[i], n: GOLD_EXPECT.pos_n[i], u: GOLD_EXPECT.pos_u[i], r: GOLD_EXPECT.color_r[i], g: GOLD_EXPECT.color_g[i], b: GOLD_EXPECT.color_b[i], x: GOLD_EXPECT.normal_oct_x[i], y: GOLD_EXPECT.normal_oct_y[i] });
+  }
+  const st = encodeStreams(pts, 0);
+  assert.equal(Buffer.from(st.pos).toString('hex'), POS_RAW_HEX); // 손으로 쓴 원스트림과 시험 부호화기 출력이 같다
+  const file = assemble(48, 0, [posStream, entropy(st.nrm, 0), entropy(st.col, 0)]);
+  const { planes } = decodeChunkClient(file);
+  for (const [k, want] of Object.entries(exp)) assert.deepEqual(Array.from(planes[k]), want, k);
+  // payload 한 바이트 변조는 거부된다(끝 상태 또는 값 범위)
+  const bad = Uint8Array.from(posStream); bad[bad.length - 1] ^= 1;
+  rejects(assemble(48, 0, [bad, entropy(st.nrm, 0), entropy(st.col, 0)]), CodecError, 'stream');
 });
 
 // ---------- ② 무작위 1만 점 왕복 ----------
@@ -218,8 +252,11 @@ for (const [name, opts, pal, lossy] of [
   ['저장 모드·색 PALETTE(256색)', { colorMode: 2, ent: 0 }, 256, false],
 ]) {
   test(`무작위 점 1만 개 왕복: ${name}`, () => {
-    const pts = randomPoints(10000, 12345 + opts.colorMode * 7 + opts.ent, { palette: pal });
-    const { file, sorted } = encodeFile(pts, opts);
+    const gen = opts.ent === 1 ? clusteredPoints : randomPoints; // 범위 부호 시험은 압축되는 점 분포(아니면 저장 모드로 내려가 시험이 되지 못한다)
+    const pts = gen(10000, 12345 + opts.colorMode * 7 + opts.ent, { palette: pal });
+    const { file, sorted, modes } = encodeFile(pts, opts);
+    if (opts.ent === 1) assert.deepEqual(modes, [1, 1, 1], '세 스트림 모두 실제로 범위 부호가 쓰여야 한다');
+    else assert.deepEqual(modes, [0, 0, 0]);
     const { header, planes } = decodeChunkClient(file);
     assert.equal(header.pointCount, 10000);
     assert.equal(planes.pos_e.length, 10000);
@@ -244,11 +281,20 @@ test('경계값: 모서리 점·중복 점(같은 키는 차분 0)', () => {
     { e: 0, n: 0, u: 0, r: 0, g: 0, b: 0, x: -127, y: 127 },
     { e: 65535, n: 65535, u: 65535, r: 1, g: 2, b: 3, x: 0, y: 0 },
   ];
-  const { file } = encodeFile(pts, { colorMode: 0, ent: 1 });
-  const { planes } = decodeChunkClient(file);
+  // 모서리 3 점 자체는 너무 작아 저장 모드로 내려가므로(정상 규칙), 같은 점들을 반복해 중복 점이 많은 범위 부호 스트림도 시험한다
+  const { file: small3, modes: m3 } = encodeFile(pts, { colorMode: 0, ent: 1 });
+  assert.deepEqual(m3, [0, 0, 0]);
+  const { planes } = decodeChunkClient(small3);
   assert.deepEqual(pointMultiset(planes), rows(pts, false));
   assert.equal(planes.pos_e[0], 0);
   assert.equal(planes.pos_u[2], 65535);
+  const many = [...pts, ...Array.from({ length: 300 }, (_, i) => ({ ...pts[i % 3] }))];
+  const { file, modes } = encodeFile(many, { colorMode: 0, ent: 1 });
+  assert.equal(modes[0], 1, 'pos 스트림은 범위 부호여야 한다');
+  const big = decodeChunkClient(file).planes;
+  assert.deepEqual(pointMultiset(big), rows(many, false));
+  assert.equal(big.pos_e[0], 0);
+  assert.equal(big.pos_u[302], 65535);
 });
 
 test('codec 0 파일은 readPlanesClient 에 위임', async () => {
@@ -318,30 +364,49 @@ test('거부: rawLen 부풀림(저장 길이 불일치·상한 초과·범위 �
   rejects(assemble(50, 0, [Uint8Array.from([0, 0x80, 0x80, 0x80, 0x80, 0x01]), ...rest]), CodecError, 'limit');
   // rawLen = 352 > 350
   rejects(assemble(50, 0, [Uint8Array.from([0, 0xe0, 0x02, ...raw]), ...rest]), CodecError, 'limit');
-  // 범위 부호에서 rawLen 만 328(상한 이내, 실제보다 큼): payload 가 모자라 거부
-  const rg = entropy(st.pos, 1);
+  // 범위 부호에서 rawLen 만 328(상한 이내, 실제보다 큼): 범위 복호가 실패하므로 'stream'(클라이언트도 'range' 아님)
+  // 압축되는 점(payload ≤ rawLen)으로 만들어야 비정규 컨테이너 검사가 아니라 범위 복호 실패 경로를 시험한다.
+  const cs = encodeStreams(clusteredPoints(50, 8, { span: 2 }), 0);
+  const rg = entropyForcedRange(cs.pos);
   const rl = rg[1] & 128 ? 2 : 1;
-  assert.ok(st.pos.length < 328);
-  rejects(assemble(50, 0, [Uint8Array.from([1, 0xc8, 0x02, ...rg.subarray(1 + rl)]), ...rest]), CodecError, 'range');
+  const payload = rg.subarray(1 + rl);
+  assert.ok(cs.pos.length < 328 && payload.length <= cs.pos.length, `payload ${payload.length} B, raw ${cs.pos.length} B`);
+  assert.equal(rg[0], 1);
+  assert.doesNotThrow(() => decodeChunkClient(assemble(50, 0, [rg, entropy(cs.nrm, 0), entropy(cs.col, 0)]))); // 정상 대조
+  rejects(assemble(50, 0, [Uint8Array.from([1, 0xc8, 0x02, ...payload]), entropy(cs.nrm, 0), entropy(cs.col, 0)]), CodecError, 'stream');
 });
 test('거부: 범위 부호 payload 가 남거나 첫 바이트 비 0', () => {
-  const st = encodeStreams(randomPoints(50, 9), 0);
-  const ok = entropy(st.pos, 1);
+  const st = encodeStreams(clusteredPoints(50, 9), 0);
+  const ok = entropyForcedRange(st.pos);
+  assert.ok(ok.length - 2 <= st.pos.length, '정상 대조: payload ≤ rawLen 이라야 mode 1 이 정규'); // 헤더 = mode 1 B + rawLen LEB 1 B
+  assert.doesNotThrow(() => decodeChunkClient(assemble(50, 0, [ok, entropy(st.nrm, 0), entropy(st.col, 0)])));
   const more = Uint8Array.from([...ok, 0]);
-  rejects(assemble(50, 0, [more, entropy(st.nrm, 0), entropy(st.col, 0)]), CodecError, 'range');
+  rejects(assemble(50, 0, [more, entropy(st.nrm, 0), entropy(st.col, 0)]), CodecError, 'stream');
   const hdrLen = 1 + (ok[1] & 128 ? 2 : 1);
   const nz = ok.slice(); nz[hdrLen] = 1;
-  rejects(assemble(50, 0, [nz, entropy(st.nrm, 0), entropy(st.col, 0)]), CodecError, 'range');
+  rejects(assemble(50, 0, [nz, entropy(st.nrm, 0), entropy(st.col, 0)]), CodecError, 'stream');
 });
 test('거부: pos 스트림 키 2^48 이상·모자람·남음', () => {
   const n = 2;
   const nrm = entropy(Uint8Array.from([0, 0, 0, 0]), 0), col = entropy(Uint8Array.from([0, 0, 0, 0, 0, 0, 0]), 0);
   const big = []; leb(2n ** 48n, big); big.push(0);
   rejects(assemble(n, 0, [entropy(Uint8Array.from(big), 0), nrm, col]), CodecError, 'range');
-  rejects(assemble(n, 0, [entropy(Uint8Array.from([5]), 0), nrm, col]), CodecError, 'stream'); // 모자람
+  rejects(assemble(n, 0, [entropy(Uint8Array.from([5]), 0), nrm, col]), CodecError, 'limit'); // 점마다 최소 1 B(streamRawBounds 하한 2) 미달
+  rejects(assemble(n, 0, [entropy(Uint8Array.from([5, 0x80]), 0), nrm, col]), CodecError, 'stream'); // 길이는 하한이지만 둘째 LEB128 이 잘림
   rejects(assemble(n, 0, [entropy(Uint8Array.from([5, 6, 7]), 0), nrm, col]), CodecError, 'stream'); // 남음
   // 정상 대조: 2 점
   assert.doesNotThrow(() => decodeChunkClient(assemble(n, 0, [entropy(Uint8Array.from([5, 6]), 0), nrm, col])));
+});
+test('거부: payload 가 rawLen 보다 큰 mode 1 은 범위 복호로 풀리는 스트림이라도 비정규라 거부', () => {
+  // 0x00 한 바이트의 범위 부호는 손계산상 payload 6 B(전부 0x00)이고 그 자체로는 정확히 복호된다. 그래도 6 > rawLen 1 이라 비정규.
+  assert.deepEqual(RangeEnc.encode(Uint8Array.of(0)), [0, 0, 0, 0, 0, 0]);
+  const nrm = entropy(Uint8Array.from([0, 0]), 0), col = entropy(Uint8Array.from([0, 0, 0, 0]), 0);
+  const odd = assemble(1, 0, [Uint8Array.from([1, 1, 0, 0, 0, 0, 0, 0]), nrm, col]);
+  rejects(odd, CodecError, 'stream');
+  // 같은 점을 저장 모드로 쓰면 정상 복호(대조)
+  assert.doesNotThrow(() => decodeChunkClient(assemble(1, 0, [entropy(Uint8Array.of(0), 0), nrm, col])));
+  // rawLen 0 인 mode 1 도 'stream'(저장 모드 rawLen 0 이 정규)
+  rejects(assemble(1, 0, [Uint8Array.from([1, 0, 0, 0, 0, 0, 0]), nrm, col]), CodecError, 'stream');
 });
 test('거부: normal 값 범위 밖(누적 128)', () => {
   const col = entropy(Uint8Array.from([0, 0, 0, 0, 0, 0, 0]), 0);
@@ -359,7 +424,8 @@ test('거부: 팔레트 인덱스 범위 밖·길이 불일치', () => {
   const st = encodeStreams(randomPoints(3, 11), 0);
   const e = [entropy(st.pos, 0), entropy(st.nrm, 0)];
   rejects(assemble(3, 2, [...e, entropy(Uint8Array.from([2, 0, 1, 2, 3, 0, 0, 1]), 0)]), CodecError, 'range'); // k=1 인데 인덱스 1
-  rejects(assemble(3, 2, [...e, entropy(Uint8Array.from([2, 0, 1, 2, 3, 0, 0]), 0)]), CodecError, 'stream');
+  rejects(assemble(3, 2, [...e, entropy(Uint8Array.from([2, 0, 1, 2, 3, 0, 0]), 0)]), CodecError, 'limit'); // 7 B < 색 스트림 하한 min(n+5, 3n+1)=8
+  rejects(assemble(3, 2, [...e, entropy(Uint8Array.from([2, 2, 0, 1, 2, 3, 0, 0, 1]), 0)]), CodecError, 'stream'); // 하한 이상이나 k=3 이면 14 B 여야 한다
 });
 test('거부: 모르는 codec·짧은 입력은 AssetFormatError', () => {
   const f = small(); f[OFFSETS.codec] = 9;
