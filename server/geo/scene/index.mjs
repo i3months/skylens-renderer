@@ -1,7 +1,9 @@
 import { GeoError } from '../../../contracts/geo/index.mjs';
 
 // 공통 변환: 입력 검증 후 새 Float32Array 로 축 치환 (입력 불변)
-// 부호 반전은 0 - x 로 해 -0 이 생기지 않게 함
+// 형식 배열(Float32Array|Float64Array)만 받는다. 일반 배열·객체 {e,n,u} 는 GeoError('range')(F-072).
+// −0 은 항상 +0 으로 정규화한다: 부호 반전은 0 - x, 그대로 옮기는 성분은 x + 0.
+// 그래서 contracts/geo 의 enuToScene 과 n=0 등에서 deepStrictEqual 로 같다.
 function convert(arr, name, map) {
   if (!(arr instanceof Float32Array || arr instanceof Float64Array)) {
     throw new GeoError('range', `${name}: Float32Array|Float64Array 필요`);
@@ -20,10 +22,10 @@ function convert(arr, name, map) {
 
 /** ENU 배열 3n → 씬 (e,n,u)→(e,u,−n). */
 export function enuArrayToScene(enu) {
-  return convert(enu, 'enuArrayToScene', (o, i, e, n, u) => { o[i] = e; o[i + 1] = u; o[i + 2] = 0 - n; });
+  return convert(enu, 'enuArrayToScene', (o, i, e, n, u) => { o[i] = e + 0; o[i + 1] = u + 0; o[i + 2] = 0 - n; });
 }
 
 /** 씬 배열 3n → ENU (x,y,z)→(x,−z,y). */
 export function sceneArrayToEnu(scene) {
-  return convert(scene, 'sceneArrayToEnu', (o, i, x, y, z) => { o[i] = x; o[i + 1] = 0 - z; o[i + 2] = y; });
+  return convert(scene, 'sceneArrayToEnu', (o, i, x, y, z) => { o[i] = x + 0; o[i + 1] = 0 - z; o[i + 2] = y + 0; });
 }
