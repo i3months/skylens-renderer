@@ -37,3 +37,9 @@ test('일반 배열 leafIndex 와 일반 배열 상자는 cull: 오류', () => {
   h.octree.boxMax = Array.from(h.octree.boxMax);
   assert.throws(() => predictiveMask(h, state, opts), CULL);
 });
+
+test('F-153 leafIndex 가 Float32Array(모두 정수)면 Int32Array 가 아니므로 cull: 오류', () => {
+  const h = mk();
+  h.octree.leafIndex = Float32Array.from(h.octree.leafIndex);
+  assert.throws(() => predictiveMask(h, state, opts), CULL);
+});
