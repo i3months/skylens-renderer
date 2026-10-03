@@ -9,6 +9,8 @@ const ERR = 'lod:';
 const DEGENERATE_SIDE = 1;
 const F32_EPS = 2 ** -23;
 const F32_TINY = 2 ** -149;
+/** Float32 로 표현되는 최댓값. 바깥 반올림·정육면체 확장이 이를 넘으면 Infinity 가 되므로 상자를 여기서 자른다. */
+const F32_MAX = 3.4028234663852886e38;
 
 // Float32 로 저장해도 상자가 점을 놓치지 않도록 바깥쪽으로 반올림한다(최소는 내림, 최대는 올림).
 function f32Down(v) {
@@ -118,7 +120,9 @@ export function buildOctree(cloud, opts) {
   const boxMin = new Float32Array(3 * nodeCount), boxMax = new Float32Array(3 * nodeCount);
   for (let i = 0; i < nodeCount; i++) {
     const c = [nCx[i], nCy[i], nCz[i]], h = nHalf[i];
-    for (let a = 0; a < 3; a++) { boxMin[3 * i + a] = f32Down(c[a] - h); boxMax[3 * i + a] = f32Up(c[a] + h); }
+    for (let a = 0; a < 3; a++) { // 정육면체 루트가 Float32 범위를 넘으면 Infinity 가 되어 계층 검사가 빌더 자신의 계층을 거부했다(F-112 ②).
+      // 점 좌표는 Float32 이므로 ±F32_MAX 안에 있어, 자른 상자도 점을 놓치지 않는다.
+      boxMin[3 * i + a] = Math.max(f32Down(c[a] - h), -F32_MAX); boxMax[3 * i + a] = Math.min(f32Up(c[a] + h), F32_MAX); }
   }
 
   return {
