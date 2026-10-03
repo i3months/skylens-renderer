@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { clientFrustumCull, leafBoxesOf, isDegenerateViewClient } from './index.mjs';
-import { boxMayBeVisible } from '../../server/lod/select/view_check.mjs'; // 비교 대상(테스트에서만 서버 import)
+import { boxMayBeVisibleSplat } from '../../server/lod/select/view_check.mjs'; // 비교 대상(테스트에서만 서버 import)
 import { buildHierarchy } from '../../server/lod/hierarchy/index.mjs';
 
 function rng(seed) {
@@ -54,9 +54,10 @@ const fixedViews = (o = [0, 0, 0]) => [
   [[100, 100, -50], [100, 100, 50]], [[0, 0, 2], [200, 200, 2]], [[80, 80, 0], [200, 80, 0]], [[400, 400, 50], [0, 0, 0]],
 ].map(([e, t], i) => lookAt(e.map((v, d) => v + o[d]), t.map((v, d) => v + o[d]), 640, 480, 500, i * 0.3));
 
-function serverMask(boxes, cam) {
+// 서버 규칙(공용 boxMayBeVisibleSplat)을 리프마다 쓴 마스크. pointSizeM 이 undefined 면 좌·우·위·아래 제거 없음.
+function serverMask(boxes, cam, pointSizeM) {
   const n = boxes.boxMin.length / 3, out = new Uint8Array(n);
-  for (let k = 0; k < n; k++) out[k] = boxMayBeVisible(cam, boxes.boxMin.subarray(3 * k, 3 * k + 3), boxes.boxMax.subarray(3 * k, 3 * k + 3)) ? 1 : 0;
+  for (let k = 0; k < n; k++) out[k] = boxMayBeVisibleSplat(cam, boxes.boxMin.subarray(3 * k, 3 * k + 3), boxes.boxMax.subarray(3 * k, 3 * k + 3), pointSizeM) ? 1 : 0;
   return out;
 }
 function randomCams(seed, cnt, o = [0, 0, 0]) {
@@ -70,12 +71,13 @@ function randomCams(seed, cnt, o = [0, 0, 0]) {
 }
 const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 
-function compareAll(off) {
+function compareAll(off, pointSizeM) {
   let cmp = 0, bad = 0, kept = 0, removed = 0;
+  const opts = pointSizeM === undefined ? undefined : { pointSizeM };
   for (const [name, cloud] of Object.entries(scenes(off))) {
     const boxes = leafBoxesOf(build(cloud).octree);
     for (const cam of [...fixedViews(off), ...randomCams(42, 200, off)]) {
-      const a = clientFrustumCull(boxes, cam), b = serverMask(boxes, cam);
+      const a = clientFrustumCull(boxes, cam, opts), b = serverMask(boxes, cam, pointSizeM);
       cmp++; if (!same(a, b)) bad++;
       for (const v of a) v ? kept++ : removed++;
     }
@@ -83,36 +85,46 @@ function compareAll(off) {
   return { cmp, bad, kept, removed };
 }
 
-test('합성 장면 3종 × 고정 시점 8 + 무작위 200: 서버 마스크와 불일치 0', () => {
-  const r = compareAll([0, 0, 0]);
-  assert.equal(r.cmp, 3 * 208);
-  assert.equal(r.bad, 0);
-  assert.ok(r.kept > 0 && r.removed > 0, `둘 다 나와야 시험이 의미 있음 kept=${r.kept} removed=${r.removed}`);
-});
+// pointSizeM: 0(원판 중심만), 0.5 m, 없음(좌·우·위·아래 제거 없음) 세 경우 모두 서버 규칙과 같아야 한다.
+for (const size of [0, 0.5, undefined]) {
+  test(`합성 장면 3종 × 고정 시점 8 + 무작위 200 (pointSizeM ${size}): 서버 마스크와 불일치 0`, () => {
+    const r = compareAll([0, 0, 0], size);
+    assert.equal(r.cmp, 3 * 208);
+    assert.equal(r.bad, 0);
+    assert.ok(r.kept > 0 && r.removed > 0, `둘 다 나와야 시험이 의미 있음 kept=${r.kept} removed=${r.removed}`);
+  });
 
-test('큰 좌표(1e6 m)에서도 서버 마스크와 불일치 0', () => {
-  const r = compareAll([1e6, -1e6, 1e6]);
-  assert.equal(r.bad, 0);
-  assert.ok(r.kept > 0 && r.removed > 0);
-});
+  test(`큰 좌표(1e6 m)에서도 서버 마스크와 불일치 0 (pointSizeM ${size})`, () => {
+    const r = compareAll([1e6, -1e6, 1e6], size);
+    assert.equal(r.bad, 0);
+    assert.ok(r.kept > 0 && r.removed > 0);
+  });
+}
 
 test('조각 목록 일치: 마스크에서 뽑은 리프 번호 목록이 서버와 같음', () => {
   const boxes = leafBoxesOf(build(scenes().terrain).octree);
   const cam = fixedViews()[0];
   const list = (m) => [...m].flatMap((v, i) => (v ? [i] : []));
-  assert.deepEqual(list(clientFrustumCull(boxes, cam)), list(serverMask(boxes, cam)));
+  assert.deepEqual(list(clientFrustumCull(boxes, cam, { pointSizeM: 0.5 })), list(serverMask(boxes, cam, 0.5)));
 });
 
 test('작은 상자 손계산: 앞·뒤·옆·경계 등호', () => {
   const cam = { width: 100, height: 100, K: { fx: 100, fy: 100, cx: 50, cy: 50 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
   const box = (a, b) => ({ boxMin: new Float32Array(a), boxMax: new Float32Array(b) });
   const b = { boxMin: new Float32Array([-1, -1, 10, -1, -1, -10, -1, -1, -5, 100, -1, 10, 50, -1, 100]), boxMax: new Float32Array([1, 1, 12, 1, 1, -5, 1, 1, 0, 200, 1, 12, 60, 1, 100.0]) };
+  const s0 = { pointSizeM: 0 }; // 원판 여유 0 = 원판 중심만 보는 규칙
   // 0: 정면 앞 → 1, 1: 뒤 → 0, 2: z=0 에 걸쳐 z 최댓값 0(앞 없음) → 0, 3: 오른쪽 한참 밖(x≥100,z≤12) → 0, 4: x=50..60,z=100: 오른쪽 경계 x=50 등호 → 1
-  assert.deepEqual([...clientFrustumCull(b, cam)], [1, 0, 0, 0, 1]);
-  assert.deepEqual([...clientFrustumCull(box([0, 0, 0], [0, 0, 0]), cam)], [0]);
+  assert.deepEqual([...clientFrustumCull(b, cam, s0)], [1, 0, 0, 0, 1]);
+  // pointSizeM 없음: 좌·우·위·아래 제거 없음 → 3 도 남고 뒤(1·2)만 제거
+  assert.deepEqual([...clientFrustumCull(b, cam)], [1, 0, 0, 1, 1]);
+  assert.deepEqual([...clientFrustumCull(box([0, 0, 0], [0, 0, 0]), cam, s0)], [0]);
   // 왼쪽 경계 등호: x ∈ [−60, −50], z = 100 → 꼭짓점 x=−50 에서 fx·x+cx·z = 0 → 남김(1); x ≤ −51 이면 제거(0)
-  assert.deepEqual([...clientFrustumCull(box([-60, 0, 100], [-50, 0, 100]), cam)], [1]);
-  assert.deepEqual([...clientFrustumCull(box([-60, 0, 100], [-51, 0, 100]), cam)], [0]);
+  assert.deepEqual([...clientFrustumCull(box([-60, 0, 100], [-50, 0, 100]), cam, s0)], [1]);
+  assert.deepEqual([...clientFrustumCull(box([-60, 0, 100], [-51, 0, 100]), cam, s0)], [0]);
+  // 원판 여유: pointSizeM 0.2 → m = fx·0.2/2 = 10. x_max = −50.1: −5010 + 5000 + 10 = 0 → 남김, x_max = −50.2 → −10 → 제거
+  const s2 = { pointSizeM: 0.2 };
+  assert.deepEqual([...clientFrustumCull(box([-60, 0, 100], [-50.1, 0, 100]), cam, s2)], [1]);
+  assert.deepEqual([...clientFrustumCull(box([-60, 0, 100], [-50.2, 0, 100]), cam, s2)], [0]);
 });
 
 test('퇴화 시점: 전부 0, 던지지 않음', () => {
@@ -129,7 +141,7 @@ test('퇴화 시점: 전부 0, 던지지 않음', () => {
   ];
   for (const cam of bads) {
     assert.equal(isDegenerateViewClient(cam), true);
-    const m = clientFrustumCull(boxes, cam);
+    const m = clientFrustumCull(boxes, cam, { pointSizeM: 0.5 });
     assert.equal(m.length, n);
     assert.equal(m.reduce((a, v) => a + v, 0), 0);
   }
@@ -141,6 +153,9 @@ test('입력 오류는 cull: 접두 오류', () => {
   assert.throws(() => clientFrustumCull(null, cam), /^Error: cull:/);
   assert.throws(() => clientFrustumCull({ boxMin: new Float32Array(3), boxMax: new Float32Array(6) }, cam), /^Error: cull:/);
   assert.throws(() => clientFrustumCull({ boxMin: [0, 0, 0], boxMax: [1, 1, 1] }, cam), /^Error: cull:/);
+  const ok = { boxMin: new Float32Array(3), boxMax: new Float32Array(3) };
+  for (const bad of [-0.01, NaN, Infinity, '0.05']) assert.throws(() => clientFrustumCull(ok, cam, { pointSizeM: bad }), /^Error: cull:/);
+  assert.throws(() => clientFrustumCull(ok, cam, 0.05), /^Error: cull:/);
   assert.throws(() => leafBoxesOf({ leafCount: 2, leafIndex: new Int32Array([0, -1]), boxMin: new Float32Array(6), boxMax: new Float32Array(6) }), /^Error: cull:/);
 });
 

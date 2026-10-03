@@ -1,6 +1,10 @@
 // 클라이언트 절두체 컬링(T08.7). 서버 frustumCull(= boxMayBeVisible 규칙)과 같은 마스크를 독립 구현으로 낸다.
 // 브라우저에서도 돌아야 하므로 node: 내장 모듈·서버 모듈을 import 하지 않는다(순수 ESM, 의존성 없음).
 // 규칙: 앞 z > 0, 좌·우·위·아래는 등호를 안으로 본다. 상자 8 꼭짓점이 모두 한 반공간 밖일 때만 제거(보수적).
+// F-116 원판 여유: 점은 반경 r = fx·pointSizeM/(2z) px 원판으로 그려진다(위·아래도 fx). 좌·우·위·아래 평면에
+//   m = fx·pointSizeM/2 를 더해 바깥으로 민다: fx·x + cx·z + m ≥ 0, fx·x + (cx − W)·z − m ≤ 0, fy·y + cy·z + m ≥ 0,
+//   fy·y + (cy − H)·z − m ≤ 0. X_c 의 1차식이라 8 꼭짓점 판정이 정확하다.
+// opts.pointSizeM 이 없으면 원판 크기를 모르므로 좌·우·위·아래로는 아무것도 버리지 않는다(앞 z > 0 만 판정).
 // 퇴화 시점(NaN·Infinity, 해상도·초점거리 ≤ 0, R 이 회전 아님)이면 던지지 않고 전부 0 을 돌려준다.
 // 입력 오류(leafBoxes 형식)는 'cull:' 오류.
 const ERR = 'cull:';
@@ -42,8 +46,15 @@ export function leafBoxesOf(octree) {
   return { boxMin: mn, boxMax: mx };
 }
 
-/** 리프 상자 목록과 카메라로 마스크(1 = 남김, 0 = 제거)를 만든다. */
-export function clientFrustumCull(leafBoxes, camera) {
+/** 리프 상자 목록과 카메라로 마스크(1 = 남김, 0 = 제거)를 만든다. opts.pointSizeM = 원판 지름(m), 없으면 좌·우·위·아래 제거 없음. */
+export function clientFrustumCull(leafBoxes, camera, opts) {
+  let pointSizeM;
+  if (opts !== undefined && opts !== null) {
+    if (typeof opts !== 'object') throw new Error(`${ERR} opts 는 객체여야 함`);
+    pointSizeM = opts.pointSizeM ?? undefined;
+    if (pointSizeM !== undefined && !(typeof pointSizeM === 'number' && Number.isFinite(pointSizeM) && pointSizeM >= 0)) throw new Error(`${ERR} pointSizeM 은 0 이상의 유한 수여야 함: ${String(pointSizeM)}`);
+  }
+  const lateral = pointSizeM !== undefined;
   if (!leafBoxes || !(leafBoxes.boxMin instanceof Float32Array) || !(leafBoxes.boxMax instanceof Float32Array)) throw new Error(`${ERR} leafBoxes 는 {boxMin, boxMax: Float32Array}`);
   const { boxMin, boxMax } = leafBoxes;
   if (boxMin.length % 3 !== 0 || boxMin.length !== boxMax.length) throw new Error(`${ERR} boxMin·boxMax 는 같은 길이의 3의 배수여야 함`);
@@ -52,9 +63,10 @@ export function clientFrustumCull(leafBoxes, camera) {
   if (isDegenerateViewClient(camera)) return out;
   const { R, t, K, width: W, height: H } = camera;
   const { fx, fy, cx, cy } = K;
+  const m = lateral ? 0.5 * fx * pointSizeM : 0;
   for (let k = 0; k < n; k++) {
     const b = 3 * k;
-    let front = false, left = false, right = false, top = false, bottom = false;
+    let front = false, left = !lateral, right = !lateral, top = !lateral, bottom = !lateral;
     for (let c = 0; c < 8; c++) {
       const X = c & 1 ? boxMax[b] : boxMin[b];
       const Y = c & 2 ? boxMax[b + 1] : boxMin[b + 1];
@@ -63,10 +75,11 @@ export function clientFrustumCull(leafBoxes, camera) {
       const y = R[3] * X + R[4] * Y + R[5] * Z + t[1];
       const z = R[6] * X + R[7] * Y + R[8] * Z + t[2];
       if (z > 0) front = true;
-      if (fx * x + cx * z >= 0) left = true;
-      if (fx * x + (cx - W) * z <= 0) right = true;
-      if (fy * y + cy * z >= 0) top = true;
-      if (fy * y + (cy - H) * z <= 0) bottom = true;
+      if (!lateral) continue;
+      if (fx * x + cx * z + m >= 0) left = true;
+      if (fx * x + (cx - W) * z - m <= 0) right = true;
+      if (fy * y + cy * z + m >= 0) top = true;
+      if (fy * y + (cy - H) * z - m <= 0) bottom = true;
     }
     out[k] = front && left && right && top && bottom ? 1 : 0;
   }
