@@ -64,3 +64,61 @@ test('카메라 오류 접두: select·budget(leafTargets 포함)·progressive �
     assert.throws(fn, (e) => e.message.startsWith('lod:'), String(fn));
   }
 });
+
+// ---- F-102 ①: 좌·우·위·아래 평면 각각의 경계값과 밖 상자의 NOT_DRAWN ----
+// 이 카메라(fx = fy = 90, cx = 160, cy = 90, 320×180)에서 정확히 표현되는 경계:
+//   왼쪽 u = 0 ⇔ x = −16 (z = 9)   오른쪽 u = 320 ⇔ x = +16 (z = 9)
+//   위   v = 0 ⇔ y = −10 (z = 10)  아래   v = 180 ⇔ y = +10 (z = 10)
+// 얇은 상자(z 고정)를 경계 한쪽에 완전히 놓아 한 평면만 판정을 가르게 한다. d ≥ 0 은 경계에서 바깥으로의 거리.
+const PLANES = {
+  left:   (d) => ({ mn: [-16 - d - 1, 0, 9], mx: [-16 - d, 0.1, 9] }),
+  right:  (d) => ({ mn: [16 + d, 0, 9], mx: [16 + d + 1, 0.1, 9] }),
+  top:    (d) => ({ mn: [0, -10 - d - 1, 10], mx: [0.1, -10 - d, 10] }),
+  bottom: (d) => ({ mn: [0, 10 + d, 10], mx: [0.1, 10 + d + 1, 10] }),
+};
+
+for (const [name, mk] of Object.entries(PLANES)) {
+  test(`boxMayBeVisible: ${name} 평면 — 경계 위는 안, 1e-3 밖·멀리 밖은 밖, 안쪽은 안`, () => {
+    const on = mk(0), out = mk(1e-3), far = mk(5), inn = mk(-1);
+    assert.equal(boxMayBeVisible(CAM, on.mn, on.mx), true, '등호는 안');
+    assert.equal(boxMayBeVisible(CAM, out.mn, out.mx), false, '경계 바깥');
+    assert.equal(boxMayBeVisible(CAM, far.mn, far.mx), false, '멀리 바깥');
+    assert.equal(boxMayBeVisible(CAM, inn.mn, inn.mx), true, '경계 안쪽');
+  });
+}
+
+test('boxMayBeVisible: 평면 경계에 걸친 상자는 네 평면 모두 안', () => {
+  assert.equal(boxMayBeVisible(CAM, [10, 0, 9], [20, 0.1, 9]), true);
+  assert.equal(boxMayBeVisible(CAM, [-20, 0, 9], [-10, 0.1, 9]), true);
+  assert.equal(boxMayBeVisible(CAM, [0, -15, 10], [0.1, -5, 10]), true);
+  assert.equal(boxMayBeVisible(CAM, [0, 5, 10], [0.1, 15, 10]), true);
+});
+
+// 점 두 개(작은 상자)를 (x, y, z) 에 둔 한 리프 계층.
+function leafAt(x, y, z) {
+  const pts = [x, y, z, x + 0.001, y + 0.001, z + 0.001];
+  const cloud = { format: 1, count: 2, positions: Float32Array.from(pts), normals: new Float32Array(6), colors: new Uint8Array(6) };
+  return buildHierarchy(cloud, { edge0M: 0.25, levelCount: 3, maxLeafPoints: 64 });
+}
+
+// 경계에서 충분히(수 m) 안쪽·바깥쪽인 점. 리프 상자가 셀 크기여도 한쪽에 머문다.
+const LEAF_CASES = {
+  left:   { inside: [-12, 0, 9], outside: [-20, 0, 9] },
+  right:  { inside: [12, 0, 9], outside: [20, 0, 9] },
+  top:    { inside: [0, -6, 10], outside: [0, -14, 10] },
+  bottom: { inside: [0, 6, 10], outside: [0, 14, 10] },
+};
+
+for (const [name, c] of Object.entries(LEAF_CASES)) {
+  test(`${name} 평면 밖 리프: select·leafTargets·budget·progressive 모두 그리지 않음(안쪽 리프는 그림)`, () => {
+    const hi = leafAt(...c.inside), ho = leafAt(...c.outside);
+    assert.notEqual(selectLevels(hi, CAM, { thresholdPx: 1 }).leafLevel[0], NOT_DRAWN);
+    assert.equal(leafTargets(hi, CAM, 1).visible[0], 1);
+    assert.notEqual(selectWithBudget(hi, CAM, { budgetPoints: 1000, thresholdPx: 1 }).leafLevel[0], NOT_DRAWN);
+    assert.ok(progressiveChunks(hi, CAM, { thresholdPx: 1 }).length > 0);
+    assert.equal(selectLevels(ho, CAM, { thresholdPx: 1 }).leafLevel[0], NOT_DRAWN);
+    assert.equal(leafTargets(ho, CAM, 1).visible[0], 0);
+    assert.equal(selectWithBudget(ho, CAM, { budgetPoints: 1000, thresholdPx: 1 }).leafLevel[0], NOT_DRAWN);
+    assert.equal(progressiveChunks(ho, CAM, { thresholdPx: 1 }).length, 0);
+  });
+}
