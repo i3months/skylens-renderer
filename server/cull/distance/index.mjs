@@ -2,6 +2,7 @@
 // 거리 = 카메라 중심과 리프 상자의 최소 거리. 경계(거리 = maxDistanceM)는 보수적으로 남긴다.
 
 import { cameraCenter, boxDistanceM } from '../../lod/select/screen_error.mjs';
+import { isDegenerateView } from '../degenerate/index.mjs';
 
 const ERR = 'cull:';
 
@@ -35,30 +36,6 @@ function assertHierarchy(h) {
   }
 }
 
-// 거리 판정에는 카메라 중심(R, t)만 쓰므로 R·t 가 유한한 숫자인지만 본다.
-function isDegenerateCamera(camera) {
-  if (!camera || typeof camera !== 'object') return true;
-  const { R, t } = camera;
-  if (!R || R.length !== 9 || !t || t.length !== 3) return true;
-  for (let i = 0; i < 9; i++) if (typeof R[i] !== 'number' || !Number.isFinite(R[i])) return true;
-  for (let i = 0; i < 3; i++) if (typeof t[i] !== 'number' || !Number.isFinite(t[i])) return true;
-  return !isRotation(R);
-}
-
-// R 이 회전(정규직교·det=+1)인지. 0 행렬·2I·반사 등은 거부. (isDegenerateView 는 width/height/K 까지 요구해 쓸 수 없음)
-function isRotation(R) {
-  const TOL = 1e-6;
-  for (let i = 0; i < 3; i++) {
-    for (let j = 0; j < 3; j++) {
-      let s = 0;
-      for (let k = 0; k < 3; k++) s += R[i * 3 + k] * R[j * 3 + k];
-      if (!(Math.abs(s - (i === j ? 1 : 0)) <= TOL)) return false;
-    }
-  }
-  const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
-  return Math.abs(det - 1) <= TOL;
-}
-
 /**
  * 거리 기반으로 리프를 걸러 낸다. 카메라 중심~리프 상자 최소 거리 > maxDistanceM 이면 0(제거).
  * 경계(거리 = maxDistanceM)는 1(남김). 빈 리프도 0.
@@ -87,7 +64,7 @@ export function distanceCull(hierarchy, camera, opts = {}) {
   }
 
   // 퇴화 시점(NaN·Infinity 등)이면 전부 0
-  if (isDegenerateCamera(camera)) return mask;
+  if (isDegenerateView(camera)) return mask;
 
   // maxDistanceM = Infinity 면 비어있지 않은 리프 전부 남김
   if (maxDistanceM === Infinity) {
