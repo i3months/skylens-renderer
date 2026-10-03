@@ -150,15 +150,10 @@ for (const st of STAGES) {
   }
 }
 
-// 알려진 위반(F-157 발견, 이 시험의 소유 밖 구현 결함): 리프 상자의 y 좌표가 NaN 이면 boxMayBeVisibleSplat 계열 단계가
-// 정상에서 남던 리프를 제거한다(거짓 제거). 고쳐질 때까지 todo 로 표시하되 단언은 그대로 실행한다(고쳐지면 todo 표시를 지울 것).
-const KNOWN_NAN_Y_FALSE_REMOVAL = new Set(['frustumCull', 'predictiveMask', 'clientFrustumCull']);
-
 // NaN 리프: 계약 정책 = 남김(1, 거짓 제거 0). 다른 리프는 정상 결과와 같아야 한다. NaN 을 받는 서버 단계(NaN 거부)는 'cull:' 오류.
 for (const st of STAGES) {
   for (const axis of COORDS) {
-    const todo = axis === 1 && KNOWN_NAN_Y_FALSE_REMOVAL.has(st.name) ? 'NaN y 리프 거짓 제거(구현 결함)' : false;
-    test(`${st.name} × NaN 리프(${AXIS[axis]}): ${st.throwsNaN ? 'throw cull:' : 'pass (남김 = 1)'}`, { todo }, async () => {
+    test(`${st.name} × NaN 리프(${AXIS[axis]}): ${st.throwsNaN ? 'throw cull:' : 'pass (남김 = 1)'}`, async () => {
       if (st.throwsNaN) {
         const node = getFirstLeafNode(baseH);
         assert.ok(node >= 0);
