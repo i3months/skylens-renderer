@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildHierarchy } from '../../lod/select/index.mjs';
 import { cullAndSelect, loadDefaultImpls } from './index.mjs';
+import { backfaceCull, leafNormalCones } from '../backface/index.mjs';
 
 const CAM = { width: 320, height: 180, K: { fx: 400, fy: 400, cx: 160, cy: 90 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
 const SIZE_M = 0.05, STEP = 0.025, NX = 40, NY = 24;
@@ -31,4 +32,16 @@ test('pointSizeM 있으면 뒷면·가림 제거 > 0, 없으면 정확히 0 (같
     assert.ok(withSize[key] > 0, `${stage} pointSizeM=0.05 제거 ${withSize[key]}`);
     assert.equal(without[key], 0, `${stage} pointSizeM 없음 제거 ${without[key]}`);
   }
+});
+
+// backfaceCull 직접 호출: pointSizeM 을 생략하면 0.05 같은 값으로 대체되지 않고 제거 0, 0.05 를 주면 제거 > 0.
+test('backfaceCull 직접 호출: pointSizeM 생략은 제거 0, 0.05 명시는 제거 > 0', () => {
+  const cones = leafNormalCones(h);
+  const removed = (m) => m.reduce((a, v) => a + (v === 0 ? 1 : 0), 0);
+  const omitted = removed(backfaceCull(h, CAM, cones, {}));
+  const omittedNoOpts = removed(backfaceCull(h, CAM, cones));
+  const explicit = removed(backfaceCull(h, CAM, cones, { pointSizeM: SIZE_M }));
+  assert.equal(omitted, 0, `생략 제거 ${omitted}`);
+  assert.equal(omittedNoOpts, 0, `opts 없음 제거 ${omittedNoOpts}`);
+  assert.ok(explicit > 0, `0.05 명시 제거 ${explicit}`);
 });
