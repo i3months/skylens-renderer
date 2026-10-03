@@ -128,8 +128,12 @@ const R0 = camera(320, 180, 90), R1 = camera(960, 540, 754.32), G = generalCamer
 //   f·e_l/d_eff ≤ τ 를 만족하는 가장 거친 단계(최상위가 아닐 때)이므로 l+1 은 f·e_{l+1}/d_eff > τ, 즉 f·e_l/d_eff > τ/2 이다.
 //   실제 투영 칸 변은 추정값보다 작을 수 있으므로(추정은 상계) 이 τ/2 를 실제 값의 하한으로 쓸 수 없다. 그래서 추정값에는
 //   τ/2 를 단언하고(아래 loop), 실제 값 하한은 설정마다 측정해 둔다.
-//   측정(새 규칙 최대 / '단계 l−1 강제' 변이 최대 ≈ 절반): 0.292/0.146, 0.268/0.134, 0.298/0.149, 0.256/0.128 px.
-//   minWorstPx 는 두 값의 중간(반올림). 'd_eff×0.6' 변이는 설정 1 에서 0.274 로 통과하나 설정 2·3 에서 0.134·0.149 로 걸린다.
+//   측정(새 규칙 최대): 0.292, 0.268, 0.298, 0.256 px. minWorstPx 는 그 값보다 낮게 잡은 하한이다.
+//   변이 실행 로그(screen_error.mjs levelFor 결과에서 1 빼기, 최소 0): 설정 2·3 은 최대가 0.134·0.149 px 로 minWorstPx(0.2·0.22) 아래라
+//   실패한다. 설정 1·4 는 단계 ≥ 1 리프가 0 개(전부 원본 단계)라 최대 칸 변 값이 없고, 모서리 검사 수 cornerChecked = 0 단언에서 실패한다.
+//   (설정 1·4 의 '절반' 값 0.146·0.128 은 측정이 아니라 새 규칙 최대의 절반 계산이었으므로 쓰지 않는다.)
+//   'd_eff×0.6' 변이(effectiveDistance 의 effDistM 에 0.6 곱함) 실행 로그: 설정 1 0.274·설정 4 0.256 px 로 통과하고
+//   설정 2·3 에서 0.134·0.149 px 로 걸린다.
 const SETTINGS = [
   { name: '320×180 세로 화각 90° (fx = fy = 90)', cam: R0, center: cornerPoint(R0, 150), cosBelow: 0.5, minWorstPx: 0.22 },
   { name: '960×540 fx = fy = 754.32', cam: R1, center: cornerPoint(R1, 700), cosBelow: 0.85, minWorstPx: 0.2 },
@@ -158,7 +162,7 @@ for (const { name, cam, center, cosBelow, minWorstPx } of SETTINGS) {
     const [cx0, cy0, cz0] = [0, 1, 2].map((r) => cam.R[3 * r] * rule.center[0] + cam.R[3 * r + 1] * rule.center[1] + cam.R[3 * r + 2] * rule.center[2] + cam.t[r]);
     assert.ok(Math.hypot(cx0, cy0, cz0) < 1e-9, `R·C + t = (${cx0}, ${cy0}, ${cz0})`);
     const sel = selectLevels(h, cam, { thresholdPx: TAU });
-    let checked = 0, cornerChecked = 0, oldOver = 0, worstNew = 0, worstOld = 0, maxEst = 0;
+    let checked = 0, cornerChecked = 0, oldOver = 0, worstNew = 0, worstOld = 0;
     for (let k = 0; k < h.octree.leafCount; k++) {
       const l = sel.leafLevel[k];
       if (l === NOT_DRAWN || l === 0) continue; // 단계 0 은 원본(칸 없음)
@@ -173,7 +177,7 @@ for (const { name, cam, center, cosBelow, minWorstPx } of SETTINGS) {
       // 규칙 추정값 f·e_l/d_eff 는 τ 이하, 최상위 단계가 아니면 τ/2 초과(증명된 하한)
       const est = rule.focalPx * h.levels[l].edgeM / cornerInfo.effDistM;
       assert.ok(est <= TAU * (1 + 1e-9), `리프 ${k}: 추정 ${est} > τ`);
-      if (l < LEVELS - 1) { assert.ok(est > TAU / 2 * (1 - 1e-9), `리프 ${k} 단계 ${l}: 추정 ${est} ≤ τ/2`); maxEst = Math.max(maxEst, est); }
+      if (l < LEVELS - 1) { assert.ok(est > TAU / 2 * (1 - 1e-9), `리프 ${k} 단계 ${l}: 추정 ${est} ≤ τ/2`) }
       const lo = oldLevel(h, cam, n);
       if (lo > 0) {
         const pxOld = maxCellEdgePx(h, cam, n, k, lo);

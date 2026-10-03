@@ -69,7 +69,9 @@ for (const [name, fn] of Object.entries(NODE_COUNT_BAD)) {
   });
 }
 
-test('budget: d 가 비유한(오버플로)인 실제 리프도 던지지 않고 그 리프는 NOT_DRAWN', () => {
+// 주의: rule.leaf 는 비유한 d(distM Infinity, effDistM 0)에서도 던지지 않으므로 이 시험은 '가시성 판정이 rule.leaf 앞에 있다'(F-107 ② 순서)를
+// 증명하지 못한다(순서만 바꾸는 변이는 동치로 통과). 여기서는 시야 밖 결과만 단언한다.
+test('시야 밖 비유한 d 리프는 NOT_DRAWN, 던지지 않음 (selectLevels·budget)', () => {
   const { octree, levels } = base;
   const full = selectLevels(base, camera, OPTS);
   // 실제 리프(leafIndex ≥ 0)이고 점이 있으며 원래 그려지는 노드를 고른다(루트 아님).
