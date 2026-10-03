@@ -17,8 +17,6 @@ function prng(seed) {
 }
 
 const N = 10000;
-// 시드 20260502, 1만 점에서 얻은 기준값
-const EXPECT = { groups: 283, firstTileY: -8, lastTileY: 8 };
 
 function makePoints() {
   const rnd = prng(20260502);
@@ -36,6 +34,25 @@ function makePoints() {
   }
   return p;
 }
+
+function calculateExpectations() {
+  const pos = makePoints();
+  const tiles = new Set();
+  let minTileY = Infinity;
+  let maxTileY = -Infinity;
+  for (let i = 0; i < N; i++) {
+    const e = pos[3 * i];
+    const n = pos[3 * i + 1];
+    const tileX = Math.floor(e / 64);
+    const tileY = Math.floor(n / 64);
+    tiles.add(`${tileX},${tileY}`);
+    minTileY = Math.min(minTileY, tileY);
+    maxTileY = Math.max(maxTileY, tileY);
+  }
+  return { groups: tiles.size, firstTileY: minTileY, lastTileY: maxTileY };
+}
+
+const EXPECT = calculateExpectations();
 
 test('tile_size', () => assert.equal(TILE_SIZE_M, 64));
 

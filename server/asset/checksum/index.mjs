@@ -54,7 +54,7 @@ export function verifyChecksum(fileBytes) {
     const dv = new DataView(fileBytes.buffer, fileBytes.byteOffset, fileBytes.byteLength);
     return dv.getUint32(OFFSETS.checksum, true) === computeChecksum(fileBytes);
   } catch (e) {
-    if (e instanceof AssetFormatError || e instanceof RangeError) return false;
+    if (e instanceof AssetFormatError || e instanceof RangeError || e instanceof TypeError) return false;
     throw e;
   }
 }

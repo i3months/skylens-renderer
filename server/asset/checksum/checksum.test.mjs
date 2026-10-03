@@ -58,6 +58,15 @@ test('잘린·짧은 입력은 거짓', () => {
   assert.equal(verifyChecksum(g.subarray(0, g.length - 1)), false);
 });
 
+test('null·잘못된 입력은 거짓', () => {
+  assert.equal(verifyChecksum(null), false);
+  assert.equal(verifyChecksum(undefined), false);
+  assert.equal(verifyChecksum({}), false);
+  assert.equal(verifyChecksum(new ArrayBuffer(100)), false);
+  assert.equal(verifyChecksum([1, 2, 3]), false);
+  assert.equal(verifyChecksum('string'), false);
+});
+
 test('checksum_detects_flip', () => {
   const r = rng(20260101);
   for (const name of ['point27', 'gauss56']) {
