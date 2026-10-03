@@ -107,6 +107,7 @@ test('shadeResult: 거부', () => {
   const r = sample();
   assert.throws(() => shadeResult(r, cam, { format: 1 }, [0, 0, 1]), /^Error: shade:/);
   assert.throws(() => shadeResult(r, cam, { format: 1, normals: new Float32Array(3) }, [0, 0, 1]), /^Error: shade:/);
-  assert.throws(() => shadeResult(r, cam, { format: 1, normals: new Float32Array(9) }, [0, 0, 1]), /^Error: shade:/);
+  // 길이 0 법선은 거부가 아니라 셰이딩 생략(입력 색 유지)이다(F-093 ②, shade_rules.test.mjs 에서 자세히 검사).
+  assert.deepEqual([...shadeResult(r, cam, { format: 1, normals: new Float32Array(9) }, [0, 0, 1])], [...r.color]);
   assert.throws(() => shadeResult(r, cam, { format: 1, normals: new Float32Array(9).fill(1) }, [0, 0, 0]), /^Error: shade:/);
 });
