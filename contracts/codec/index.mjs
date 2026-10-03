@@ -8,7 +8,7 @@
 
 /** 이 계약이 정의하는 codec 값. 0 은 CODEC_RAW_PLANAR(contracts/asset). */
 export const CODEC_SKLC1 = 1;
-/** codec 1 이 받는 입력 형식: 27 B 점(format 1)만. format 2 는 codec 1 로 쓰면 거부(code 'codec'). */
+/** codec 1 이 받는 입력 형식: 27 B 점(format 1)만. format 2 는 codec 1 로 쓰면 거부(CodecError code 'format'). */
 export const CODEC1_FORMATS = Object.freeze([1]);
 
 /** 모턴 키 비트 수: 3 축 × 16 비트 = 48 비트(Number 로 정확히 표현). 비트 i 번 = e 의 i 번 비트 → 키 비트 3i, n → 3i+1, u → 3i+2. */
