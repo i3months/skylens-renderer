@@ -23,6 +23,7 @@ import { CULL_API, CULL_STAGES, andMasks, chunksOfMask, assertLeafMask } from '.
 import { NOT_DRAWN } from '../../../contracts/lod/index.mjs';
 import { isDegenerateView, assertCameraShape } from '../degenerate/index.mjs';
 import { selectLevels, assertHierarchyInput } from '../../lod/select/index.mjs';
+import { guardHierarchyRead } from '../degenerate/hierarchy_guard.mjs';
 
 const ERR = 'cull:';
 const STAT_KEY = Object.freeze({ frustum: 'removedFrustum', backface: 'removedBackface', occlusion: 'removedOcclusion', distance: 'removedDistance' });
@@ -39,9 +40,12 @@ export function cachedNormalCones(hierarchy, compute) {
   if (hierarchy === null || typeof hierarchy !== 'object' || Array.isArray(hierarchy)) throw new Error(`${ERR} hierarchy 는 객체여야 함: ${String(hierarchy)}`);
   if (typeof compute !== 'function') throw new Error(`${ERR} compute 는 함수여야 함: ${String(compute)}`);
 
-  const normals = hierarchy.levels?.[0]?.normals;
-  const leafStart = hierarchy.levels?.[0]?.leafStart;
-  const L = hierarchy.octree?.leafCount;
+  // 접근자·Proxy 가 던지는 예외는 'cull:' 오류로 바꾼다(F-148).
+  const { normals, leafStart, L } = guardHierarchyRead(() => ({
+    normals: hierarchy.levels?.[0]?.normals,
+    leafStart: hierarchy.levels?.[0]?.leafStart,
+    L: hierarchy.octree?.leafCount,
+  }));
   const c = coneCache.get(hierarchy);
   if (c !== undefined && c.normals === normals && c.leafStart === leafStart && c.L === L) return c.cones;
   const cones = compute(hierarchy);
@@ -133,14 +137,16 @@ function emptyStats(leafCount) {
  * @returns {import('../../../contracts/cull/index.mjs').CombinedResult}
  */
 export function cullAndSelect(hierarchy, camera, opts) {
-  try {
-    assertHierarchyInput(hierarchy);
-  } catch (e) {
-    throw new Error(`${ERR} 계층이 올바르지 않음 (${e.message})`);
-  }
+  guardHierarchyRead(() => {
+    try {
+      assertHierarchyInput(hierarchy);
+    } catch (e) {
+      throw new Error(`${ERR} 계층이 올바르지 않음 (${e.message})`);
+    }
+  });
   assertCameraShape(camera);
   const stages = assertOpts(opts);
-  const leafCount = hierarchy.octree.leafCount;
+  const leafCount = guardHierarchyRead(() => hierarchy.octree.leafCount);
 
   const degenerate = (opts.isDegenerateView ?? isDegenerateView)(camera);
   if (degenerate) {
