@@ -27,9 +27,12 @@ export function unproject(camera, u, v, d) {
   const b = yc - t[1];
   const c = zc - t[2];
   // Rᵀ 를 곱한다: (Rᵀ·w)_i = Σ_k R[k][i]·w_k (행 우선 저장이므로 R[k*3+i])
-  return [
+  const out = [
     R[0] * a + R[3] * b + R[6] * c,
     R[1] * a + R[4] * b + R[7] * c,
     R[2] * a + R[5] * b + R[8] * c,
   ];
+  // 극단값(예: d 가 매우 큼)에서 넘침으로 비유한 값이 나오면 조용히 돌려주지 않는다.
+  if (!out.every(Number.isFinite)) throw new Error(`${ERR} 역투영 결과가 유한하지 않음(입력이 너무 극단적임)`);
+  return out;
 }

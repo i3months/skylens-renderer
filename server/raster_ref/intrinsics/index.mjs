@@ -40,5 +40,9 @@ export function scaleIntrinsics(K, fromW, fromH, toW, toH, opts = {}) {
   const sx = toW / fromW;
   const sy = toH / fromH;
   const sc = (c, s) => (mode === 'half' ? (c + 0.5) * s - 0.5 : c * s);
-  return { fx: K.fx * sx, fy: K.fy * sy, cx: sc(K.cx, sx), cy: sc(K.cy, sy) };
+  const out = { fx: K.fx * sx, fy: K.fy * sy, cx: sc(K.cx, sx), cy: sc(K.cy, sy) };
+  // 극단 배율에서 넘침·언더플로로 f 가 0 이나 무한이 되거나 c 가 비유한이 되면 조용히 돌려주지 않는다.
+  for (const n of ['fx', 'fy']) if (!(out[n] > 0) || !Number.isFinite(out[n])) throw new Error(`${ERR} 배율 결과 ${n} 가 양의 유한 수가 아님: ${out[n]}`);
+  for (const n of ['cx', 'cy']) if (!Number.isFinite(out[n])) throw new Error(`${ERR} 배율 결과 ${n} 가 유한하지 않음: ${out[n]}`);
+  return out;
 }
