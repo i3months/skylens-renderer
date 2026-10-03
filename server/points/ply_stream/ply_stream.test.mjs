@@ -3,6 +3,7 @@ import v8 from 'node:v8';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { readPlyStream } from './index.mjs';
+import { countCopiesAsync } from '../test_util/copies.mjs';
 import { PointsError, PROPERTIES, FORMAT_POINT27, FORMAT_GAUSS56, stride } from '../../../contracts/points/index.mjs';
 
 const header = (format, n) => Buffer.from(
@@ -123,17 +124,85 @@ test('음성: null 소스와 문자열 청크는 header', async () => {
   await assert.rejects(collect([bytes.subarray(0, header(FORMAT_POINT27, 2).length), 'text']), isHeader);
 });
 
-test('머리를 1바이트 청크 100만 개로 받아도 1 초 미만', async () => {
-  // end_header 가 없는 머리 입력(상한 1 MiB 직전까지)을 1바이트씩 넣는다: 누적이 O(n) 이어야 한다
-  const junk = Buffer.alloc(1 << 20, 0x61);
-  const t0 = process.hrtime.bigint();
-  await assert.rejects(collect(slices(junk, 1)), { code: 'header' });
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  console.log(`1-byte header chunks x ${junk.length}: ${ms.toFixed(0)} ms`);
-  assert.ok(ms < 1000, `${ms} ms`);
+const LIMIT = 1 << 20; // 구현의 MAX_HEADER 와 같은 값(머리 상한)
+// 길이가 정확히 total 바이트인 유효 머리(주석 줄로 채운다)
+function paddedHeader(total) {
+  const pre = header(FORMAT_POINT27, 1).toString('latin1').replace('end_header\n', '');
+  const post = 'end_header\n';
+  const padLen = total - pre.length - post.length - 'comment \n'.length; // 주석 한 줄
+  assert.ok(padLen >= 0);
+  const h = Buffer.from(pre + 'comment ' + 'a'.repeat(padLen) + '\n' + post, 'latin1');
+  assert.equal(h.length, total);
+  return h;
+}
+const withinLimit = (e) => e instanceof PointsError && e.code === 'header' && /within limit/.test(e.message);
+
+test('음성: end_header 가 상한(1 MiB)을 넘으면 읽기를 멈추고 within limit', async () => {
+  // 상한 + 1 바이트 쓰레기 뒤에 무한 제너레이터: 한도 초과 순간 이후로는 더 당겨 읽지 않는다
+  for (const size of [LIMIT + 1, 4096, 1000]) {
+    const junk = Buffer.alloc(LIMIT + 1, 0x61);
+    let pulled = 0;
+    const fed = Math.ceil(junk.length / size);
+    function* src() {
+      for (let o = 0; o < junk.length; o += size) { pulled++; yield junk.subarray(o, o + size); }
+      for (;;) { pulled++; if (pulled > fed + 3) return; yield Buffer.alloc(1, 0x61); } // 무한(안전망으로 3 번 뒤 종료)
+    }
+    await assert.rejects(collect(src()), withinLimit, `size ${size}`);
+    assert.ok(pulled <= fed, `size ${size}: 한도 초과 뒤에도 ${pulled - fed} 청크를 더 당김`);
+  }
+  // 비동기 무한 소스도 마찬가지
+  let pulledA = 0;
+  async function* inf() { for (;;) { pulledA++; if (pulledA > 5000) return; yield Buffer.alloc(4096, 0x61); } }
+  await assert.rejects(collect(inf()), withinLimit);
+  assert.ok(pulledA <= LIMIT / 4096 + 1, `pulled ${pulledA}`);
+  // 한 청크 안에 상한 초과 쓰레기 + end_header 가 함께 있어도 거부
+  const one = Buffer.concat([Buffer.alloc(LIMIT + 10, 0x61), Buffer.from('end_header\n')]);
+  await assert.rejects(collect([one]), withinLimit);
+  // 앞에 작은 청크가 쌓인 뒤 큰 청크 하나에 쓰레기 + end_header
+  await assert.rejects(collect([Buffer.alloc(100, 0x61), one]), withinLimit);
+});
+
+test('경계: end_header 로 끝나는 머리가 정확히 1 MiB 면 성공, 1 바이트 늘면 실패', async () => {
+  for (const size of [Infinity, 4096, 4097, 1 << 16]) {
+    const mk = (total) => { const h = paddedHeader(total); const body = Buffer.alloc(27); return Buffer.concat([h, body]); };
+    const sl = (buf) => (size === Infinity ? [buf] : slices(buf, size));
+    const ok = await collect(sl(mk(LIMIT)));
+    assert.equal(ok.length, 1, `size ${size}`);
+    await assert.rejects(collect(sl(mk(LIMIT + 1))), withinLimit, `size ${size}`);
+    await assert.rejects(collect(sl(mk(LIMIT + 4096))), withinLimit, `size ${size}`);
+    assert.equal((await collect(sl(mk(LIMIT - 1)))).length, 1);
+  }
+});
+
+test('opts 가 null/undefined 여도 기본값으로 동작한다', async () => {
+  const { bytes, exp } = synth(FORMAT_POINT27, 5);
+  for (const opts of [null, undefined]) {
+    const parts = await collect(slices(bytes, 7), opts);
+    assert.deepEqual(concatCols(parts).positions, exp.positions);
+  }
+});
+
+test('머리 누적 복사량은 입력 길이에 선형이고 큰 청크의 본문은 복사하지 않는다', async () => {
+  // 벽시계 대신 Buffer 로 새로 만든 바이트 수를 센다(결정적). 1바이트 청크 100만 개: 선형이면 ~2 MiB 이하, 2차 누적이면 수 TB
+  const junk = Buffer.alloc(LIMIT, 0x61);
+  const chunks = [...slices(junk, 1)];
+  const copiedJunk = await countCopiesAsync(() => assert.rejects(collect(chunks), { code: 'header' }));
+  console.log(`1-byte header chunks x ${junk.length}: copied ${copiedJunk} B`);
+  assert.ok(copiedJunk <= 2 * junk.length + 65536, `copied ${copiedJunk}`);
+  // 상한을 넘는 큰 청크(표시 없음): 상한 확인 전에 복사하지 않는다
+  const big = Buffer.alloc(8 << 20, 0x61);
+  const copiedBigJunk = await countCopiesAsync(() => assert.rejects(collect([big]), withinLimit));
+  assert.ok(copiedBigJunk <= 8192, `copied ${copiedBigJunk}`);
+  // 머리 + 큰 본문이 한 청크: 머리 바이트(+4 KiB 블록) 만 복사하고 본문(≈8 MB)은 뷰로 읽는다
+  const { bytes } = synth(FORMAT_POINT27, 300000);
+  const h = header(FORMAT_POINT27, 300000);
+  let n = 0;
+  const copiedBody = await countCopiesAsync(async () => { for await (const c of readPlyStream([bytes], { chunkPoints: 65536 })) n += c.count; });
+  assert.equal(n, 300000);
+  assert.ok(copiedBody <= h.length + 8192, `copied ${copiedBody} (header ${h.length})`);
   // 정상 머리 + 본문도 1바이트 청크로 값이 같다(경계에 걸친 end_header 포함)
-  const { bytes, exp } = synth(FORMAT_POINT27, 20);
-  assert.deepEqual(concatCols(await collect(slices(bytes, 1))).positions, exp.positions);
+  const s20 = synth(FORMAT_POINT27, 20);
+  assert.deepEqual(concatCols(await collect(slices(s20.bytes, 1))).positions, s20.exp.positions);
 });
 
 // 청크마다 GC 후 보유량(arrayBuffers + heapUsed 의 기준선 대비 증가)의 최댓값을 잰다. 한계는 SPEC 의 32 MB 그대로다.
