@@ -2,17 +2,22 @@
 // Layout assumption checked by callers: size == headerBytes + stride * vertexCount.
 const SIZES = { char: 1, uchar: 1, int8: 1, uint8: 1, short: 2, ushort: 2, int16: 2, uint16: 2, int: 4, uint: 4, int32: 4, uint32: 4, float: 4, float32: 4, double: 8, float64: 8 };
 
+// 헤더 탐색 상한(바이트). 이 안에 end_header 가 없으면 헤더 없음으로 본다.
+export const PLY_HEADER_MAX_BYTES = 1 << 20;
+
 /**
- * @param {Uint8Array|Buffer} buf at least the whole header
+ * @param {Uint8Array|Buffer} buf at least the whole header (앞 maxHeaderBytes, 기본 PLY_HEADER_MAX_BYTES 만 복사 없이 본다)
  * @returns {{format: string, vertexCount: number, properties: {name: string, type: string}[], headerBytes: number, stride: number}}
  * Throws Error('ply: ...') when there is no header end, no `element vertex`, a list property, an unknown type, an empty vertex layout (stride 0), or no x/y/z property.
  */
-export function parsePlyHeader(buf) {
+export function parsePlyHeader(buf, maxHeaderBytes = PLY_HEADER_MAX_BYTES) {
   const marker = Buffer.from('end_header\n');
-  const at = Buffer.from(buf).indexOf(marker);
+  // 복사 없이 앞부분만 감싼다(Buffer.from(buf) 는 전체를 복사하므로 쓰지 않는다).
+  const head = Buffer.from(buf.buffer, buf.byteOffset, Math.min(buf.byteLength, maxHeaderBytes));
+  const at = head.indexOf(marker);
   if (at < 0) throw new Error('ply: end_header not found');
   const headerBytes = at + marker.length;
-  const lines = Buffer.from(buf).subarray(0, at).toString('latin1').split('\n').map((l) => l.trim());
+  const lines = head.subarray(0, at).toString('latin1').split('\n').map((l) => l.trim());
   if (lines[0] !== 'ply') throw new Error('ply: bad magic');
   let format = null;
   let vertexCount = null;

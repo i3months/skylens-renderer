@@ -59,6 +59,9 @@ node tools/baseline_report/cli.mjs --status summary.json
 ### 경량 자산 포맷 (.skla)
 조각 하나가 파일 하나다(헤더 128 B + 필드별 평면 본문, little-endian, 좌표는 GeoAnchor 기준 ENU 64 m 타일). 27 B 점(법선 포함)과 56 B 가우시안(불투명도·크기·회전 포함)을 한 포맷에 담고 헤더의 형식 표시로 구분한다. 명세는 `format/ASSET_FORMAT.md`, 코드 계약은 `contracts/asset/`, 골든 파일은 `fixtures/asset_golden/` 에 있다. 서버 모듈은 `server/asset/`(헤더·타일 색인·경계 상자·식별자·체크섬·역변환·쓰기·결정성·호환·퍼저), 클라이언트 읽기는 `client/asset/`, 검증 도구는 `node tools/asset_validate/cli.mjs <파일.skla>`(위반이 있으면 종료코드 1).
 
+### 점 입력과 좌표 (T04)
+27 B 점과 56 B 가우시안 PLY 를 읽고 쓴다. 계약 `contracts/points/`·`contracts/geo/`, 서버 모듈 `server/points/`(PLY 읽기·쓰기·스트리밍·손상 입력 거부·법선 정규화·구간 파일 식별)와 `server/geo/`(GPS↔ENU, ENU↔씬 좌표 x=동, y=위, z=−북), 클라이언트 변환 `client/geo/`, 점 통계 `tools/points_stat/`. GPS↔ENU 는 skylens `geo.ts` 와 같은 등장방형 근사(R = 6378137 m)이며, geo.ts 를 옮긴 기준 함수와 1 mm 이내로 일치함을 테스트한다.
+
 ### 개발 설정
 ```
 git config core.hooksPath .githooks
@@ -123,6 +126,9 @@ External tools: first-frame and heap measurement need playwright and Chromium. T
 
 ### Lightweight asset format (.skla)
 One chunk is one file (128 B header + per-field planar body, little-endian, coordinates in GeoAnchor-relative ENU on 64 m tiles). The 27 B point (with normal) and the 56 B Gaussian (with opacity, scale and rotation) share one format, told apart by the format field in the header. The spec is `format/ASSET_FORMAT.md`, the code contract is `contracts/asset/`, and golden files are in `fixtures/asset_golden/`. Server modules live in `server/asset/` (header, tile index, bounds, ids, checksum, unpack, pack, determinism, compat, fuzzer), the client reader in `client/asset/`, and the validator is `node tools/asset_validate/cli.mjs <file.skla>` (exit code 1 on violations).
+
+### Point input and coordinates (T04)
+Reads and writes 27 B point and 56 B Gaussian PLY files. Contracts live in `contracts/points/` and `contracts/geo/`; server modules in `server/points/` (PLY read/write/streaming, rejection of corrupt input, normal normalization, segment file identification) and `server/geo/` (GPS↔ENU, ENU↔scene axes x=east, y=up, z=−north); the client conversion in `client/geo/`; point statistics in `tools/points_stat/`. GPS↔ENU uses the same equirectangular approximation as skylens `geo.ts` (R = 6378137 m) and is tested against a transcribed reference function to within 1 mm.
 
 ### Development setup
 ```

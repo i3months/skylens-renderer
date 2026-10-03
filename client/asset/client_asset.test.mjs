@@ -116,7 +116,7 @@ for (const name of ['point27', 'gauss56']) {
     const longer = new Uint8Array(bytes.length + 4);
     longer.set(bytes);
     assert.throws(() => readPlanesClient(longer, h), (e) => e instanceof AssetFormatError && e.code === 'body');
-    assert.throws(() => readPlanesClient(bytes.subarray(0, bytes.length - 1), h), (e) => e.code === 'body');
+    assert.throws(() => readPlanesClient(bytes.subarray(0, bytes.length - 1), h), (e) => e instanceof AssetFormatError && e.code === 'body');
     assert.throws(() => readPlanesClient(bytes, { ...h, codec: 1 }), (e) => e instanceof AssetFormatError && e.code === 'codec');
   });
 }

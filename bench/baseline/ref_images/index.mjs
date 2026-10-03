@@ -372,7 +372,8 @@ const END_HEADER = Buffer.from('end_header\n', 'latin1');
 function headerOf(buf, name) {
   const at = buf.indexOf(END_HEADER);
   try {
-    return parsePlyHeader(buf.subarray(0, at < 0 ? Math.min(buf.length, HEADER_MAX) : at + END_HEADER.length));
+    const view = buf.subarray(0, at < 0 ? Math.min(buf.length, HEADER_MAX) : at + END_HEADER.length);
+    return parsePlyHeader(view, view.length);
   } catch (e) {
     throw new Error(`${name}: ${e.message}`);
   }

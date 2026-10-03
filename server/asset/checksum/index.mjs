@@ -16,12 +16,18 @@ function update(bytes, prev, start, end) {
   return (c ^ 0xffffffff) >>> 0;
 }
 
+// 입력은 Uint8Array 만 받는다(ArrayBuffer 포함 그 외는 AssetFormatError)
+function requireBytes(b) {
+  if (!(b instanceof Uint8Array)) throw new AssetFormatError('short', 'input is not Uint8Array');
+}
+
 /**
- * @param {Uint8Array} bytes
+ * @param {Uint8Array} bytes Uint8Array 만 허용. ArrayBuffer·null 등은 AssetFormatError
  * @param {number} [prev] 이어서 계산할 때 앞 결과
  * @returns {number} u32
  */
 export function crc32(bytes, prev = 0) {
+  requireBytes(bytes);
   return update(bytes, prev >>> 0, 0, bytes.length);
 }
 
@@ -32,6 +38,7 @@ export function crc32(bytes, prev = 0) {
  * @returns {number}
  */
 export function computeChecksum(fileBytes) {
+  requireBytes(fileBytes);
   if (fileBytes.length < HEADER_SIZE) throw new AssetFormatError('short', `header needs ${HEADER_SIZE} bytes, got ${fileBytes.length}`);
   const dv = new DataView(fileBytes.buffer, fileBytes.byteOffset, fileBytes.byteLength);
   const headerSize = dv.getUint16(OFFSETS.headerSize, true);

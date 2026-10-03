@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { checkDeterminism } from './index.mjs';
 import { packChunk } from '../pack/index.mjs';
 import { ANCHOR } from '../../../fixtures/asset_golden/generate.mjs';
-import { FORMAT_POINT27, FORMAT_GAUSS56, SH_C0 } from '../../../contracts/asset/index.mjs';
+import { FORMAT_POINT27, FORMAT_GAUSS56, SH_C0, AssetFormatError } from '../../../contracts/asset/index.mjs';
 
 // 테스트용 가짜 packChunk 함수들
 
@@ -80,19 +80,14 @@ test('determinism_different_length: 길이가 다르면 → offset은 짧은 쪽
   assert.equal(result.firstDiffOffset, 3);
 });
 
-// times=0 처리
-test('determinism_times_zero: times=0 → identical true, offset null', () => {
-  const result = checkDeterminism(testInput, 0, fakePackSameBytes);
-  assert.equal(result.identical, true);
-  assert.equal(result.firstDiffOffset, null);
-});
-
-// times=1 처리
-test('determinism_times_one: times=1 → 비교 대상 없음, identical true', () => {
-  const result = checkDeterminism(testInput, 1, fakePackSameBytes);
-  assert.equal(result.identical, true);
-  assert.equal(result.firstDiffOffset, null);
-});
+// times 0·1 은 비교할 쌍이 없어 거부(packFn 은 호출되지 않는다)
+for (const t of [0, 1]) {
+  test(`determinism_times_${t}: times=${t} → AssetFormatError, packFn 호출 0`, () => {
+    let calls = 0;
+    assert.throws(() => checkDeterminism(testInput, t, () => { calls++; return new Uint8Array(1); }), AssetFormatError);
+    assert.equal(calls, 0);
+  });
+}
 
 // times=3 처리
 test('determinism_times_three: times=3 → 세 번 모두 같으면 identical true', () => {
@@ -153,7 +148,10 @@ test('determinism_real_pack_gauss56: packFn 생략 → identical true', () => {
 });
 
 test('determinism_default_is_packChunk: 명시한 packChunk 와 결과 같음', () => {
-  assert.deepEqual(checkDeterminism(point27Input(), 2, packChunk), checkDeterminism(point27Input()));
+  const withExplicit = checkDeterminism(point27Input(), 2, packChunk);
+  const withDefault = checkDeterminism(point27Input());
+  assert.deepEqual(withExplicit, withDefault);
+  assert.equal(withDefault.identical, true);
 });
 
 // times 검증
