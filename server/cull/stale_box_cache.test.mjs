@@ -83,3 +83,43 @@ test('F-138 ④ backface: positions만 교체했을 때 결과가 같은 필드�
   assert.notEqual(diff(before, fresh), 0, '이동이 판정을 바꾸지 못하면 시험이 의미 없다');
   assert.equal(diff(got, fresh), 0);
 });
+
+// F-143 ③: leafStart만 교체(positions는 그대로)했을 때도 딱 맞는 상자를 다시 계산해야 한다.
+function staleVsFreshLeafStartOnly(cull) {
+  const { cloud } = genFlat({ seed: 1, count: 200000 });
+  const h = buildHierarchy(cloud, OPTS);
+  const L = h.octree.leafCount;
+  const origLeafStart = h.levels[0].leafStart;
+
+  // 캐시에 원본 상자를 채운다
+  cull(h);
+
+  // leafStart를 수정: 모든 점을 리프 0에 압축(나머지는 비운다)
+  const modifiedLeafStart = new Uint32Array(L + 1);
+  modifiedLeafStart[0] = 0;
+  modifiedLeafStart[L] = origLeafStart[L];  // 전체 점 개수
+  for (let i = 1; i < L; i++) {
+    modifiedLeafStart[i] = origLeafStart[L];  // 빈 리프
+  }
+
+  // leafStart만 교체한다
+  h.levels[0].leafStart = modifiedLeafStart;
+
+  // 모든 levels를 깊은 복사해서 캐시가 적용되지 않는 신규 계층을 만든다
+  const fresh = cull({ ...h, levels: h.levels.map((l) => ({ ...l })) });
+
+  // 캐시가 있는 h에서 다시 실행(leafStart 비교가 없으면 캐시를 재사용하므로 wrong result)
+  const got = cull(h);
+
+  return { fresh, got };
+}
+
+test('F-143 ③ occlusion: leafStart만 교체했을 때 결과가 새 객체와 같다', () => {
+  const { fresh, got } = staleVsFreshLeafStartOnly(occ);
+  assert.equal(diff(got, fresh), 0, 'leafStart 변경시 상자 캐시가 다시 계산되어야 한다');
+});
+
+test('F-143 ③ backface: leafStart만 교체했을 때 결과가 같은 필드의 새 객체와 같다', () => {
+  const { fresh, got } = staleVsFreshLeafStartOnly(bface);
+  assert.equal(diff(got, fresh), 0, 'leafStart 변경시 상자 캐시가 다시 계산되어야 한다');
+});
