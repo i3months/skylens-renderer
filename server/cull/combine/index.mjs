@@ -22,6 +22,7 @@
 import { CULL_API, CULL_STAGES, andMasks, chunksOfMask, assertLeafMask } from '../../../contracts/cull/index.mjs';
 import { NOT_DRAWN } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
+import { isDegenerateView } from '../degenerate/index.mjs';
 import { selectLevels, assertHierarchyInput } from '../../lod/select/index.mjs';
 
 const ERR = 'cull:';
@@ -88,7 +89,7 @@ function assertCameraShape(camera) {
 
 /** 주입이 없을 때의 퇴화 판정: 계약상 퇴화 조건은 raster 카메라 검사 실패와 같다(구조 검사는 앞에서 끝남). */
 function localIsDegenerate(camera) {
-  try { assertCamera(camera); return false; } catch { return true; }
+  return isDegenerateView(camera);
 }
 
 function assertOpts(opts) {
