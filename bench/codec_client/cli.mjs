@@ -2,6 +2,8 @@
 // 클라이언트 codec 1 복호 벤치마크 CLI.
 // 사용: node cli.mjs [--points=1000000] [--runs=5] [--json=path] [--help]
 import { writeFileSync } from 'node:fs';
+import { cpus } from 'node:os';
+import { version as nodeVersion } from 'node:process';
 import { benchmark, formatResultTable } from './index.mjs';
 
 function printUsage() {
@@ -19,6 +21,17 @@ function printUsage() {
   node cli.mjs --points=100000 --runs=3
   node cli.mjs --points=1000000 --json=/tmp/result.json
 `);
+}
+
+/**
+ * CPU 모델 이름 추출.
+ */
+function getCpuModel() {
+  const cpuList = cpus();
+  if (cpuList.length > 0) {
+    return cpuList[0].model;
+  }
+  return 'Unknown';
 }
 
 function parseArgs(argv) {
@@ -104,7 +117,15 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv);
 
+  // 시스템 정보 수집
+  const command = `node ${process.argv.slice(1).join(' ')}`;
+  const cpuModel = getCpuModel();
+  const nodeVer = nodeVersion;
+
   console.log('클라이언트 codec 1 복호 벤치마크 시작...');
+  console.log(`명령: ${command}`);
+  console.log(`CPU: ${cpuModel}`);
+  console.log(`Node: ${nodeVer}`);
   console.log(`설정: 점 수=${args.points.toLocaleString()}, 회차=${args.runs}`);
   console.log('');
 
@@ -120,6 +141,9 @@ async function main() {
     try {
       const data = {
         timestamp: new Date().toISOString(),
+        command,
+        cpu: cpuModel,
+        nodeVersion: nodeVer,
         config: { points: args.points, runs: args.runs },
         results: result,
         totalElapsed: elapsed,

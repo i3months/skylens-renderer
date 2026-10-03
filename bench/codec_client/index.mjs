@@ -4,16 +4,69 @@ import { encodeChunk } from '../../server/codec/chunk/index.mjs';
 import { decodeChunkClient } from '../../client/codec/index.mjs';
 import { packChunk } from '../../server/asset/pack/index.mjs';
 import { FORMAT_POINT27 } from '../../contracts/asset/index.mjs';
+import { mortonOrder } from '../../server/codec/order/index.mjs';
 import { generate as generateFlatBoxes } from '../../fixtures/scenes/flat_boxes/index.mjs';
+
+/**
+ * 원본 synthetic 점을 생성하고 morton 순으로 정렬된 평면을 반환(테스트용).
+ * 무손실 인코딩의 경우만 사용. 복호 결과와 비교하기 위해 morton 순으로 정렬된 평면을 반환한다.
+ * @param {number} pointCount 점 수
+ * @param {number} seed seed
+ * @returns {{pos_e: Uint16Array, pos_n: Uint16Array, pos_u: Uint16Array, color_r: Uint8Array, color_g: Uint8Array, color_b: Uint8Array, normal_oct_x: Int8Array, normal_oct_y: Int8Array}}
+ */
+export function extractOriginalPlanes(pointCount, seed) {
+  const rng = (() => {
+    let s = seed >>> 0;
+    return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / (2 ** 32); };
+  })();
+
+  const positions = new Float32Array(pointCount * 3);
+  const normals = new Float32Array(pointCount * 3);
+  const colors = new Uint8Array(pointCount * 3);
+
+  for (let i = 0; i < pointCount; i++) {
+    positions[3 * i] = rng() * 63.99;
+    positions[3 * i + 1] = rng() * 63.99;
+    positions[3 * i + 2] = rng() * 63.99;
+
+    let nx = rng() * 2 - 1;
+    let ny = rng() * 2 - 1;
+    let nz = rng() * 2 - 1;
+    const len = Math.hypot(nx, ny, nz);
+    normals[3 * i] = nx / len;
+    normals[3 * i + 1] = ny / len;
+    normals[3 * i + 2] = nz / len;
+
+    colors[3 * i] = Math.floor(rng() * 256);
+    colors[3 * i + 1] = Math.floor(rng() * 256);
+    colors[3 * i + 2] = Math.floor(rng() * 256);
+  }
+
+  const rawFile = packChunk({
+    format: FORMAT_POINT27,
+    segmentId: 0,
+    level: 0,
+    lod: 0,
+    chunkIndex: 0,
+    anchor: { lat: 37.5, lon: 127, alt: 30 },
+    fields: { positions, normals, colors },
+  });
+
+  // 인코드했을 때 morton 순으로 정렬되므로, 원본도 같은 방식으로 정렬해서 비교
+  const decoded = decodeChunkClient(encodeChunk(rawFile, { lossyColor: false }));
+  return decoded.planes;
+}
 
 /**
  * 조각 하나를 synthetic 점 데이터로 만든다.
  * 모든 점은 한 타일(0-64 m) 내에 있어야 한다.
  * @param {number} pointCount 이 조각의 점 수
  * @param {number} seed 재현 가능한 seed
+ * @param {Object} opts 옵션
+ * @param {boolean} [opts.lossy=false] 손실 색 압축 사용 여부
  * @returns {Uint8Array} codec 1 부호화 파일
  */
-export function createChunk(pointCount, seed) {
+export function createChunk(pointCount, seed, opts = {}) {
   const rng = (() => {
     let s = seed >>> 0;
     return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / (2 ** 32); };
@@ -56,7 +109,7 @@ export function createChunk(pointCount, seed) {
   });
 
   // codec 0 → codec 1
-  return encodeChunk(rawFile);
+  return encodeChunk(rawFile, { lossyColor: opts.lossy });
 }
 
 /**
@@ -125,11 +178,11 @@ export function benchmark({ points = 1000000, runs = 5, chunkSize = 50000 } = {}
   const pointsPerChunk = Math.ceil(points / chunkCount); // 각 조각이 가질 점 수
 
   // 무손실 모드
-  const chunksCopy = Array.from({ length: chunkCount }, (_, i) => createChunk(pointsPerChunk, i));
+  const chunksCopy = Array.from({ length: chunkCount }, (_, i) => createChunk(pointsPerChunk, i, { lossy: false }));
   const losslessResult = measureDecode(chunksCopy, { runs });
 
   // 손실 모드
-  const chunksDecode = Array.from({ length: chunkCount }, (_, i) => createChunk(pointsPerChunk, i + 1000));
+  const chunksDecode = Array.from({ length: chunkCount }, (_, i) => createChunk(pointsPerChunk, i + 1000, { lossy: true }));
   const lossyResult = measureDecode(chunksDecode, { runs });
 
   return {
