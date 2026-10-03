@@ -6,6 +6,7 @@
 //     목표 T == 최대 단계  -> [최대 단계 조각]
 //     목표 T <  최대 단계  -> [최대 단계 조각, T 단계 조각]   (사이 단계는 보내지 않음)
 // 조각 순서: 거친 단계(큰 level) 먼저, 같은 단계 안에서는 카메라에 가까운 리프 먼저(동률이면 리프 번호).
+import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { buildDistanceTable, levelForDistance } from '../distance_table/index.mjs';
 
 const ERR = 'lod:';
@@ -72,7 +73,11 @@ function leafNodes(octree) {
  */
 export function progressiveChunks(hierarchy, camera, opts) {
   if (!hierarchy || !hierarchy.octree || !Array.isArray(hierarchy.levels) || hierarchy.levels.length < 1) throw new Error(`${ERR} 계층이 아님`);
-  if (!camera || !camera.K || !Array.isArray(camera.R) || !Array.isArray(camera.t)) throw new Error(`${ERR} 카메라가 아님`);
+  try {
+    assertCamera(camera); // select/budget 와 같은 계약 검사. 오류는 'lod:' 로 옮긴다.
+  } catch (e) {
+    throw new Error(`${ERR} 카메라가 올바르지 않음 (${e.message})`);
+  }
   const { octree, levels, edge0M } = hierarchy;
   const maxLevel = levels.length - 1;
   const table = buildDistanceTable({ fx: camera.K.fx, thresholdPx: opts?.thresholdPx, edge0M, levelCount: levels.length });

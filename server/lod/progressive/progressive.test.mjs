@@ -163,3 +163,21 @@ test('음성: 누적 적용(교체 아님)은 중복을 만들고, 잘못된 입
   assert.throws(() => progressiveChunks(h, cam, { thresholdPx: 0 }), /lod:/);
   assert.throws(() => progressiveChunks(null, cam, { thresholdPx: 1 }), /lod:/);
 });
+
+test('카메라 검사: NaN t·NaN R·영행렬 R·width 0·f 0 은 lod: 오류, 정상 카메라는 결과 동일', () => {
+  const cam = camOf(vps[0]);
+  const bads = {
+    'NaN t': { ...cam, t: [NaN, cam.t[1], cam.t[2]] },
+    'NaN R': { ...cam, R: [NaN, ...cam.R.slice(1)] },
+    '영행렬 R': { ...cam, R: new Array(9).fill(0) },
+    'width 0': { ...cam, width: 0 },
+    'f 0': { ...cam, K: { ...cam.K, fx: 0 } },
+  };
+  for (const [name, bad] of Object.entries(bads)) {
+    assert.throws(() => progressiveChunks(h, bad, { thresholdPx: TAU }), /^Error: lod:/, name);
+  }
+  const a = chunksOf(cam), b = chunksOf({ ...cam });
+  assert.equal(a.length, b.length);
+  assert.ok(a.length > 0);
+  a.forEach((c, i) => { assert.equal(c.level, b[i].level); assert.equal(c.leaf, b[i].leaf); assert.deepEqual(c.indices, b[i].indices); });
+});
