@@ -40,9 +40,21 @@ test('F-130 occlusion: 배열을 바꿔 끼운 같은 객체의 결과가 새 �
   assert.equal(diff(got, fresh), 0);
 });
 
-test('F-130 backface: 배열을 바꿔 끼운 같은 객체의 결과가 새 객체와 같다', () => {
-  const { fresh, got } = staleVsFresh(bface, 60) // backface 는 덮임 판정의 사각형만 상자에 의존해 이동량이 커야 차이가 드러난다;
+// backface 는 덮임 판정의 사각형만 상자에 의존해 이동량이 커야(dz=30) 판정이 바뀐다.
+// 오라클은 같은 필드를 가진 새 객체(상자 캐시 없음)의 결과다.
+function backfaceStaleVsFresh(swap, dz) {
+  const { cloud } = genFlat({ seed: 1, count: 200000 });
+  const h = buildHierarchy(cloud, OPTS);
+  const before = bface(h);
+  swap(h, buildHierarchy(shifted(cloud, dz), OPTS));
+  const fresh = bface({ ...h, levels: h.levels.map((l) => ({ ...l })) });
+  return { before, fresh, got: bface(h) };
+}
+
+test('F-130 backface: 배열을 바꿔 끼운 같은 객체의 결과가 같은 필드의 새 객체와 같다', () => {
+  const { before, fresh, got } = backfaceStaleVsFresh((h, hNew) => Object.assign(h, hNew), 30);
   assert.ok(fresh.includes(0), '시험 장면에서 제거가 있어야 의미가 있다');
+  assert.notEqual(diff(before, fresh), 0, '이동이 판정을 바꾸지 못하면 시험이 의미 없다');
   assert.equal(diff(got, fresh), 0);
 });
 
@@ -65,8 +77,9 @@ test('F-138 ④ occlusion: positions만 교체했을 때 결과가 새 객체와
   assert.equal(diff(got, fresh), 0);
 });
 
-test('F-138 ④ backface: positions만 교체했을 때 결과가 새 객체와 같다', () => {
-  const { fresh, got } = staleVsFreshPositionsOnly(bface, 3);
+test('F-138 ④ backface: positions만 교체했을 때 결과가 같은 필드의 새 객체와 같다', () => {
+  const { before, fresh, got } = backfaceStaleVsFresh((h, hNew) => { h.levels[0].positions = hNew.levels[0].positions; }, 30);
   assert.ok(fresh.includes(0), '시험 장면에서 제거가 있어야 의미가 있다');
+  assert.notEqual(diff(before, fresh), 0, '이동이 판정을 바꾸지 못하면 시험이 의미 없다');
   assert.equal(diff(got, fresh), 0);
 });
