@@ -15,6 +15,12 @@ const ROT_SCALE = ROT_COMPONENT_CENTER * Math.SQRT2;
 const ALPHA_MIN = 1 / 510;
 const ALPHA_MAX = 509 / 510;
 
+// f32Toward 용 재사용 스크래치(호출마다 할당하지 않는다). 동기 함수라 재진입 없음.
+const F32_SCRATCH = new Float32Array(1);
+const I32_SCRATCH = new Int32Array(F32_SCRATCH.buffer);
+const ROT_SCRATCH = new Float64Array(4);
+const ROT_OUT = new Float64Array(4);
+
 /**
  * f32 로 내리되 dir<0 이면 x 이하, dir>0 이면 x 이상인 가장 가까운 값을 고른다.
  * 저장 값 구간 [q−0.5, q+0.5) 은 아래 끝(동점, 원본 < 복원)이 닫혀 있어, 복원 값을 아래로 내리면
@@ -25,11 +31,10 @@ const ALPHA_MAX = 509 / 510;
 function f32Toward(x, dir) {
   const f = Math.fround(x);
   if (dir < 0 ? f <= x : f >= x) return f;
-  const buf = new Float32Array([f]);
-  const bits = new Int32Array(buf.buffer);
+  F32_SCRATCH[0] = f;
   // 크기 방향으로 한 ulp 옮긴다(f 와 x 는 같은 부호, 0 아님)
-  bits[0] += (f > 0) === (dir > 0) ? 1 : -1;
-  return buf[0];
+  I32_SCRATCH[0] += (f > 0) === (dir > 0) ? 1 : -1;
+  return F32_SCRATCH[0];
 }
 
 /**
@@ -60,12 +65,20 @@ export function decodeOctNormal(qx, qy) {
  * @returns {[number, number, number, number]} (w, x, y, z)
  */
 export function decodeRotation(packed) {
+  const q = [0, 0, 0, 0];
+  decodeRotationInto(packed, q, 0);
+  return q;
+}
+
+/** decodeRotation 본체: out[o..o+3] 에 (w, x, y, z) 를 쓴다(할당 없음). */
+function decodeRotationInto(packed, out, o) {
   if (!Number.isInteger(packed) || packed < 0 || packed > 0xffffffff) {
     throw new AssetFormatError('range', `rotation ${packed} not u32`);
   }
   const m = packed >>> 30;
   const a = [(packed >>> 20) & 1023, (packed >>> 10) & 1023, packed & 1023];
-  const q = [0, 0, 0, 0];
+  const q = ROT_SCRATCH;
+  q[0] = 0; q[1] = 0; q[2] = 0; q[3] = 0;
   let sum = 0;
   let j = 0;
   for (let k = 0; k < 4; k++) {
@@ -77,19 +90,21 @@ export function decodeRotation(packed) {
   }
   q[m] = Math.sqrt(Math.max(0, 1 - sum));
   const len = Math.hypot(q[0], q[1], q[2], q[3]);
-  return largestNonNegative([q[0] / len, q[1] / len, q[2] / len, q[3] / len]);
+  out[o] = q[0] / len; out[o + 1] = q[1] / len; out[o + 2] = q[2] / len; out[o + 3] = q[3] / len;
+  largestNonNegative(out, o);
 }
 
 /**
  * 반올림으로 다른 성분이 q_m 보다 커질 수 있어, 가장 큰 성분(같으면 작은 k)이 음수면 전체 부호를 뒤집는다(같은 회전).
  * @template {ArrayLike<number> & {[i: number]: number}} T
- * @param {T} q 길이 4
+ * @param {T} q 길이 4 이상(o 부터 4개를 본다)
+ * @param {number} [o] 시작 인덱스
  * @returns {T}
  */
-function largestNonNegative(q) {
-  let m = 0;
-  for (let k = 1; k < 4; k++) if (Math.abs(q[k]) > Math.abs(q[m])) m = k;
-  if (q[m] < 0) for (let k = 0; k < 4; k++) q[k] = -q[k];
+function largestNonNegative(q, o = 0) {
+  let m = o;
+  for (let k = o + 1; k < o + 4; k++) if (Math.abs(q[k]) > Math.abs(q[m])) m = k;
+  if (q[m] < 0) for (let k = o; k < o + 4; k++) q[k] = -q[k];
   return q;
 }
 
@@ -129,6 +144,8 @@ function readPlanes(fileBytes) {
 
 /**
  * 조각을 원본 형식 필드로 되돌린다(명세 §6). codec 0 만 안다. 체크섬은 검사하지 않는다.
+ * 의미 검사 범위: 헤더 파싱·codec·quantExp·pointCount≥1·bboxMin 유한·본문 길이만 본다.
+ * lod·tileSizeM·bboxMax·타일/bbox 일치는 검사하지 않는다(필요하면 readHeaderStrict 로 먼저 검증).
  * @param {Uint8Array} fileBytes
  * @returns {{header: AssetHeader, fields: Point27Fields | Gauss56Fields}}
  */
@@ -173,9 +190,11 @@ export function unpackChunk(fileBytes) {
     const logit = Math.log(alpha / (1 - alpha));
     // q=255 는 복원 α(509/510)가 구간 아래 끝이라 위로, 나머지는 아래로 내린다
     opacity[i] = f32Toward(logit, q === 255 ? 1 : -1);
-    rotations.set(decodeRotation(planes.rotation[i]), 4 * i);
+    // f64 로 복원·부호 정리한 뒤 f32 로 옮긴다(decodeRotation 과 같은 순서)
+    decodeRotationInto(planes.rotation[i], ROT_OUT, 0);
+    rotations[4 * i] = ROT_OUT[0]; rotations[4 * i + 1] = ROT_OUT[1]; rotations[4 * i + 2] = ROT_OUT[2]; rotations[4 * i + 3] = ROT_OUT[3];
     // f32 로 내린 뒤 크기 순서가 바뀔 수 있어 한 번 더 맞춘다(부호 반전은 f32 에서 정확)
-    largestNonNegative(rotations.subarray(4 * i, 4 * i + 4));
+    largestNonNegative(rotations, 4 * i);
   }
   return { header, fields: { positions, fdc, opacity, scales, rotations } };
 }
