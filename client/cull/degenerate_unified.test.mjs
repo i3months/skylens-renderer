@@ -26,7 +26,7 @@ assert.equal(IMPL_MAX_COARSE_CELLS, MAX_COARSE_CELLS, '구현 상수가 시험 �
 
 // 벽시계 대신 작업량(타입 배열 할당 원소 수)을 센다: 전역 생성자를 Proxy 로 감싸 숫자 길이로 만든 배열의 최대·합계 길이를 기록한다. 결정적이다.
 // Float32Array.from/of 는 실제로 세어진다 (생성자 호출이므로 Proxy 를 탄다).
-// 세어지지 않는 것은 map·slice·subarray·배열 인자로 기존 버퍼 사용 (생성자를 타지 않음).
+// 세어지지 않는 것은 map·slice·subarray 와 '첫 인자가 숫자가 아닌' 생성(배열·ArrayBuffer 인자도 construct 트랩은 타지만 첫 인자가 숫자가 아니라 세지 않음).
 function trackAlloc(fn) {
   const names = ['Float32Array', 'Float64Array', 'Int32Array', 'Uint32Array', 'Uint8Array'];
   const orig = {};

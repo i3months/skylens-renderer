@@ -23,7 +23,7 @@ test('leafCount 0 · nodeCount 1 계층은 cull: 오류', () => {
 
 test('정상 계층(leafCount 1)은 영향 없음', () => {
   const m = frustumCull(hier(1, 1), { ...cam, t: [0, 0, 5] });
-  assert.equal(m.length, 1);
+  assert.deepEqual(Array.from(m), [1]);
 });
 
 test('필드 읽기 중 예외(접근자·Proxy)도 cull: 오류', () => {
