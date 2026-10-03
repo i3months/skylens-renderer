@@ -1,4 +1,7 @@
-// 서버·클라이언트 오류 의미 정렬 시험(F-172 ①②③⑧⑭, F-169). 시험용 조립기는 이 파일 안에서 계약 형식대로 따로 쓴 것.
+// 클라이언트 decodeChunkClient 의 오류 의미 시험(F-172 ①②③⑧⑭, F-169). 이 파일은 서버를 import 하지 않는다(client/codec 은 서버 코드와 독립).
+// 따라서 "서버와 같음"은 여기서 검증되지 않는다: 기대 코드는 서버 동작을 보고 적어 둔 값일 뿐이라 서버가 바뀌어도 이 시험은 통과한다.
+// 서버 decodeChunk 와 같은 입력을 양쪽에 넣어 throw·e.constructor·e.code 를 맞대는 교차 시험은 cross_error.test.mjs 에 있다.
+// 시험용 조립기는 이 파일 안에서 계약 형식대로 따로 쓴 것.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decodeChunkClient } from './index.mjs';
