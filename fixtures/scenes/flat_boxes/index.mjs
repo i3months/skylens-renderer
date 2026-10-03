@@ -1,6 +1,6 @@
 // 장면 flat_boxes: 평지(200x200 m) 위에 상자 건물 12동. 새로 작성한 코드(차용 없음).
 // 좌표: ENU, x=동, y=위, z=−북, 1 unit = 1 m.
-import { mulberry32, subSeed, makeResult, FORMAT_POINT27 } from '../../../contracts/scenes/index.mjs';
+import { mulberry32, subSeed, makeResult, FORMAT_POINT27, checkCount, normalizeSeed, checkFormat } from '../../../contracts/scenes/index.mjs';
 
 const HALF = 100; // 바닥 반폭(m)
 const N_BUILDINGS = 12;
@@ -108,8 +108,9 @@ function allocate(areas, total) {
 }
 
 export function generate(opts = {}) {
-  const seed = opts.seed >>> 0;
-  const count = opts.count ?? DEFAULT_COUNT;
+  const seed = normalizeSeed(opts.seed);
+  const count = checkCount(opts.count, DEFAULT_COUNT);
+  const format = checkFormat(opts.format);
   const rngLayout = mulberry32(subSeed(seed, 0));
   const rng = mulberry32(subSeed(seed, 1));
 
@@ -157,5 +158,5 @@ export function generate(opts = {}) {
     ground: { size: 2 * HALF },
     buildings: buildings.map((b) => ({ min: [...b.min], max: [...b.max], height: b.height })),
   };
-  return makeResult('flat_boxes', seed, opts.format ?? FORMAT_POINT27, { format: FORMAT_POINT27, count, positions, normals, colors }, truth);
+  return makeResult('flat_boxes', seed, format, { format: FORMAT_POINT27, count, positions, normals, colors }, truth);
 }
