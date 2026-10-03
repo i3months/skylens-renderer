@@ -101,25 +101,26 @@ export function freePath(opts) {
   const speed = 10; // m/s (상한 15)
   const way = Array.from({ length: N }, () => [0, 1, 2].map((c) => b.min[c] + rnd() * (b.max[c] - b.min[c])));
 
-  // 호장 재매개화: 구간당 200 표본으로 누적 길이 표를 만든다.
-  const M = 200 * N;
-  const us = new Float64Array(M + 1), ls = new Float64Array(M + 1);
-  let prev = loopAt(way, 0);
-  for (let i = 1; i <= M; i++) {
-    const u = (i / M) * N;
-    const p = loopAt(way, u);
-    us[i] = u;
-    ls[i] = ls[i - 1] + Math.hypot(p[0] - prev[0], p[1] - prev[1], p[2] - prev[2]);
-    prev = p;
+  // Catmull-Rom 은 웨이포인트 밖으로 오버슈트한다. 곡선을 bounds 로 자르면 잘린 구간에서 속도가 줄어
+  // 등속(10 m/s) 정의가 깨지므로, 곡선이 bounds 를 넘는 축은 웨이포인트를 그 축에서 아핀 축소해 곡선 전체를
+  // bounds 안(양끝에서 폭의 1e-3 안쪽)에 넣는다. 아핀 변환은 Catmull-Rom 곡선을 곡선으로 옮기므로 모양이 보존되고,
+  // 프레임 간 현 길이 등속화: 이전 프레임 위치에서 현(직선) 거리가 정확히 speed/fps 가 되는 다음 매개변수를
+  // 곡선을 따라 찾는다(작은 간격으로 전진하다 넘으면 이분법). 호장 기준이면 급커브에서 프레임 간 직선 거리가
+  // 호보다 짧아져 속도가 10 m/s 미만으로 보이므로(시드 101·187 등), 프레임 사이 직선 속도를 직접 맞춘다.
+  const pos = (u) => loopAt(way, u).map((v, c) => Math.min(b.max[c], Math.max(b.min[c], v)));
+  const step = speed / fps;
+  const DU = 1 / 200; // 전진 간격(웨이포인트 구간의 1/200)
+  const us = new Float64Array(frames);
+  {
+    let u = 0, q = pos(0);
+    for (let i = 1; i < frames; i++) {
+      let lo = u, hi = u, guard = 0;
+      const dist = (w) => { const r = pos(w); return Math.hypot(r[0] - q[0], r[1] - q[1], r[2] - q[2]); };
+      do { lo = hi; hi += DU; if (++guard > 1e6) fail('경로 진행 실패(곡선이 너무 짧음)'); } while (dist(hi) < step);
+      for (let it = 0; it < 60; it++) { const m = (lo + hi) / 2; if (dist(m) < step) lo = m; else hi = m; }
+      u = hi; q = pos(u); us[i] = u;
+    }
   }
-  const total = ls[M];
-  const uAt = (len) => {
-    len = ((len % total) + total) % total;
-    let lo = 0, hi = M;
-    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (ls[m] <= len) lo = m; else hi = m; }
-    const f = (len - ls[lo]) / (ls[hi] - ls[lo] || 1);
-    return us[lo] + f * (us[hi] - us[lo]);
-  };
 
   // 시선: yaw 는 웨이포인트 간 최대 ±50° 변화, 구간 시간은 경로 한 바퀴를 N 등분.
   const lookN = 8;
@@ -137,7 +138,7 @@ export function freePath(opts) {
   const out = [];
   for (let i = 0; i < frames; i++) {
     const t = i / fps;
-    const p = loopAt(way, uAt(speed * t)).map((v, c) => Math.min(b.max[c], Math.max(b.min[c], v)));
+    const p = pos(us[i]);
     const [yw, ptRaw] = lookCurve(((lookN - 1) * t) / duration);
     const pt = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, ptRaw));
     const d = [Math.cos(pt) * Math.sin(yw), Math.sin(pt), -Math.cos(pt) * Math.cos(yw)];
