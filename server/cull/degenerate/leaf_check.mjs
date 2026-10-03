@@ -12,6 +12,10 @@ export function checkLeafIndexOneToOne(oc, scratch) {
   for (let n = 0; n < oc.nodeCount; n++) {
     const k = oc.leafIndex[n];
     if (k === -1) continue;
+    // 비정수(1.5, NaN 등)는 seen[k] 쓰기가 무시되어 통과해 버리므로 정수 여부를 먼저 요구한다
+    if (!Number.isInteger(k)) {
+      throw new Error(`cull: leafIndex[${n}]=${k} 가 정수가 아님`);
+    }
     if (!(k >= 0 && k < oc.leafCount) || seen[k]) {
       throw new Error(`cull: leafIndex[${n}]=${k} 가 범위를 벗어났거나 중복됨`);
     }
