@@ -6,13 +6,13 @@ import { AssetFormatError } from '../../../contracts/asset/index.mjs';
 /**
  * 같은 입력으로 packFn을 times 번 돌려 바이트가 모두 같은지 본다.
  * @param {Parameters<typeof import('../../../contracts/asset/stubs.mjs').packChunk>[0]} input
- * @param {number} [times] 기본 2. 0 이상의 정수(0·1 은 비교 대상이 없어 identical true; 기존 테스트 호환)
+ * @param {number} [times] 기본 2. 2 이상의 정수(0·1 은 비교할 쌍이 없어 거부한다)
  * @param {(input: object) => Uint8Array} [packFn] 기본은 ../pack/index.mjs 의 packChunk
  * @returns {{identical: boolean, firstDiffOffset: number | null}}
  */
 export function checkDeterminism(input, times = 2, packFn = packChunk) {
-  if (!Number.isInteger(times) || times < 0) {
-    throw new Error('times must be a non-negative integer');
+  if (!Number.isInteger(times) || times < 2) {
+    throw new AssetFormatError('field', 'times must be an integer >= 2');
   }
 
   // 첫 결과만 보관하고 나머지는 나올 때마다 바로 비교
