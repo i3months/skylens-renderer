@@ -60,7 +60,28 @@ node tools/baseline_report/cli.mjs --status summary.json
 조각 하나가 파일 하나다(헤더 128 B + 필드별 평면 본문, little-endian, 좌표는 GeoAnchor 기준 ENU 64 m 타일). 27 B 점(법선 포함)과 56 B 가우시안(불투명도·크기·회전 포함)을 한 포맷에 담고 헤더의 형식 표시로 구분한다. 명세는 `format/ASSET_FORMAT.md`, 코드 계약은 `contracts/asset/`, 골든 파일은 `fixtures/asset_golden/` 에 있다. 서버 모듈은 `server/asset/`(헤더·타일 색인·경계 상자·식별자·체크섬·역변환·쓰기·결정성·호환·퍼저), 클라이언트 읽기는 `client/asset/`, 검증 도구는 `node tools/asset_validate/cli.mjs <파일.skla>`(위반이 있으면 종료코드 1).
 
 ### 점 입력과 좌표 (T04)
-27 B 점과 56 B 가우시안 PLY 를 읽고 쓴다. 계약 `contracts/points/`·`contracts/geo/`, 서버 모듈 `server/points/`(PLY 읽기·쓰기·스트리밍·손상 입력 거부·법선 정규화·구간 파일 식별)와 `server/geo/`(GPS↔ENU, ENU↔씬 좌표 x=동, y=위, z=−북), 클라이언트 변환 `client/geo/`, 점 통계 `tools/points_stat/`. GPS↔ENU 는 skylens `geo.ts` 와 같은 등장방형 근사(R = 6378137 m)이며, geo.ts 를 옮긴 기준 함수와 1 mm 이내로 일치함을 테스트한다.
+27 B 점과 56 B 가우시안 PLY 를 읽고 쓴다. 계약 `contracts/points/`·`contracts/geo/`, 서버 모듈 `server/points/`(PLY 읽기·쓰기·스트리밍·손상 입력 거부·법선 정규화·구간 파일 식별)와 `server/geo/`(GPS↔ENU, ENU↔씬 좌표 x=동, y=위, z=−북), 클라이언트 변환 `client/geo/`, 점 통계 `tools/points_stat/`. GPS↔ENU 는 skylens `geo.ts` 와 같은 등장방형 근사(R = 6378137 m)이며, geo.ts 를 옮긴 기준 함수와 1 mm 이내로 일치함을 테스트한다. 경도 차이(|Δλ|)가 180°를 넘으면 360° − |Δλ|를 쓴다.
+
+### 합성 장면과 뷰포인트 (T05)
+테스트·측정용 8가지 합성 장면. 각 장면 생성기는 `fixtures/scenes/<이름>/index.mjs` 에 위치하고 `generate(opts)` 를 내보내며 `SceneResult` 를 반환한다(계약은 `contracts/scenes/index.mjs`). 좌표는 GeoAnchor 기준 로컬 ENU(1 unit = 1 m). 점 형식: 27 B(위치+법선) 또는 56 B(가우시안·불투명도·크기·회전).
+
+**장면:**
+| 이름 | 설명 |
+| --- | --- |
+| buildings | 건물 외곽 돌출(관제탑용) |
+| dem | DEM 타일 합성 장면(관제탑용) |
+| depth_noise | 깊이 오차 모형에 따른 잡음 주입 |
+| flat_boxes | 평지(200×200 m) 위에 상자 건물 12동 |
+| holes | 무늬 있는 평지 + 무늬 없는 빈자리(메우지 않음) |
+| large | 대규모 장면 생성(250만 점 성능 시험용) |
+| levels | 구간×4수준 점 수 사다리 장면 |
+| terrain | 완만한 지형 장면(해석적 높이장) |
+
+**뷰포인트:** `fixtures/viewpoints/synthetic.json` 은 `flat_boxes` 장면용 8개 고정 뷰포인트(id 1-8, 이름: aerial_overview, aerial_oblique_ne, top_down, street_level, low_close_box, tower_high, tower_mid, edge_far)를 정의한다. 실제 자산용 viewpoints.json 과 별개다.
+
+**카메라 경로:** `fixtures/paths/index.mjs` 는 카메라 경로 생성기를 제공한다: 드론 추적(원형 비행·지터 포함)과 자유 조작(Catmull-Rom 웨이포인트). 모두 결정적 시드 지정(contracts/scenes mulberry32, subSeed).
+
+**미리보기 생성:** `node tools/scene_preview/cli.mjs <장면이름> <시드> <출력디렉터리>` 로 지정한 시드의 장면 미리보기 이미지(PNG)를 생성한다. `<장면이름>` 은 8가지 장면 키 중 하나. 출력 디렉터리가 없으면 생성된다.
 
 ### 개발 설정
 ```
@@ -128,7 +149,28 @@ External tools: first-frame and heap measurement need playwright and Chromium. T
 One chunk is one file (128 B header + per-field planar body, little-endian, coordinates in GeoAnchor-relative ENU on 64 m tiles). The 27 B point (with normal) and the 56 B Gaussian (with opacity, scale and rotation) share one format, told apart by the format field in the header. The spec is `format/ASSET_FORMAT.md`, the code contract is `contracts/asset/`, and golden files are in `fixtures/asset_golden/`. Server modules live in `server/asset/` (header, tile index, bounds, ids, checksum, unpack, pack, determinism, compat, fuzzer), the client reader in `client/asset/`, and the validator is `node tools/asset_validate/cli.mjs <file.skla>` (exit code 1 on violations).
 
 ### Point input and coordinates (T04)
-Reads and writes 27 B point and 56 B Gaussian PLY files. Contracts live in `contracts/points/` and `contracts/geo/`; server modules in `server/points/` (PLY read/write/streaming, rejection of corrupt input, normal normalization, segment file identification) and `server/geo/` (GPS↔ENU, ENU↔scene axes x=east, y=up, z=−north); the client conversion in `client/geo/`; point statistics in `tools/points_stat/`. GPS↔ENU uses the same equirectangular approximation as skylens `geo.ts` (R = 6378137 m) and is tested against a transcribed reference function to within 1 mm.
+Reads and writes 27 B point and 56 B Gaussian PLY files. Contracts live in `contracts/points/` and `contracts/geo/`; server modules in `server/points/` (PLY read/write/streaming, rejection of corrupt input, normal normalization, segment file identification) and `server/geo/` (GPS↔ENU, ENU↔scene axes x=east, y=up, z=−north); the client conversion in `client/geo/`; point statistics in `tools/points_stat/`. GPS↔ENU uses the same equirectangular approximation as skylens `geo.ts` (R = 6378137 m) and is tested against a transcribed reference function to within 1 mm. When longitude difference |Δλ| exceeds 180°, use 360° − |Δλ|.
+
+### Synthetic scenes and viewpoints (T05)
+8 synthetic scenes for testing and measurement. Each scene generator lives in `fixtures/scenes/<name>/index.mjs` and exports `generate(opts)` returning a `SceneResult` (contract in `contracts/scenes/index.mjs`). Coordinates are local ENU anchored at the GeoAnchor, 1 unit = 1 m. Point formats: 27 B (position + normal) and 56 B (Gaussian with opacity, scale, rotation).
+
+**Scenes:**
+| Name | Description |
+| --- | --- |
+| buildings | Building footprints with heights (control tower use) |
+| dem | Digital Elevation Model synthetic scene (control tower use) |
+| depth_noise | Depth error model with noise injection |
+| flat_boxes | Flat terrain (200×200 m) with 12 box buildings |
+| holes | Flat terrain with patterned ground and rectangular gaps (no infill) |
+| large | Large-scale scene generation (2.5M points for performance testing) |
+| levels | Segment × 4-level point count ladder scene |
+| terrain | Gentle terrain scene with analytical height field |
+
+**Viewpoints:** `fixtures/viewpoints/synthetic.json` defines 8 fixed viewpoints for the `flat_boxes` scene (ids 1-8, names: aerial_overview, aerial_oblique_ne, top_down, street_level, low_close_box, tower_high, tower_mid, edge_far). This is separate from the production viewpoints file.
+
+**Camera paths:** `fixtures/paths/index.mjs` provides camera path generators: drone tracking (circular flight with jitter) and free navigation (Catmull-Rom waypoints). Both use deterministic seeding (contracts/scenes mulberry32, subSeed).
+
+**Preview generation:** Use `node tools/scene_preview/cli.mjs <scene-name> <seed> <output-directory>` to generate a preview image (PNG) of a scene with the specified seed. `<scene-name>` is one of the 8 scene keys. Output directory is created if needed.
 
 ### Development setup
 ```

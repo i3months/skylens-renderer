@@ -28,10 +28,14 @@ export function parsePlyHeader(buf, maxHeaderBytes = PLY_HEADER_MAX_BYTES) {
     if (t[0] === 'format') format = t[1];
     else if (t[0] === 'element') {
       inVertex = t[1] === 'vertex';
-      if (inVertex) vertexCount = Number(t[2]);
+      if (inVertex) {
+        // 십진 정수만 받는다 (0x10, 1e3 등 다른 형식 거부)
+        if (!/^\d+$/.test(t[2])) throw new Error('ply: element vertex missing');
+        vertexCount = Number(t[2]);
+      }
     } else if (t[0] === 'property' && inVertex) {
       if (t[1] === 'list') throw new Error('ply: list property unsupported');
-      if (!(t[1] in SIZES)) throw new Error(`ply: unknown type ${t[1]}`);
+      if (!Object.hasOwn(SIZES, t[1])) throw new Error(`ply: unknown type ${t[1]}`);
       properties.push({ name: t[2], type: t[1] });
     }
   }
