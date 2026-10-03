@@ -101,9 +101,18 @@ const asc37 = (rows, w) => { const r = compose(rows, w).map((x) => x.name); retu
 test('§3-6 표: 구성한 점수의 1위는 camF_0054', () => {
   const r = compose(T36);
   assert.equal(r[0].name, '0054');
-  // 2위(0051)보다 3% 이상 앞선다: 3212 vs 3081 (손계산: 3266·w_θ(9.27)=3266·0.9921 ≈ 3240, ×w_s(0.9)=1)
+  // 2위(0051)보다 3% 이상 앞선다: 3212 vs 3081 (손계산: 3266·exp(−0.5329/32)=3266·0.9835 ≈ 3212, w_s(0.9)=1)
   assert.ok(r[0].score > r[1].score * 1.03, JSON.stringify(r.slice(0, 2)));
   near(r[0].score, 3266 * Math.exp(-((9.27 - 10) ** 2) / 32), 1e-9, '0054 = N·exp(−0.73²/32)');
+});
+
+test('§3-6 표: 상위 8 집합은 문서와 다르다 (0045 가 빠지고 0069 가 들어감, 결정 0020 ①)', () => {
+  const r = compose(T36).sort((a, b) => b.score - a.score);
+  assert.deepEqual(r.map((x) => x.name), ['0054', '0051', '0057', '0060', '0063', '0048', '0066', '0069', '0045', '0072', '0075', '0042']);
+  assert.deepEqual(r.map((x) => Math.round(x.score)), [3212, 3081, 3031, 2890, 2682, 2659, 2495, 2254, 2153, 2007, 1725, 1625]);
+  const top8 = r.slice(0, 8).map((x) => x.name).sort();
+  assert.deepEqual(top8, ['0048', '0051', '0054', '0057', '0060', '0063', '0066', '0069']);
+  assert.ok(!top8.includes('0045'));
 });
 
 test('§3-7 표: 점수 순서 0027<0033<0024<0039<0042<0054', () => {
@@ -141,6 +150,8 @@ test('기하 합성: 기선 1.04/4.14/8.26/15.37 m 후보 순위 (손계산 부�
   //   4.14 m : θ ∈ [4.3, 5.4]° → w_θ ∈ [0.35, 0.52]  → 점수 ∈ [575, 855]
   //   1.04 m : θ ≤ 1.4°       → w_θ ≤ exp(−73.96/32) = 0.099 → 점수 ≤ 172
   assert.ok(score(8.26) <= 1519 && score(8.26) >= 1519 * angleScore(8), String(score(8.26)));
+  // 측정값 회귀 고정(손계산 구간 안): θ₀ 9~12 변이는 이 ±1% 를 벗어난다.
+  near(score(8.26), 1483.49, 1483.49 * 0.01, '8.26 m 점수 ±1%');
   assert.ok(score(15.37) <= 1302 && score(15.37) >= 1302 * angleScore(19), String(score(15.37)));
   assert.ok(score(4.14) <= 1643 * angleScore(5.4) && score(4.14) >= 1643 * angleScore(4.3), String(score(4.14)));
   assert.ok(score(1.04) <= 1736 * angleScore(1.4), String(score(1.04)));
