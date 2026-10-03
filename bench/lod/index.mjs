@@ -5,8 +5,11 @@ import { writeFileSync } from 'node:fs';
 import { packChunk } from '../../server/asset/pack/index.mjs';
 import { FORMAT_POINT27 } from '../../contracts/asset/index.mjs';
 import { buildHierarchy } from '../../server/lod/hierarchy/index.mjs';
+import { materialize } from '../../server/lod/select/index.mjs';
 
 const TILE_SIZE = 64;
+const TILE_KEY_SPAN = 2 ** 22;
+const TILE_KEY_HALF = 2 ** 21;
 
 /**
  * @param {Object} cloud Point27Cloud
@@ -21,10 +24,13 @@ export function measureSegmentBytes(cloud, opts = {}) {
   const h = buildHierarchy(cloud, { edge0M, levelCount, maxLeafPoints });
   const points = [], bytesByLevel = [], chunksByLevel = [];
   for (const lv of h.levels) {
+    // 타일 키는 정수(tx·2^22 + tz). 문자열 키 Map 은 점마다 문자열을 만들어 느렸다. 값(타일 구성·순서)은 같다.
     const tiles = new Map();
     for (let s = 0; s < lv.count; s++) {
       const i = lv.indices[s];
-      const key = `${Math.floor(cloud.positions[3 * i] / TILE_SIZE)},${Math.floor(cloud.positions[3 * i + 2] / TILE_SIZE)}`;
+      const tx = Math.floor(cloud.positions[3 * i] / TILE_SIZE), tz = Math.floor(cloud.positions[3 * i + 2] / TILE_SIZE);
+      if (!(Math.abs(tz) < TILE_KEY_HALF) || !(Math.abs(tx) < 2 ** 30)) throw new Error(`lod bench: 타일 좌표 범위 밖 (${tx},${tz})`);
+      const key = tx * TILE_KEY_SPAN + tz;
       let arr = tiles.get(key);
       if (!arr) tiles.set(key, (arr = []));
       arr.push(s);
@@ -33,11 +39,12 @@ export function measureSegmentBytes(cloud, opts = {}) {
     for (const list of tiles.values()) {
       const m = list.length;
       const positions = new Float32Array(3 * m), normals = new Float32Array(3 * m), colors = new Uint8Array(3 * m);
-      list.forEach((s, d) => {
-        positions.set(cloud.positions.subarray(3 * lv.indices[s], 3 * lv.indices[s] + 3), 3 * d);
-        normals.set(lv.normals.subarray(3 * s, 3 * s + 3), 3 * d);
-        colors.set(lv.colors.subarray(3 * s, 3 * s + 3), 3 * d);
-      });
+      for (let d = 0; d < m; d++) {
+        const s = list[d], b = 3 * lv.indices[s];
+        positions[3 * d] = cloud.positions[b]; positions[3 * d + 1] = cloud.positions[b + 1]; positions[3 * d + 2] = cloud.positions[b + 2];
+        normals[3 * d] = lv.normals[3 * s]; normals[3 * d + 1] = lv.normals[3 * s + 1]; normals[3 * d + 2] = lv.normals[3 * s + 2];
+        colors[3 * d] = lv.colors[3 * s]; colors[3 * d + 1] = lv.colors[3 * s + 1]; colors[3 * d + 2] = lv.colors[3 * s + 2];
+      }
       bytes += packChunk({ format: FORMAT_POINT27, segmentId: 0, level: Math.min(lv.level, 3), lod: 0, chunkIndex: 0, anchor, fields: { positions, normals, colors } }).length;
     }
     points.push(lv.count);
@@ -45,6 +52,33 @@ export function measureSegmentBytes(cloud, opts = {}) {
     chunksByLevel.push(tiles.size);
   }
   return { points, bytesByLevel, chunksByLevel };
+}
+
+/**
+ * materialize 시간 측정. 계층의 모든 리프를 단계 0 으로 고르고 그중 keepRatio 만큼(결정적 해시로) 선택해 materialize 한다.
+ * 값만 보고하며 문턱 검사는 하지 않는다.
+ * @returns {{selectedPoints: number, totalPoints: number, medianMs: number, runsMs: number[]}}
+ */
+export function measureMaterialize(hierarchy, { keepRatio = 0.736, runs = 5 } = {}) {
+  const { octree, levels } = hierarchy;
+  const leafLevel = new Uint8Array(octree.leafCount).fill(255);
+  let pointCount = 0;
+  for (let k = 0; k < octree.leafCount; k++) {
+    // 리프 번호 기반 고정 해시(시드 무관, 재현 가능)
+    if (((Math.imul(k + 1, 2654435761) >>> 0) / 4294967296) < keepRatio) {
+      leafLevel[k] = 0;
+      pointCount += levels[0].leafStart[k + 1] - levels[0].leafStart[k];
+    }
+  }
+  const sel = { leafLevel, pointCount };
+  const runsMs = [];
+  for (let r = 0; r < runs; r++) {
+    const t0 = performance.now();
+    materialize(hierarchy, sel);
+    runsMs.push(performance.now() - t0);
+  }
+  const sorted = [...runsMs].sort((a, b) => a - b);
+  return { selectedPoints: pointCount, totalPoints: hierarchy.cloud.count, medianMs: sorted[sorted.length >> 1], runsMs };
 }
 
 /**
@@ -85,12 +119,13 @@ export function printTable(result, targetBytes = 3e6) {
  * @param {{points: number[], bytesByLevel: number[]}} result
  * @param {string} filePath
  */
-export function writeJSON(result, filePath) {
+export function writeJSON(result, filePath, extra = {}) {
   const data = {
     timestamp: new Date().toISOString(),
     points: result.points,
     bytesByLevel: result.bytesByLevel,
     totalBytes: result.bytesByLevel.reduce((a, b) => a + b, 0),
+    ...extra,
   };
   writeFileSync(filePath, JSON.stringify(data, null, 2));
   console.log(`\nJSON 저장: ${filePath}`);
