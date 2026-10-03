@@ -14,6 +14,7 @@
 
 import { degenerateCamera } from '../degenerate/index.mjs';
 import { guardHierarchyRead } from '../degenerate/hierarchy_guard.mjs';
+import { checkLeafIndexOneToOne } from '../degenerate/leaf_check.mjs';
 
 const ERR = 'cull:';
 const NEAR_M = 0.01;
@@ -23,16 +24,28 @@ export const MAX_COARSE_CELLS = 4_000_000; // 거친 버퍼 칸 수 상한: 큰 
 // leafCount < 1 은 계약(contracts/cull, F-145)상 구조 오류다.
 // 필드 읽기는 guardHierarchyRead 로 감싸 getter·Proxy 예외를 'cull:' 오류로 바꾼다(F-148).
 // levels[0] 존재·타입배열 검사(F-149): 일반 배열이나 levels 없음은 TypeError 가 아니라 'cull:' 오류.
+// nodeCount·배열 길이·leafIndex 범위/중복·상자 유한성·positions 길이 검사(F-152): 어긋나면 점수만 틀어지므로 'cull:' 오류로 막는다.
+// 검사하며 읽은 값을 스냅숏으로 돌려주고 이후 계산은 이것만 쓴다(계산 중에는 계층 접근자를 다시 읽지 않는다 → 계산 단계 오류가 계층 오류로 오인되지 않음).
 const isTyped = (a) => ArrayBuffer.isView(a) && !(a instanceof DataView);
-function assertHierarchy(h) {
-  guardHierarchyRead(() => {
+function readHierarchy(h) {
+  return guardHierarchyRead(() => {
     const oc = h?.octree;
     if (!oc || !Number.isInteger(oc.leafCount) || oc.leafCount < 1 || !(oc.leafStart instanceof Uint32Array)
       || !isTyped(oc.leafIndex) || !isTyped(oc.boxMin) || !isTyped(oc.boxMax) || oc.leafStart.length !== oc.leafCount + 1) {
       throw new Error(`${ERR} 계층(octree)이 올바르지 않음`);
     }
+    const { leafCount, leafStart, leafIndex, boxMin, boxMax } = oc;
+    const nodeCount = oc.nodeCount;
+    if (!Number.isInteger(nodeCount) || nodeCount < leafCount) throw new Error(`${ERR} octree.nodeCount(${nodeCount}) 가 올바르지 않음`);
+    if (leafIndex.length < nodeCount) throw new Error(`${ERR} leafIndex 길이(${leafIndex.length}) 가 nodeCount(${nodeCount}) 보다 짧음`);
+    if (boxMin.length < 3 * nodeCount || boxMax.length < 3 * nodeCount) throw new Error(`${ERR} boxMin/boxMax 길이가 3*nodeCount(${3 * nodeCount}) 보다 짧음`);
+    checkLeafIndexOneToOne({ leafIndex, boxMin, boxMax, leafCount, nodeCount });
     const lv = Array.isArray(h.levels) ? h.levels[0] : undefined;
     if (!lv || !isTyped(lv.positions)) throw new Error(`${ERR} 계층 levels[0].positions 가 올바르지 않음`);
+    const positions = lv.positions, lvStart = lv.leafStart, edgeM = lv.edgeM;
+    if (!(lvStart instanceof Uint32Array) || lvStart.length !== leafCount + 1) throw new Error(`${ERR} 계층 levels[0].leafStart 가 올바르지 않음`);
+    if (3 * lvStart[leafCount] > positions.length) throw new Error(`${ERR} levels[0].positions 길이(${positions.length}) 가 leafStart 가 가리키는 점 수보다 짧음`);
+    return { leafCount, leafStart, leafIndex, boxMin, boxMax, nodeCount, positions, lvStart, edgeM };
   });
 }
 
@@ -74,25 +87,23 @@ function coarseScale(camera) {
 }
 
 /** 단계 0 점을 거친 깊이 버퍼에 그려 리프별 이긴 칸 수(원 해상도 px 환산)를 센다. */
-function coarseWins(hierarchy, camera) {
-  const oc = hierarchy.octree;
-  const wins = new Float64Array(oc.leafCount);
-  const lv = hierarchy.levels[0];
+function coarseWins(hd, camera) {
+  const wins = new Float64Array(hd.leafCount);
   const { K, R, t } = camera;
   const scale = coarseScale(camera);
   const w = Math.max(1, Math.round(camera.width * scale)), h = Math.max(1, Math.round(camera.height * scale));
   const sx = w / camera.width, sy = h / camera.height;
   const depth = new Float32Array(w * h).fill(Infinity);
   const owner = new Int32Array(w * h).fill(-1);
-  const pos = lv.positions;
-  for (let k = 0; k < oc.leafCount; k++) {
-    for (let s = lv.leafStart[k]; s < lv.leafStart[k + 1]; s++) {
+  const pos = hd.positions, lvStart = hd.lvStart;
+  for (let k = 0; k < hd.leafCount; k++) {
+    for (let s = lvStart[k]; s < lvStart[k + 1]; s++) {
       const X = pos[3 * s], Y = pos[3 * s + 1], Z = pos[3 * s + 2];
       const z = R[6] * X + R[7] * Y + R[8] * Z + t[2];
       if (!(z > 0)) continue;
       const u = (K.fx * (R[0] * X + R[1] * Y + R[2] * Z + t[0]) / z + K.cx) * sx;
       const v = (K.fy * (R[3] * X + R[4] * Y + R[5] * Z + t[1]) / z + K.cy) * sy;
-      const r = Math.max(0.5, 0.5 * lv.edgeM * Math.max(K.fx * sx, K.fy * sy) / z);
+      const r = Math.max(0.5, 0.5 * hd.edgeM * Math.max(K.fx * sx, K.fy * sy) / z);
       if (!Number.isFinite(u) || !Number.isFinite(v) || u + r < 0 || v + r < 0 || u - r > w || v - r > h) continue;
       const x0 = Math.max(0, Math.floor(u - r)), x1 = Math.min(w - 1, Math.floor(u + r));
       const y0 = Math.max(0, Math.floor(v - r)), y1 = Math.min(h - 1, Math.floor(v + r));
@@ -115,13 +126,12 @@ function coarseWins(hierarchy, camera) {
  * @returns {Float64Array} 길이 leafCount
  */
 export function leafPriority(hierarchy, camera) {
-  assertHierarchy(hierarchy);
-  const oc = hierarchy.octree;
+  const oc = readHierarchy(hierarchy);
   const out = new Float64Array(oc.leafCount);
   if (degenerateCamera(camera)) return out;
   const node = new Int32Array(oc.leafCount).fill(-1);
   for (let i = 0; i < oc.nodeCount; i++) if (oc.leafIndex[i] >= 0) node[oc.leafIndex[i]] = i;
-  const wins = guardHierarchyRead(() => coarseWins(hierarchy, camera)); // levels[0] 접근자 예외도 cull: 오류로(F-148)
+  const wins = coarseWins(oc, camera); // 계층 읽기는 readHierarchy 에서 끝났으므로 여기서는 가드하지 않는다(할당 등 다른 오류를 계층 오류로 오인하지 않게, F-152)
   const P = new Float64Array(24);
   for (let k = 0; k < oc.leafCount; k++) {
     const nd = node[k];
@@ -138,8 +148,7 @@ export function leafPriority(hierarchy, camera) {
  * @returns {Uint32Array}
  */
 export function orderChunks(hierarchy, camera, mask) {
-  assertHierarchy(hierarchy);
-  const n = hierarchy.octree.leafCount;
+  const n = readHierarchy(hierarchy).leafCount;
   if (!(mask instanceof Uint8Array) || mask.length !== n) throw new Error(`${ERR} 마스크는 길이 ${n} 의 Uint8Array 여야 함`);
   for (let i = 0; i < n; i++) if (mask[i] !== 0 && mask[i] !== 1) throw new Error(`${ERR} 마스크[${i}] = ${mask[i]} 는 0/1 이 아님`);
   if (degenerateCamera(camera)) return new Uint32Array(0); // 퇴화 시점: 계약(T08.10)상 아무것도 남기지 않는다
