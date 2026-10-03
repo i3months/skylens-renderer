@@ -21,7 +21,7 @@ console.log(`   완료: ${(generateTime / 1000).toFixed(1)}초`);
 const measureStartTime = Date.now();
 console.log('\n2. 자산 크기 측정 중...');
 const result = measureSegmentBytes(scene.cloud, {
-  edge0M: 64,
+  edge0M: 0.05,
   levelCount: LEVEL_COUNT,
 });
 const measureTime = Date.now() - measureStartTime;

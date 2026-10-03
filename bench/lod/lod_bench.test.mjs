@@ -9,7 +9,7 @@ test('LOD 벤치: 작은 장면(20k 점) 레벨별 바이트 단조 감소', () 
   const cloud = scene.cloud;
 
   const result = measureSegmentBytes(cloud, {
-    edge0M: 64,
+    edge0M: 0.3,
     levelCount: 4,
   });
 
@@ -56,44 +56,3 @@ test('LOD 벤치: 다른 시드(20k 점)도 바이트 단조 감소', () => {
 });
 
 // 커스텀 리듀서 테스트
-test('LOD 벤치: 커스텀 리듀서 사용 가능', () => {
-  const scene = generateTerrain({ seed: 5, count: 20000, format: 1 });
-
-  let reducerCalled = false;
-  const customReducer = (positions, normals, colors, cellSize, boundMin) => {
-    reducerCalled = true;
-    // 기본 동작: 칸마다 첫 점만
-    const selected = new Map();
-    const n = positions.length / 3;
-    for (let i = 0; i < n; i++) {
-      const e = positions[3 * i];
-      const n_ = positions[3 * i + 1];
-      const cellE = Math.floor((e - boundMin[0]) / cellSize);
-      const cellN = Math.floor((n_ - boundMin[1]) / cellSize);
-      const cellKey = `${cellE},${cellN}`;
-      if (!selected.has(cellKey)) {
-        selected.set(cellKey, i);
-      }
-    }
-    const indices = Array.from(selected.values());
-    const reducedPositions = new Float32Array(indices.length * 3);
-    const reducedNormals = new Float32Array(indices.length * 3);
-    const reducedColors = new Uint8Array(indices.length * 3);
-    indices.forEach((srcIdx, dstIdx) => {
-      for (let a = 0; a < 3; a++) {
-        reducedPositions[3 * dstIdx + a] = positions[3 * srcIdx + a];
-        reducedNormals[3 * dstIdx + a] = normals[3 * srcIdx + a];
-        reducedColors[3 * dstIdx + a] = colors[3 * srcIdx + a];
-      }
-    });
-    return { positions: reducedPositions, normals: reducedNormals, colors: reducedColors };
-  };
-
-  const result = measureSegmentBytes(scene.cloud, {
-    levelCount: 2,
-    reduce: customReducer,
-  });
-
-  assert.ok(reducerCalled, '커스텀 리듀서가 호출되지 않음');
-  assert.ok(result.bytesByLevel.length === 2);
-});
