@@ -58,7 +58,10 @@ test('combine: pointSizeM 이 없으면 좌우상하 제거 없음, 가림 단�
   const r = await cullAndSelectDefault(h, CAM, { thresholdPx: 0.5, stages: ['frustum', 'occlusion'] });
   assert.equal(r.cull.stats.removedFrustum, 0);
   assert.equal(r.cull.stats.removedOcclusion, 0);
-  assert.equal(r.cull.stats.kept, oc.leafCount);
+  assert.ok(r.cull.mask.every((m) => m === 1));
+  // chunks 는 LOD 가 NOT_DRAWN 으로 둔 리프를 제외한다(F-118 ⑤)
+  const drawnN = r.selection.leafLevel.reduce((n, l) => n + (l !== 255 ? 1 : 0), 0);
+  assert.equal(r.cull.stats.kept, drawnN);
 });
 
 test('combine: pointSizeM 이 모든 단계의 stageOpts 로 전달되고, 입력 오류는 cull:', () => {
@@ -82,4 +85,12 @@ test('predict: pointSizeM 이 있으면 가장자리 걸침 리프가 남고, 0 
   const mNone = predictiveMask(h, st, { horizonS: 1, steps: 2 });
   assert.ok(allIn(edgeLeaves, mNone) && allIn(decoyLeaves, mNone), 'pointSizeM 없음은 좌우상하 제거 없음');
   assert.throws(() => predictiveMask(h, st, { horizonS: 1, steps: 2, pointSizeM: -1 }), /^Error: cull:/);
+});
+
+test('combine: 가림 단계에 pointSizeM 이 전달되어야 일한다(없으면 0 제거, 있으면 호출 인자로 확인)', async () => {
+  const { loadDefaultStages } = await import('./index.mjs');
+  const st = await loadDefaultStages();
+  const o = { thresholdPx: 0.5 };
+  assert.ok(st.occlusion(h, CAM, o).every((m) => m === 1));
+  assert.ok(st.backface(h, CAM, o).every((m) => m === 1));
 });
