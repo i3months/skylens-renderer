@@ -81,7 +81,7 @@ for (const st of STAGES) {
 }
 
 // F-162 ②: distanceCull 은 NaN 축의 간격을 0 으로 두고 '유한한 축만으로' 판정한다(boxDistanceM 의 비교가 NaN 에서 거짓 → 간격 0).
-//   hypot 이 넘쳐 Infinity 면 제거, 간격이 NaN 이면 거리 NaN 이라 남김(contracts/cull/index.mjs 와 같은 표현).
+//   hypot 이 넘쳐 Infinity 면 제거, 유한 축만으로는 거리가 0 이거나 유한이라 남김(boxDistanceM 이 NaN 간격을 0 으로 취급).
 //   간격 하한만 쓰므로 유한 축만으로 확실히 먼 리프를 제거하는 것은 거짓 제거가 아니다. 위 표는 maxDistanceM 1e4 라 이 경우를 피한다.
 //   카메라 중심은 원점(R=I, t=0)이다. 비어있지 않은 리프 하나(k)의 상자를 직접 덮어쓴다.
 function distanceWith(boxFn) {
