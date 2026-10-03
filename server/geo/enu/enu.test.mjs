@@ -226,6 +226,26 @@ for (const km of [0.1, 1, 10, 50]) {
   });
 }
 
+test('F-076 기본 경로 1만 점: 기준(geo.ts)과 최대 차 0 m, 왕복 ≤ 1 mm', (t) => {
+  const r = rng(0xf076);
+  let fwd = 0, inv = 0, rt = 0;
+  for (let i = 0; i < 10000; i++) {
+    const a = SK_ANCHORS[i % SK_ANCHORS.length];
+    const enu = randEnu(r, 50000);
+    const g = refEnuToGpsSk({ e: enu[0], n: enu[1], u: enu[2] }, a);
+    const got = gpsToEnu(g, a), want = refGpsToEnuSk(g, a);
+    fwd = Math.max(fwd, Math.abs(got[0] - want.e), Math.abs(got[1] - want.n), Math.abs(got[2] - want.u));
+    const gg = enuToGps(enu, a), wg = refEnuToGpsSk({ e: enu[0], n: enu[1], u: enu[2] }, a);
+    inv = Math.max(inv, Math.abs(gg.lat - wg.lat), Math.abs(gg.lon - wg.lon), Math.abs(gg.alt - wg.alt));
+    const back = gpsToEnu(gg, a);
+    rt = Math.max(rt, Math.hypot(back[0] - enu[0], back[1] - enu[1], back[2] - enu[2]));
+  }
+  t.diagnostic(`정방향 최대 차 ${fwd} m, 역방향 최대 차 ${inv} 도, 왕복 ${rt} m`);
+  assert.equal(fwd, 0);
+  assert.equal(inv, 0);
+  assert.ok(rt <= 1e-3, `왕복 ${rt}`);
+});
+
 test('F-071 손계산 값: 등장방형 근사 식 그대로', () => {
   // R·π/180 = 6378137·0.017453292519943295 = 111319.49079327357 m (경위도 1도)
   const deg1 = 111319.49079327357;
@@ -258,7 +278,66 @@ test('F-073⑥ enuToGps 결과가 비유한이면 GeoError(range)', () => {
   assert.throws(() => enuToGps([1.7e308, 0, 0], { lat: 89.9999999, lon: 0, alt: 0 }), isRange);
   assert.throws(() => sceneToGps([1e300, 0, 0], pole), isRange);
   // 극 앵커라도 e=0 이면 유한
-  assert.deepEqual(enuToGps([0, 10, 0], pole), { lat: 90 + 10 / REF_R / REF_DEG, lon: 0, alt: 0 });
+  assert.deepEqual(enuToGps([0, -10, 0], pole), { lat: 90 - 10 / REF_R / REF_DEG, lon: 0, alt: 0 });
+});
+
+// F-076: 결과 범위·극 앵커·경도 감싸기·유한성·array-like
+test('F-076 enuToGps 결과 위도 밖·극 앵커 e≠0 은 GeoError(range)', () => {
+  const isRange = (e) => e instanceof GeoError && e.code === 'range';
+  assert.throws(() => enuToGps([1, 0, 0], { lat: 90, lon: 0, alt: 0 }), isRange);
+  assert.throws(() => enuToGps([-1, 0, 0], { lat: -90, lon: 0, alt: 0 }), isRange);
+  assert.throws(() => enuToGps([1e-6, 0, 0], { lat: 90, lon: 0, alt: 0 }), isRange);
+  assert.throws(() => enuToGps([0, 1e7, 0], { lat: 80, lon: 0, alt: 0 }), isRange);
+  assert.throws(() => enuToGps([0, -1e7, 0], { lat: -80, lon: 0, alt: 0 }), isRange);
+  assert.throws(() => enuToGps([0, 10, 0], { lat: 90, lon: 0, alt: 0 }), isRange);
+  assert.throws(() => sceneToGps([1, 0, 0], { lat: 90, lon: 0, alt: 0 }), isRange);
+});
+
+test('F-076 극 앵커 e=0 은 통과(lon 그대로)', () => {
+  for (const lat of [90, -90]) {
+    const a = { lat, lon: 33.5, alt: 7 };
+    const g = enuToGps([0, 0, 2], a);
+    assert.deepEqual(g, { lat, lon: 33.5, alt: 9 });
+    assert.deepEqual(enuToGps([-0, 0, 0], a), { lat, lon: 33.5, alt: 7 });
+  }
+  assert.deepEqual(gpsToEnu({ lat: 90, lon: 0, alt: 0 }, { lat: 90, lon: 0, alt: 0 }), [0, 0, 0]);
+});
+
+test('F-076 날짜변경선 앵커: 경도를 (−180,180] 로 감싸 왕복', () => {
+  const a = { lat: 10, lon: 179.9999, alt: 0 };
+  const g = sceneToGps([100, 0, 0], a);
+  assert.ok(g.lon > -180 && g.lon <= 180, `lon ${g.lon}`);
+  assert.ok(g.lon < -179, `lon ${g.lon}`); // 동쪽으로 넘어가 −179.99… 쪽
+  const back = gpsToScene(g, a); // 이전에는 lon 180.001 이라 throw
+  for (let i = 0; i < 3; i++) near(back[i], [100, 0, 0][i], 1e-6, `왕복 ${i}`);
+  // 서쪽 방향
+  const a2 = { lat: -20, lon: -179.9999, alt: 5 };
+  const g2 = enuToGps([-500, 0, 0], a2);
+  assert.ok(g2.lon > 179 && g2.lon <= 180, `lon ${g2.lon}`);
+  // 정확히 180 은 그대로, 180 초과는 감쌈, 경계 값
+  assert.equal(enuToGps([0, 0, 0], { lat: 0, lon: 180, alt: 0 }).lon, 180);
+  const wrapped = enuToGps([111319.49079327357 * 1, 0, 0], { lat: 0, lon: 180, alt: 0 });
+  near(wrapped.lon, -179, 1e-9, '180+1 → −179');
+  const e2 = gpsToEnu(g2, a2);
+  near(e2[0], -500, 1e-6, '서쪽 왕복 e'); near(e2[1], 0, 1e-6, '서쪽 왕복 n');
+  // 범위 안의 값은 기준 함수와 비트까지 같다(감싸기가 기본 경로를 바꾸지 않음)
+  const x = enuToGps([1234.5, -678.9, 1], SK_ANCHORS[0]);
+  assert.deepEqual(x, refEnuToGpsSk({ e: 1234.5, n: -678.9, u: 1 }, SK_ANCHORS[0]));
+});
+
+test('F-076 gpsToEnu 결과가 비유한이면 GeoError(range)', () => {
+  assert.throws(
+    () => gpsToEnu({ lat: 0, lon: 0, alt: 1e308 }, { lat: 0, lon: 0, alt: -1e308 }),
+    (e) => e instanceof GeoError && e.code === 'range',
+  );
+});
+
+test('F-076 enuToGps: array-like 객체는 TypeError', () => {
+  for (const bad of [new Float64Array(3), { 0: 1, 1: 2, 2: 3, length: 3 }, { length: 3 }]) {
+    assert.throws(() => enuToGps(bad, SK_ANCHORS[0]), TypeError);
+    assert.throws(() => enuToGpsExact(bad, SK_ANCHORS[0]), TypeError);
+  }
+  assert.throws(() => enuToGps([1, 2], SK_ANCHORS[0]), GeoError);
 });
 
 test('skylens 이름 6개와 어댑터: 기준 함수와 같은 의미', () => {

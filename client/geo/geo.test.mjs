@@ -37,6 +37,15 @@ const refEnu = (g, a) => { const r = skylensGpsToEnu(g, a); return [r.e, r.n, r.
 
 // 앵커: 서울시청 부근
 const ANCHOR = Object.freeze({ lat: 37.5665, lon: 126.978, alt: 30 });
+// 여러 앵커: 북·남반구, 동·서경, 고위도, 고도 ≠ 30(서버 SK_ANCHORS 와 같은 구성). Seoul 하나로는 cos·상수 변이를 못 잡는다.
+const ANCHORS = [
+  ANCHOR,
+  { lat: 0, lon: 0, alt: 0 },
+  { lat: -33.86, lon: 151.21, alt: 5 },
+  { lat: 78.2, lon: 15.6, alt: -12.5 },
+  { lat: 49.0, lon: -123.1, alt: 1500 },
+  { lat: -54.8, lon: -68.3, alt: 20 },
+];
 const RADII_KM = [0.1, 1, 10, 50];
 const N_POINTS = 10000;
 
@@ -87,16 +96,44 @@ test('손계산 기준값(앵커 37.5665N 126.978E 30m, 등장방형 근사)', (
   }
 });
 
+test('앵커별 손계산 값(경도 +0.01° 의 e = 0.01·R·DEG·cos φ0, 위도 +0.01° 의 n = 1113.19…)', () => {
+  // cos φ0 와 e 는 독립 계산(파이썬 math.cos) 리터럴. R·DEG = 111319.49079327357
+  const table = [
+    [{ lat: 0, lon: 0, alt: 0 }, 1113.1949079327357],
+    [{ lat: -33.86, lon: 151.21, alt: 5 }, 924.3986794126988],
+    [{ lat: 78.2, lon: 15.6, alt: -12.5 }, 227.64396360262964],
+    [{ lat: 49.0, lon: -123.1, alt: 1500 }, 730.3215703755278],
+    [{ lat: 60, lon: 10, alt: 100 }, 556.597453966368],
+  ];
+  for (const [a, e0] of table) {
+    const east = gpsToEnuClient({ lat: a.lat, lon: a.lon + 0.01, alt: a.alt + 7 }, a);
+    assert.ok(Math.abs(east[0] - e0) < 1e-6, `${JSON.stringify(a)} e ${east[0]} vs ${e0}`);
+    assert.ok(Math.abs(east[1]) < 1e-6 && east[2] === 7);
+    const north = gpsToEnuClient({ lat: a.lat + 0.01, lon: a.lon, alt: a.alt - 3 }, a);
+    assert.ok(Math.abs(north[1] - 1113.1949079327357) < 1e-6, `${JSON.stringify(a)} n ${north[1]}`);
+    assert.ok(Math.abs(north[0]) < 1e-6 && north[2] === -3);
+  }
+});
+
 for (const km of RADII_KM) {
-  test(`skylens geo.ts 기준 함수와 반경 ${km} km 무작위 ${N_POINTS} 점 차 ≤ 1 mm`, () => {
+  test(`skylens geo.ts 기준 함수와 반경 ${km} km 무작위 ${N_POINTS} 점(앵커 ${ANCHORS.length} 개) 차 = 0 m`, () => {
     let worst = 0;
-    for (const g of pointsAround(ANCHOR, km * 1000, N_POINTS, 20261003 + km * 1000)) {
-      worst = Math.max(worst, maxDiff(gpsToEnuClient(g, ANCHOR), refEnu(g, ANCHOR)));
+    for (const [ai, a] of ANCHORS.entries()) {
+      for (const g of pointsAround(a, km * 1000, Math.floor(N_POINTS / ANCHORS.length), 20261003 + km * 1000 + ai)) {
+        worst = Math.max(worst, maxDiff(gpsToEnuClient(g, a), refEnu(g, a)));
+      }
     }
     console.log(`radius ${km} km: max diff vs skylens geo.ts = ${worst} m`);
-    assert.ok(worst <= 1e-3, `max diff ${worst} m`);
+    assert.equal(worst, 0, `max diff ${worst} m`);
   });
 }
+
+test('날짜변경선 건너 경도 차는 짧은 쪽(±360° 보정)', () => {
+  const a = { lat: 10, lon: 179.9999, alt: 0 };
+  const e = gpsToEnuClient({ lat: 10, lon: -179.9999, alt: 0 }, a);
+  const want = 0.0002 * 111319.49079327357 * Math.cos(10 * Math.PI / 180);
+  assert.ok(Math.abs(e[0] - want) < 1e-6, `${e[0]} vs ${want}`);
+});
 
 test('비유한·범위 밖은 GeoError(range)', () => {
   const a = { lat: 0, lon: 0, alt: 0 };
@@ -132,9 +169,11 @@ test('서버·클라이언트 동치 회귀 감시', async (t) => {
   if (!existsSync(serverPath)) return t.skip('server/geo/enu/index.mjs 없음');
   const { gpsToEnu } = await import(pathToFileURL(serverPath).href);
   let worst = 0;
-  for (const km of RADII_KM) {
-    for (const g of pointsAround(ANCHOR, km * 1000, N_POINTS / RADII_KM.length, 777 + km * 1000)) {
-      worst = Math.max(worst, maxDiff(gpsToEnuClient(g, ANCHOR), gpsToEnu(g, ANCHOR)));
+  for (const [ai, a] of ANCHORS.entries()) {
+    for (const km of RADII_KM) {
+      for (const g of pointsAround(a, km * 1000, N_POINTS / RADII_KM.length / ANCHORS.length, 777 + km * 1000 + ai)) {
+        worst = Math.max(worst, maxDiff(gpsToEnuClient(g, a), gpsToEnu(g, a)));
+      }
     }
   }
   console.log(`max diff vs server: ${worst} m`);

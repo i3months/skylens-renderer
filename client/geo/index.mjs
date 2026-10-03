@@ -24,7 +24,10 @@ export function gpsToEnuClient(gps, anchor) {
   check(gps, 'gps');
   check(anchor, 'anchor');
   const dPhi = (gps.lat - anchor.lat) * DEG; // Δφ (rad)
-  const dLambda = (gps.lon - anchor.lon) * DEG; // Δλ (rad)
+  // 경도 차가 ±180° 를 넘으면 짧은 쪽으로 감싼다(서버 gpsToEnu 와 같음). |Δ| ≤ 180 이면 geo.ts 와 같은 값.
+  let dLon = gps.lon - anchor.lon;
+  if (dLon > 180) dLon -= 360; else if (dLon < -180) dLon += 360;
+  const dLambda = dLon * DEG; // Δλ (rad)
   const e = dLambda * EARTH_RADIUS_M * Math.cos(anchor.lat * DEG);
   const n = dPhi * EARTH_RADIUS_M;
   const u = gps.alt - anchor.alt;

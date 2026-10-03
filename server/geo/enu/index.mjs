@@ -27,9 +27,14 @@ function checkGps(g, name) {
 }
 
 function checkEnu(enu) {
-  if (enu === null || typeof enu !== 'object' || enu.length !== 3) {
+  if (!Array.isArray(enu)) {
+    // 배열처럼 보이는 객체(TypedArray·{length:3} 등)는 호출 오류(TypeError). 그 밖의 비배열은 기존대로 range.
+    if (enu !== null && typeof enu === 'object' && Number.isInteger(enu.length)) {
+      throw new TypeError('enu 는 Array 여야 한다(array-like 객체 불가)');
+    }
     throw new GeoError('range', 'enu 는 길이 3 배열이어야 한다');
   }
+  if (enu.length !== 3) throw new GeoError('range', 'enu 는 길이 3 배열이어야 한다');
   for (let i = 0; i < 3; i++) {
     if (!Number.isFinite(enu[i])) throw new GeoError('range', `enu[${i}] 유한하지 않음: ${enu[i]}`);
   }
@@ -115,7 +120,8 @@ export function enuToGpsExact(enu, anchor) {
 // ── 기본 경로: skylens geo.ts 와 같은 등장방형 근사 ──
 
 /**
- * GPS → ENU [e, n, u] m(anchor 기준, 등장방형 근사). 비유한·위경도 범위 밖 입력은 GeoError('range').
+ * GPS → ENU [e, n, u] m(anchor 기준, 등장방형 근사). 비유한·위경도 범위 밖 입력·비유한 결과는 GeoError('range').
+ * 경도 차 |Δλ| > 180° 는 짧은 쪽(±360° 보정)으로 취급한다.
  * @param {import('../../../contracts/geo/index.mjs').Gps} gps
  * @param {import('../../../contracts/geo/index.mjs').Gps} anchor
  * @returns {import('../../../contracts/geo/index.mjs').Enu}
@@ -125,13 +131,22 @@ export function gpsToEnu(gps, anchor) {
   checkGps(anchor, 'anchor');
   const phi0 = anchor.lat * DEG;
   const dPhi = (gps.lat - anchor.lat) * DEG;
-  const dLam = (gps.lon - anchor.lon) * DEG;
-  return [dLam * EARTH_RADIUS_M * Math.cos(phi0), dPhi * EARTH_RADIUS_M, gps.alt - anchor.alt];
+  // 경도 차가 ±180° 를 넘으면 짧은 쪽으로 감싼다(날짜변경선 왕복). |Δ| ≤ 180 이면 geo.ts 와 비트까지 같다.
+  let dLon = gps.lon - anchor.lon;
+  if (dLon > 180) dLon -= 360; else if (dLon < -180) dLon += 360;
+  const dLam = dLon * DEG;
+  const out = [dLam * EARTH_RADIUS_M * Math.cos(phi0), dPhi * EARTH_RADIUS_M, gps.alt - anchor.alt];
+  if (!Number.isFinite(out[0]) || !Number.isFinite(out[1]) || !Number.isFinite(out[2])) {
+    throw new GeoError('range', `gpsToEnu 결과가 유한하지 않다: ${out}`);
+  }
+  return out;
 }
 
 /**
- * ENU [e, n, u] → GPS(gpsToEnu 의 역). 입력 비유한·anchor 범위 밖, 또는 결과가 비유한(예: 극 앵커에서
- * cos φ0 ≈ 0 으로 경도가 넘침)이면 GeoError('range'). 결과 경도·위도를 감싸거나 자르지는 않는다(skylens 와 같음).
+ * ENU [e, n, u] → GPS(gpsToEnu 의 역). GeoError('range') 조건: 입력 비유한·anchor 범위 밖, 결과가 비유한,
+ * 결과 |lat| > 90, 극 앵커(|cos φ0| < 1e-12)에서 e ≠ 0(경도가 정의되지 않음; e = 0 이면 lon 은 anchor 그대로 통과).
+ * 결과 경도가 ±180 을 넘으면 (−180, 180] 로 감싼다(날짜변경선 왕복용; 범위 안의 값은 그대로이므로 기본 경로 값은
+ * skylens geo.ts 와 같다). 위도는 감싸지 않고 거부한다. enu 가 Array 가 아닌 array-like 이면 TypeError.
  * @param {import('../../../contracts/geo/index.mjs').Enu} enu
  * @param {import('../../../contracts/geo/index.mjs').Gps} anchor
  * @returns {import('../../../contracts/geo/index.mjs').Gps}
@@ -140,11 +155,20 @@ export function enuToGps(enu, anchor) {
   checkEnu(enu);
   checkGps(anchor, 'anchor');
   const [e, n, u] = enu;
+  const cosPhi0 = Math.cos(anchor.lat * DEG);
+  if (Math.abs(cosPhi0) < 1e-12 && e !== 0) {
+    throw new GeoError('range', `극 앵커(lat ${anchor.lat})에서 e ≠ 0 이면 경도가 정의되지 않는다`);
+  }
   const lat = anchor.lat + n / EARTH_RADIUS_M / DEG;
-  const lon = anchor.lon + e / (EARTH_RADIUS_M * Math.cos(anchor.lat * DEG)) / DEG;
+  let lon = Math.abs(cosPhi0) < 1e-12 ? anchor.lon : anchor.lon + e / (EARTH_RADIUS_M * cosPhi0) / DEG;
   const alt = anchor.alt + u;
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(alt)) {
     throw new GeoError('range', `enuToGps 결과가 유한하지 않다: ${lat}, ${lon}, ${alt}`);
+  }
+  if (lat < -90 || lat > 90) throw new GeoError('range', `enuToGps 결과 위도 범위 밖: ${lat}`);
+  if (lon > 180 || lon < -180) {
+    lon = ((((lon + 180) % 360) + 360) % 360) - 180;
+    if (lon === -180) lon = 180; // (−180, 180]
   }
   return { lat, lon, alt };
 }
