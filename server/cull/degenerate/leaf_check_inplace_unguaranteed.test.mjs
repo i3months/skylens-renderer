@@ -22,11 +22,12 @@ const make = () => {
   };
 };
 
-// 노드 5, 6 은 표본(0, 31, 62, ... 와 마지막 노드) 밖이다.
-const LEAF = 5;
-const OTHER = 6;
+// 표본 단계(SENTINEL_SAMPLES=32에서 계산)로 구한 표본 밖 노드
+const step = Math.floor(NODES / 32);
+const LEAF = Math.floor(step / 2);
+const OTHER = LEAF + 1;
 
-test('cull: 표본 밖 리프의 제자리 수정(상자 Infinity, leafIndex 중복)은 재검사에서 감지되지 않는다(보장하지 않음이 계약)', () => {
+test('cull: 표본 밖 리프의 제자리 수정(상자 Infinity, leafIndex 중복)은 재검사에서 감지되지 않는다 - update when detection improves(보장하지 않음이 계약)', () => {
   const oc = make();
   assert.equal(checkLeafIndexOneToOne(oc), true);
 
