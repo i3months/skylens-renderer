@@ -4,6 +4,7 @@ import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
 import { isDegenerateView, degenerateCamera, assertCameraShape } from '../degenerate/index.mjs';
 import { guardHierarchyRead } from '../degenerate/hierarchy_guard.mjs';
+import { checkLeafIndexOneToOne } from '../degenerate/leaf_check.mjs';
 
 const ERR = 'cull:';
 const fin = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -58,25 +59,34 @@ export function predictCamera(camera, motion, dtS) {
   return { ...camera, R: Rn, t };
 }
 
-function leafBoxes(h) {
+/** 계층 필드를 읽고 검사한다(getter·Proxy 예외 대상). 할당·수식은 여기서 하지 않는다. */
+function readLeaves(h) {
   const o = h?.octree;
   if (!o || !Number.isInteger(o.leafCount) || o.leafCount < 1 || !o.leafIndex || !o.boxMin || !o.boxMax) throw new Error(`${ERR} 계층의 팔진 트리가 올바르지 않음`);
   const n = o.leafCount;
-  const mn = new Float64Array(3 * n), mx = new Float64Array(3 * n);
-  let found = 0;
-  for (let i = 0; i < o.leafIndex.length; i++) {
-    const k = o.leafIndex[i];
-    if (k < 0) continue;
-    if (k >= n) throw new Error(`${ERR} leafIndex 가 리프 수를 넘음`);
-    for (let a = 0; a < 3; a++) { mn[3 * k + a] = o.boxMin[3 * i + a]; mx[3 * k + a] = o.boxMax[3 * i + a]; }
-    found++;
+  const { leafIndex, boxMin, boxMax } = o;
+  const nodeCount = Number.isInteger(o.nodeCount) ? o.nodeCount : leafIndex.length;
+  if (nodeCount < 0 || leafIndex.length < nodeCount || boxMin.length < 3 * nodeCount || boxMax.length < 3 * nodeCount) {
+    throw new Error(`${ERR} octree 배열 길이가 nodeCount 와 맞지 않음`);
   }
-  if (found !== n) throw new Error(`${ERR} 리프 상자 수가 leafCount 와 다름`);
+  // 리프 ↔ 노드 일대일, 리프 상자의 ±Infinity 거부(F-150). 중복 k 와 빠진 리프가 (0,0,0) 상자로 남아 거짓 제거되는 것을 막는다.
+  checkLeafIndexOneToOne({ leafIndex, boxMin, boxMax, leafCount: n, nodeCount });
   // frustumCull 과 같이 빈 리프(levels[0] 구간이 빈 리프)는 그릴 점이 없으므로 제외한다.
   const ls = h.levels?.[0]?.leafStart;
+  if (ls !== undefined && ls !== null && ls.length !== n + 1) throw new Error(`${ERR} levels[0].leafStart 길이가 leafCount+1 이 아님`);
+  return { n, leafIndex, boxMin, boxMax, nodeCount, ls };
+}
+
+function leafBoxes(h) {
+  const { n, leafIndex, boxMin, boxMax, nodeCount, ls } = guardHierarchyRead(() => readLeaves(h)); // 가드는 필드 읽기·검사에만(F-152 ⑦)
+  const mn = new Float64Array(3 * n), mx = new Float64Array(3 * n);
+  for (let i = 0; i < nodeCount; i++) {
+    const k = leafIndex[i];
+    if (k < 0) continue;
+    for (let a = 0; a < 3; a++) { mn[3 * k + a] = boxMin[3 * i + a]; mx[3 * k + a] = boxMax[3 * i + a]; }
+  }
   let empty = null;
   if (ls !== undefined && ls !== null) {
-    if (ls.length !== n + 1) throw new Error(`${ERR} levels[0].leafStart 길이가 leafCount+1 이 아님`);
     empty = new Uint8Array(n);
     for (let k = 0; k < n; k++) if (ls[k + 1] === ls[k]) empty[k] = 1;
   }
@@ -96,7 +106,7 @@ export function predictiveMask(hierarchy, state, opts) {
   if (!fin(horizonS) || horizonS < 0) throw new Error(`${ERR} horizonS 는 0 이상의 유한수여야 함: ${String(horizonS)}`);
   if (!Number.isInteger(steps) || steps < 1 || steps > 10000) throw new Error(`${ERR} steps 는 1..10000 의 정수여야 함: ${String(steps)}`);
   if (pointSizeM !== undefined && pointSizeM !== null && !(fin(pointSizeM) && pointSizeM >= 0)) throw new Error(`${ERR} pointSizeM 은 0 이상의 유한수여야 함: ${String(pointSizeM)}`);
-  const { n, mn, mx, empty } = guardHierarchyRead(() => leafBoxes(hierarchy)); // getter·Proxy 예외도 cull: 오류로(F-148)
+  const { n, mn, mx, empty } = leafBoxes(hierarchy); // 필드 읽기의 getter·Proxy 예외는 cull: 오류로(F-148)
   const out = new Uint8Array(n);
   const cam = state?.camera;
   const v = vec3(state?.velocityMps, 'velocityMps'); // 형식 오류는 퇴화 카메라보다 먼저 던진다

@@ -1,5 +1,5 @@
 // 계층·octree 필드 읽기를 감싸는 공용 래퍼(F-148). 접근자(getter)·Proxy 가 던지는 예외를 'cull:' 오류로 바꾼다.
-// 'cull:' 로 시작하는 오류는 그대로 다시 던진다. 모든 컬링 단계(distance·priority·occlusion·predict·combine)가 계층 검사에 이 함수를 쓴다.
+// 'cull:' 로 시작하는 오류는 그대로 다시 던진다. distance·priority·occlusion·predict·combine 이 계층 검사에 이 함수를 쓴다(frustum 은 assertHierarchyLocal, backface 는 checkHierarchy 씀).
 const ERR = 'cull:';
 
 /**

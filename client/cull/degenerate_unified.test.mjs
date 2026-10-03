@@ -28,7 +28,7 @@ assert.equal(IMPL_MAX_COARSE_CELLS, MAX_COARSE_CELLS, '구현 상수가 시험 �
 // Float32Array.from/of 는 실제로 세어진다 (생성자 호출이므로 Proxy 를 탄다).
 // 세어지지 않는 것은 map·slice·subarray 와 '첫 인자가 숫자가 아닌' 생성(배열·ArrayBuffer 인자도 construct 트랩은 타지만 첫 인자가 숫자가 아니라 세지 않음).
 function trackAlloc(fn) {
-  const names = ['Float32Array', 'Float64Array', 'Int32Array', 'Uint32Array', 'Uint8Array'];
+  const names = ['Float32Array', 'Float64Array', 'Int32Array', 'Uint32Array', 'Uint8Array', 'Int8Array', 'Int16Array', 'Uint16Array', 'Uint8ClampedArray', 'BigInt64Array', 'BigUint64Array'];
   const orig = {};
   const st = { max: 0, total: 0 };
   for (const nm of names) {
@@ -43,6 +43,12 @@ function trackAlloc(fn) {
   try { st.result = fn(); } finally { for (const nm of names) globalThis[nm] = orig[nm]; }
   return st;
 }
+
+test('F-152 ②: trackAlloc counts Int16Array allocations', () => {
+  const st = trackAlloc(() => new Int16Array(4));
+  assert.equal(st.total, 4);
+  assert.equal(st.max, 4);
+});
 
 const DEGENERATE = {
   'width 1 + fx 1e7 (시야각 < 1e-6)': withK({ fx: 1e7 }, { width: 1 }),
@@ -172,8 +178,10 @@ test('F-120 해상도: 60000x60000 은 퇴화이며 빠르게 빈 결과를 내�
   assert.ok(isZero(mask));
   // 벽시계 대신 작업량: 퇴화 경로는 결과 버퍼(leafPriority n 칸 + frustumCull n 칸 + leafIndex 검사표 n 칸)만 만들고 거친 깊이 버퍼는 만들지 않는다.
   assert.ok(a.max <= n, `퇴화 경로가 ${a.max} 칸 버퍼를 할당함`);
-  // F-149 ④: frustumCull 이 leafIndex 일대일 검사용 n 바이트 표(Uint8Array)를 하나 더 만들어 합계 문턱을 2n → 3n 으로 올린다(올리기만 함).
-  assert.ok(a.total <= 3 * n, `퇴화 경로 할당 합계 ${a.total} > 3n`);
+  // F-152 ①: frustumCull 은 결과 마스크를 leafIndex 검사표로 재사용하므로 단독 할당 합계는 n(아래 단언). 세 함수 합계 문턱은 F-152 ⑧ 이 priority 에 넣은 검사표(leafPriority·orderChunks 각 n)만큼 늘어 4n 이내로 둔다(올리기만 함).
+  assert.ok(a.total <= 4 * n, `퇴화 경로 할당 합계 ${a.total} > 4n`);
+  const f = trackAlloc(() => frustumCull(hier, cam));
+  assert.ok(f.total <= n, `frustumCull 퇴화 경로 할당 합계 ${f.total} > n`);
 });
 
 test('F-120 정상 큰 해상도(8192x8192)는 우선순위·절두체 모두 던지지 않고 같은 마스크를 낸다', () => {
