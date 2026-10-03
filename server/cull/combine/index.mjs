@@ -36,6 +36,9 @@ export const DEFAULT_STAGES = CULL_STAGES;
 const coneCache = new WeakMap();
 /** 계층의 법선 원뿔을 캐시해서 돌려준다. 입력(normals·leafStart·L)이 같은 동안 compute 는 한 번만 불린다(주입은 시험용). */
 export function cachedNormalCones(hierarchy, compute) {
+  if (hierarchy === null || typeof hierarchy !== 'object') throw new Error(`${ERR} hierarchy 는 객체여야 함: ${String(hierarchy)}`);
+  if (typeof compute !== 'function') throw new Error(`${ERR} compute 는 함수여야 함: ${String(compute)}`);
+
   const normals = hierarchy.levels?.[0]?.normals;
   const leafStart = hierarchy.levels?.[0]?.leafStart;
   const L = hierarchy.octree?.leafCount;
