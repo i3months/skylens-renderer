@@ -53,9 +53,10 @@ test('bounds_contain_all', () => {
       for (let a = 0; a < 3; a++) {
         assert.equal(box.min[a], min[a]);
         assert.equal(box.max[a], min[a] + 65535 * step);
-        // 여유 = 격자 상한 − 실제 최댓값, 0 이상이고 65535 단계 이하
+        // 여유 + 실제 범위 = 양자화 상자 범위
         const slack = box.max[a] - max[a];
-        assert.ok(slack >= 0 && slack <= 65535 * step);
+        const range = max[a] - min[a];
+        assert.equal(slack + range, 65535 * step);
       }
       for (let i = 0; i < n; i++) {
         for (let a = 0; a < 3; a++) {
