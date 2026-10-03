@@ -397,6 +397,17 @@ test('거부: pos 스트림 키 2^48 이상·모자람·남음', () => {
   // 정상 대조: 2 점
   assert.doesNotThrow(() => decodeChunkClient(assemble(n, 0, [entropy(Uint8Array.from([5, 6]), 0), nrm, col])));
 });
+test('거부: payload 가 rawLen 보다 큰 mode 1 은 범위 복호로 풀리는 스트림이라도 비정규라 거부', () => {
+  // 0x00 한 바이트의 범위 부호는 손계산상 payload 6 B(전부 0x00)이고 그 자체로는 정확히 복호된다. 그래도 6 > rawLen 1 이라 비정규.
+  assert.deepEqual(RangeEnc.encode(Uint8Array.of(0)), [0, 0, 0, 0, 0, 0]);
+  const nrm = entropy(Uint8Array.from([0, 0]), 0), col = entropy(Uint8Array.from([0, 0, 0, 0]), 0);
+  const odd = assemble(1, 0, [Uint8Array.from([1, 1, 0, 0, 0, 0, 0, 0]), nrm, col]);
+  rejects(odd, CodecError, 'stream');
+  // 같은 점을 저장 모드로 쓰면 정상 복호(대조)
+  assert.doesNotThrow(() => decodeChunkClient(assemble(1, 0, [entropy(Uint8Array.of(0), 0), nrm, col])));
+  // rawLen 0 인 mode 1 도 'stream'(저장 모드 rawLen 0 이 정규)
+  rejects(assemble(1, 0, [Uint8Array.from([1, 0, 0, 0, 0, 0, 0]), nrm, col]), CodecError, 'stream');
+});
 test('거부: normal 값 범위 밖(누적 128)', () => {
   const col = entropy(Uint8Array.from([0, 0, 0, 0, 0, 0, 0]), 0);
   const pos = entropy(Uint8Array.from([0, 0]), 0);
