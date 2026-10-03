@@ -139,7 +139,7 @@ test('결정적: 같은 입력은 같은 선택', () => {
   assert.deepEqual(a, b);
 });
 
-// 주의(F-096 ③): 150000·600 에서는 선택 = 균일 축소(합 7.3269 = 7.3269, 2.0824 = 2.0824)라 균일 비교로 판별하는 것은 30000 하나뿐이다.
+// 주의(F-096 ③): 150000·600 에서는 선택 = 균일 축소(합 7.7709 = 7.7709, 2.0814 = 2.0814)라 균일 비교로 판별하는 것은 30000 하나뿐이다.
 // 판별하는 중간 예산 5개의 시점별 비교와 효율식 반전 변이의 음성 시험은 budget_discrim.test.mjs 에 있다.
 test('SSIM: 예산이 클수록 단조 비감소, 같은 예산에서 균일 축소보다 낮지 않음', () => {
   const rows = [];
@@ -160,7 +160,7 @@ test('SSIM: 예산이 클수록 단조 비감소, 같은 예산에서 균일 축
   for (const r of rows) console.log(`budget ${r.budget}: SSIM 합 선택 ${r.sumSel.toFixed(4)}, 균일 ${r.sumUni.toFixed(4)}`);
   for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].sumSel >= rows[i].sumSel, `단조 위반: ${rows[i - 1].budget} → ${rows[i].budget}`);
   for (const r of rows) assert.ok(r.sumSel >= r.sumUni, `예산 ${r.budget}: 균일 축소보다 낮음`);
-  // 시점별: 어느 시점도 균일보다 0.01 넘게 낮지 않다(측정: 30000 에서 모든 시점이 균일 이상, 합 4.6187 대 3.3478).
+  // 시점별: 어느 시점도 균일보다 0.01 넘게 낮지 않다(측정: 30000 에서 모든 시점이 균일 이상, 합 4.6172 대 3.3388).
   for (const r of rows) r.per.forEach(([s, u], i) => assert.ok(s >= u - 0.01, `예산 ${r.budget} 시점 ${i + 1}: 선택 ${s.toFixed(4)} < 균일 ${u.toFixed(4)}`));
 });
 
