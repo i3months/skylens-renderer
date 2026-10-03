@@ -8,7 +8,7 @@
 //   2) 아니면 ./screen_error.mjs 의 공용 규칙으로 단계를 고른다(budget·progressive 와 같은 규칙):
 //      f = max(fx, fy), d = 상자와 카메라 중심의 최소 거리, cMin = 상자 꼭짓점의 cos(광축 각) 최솟값,
 //      d_eff = max(d·cMin², z_P·c_P)(screen_error.mjs 참조) 에 대해 f·edgeM(l)/d_eff ≤ τ 인 가장 큰 l, 최대 단계는 levelCount−1.
-//      카메라가 상자 안(d = 0)이거나 상자가 카메라 평면에 걸치면(cMin ≤ 0) 원본 단계 0.
+//      d = 0 이거나, cMin ≤ 0 이고 P(상자 안 점 집합: 상자 ∩ 시야 사각뿔) 가 비면 단계 0. 걸쳐도 P 가 있으면 d_eff = z_P·c_P.
 //      축 밖 각 α 에서 투영 크기는 f·e/(r·cos²α) 이므로(F-097 ①), 리프 상자 안에 놓인 칸 변은 화면에서 τ 픽셀을 넘지 않는다.
 // materialize: 선택된 단계의 대표점만 모은다. 위치 = 입력 점 위치 그대로, 법선·색 = 그 단계의 대표값. 새 점을 만들지 않는다.
 //   위치는 build 때 리프 순서로 미리 담아 둔 levels[l].positions(입력 위치의 사본)를 법선·색처럼 리프 구간째 복사한다(F-099 ③).
@@ -47,6 +47,23 @@ export function assertHierarchyInput(h) {
     if (!(lv.positions instanceof Float32Array) || lv.positions.length !== 3 * n) throw new Error(`${ERR} 단계 ${String(lv.level)} 의 positions 가 Float32Array(3·n) 가 아님`);
     if (!(lv.normals instanceof Float32Array) || lv.normals.length !== 3 * n) throw new Error(`${ERR} 단계 ${String(lv.level)} 의 normals 가 Float32Array(3·n) 가 아님`);
     if (!(lv.colors instanceof Uint8Array) || lv.colors.length !== 3 * n) throw new Error(`${ERR} 단계 ${String(lv.level)} 의 colors 가 Uint8Array(3·n) 가 아님`);
+    // leafStart: 0 에서 시작해 n 으로 끝나는 비감소 열(리프 k 의 구간 = [leafStart[k], leafStart[k+1])).
+    const ls = lv.leafStart;
+    if (ls[0] !== 0 || ls[octree.leafCount] !== n) throw new Error(`${ERR} 단계 ${String(lv.level)} 의 leafStart 는 0 에서 시작해 ${n} 으로 끝나야 함`);
+    for (let k = 0; k < octree.leafCount; k++) {
+      if (ls[k] > ls[k + 1]) throw new Error(`${ERR} 단계 ${String(lv.level)} 의 leafStart 가 감소함 (k=${k})`);
+    }
+  }
+  // 노드 한 번 훑기: leafIndex 는 -1(내부 노드) 또는 0..leafCount-1, 상자는 유한하고 boxMin ≤ boxMax.
+  const { leafIndex, boxMin, boxMax, leafCount } = octree;
+  for (let i = 0; i < nc; i++) {
+    const v = leafIndex[i];
+    if (v !== -1 && !(v >= 0 && v < leafCount)) throw new Error(`${ERR} octree.leafIndex[${i}] = ${v} 가 -1 또는 0..${leafCount - 1} 범위 밖`);
+    for (let a = 3 * i; a < 3 * i + 3; a++) {
+      const lo = boxMin[a], hi = boxMax[a];
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) throw new Error(`${ERR} 노드 ${i} 의 상자에 유한하지 않은 값이 있음`);
+      if (lo > hi) throw new Error(`${ERR} 노드 ${i} 의 boxMin 이 boxMax 보다 큼`);
+    }
   }
 }
 
