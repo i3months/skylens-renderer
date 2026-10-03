@@ -170,6 +170,61 @@ for (const seed of [1, 2]) {
   });
 }
 
+// F-101 ②: 단계 0~3 이 모두 선택되는 카메라. 위 카메라는 단계 {1, 3} 만 써서 단계 0·2 의 이동(단계 2 대표점 이동 최대
+// 2√2 ≈ 2.83 m > 원판 반지름 2 m)이 시험되지 않았다. 비스듬히 내려다보는 카메라(높이 20 m, 뒤 150 m, 피치 0.2 rad 아래,
+// fx=fy=200, 220x220)에 τ 4 px 이면 거리 d_eff 가 단계 문턱 f·edge(l)/τ = 25·2^l m 의 네 구간에 걸친다.
+// 실측(시드 1, 40만 점): 단계별 리프 수 {0:10, 1:43, 2:123, 3:32}. 값은 사전에 정한 카메라·τ 로 한 번 재서 고정했고
+// 아래 하한(각 단계 5 리프)은 사후에 낮추지 않는다.
+const PITCH = 0.2, CP = Math.cos(PITCH), SP = Math.sin(PITCH), BACK = 150, CAM_H = 20, TAU_ALL = 4;
+const camAll = {
+  width: W, height: W, K: { fx: 200, fy: 200, cx: 110, cy: 110 },
+  R: [-1, 0, 0, 0, -CP, -SP, 0, -SP, CP],
+  t: [0, -(-CP * CAM_H + -SP * -BACK), -(-SP * CAM_H + CP * -BACK)],
+};
+const MIN_LEAVES_PER_LEVEL = 5;
+const levelHist = (leafLevel) => { const h = [0, 0, 0, 0]; for (const l of leafLevel) if (l !== NOT_DRAWN) h[l]++; return h; };
+for (const seed of [1, 2]) {
+  const s = generate({ seed, count: N });
+  const hier = buildHierarchy(s.cloud, REAL);
+  const checkAll = (name, cloud) => {
+    const r = emptyRatioPreserved(s.cloud, cloud, camAll, OPTS);
+    assert.equal(r.filled, 0, `${name}: ${JSON.stringify(r)}`);
+    assert.equal(r.noFill, true, name);
+  };
+  test(`holes seed ${seed}: 단계 0~3 이 모두 선택되는 카메라에서 select·progressive 산출물 filled 0`, () => {
+    const sel = selectLevels(hier, camAll, { thresholdPx: TAU_ALL });
+    const used = new Set(Array.from(sel.leafLevel).filter((l) => l !== NOT_DRAWN));
+    for (const l of [0, 1, 2, 3]) assert.ok(used.has(l), `select 단계 ${l} 미선택: ${used.size}`);
+    const h = levelHist(sel.leafLevel);
+    for (let l = 0; l < 4; l++) assert.ok(h[l] >= MIN_LEAVES_PER_LEVEL, `단계 ${l} 리프 ${h[l]} < ${MIN_LEAVES_PER_LEVEL}: ${h}`);
+    checkAll('select', materialize(hier, sel));
+
+    // progressive: 리프마다 마지막(가장 고운) 조각 단계가 목표 단계. 전체 적용 결과와 중간 k 모두 filled 0.
+    const ch = progressiveChunks(hier, camAll, { thresholdPx: TAU_ALL });
+    const finest = new Map();
+    for (const c of ch) finest.set(c.leaf, Math.min(finest.get(c.leaf) ?? 99, c.level));
+    const pl = new Set(finest.values());
+    for (const l of [0, 1, 2, 3]) assert.ok(pl.has(l), `progressive 단계 ${l} 미선택`);
+    for (const k of [1, Math.ceil(ch.length / 2), ch.length]) {
+      const cloud = applyChunks(hier, ch, k);
+      assert.ok(cloud.count > 0);
+      checkAll(`progressive k=${k}`, cloud);
+    }
+  });
+  test(`holes seed ${seed}: 단계 0~3 카메라에서 selectWithBudget 산출물 filled 0 (예산 충분·부족)`, () => {
+    // 예산이 충분하면 select 와 같은 단계(0~3 모두), 부족하면 더 거친 단계로 올라간다.
+    const full = selectWithBudget(hier, camAll, { budgetPoints: N, thresholdPx: TAU_ALL });
+    const used = new Set(Array.from(full.leafLevel).filter((l) => l !== NOT_DRAWN));
+    for (const l of [0, 1, 2, 3]) assert.ok(used.has(l), `budget 단계 ${l} 미선택`);
+    checkAll('budget full', materialize(hier, full));
+    for (const budgetPoints of [20000, 3000]) {
+      const sel = selectWithBudget(hier, camAll, { budgetPoints, thresholdPx: TAU_ALL });
+      assert.ok(sel.pointCount > 0 && sel.pointCount <= budgetPoints);
+      checkAll(`budget ${budgetPoints}`, materialize(hier, sel));
+    }
+  });
+}
+
 test('점 수 정의: count 가 positions.length/3 과 다르면 명시 오류, 기본 허용 0', () => {
   const s = generate({ seed: 1, count: 2000 });
   const bad = { ...s.cloud, count: s.cloud.count + 1 };

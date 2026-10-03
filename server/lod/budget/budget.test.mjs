@@ -174,3 +174,25 @@ test('음성: budget 0 은 빈 선택, 음수·NaN·비정수·Infinity 는 lod:
   assert.throws(() => selectWithBudget(hier, cameras[0], { budgetPoints: 10, thresholdPx: 0 }), /^Error: lod:/);
   assert.throws(() => selectWithBudget(hier, cameras[0]), /^Error: lod:/);
 });
+
+// F-104 ③: hierarchy 입력 검사. 깨진 입력은 TypeError 가 아니라 'lod:' 오류.
+test('hierarchy 입력 검사: null·깨진 계층은 lod: 오류', () => {
+  const cam = cameras[0];
+  const o = { budgetPoints: 1000, thresholdPx: TAU };
+  const bad = [
+    null, undefined, 3, {},
+    { ...hier, cloud: null },
+    { ...hier, octree: null },
+    { ...hier, octree: { ...hier.octree, boxMin: null } },
+    { ...hier, octree: { ...hier.octree, leafIndex: [] } },
+    { ...hier, levels: [] },
+    { ...hier, levels: [null] },
+    { ...hier, levels: [{ ...hier.levels[0], indices: null }] },
+    { ...hier, levels: [{ ...hier.levels[0], leafStart: new Uint32Array(2) }] },
+  ];
+  for (const b of bad) {
+    assert.throws(() => selectWithBudget(b, cam, o), (e) => e instanceof Error && !(e instanceof TypeError) && e.message.startsWith('lod:'), String(b && Object.keys(b)));
+    assert.throws(() => leafTargets(b, cam, TAU), (e) => !(e instanceof TypeError) && e.message.startsWith('lod:'));
+  }
+  assert.doesNotThrow(() => selectWithBudget(hier, cam, o));
+});

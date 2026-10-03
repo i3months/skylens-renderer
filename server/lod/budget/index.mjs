@@ -33,7 +33,7 @@
 //    바꾸면 호출 쪽 버그를 숨기므로 던진다.
 //  - thresholdPx 는 distance_table 의 검사(양의 유한수, 'lod:' 오류)를 그대로 따른다. 카메라는 raster 계약 검사를 하되 오류는 select·progressive 와 같이 'lod:' 로 감싼다.
 
-import { NOT_DRAWN, edgeOfLevel } from '../../../contracts/lod/index.mjs';
+import { NOT_DRAWN, edgeOfLevel, assertCloud } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { screenErrorRule } from '../select/screen_error.mjs';
 import { boxMayBeVisible } from '../select/view_check.mjs';
@@ -42,13 +42,19 @@ const ERR = 'lod:';
 // 거리 하한(m). 탐욕 단계의 ΔE 분모(d_eff)가 0 이 되지 않게 막는다(d_eff = 0 인 리프는 ΔE 가 매우 커서 맨 나중에 거칠어진다).
 const MIN_DIST_M = 1e-3;
 
-function assertHierarchy(h) {
+/**
+ * 계층 입력 검사(select 의 assertHierarchy 와 같은 규칙, 오류는 'lod:'). progressive 도 이 함수를 쓴다.
+ * select/index.mjs 가 이를 내보내면 그쪽으로 합칠 수 있다(F-104 ③).
+ */
+export function assertHierarchyInput(h) {
   if (!h || typeof h !== 'object') throw new Error(`${ERR} 계층이 객체가 아님`);
   const { octree, levels } = h;
-  if (!octree || !Number.isInteger(octree.leafCount) || !Number.isInteger(octree.nodeCount)) throw new Error(`${ERR} hierarchy.octree 가 계약대로가 아님`);
+  assertCloud(h.cloud); // 오류는 이미 'lod:' 로 시작한다
+  if (!octree || typeof octree !== 'object' || !Number.isInteger(octree.leafCount) || octree.leafCount < 1 || !Number.isInteger(octree.nodeCount)) throw new Error(`${ERR} hierarchy.octree 가 계약대로가 아님`);
+  if (!(octree.boxMin instanceof Float32Array) || !(octree.boxMax instanceof Float32Array) || !(octree.leafIndex instanceof Int32Array)) throw new Error(`${ERR} 팔진 트리 상자·리프 번호 배열이 없음`);
   if (!Array.isArray(levels) || levels.length < 1) throw new Error(`${ERR} hierarchy.levels 가 비어 있음`);
   for (const lv of levels) {
-    if (!(lv.leafStart instanceof Uint32Array) || lv.leafStart.length !== octree.leafCount + 1) throw new Error(`${ERR} levels[${lv.level}].leafStart 길이가 leafCount+1 이 아님`);
+    if (!lv || !(lv.indices instanceof Uint32Array) || !(lv.leafStart instanceof Uint32Array) || lv.leafStart.length !== octree.leafCount + 1) throw new Error(`${ERR} levels[${String(lv?.level)}] 의 구간 배열이 올바르지 않음`);
   }
 }
 
@@ -105,7 +111,7 @@ function heapPop(h) {
  * @returns {{visible: Uint8Array, distM: Float64Array, effDistM: Float64Array, target: Uint8Array, countAt: (leaf:number, level:number)=>number, levelCount: number, focalPx: number}}
  */
 export function leafTargets(hierarchy, camera, thresholdPx) {
-  assertHierarchy(hierarchy);
+  assertHierarchyInput(hierarchy);
   try {
     assertCamera(camera);
   } catch (e) {
