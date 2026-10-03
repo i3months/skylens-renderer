@@ -18,11 +18,15 @@ const K = { fx: 4000, fy: 4000, cx: 320, cy: 240 };
 const T = K.cx / K.fx; // 0.08 (좌우 대칭: (W − cx)/fx 도 같다)
 const KAPPA = 1 + T; // 부풀림 M 이 오른쪽 경계 틈을 줄이는 배율
 const cam0 = { width: 640, height: 480, K, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
-const IMPL_REL = 1.0001, IMPL_ABS = 1e-9; // index.mjs 의 부풀림 배율·가산 상수(상한 여유가 이것을 덮는지 확인용)
-const REL = 1e-3, EPS = 1e-3; // 상한 여유: M = U·(1 + REL) + EPS (predict.test.mjs 와 같다)
+const IMPL_REL = 1.0001, IMPL_ABS = 1e-9; // index.mjs 의 부풀림 상수: 상한에는 쓰지 않고, 변이 부풀림(×1.2·×1.5)을 만드는 판별 시험에만 쓴다
+const REL = 1e-3, EPS = 1e-3; // 상한 여유: M = (geoDisp + crossSlack)·(1 + REL) + EPS (predict.test.mjs 와 같다)
 const MID = 1.1; // 판별 상자의 경계 틈 = KAPPA·MID·U. 1 + REL(+EPS/U) < MID < 1.2 라 정확한 구현·상한은 못 닿고 ×1.2·×1.5 변이는 닿는다.
 
-const upperDisp = (speed, omega, hh, far) => speed * hh + omega * hh * (far + speed * hh);
+const upperDisp = (speed, omega, hh, far) => speed * hh + omega * hh * (far + speed * hh); // 판별 상자 배치용 기준값(상한 아님)
+// 상한: 기하 상한 |v|·hh + 2·far·sin(ω·hh/2) 에 구현이 더 보수적으로 잡는 몫을 시험 쪽에서 독립 도출한 crossSlack 으로 더한다.
+//   교차항 ω·hh·|v|·hh (회전 반경 far + |v|·hh) + 호/현 초과분 far·(ω·hh)³/24 (x − 2·sin(x/2) <= x³/24). 구현 상수를 복사하지 않는다.
+const geoDisp = (speed, omega, hh, far) => speed * hh + 2 * far * Math.sin((omega * hh) / 2);
+const crossSlack = (speed, omega, hh, far) => omega * hh * speed * hh + far * (omega * hh) ** 3 / 24;
 const farOf = (a, b, C) => Math.hypot(...[0, 1, 2].map((d) => Math.max(Math.abs(a[d] - C[d]), Math.abs(b[d] - C[d]))));
 const inflate = (a, b, M) => [a.map((x) => x - M), b.map((x) => x + M)];
 
@@ -39,9 +43,8 @@ function bounds(boxes, camAt, horizonS, n, speed, omega, hh) {
     const cam = camAt((horizonS * i) / n), C = cameraCenter(cam);
     boxes.forEach(([a, b], k) => {
       if (boxMayBeVisibleSplat(cam, a, b, 0)) lower.add(k);
-      const U = upperDisp(speed, omega, hh, farOf(a, b, C));
-      const M = U * (1 + REL) + EPS;
-      assert.ok(IMPL_REL * U + IMPL_ABS <= M, `전제: 상한 여유 ${M} 가 구현 부풀림 ${IMPL_REL * U + IMPL_ABS} 이상 (U=${U})`);
+      const far = farOf(a, b, C);
+      const M = (geoDisp(speed, omega, hh, far) + crossSlack(speed, omega, hh, far)) * (1 + REL) + EPS;
       if (boxMayBeVisibleSplat(cam, ...inflate(a, b, M), 0)) allowed.add(k);
     });
   }

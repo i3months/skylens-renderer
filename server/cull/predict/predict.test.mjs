@@ -194,25 +194,28 @@ test("입력 오류는 'cull:' 로 던진다", () => {
 // 즉 교차항이 없는 식이 이미 올바른 상한이다. 교차항(회전 반경 far+|v|·hh)은 구현이 더 보수적으로 잡아도 되는 여유일 뿐,
 // '반드시 남아야 하는 하한' 이 아니다(이전 F-144 의 '엄밀 하한' 전제는 틀렸다: 교차항을 뺀 구현도 올바르다).
 // 상한(allowedUnion): 촘촘한 시각(0..horizonS 를 n 등분, n 은 steps 의 배수라 구현의 표본 시각을 모두 포함)마다 상자를
-//   M = upperDisp·(1 + rel) + eps (rel = 1e-3, eps = 1e-3 m), upperDisp = |v|·hh + ω·hh·(far+|v|·hh) 만큼 부풀려 보이는 리프의 합집합.
-//   호 길이 ω·hh·r >= 현 2·r·sin(ω·hh/2) 이고 교차항은 r 을 키우기만 하므로 upperDisp 는 위 기하 상한 이상이며, 보수적인 구현(교차항 포함·호 길이)이 들어갈 자리를 준다.
+//   M = (geoDisp + crossSlack)·(1 + rel) + eps 만큼 부풀려 보이는 리프의 합집합. geoDisp = |v|·hh + 2·far·sin(ω·hh/2) 는 위 기하 상한이다.
+//   구현 상수(1.0001·U + 1e-9)를 복사해 상한으로 쓰지 않는다: 구현이 부풀림을 키우면 상한도 따라 커져 시험이 못 잡기 때문이다.
+//   crossSlack 은 구현이 기하 상한보다 보수적으로 잡는 두 항을 덮는 시험 쪽 독립 여유다.
+//     (1) 교차항: 회전 반경을 far 가 아니라 far + |v|·hh 로 잡는 몫 = ω·hh·|v|·hh (호 길이 기준; 현 기준이면 이보다 작다).
+//     (2) 호 대 현: 구현은 현 2·far·sin(x/2) 대신 호 far·x (x = ω·hh) 를 쓰고, x − 2·sin(x/2) <= x³/24 이므로 초과분 <= far·x³/24.
+//   구현의 상대 안전 배율 1e-4 와 가산 1e-9 는 rel = 1e-3, eps = 1e-3 m 가 덮는다(rel >= 1e-4 + 수치 오차, eps >= 1e-9).
 //   구현의 표본 시각이 촘촘한 표본에 들어 있으므로 반폭은 hh 그대로 쓴다(표본 간격의 반폭을 더하지 않는다).
-//   여유는 상대값이어야 한다(F-151): 구현은 1.0001·U + 1e-9 로 부풀리므로 절대 여유 1e-3 만으로는 U > 10 m 에서 구현 몫보다 작다.
-//   rel = 1e-3 > 1e-4 라 모든 U 에서 1.0001·U + 1e-9 <= M 이며, 이것을 (사례, steps, 시각, 리프)마다 단언한다(IMPL_REL·IMPL_ABS 는 이 확인에만 쓴다).
+//   여유는 상대값이어야 한다(F-151): 절대 여유 1e-3 만으로는 U > 10 m 에서 구현의 상대 몫보다 작다.
 // 하한(denseUnion): 촘촘한 시각에서 부풀림 없이(여유 0) 실제로 보이는 리프의 합집합. 마스크는 이것을 모두 덮어야 한다.
 // 판별력(부풀림 반폭 h/2·전체 ×1.2·회전항 ×1.5 변이를 잡는지)은 장면 시드와 무관하게 predict_analytic.test.mjs 가 해석적 상자 배치로 맡는다.
-const upperDisp = (speed, omega, hh, far) => speed * hh + omega * hh * (far + speed * hh);
+const geoDisp = (speed, omega, hh, far) => speed * hh + 2 * far * Math.sin((omega * hh) / 2); // 기하 상한(구현 식과 독립)
+const crossSlack = (speed, omega, hh, far) => omega * hh * speed * hh + far * (omega * hh) ** 3 / 24; // 교차항 + 호/현 초과분(위 주석)
 const farOf = (a, b, C) => Math.hypot(...[0, 1, 2].map((d) => Math.max(Math.abs(a[d] - C[d]), Math.abs(b[d] - C[d]))));
-const IMPL_REL = 1.0001, IMPL_ABS = 1e-9; // index.mjs 의 부풀림 배율·가산 상수(상한 여유가 이것을 덮는지 확인용)
+const IMPL_REL = 1.0001, IMPL_ABS = 1e-9; // index.mjs 의 부풀림 상수: 상한에는 쓰지 않고, 변이(+0.02 m·×1.2) 부풀림을 만드는 판별 시험에만 쓴다
 function allowedUnion(camAt, horizonS, n, speed, omega, hh, pointSizeM = 0, eps = 1e-3, rel = 1e-3) {
   const s = new Set();
   for (let i = 0; i <= n; i++) {
     const cam = camAt((horizonS * i) / n), C = cameraCenter(cam);
     for (let k = 0; k < oc.leafCount; k++) {
       const [a, b] = boxOf(k);
-      const U = upperDisp(speed, omega, hh, farOf(a, b, C));
-      const M = U * (1 + rel) + eps;
-      assert.ok(IMPL_REL * U + IMPL_ABS <= M, `전제: 상한 여유 ${M} 가 구현 부풀림 ${IMPL_REL * U + IMPL_ABS} 이상 (U=${U}, 시각 ${i}/${n}, 리프 ${k})`);
+      const far = farOf(a, b, C);
+      const M = (geoDisp(speed, omega, hh, far) + crossSlack(speed, omega, hh, far)) * (1 + rel) + eps;
       if (boxMayBeVisibleSplat(cam, a.map((x) => x - M), b.map((x) => x + M), pointSizeM)) s.add(k);
     }
   }
