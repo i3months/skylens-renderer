@@ -25,10 +25,12 @@ test('andMasks·chunksOfMask', () => {
 test('andMasks: 다른 길이는 오류', () => {
   assert.throws(() => andMasks([new Uint8Array([1, 1, 0, 1])], 3), /^Error: cull:/);
   assert.throws(() => andMasks([new Uint8Array([1, 1])], 4), /^Error: cull:/);
+  assert.throws(() => andMasks([new Uint8Array([1, 1, 0, 1]), new Uint8Array([1, 0, 0])], 4), /^Error: cull:/);
 });
 
 test('andMasks: 값 2 는 오류', () => {
   assert.throws(() => andMasks([new Uint8Array([0, 2, 1])], 3), /^Error: cull:/);
+  assert.throws(() => andMasks([new Uint8Array([1, 1, 0, 1]), new Uint8Array([0, 2, 1, 0])], 4), /^Error: cull:/);
 });
 
 test('andMasks: 빈 목록은 모두 1', () => {
