@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { generate } from '../../../fixtures/scenes/flat_boxes/index.mjs';
 import { buildHierarchy } from '../hierarchy/index.mjs';
 import { buildDistanceTable, levelForDistance } from '../distance_table/index.mjs';
+import { effectiveDistance } from '../select/screen_error.mjs';
 import { viewpointToCamera } from '../../../tools/render_views/index.mjs';
 import { renderPoints } from '../../raster_ref/zbuffer/index.mjs';
 import { ssim } from '../../metrics/ssim/index.mjs';
@@ -68,21 +69,12 @@ test('같은 단계 안에서는 카메라에 가까운 리프 먼저', () => {
   };
   for (let i = 1; i < ch.length; i++) if (ch[i - 1].level === ch[i].level) assert.ok(dist(ch[i - 1].leaf) <= dist(ch[i].leaf) + 1e-9);
   // 목표 단계는 거리표와 일치: 목표(마지막 조각 단계)는 거리가 멀수록 작아지지 않는다
-  // F-097 ①: 상자 8 꼭짓점의 cos(광축 각) 최솟값으로 d_eff = d·cMin², f = max(fx, fy)
+  // F-097 ①·F-104 ②: 공용 규칙 effectiveDistance 의 d_eff, f = max(fx, fy)
   const table = buildDistanceTable({ fx: Math.max(cam.K.fx, cam.K.fy), thresholdPx: TAU, edge0M: h.edge0M, levelCount: LEVELS });
-  const cMinOf = (leaf) => {
-    const n = node.get(leaf); let c = 1;
-    for (let m = 0; m < 8; m++) {
-      const P = [0, 1, 2].map((a) => ((m >> a) & 1 ? h.octree.boxMax[3 * n + a] : h.octree.boxMin[3 * n + a]));
-      const z = R[6] * P[0] + R[7] * P[1] + R[8] * P[2] + t[2];
-      const x = R[0] * P[0] + R[1] * P[1] + R[2] * P[2] + t[0], y = R[3] * P[0] + R[4] * P[1] + R[5] * P[2] + t[1];
-      c = Math.min(c, z > 0 ? z / Math.hypot(x, y, z) : 0);
-    }
-    return c;
-  };
   for (const [leaf, list] of byLeaf(ch)) {
     const T = list[list.length - 1].level;
-    const c = cMinOf(leaf), dEff = dist(leaf) * c * c;
+    const n = node.get(leaf);
+    const dEff = effectiveDistance(cam, C, h.octree.boxMin.subarray(3 * n, 3 * n + 3), h.octree.boxMax.subarray(3 * n, 3 * n + 3)).effDistM;
     const expect = dEff > 0 ? Math.min(LEVELS - 1, levelForDistance(table, dEff)) : 0;
     assert.equal(T, expect, `리프 ${leaf} 목표 단계`);
   }
