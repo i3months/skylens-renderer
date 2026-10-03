@@ -7,7 +7,7 @@ import { leafNormalCones, backfaceCull } from '../backface/index.mjs';
 import { buildDepthPyramid, occlusionCull } from '../occlusion/index.mjs';
 import { leafPriority, orderChunks } from '../priority/index.mjs';
 import { cullAndSelect, loadDefaultImpls } from '../combine/index.mjs';
-import { clientFrustumCull } from '../../../client/cull/index.mjs';
+import { leafBoxesOf } from '../../../client/cull/index.mjs';
 
 const CULL = /^Error: cull:/;
 
@@ -76,9 +76,8 @@ test('리프 0 개 계층: orderChunks 는 cull: 오류', () => {
   assert.throws(() => orderChunks(h, good(), mask), CULL);
 });
 
-test('리프 0 개 계층: clientFrustumCull 는 cull: 오류', () => {
-  const leafBoxes = { boxMin: new Float32Array(0), boxMax: new Float32Array(0) };
-  assert.throws(() => clientFrustumCull(leafBoxes, good()), CULL);
+test('리프 0 개 계층: 클라이언트 leafBoxesOf 는 cull: 오류', () => {
+  assert.throws(() => leafBoxesOf(zeroLeafHierarchy().octree), CULL);
 });
 
 test('리프 0 개 계층: cullAndSelect 는 cull: 오류', async () => {
