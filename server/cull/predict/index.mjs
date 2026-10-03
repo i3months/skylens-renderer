@@ -3,6 +3,7 @@
 import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
 import { isDegenerateView, degenerateCamera, assertCameraShape } from '../degenerate/index.mjs';
+import { guardHierarchyRead } from '../degenerate/hierarchy_guard.mjs';
 
 const ERR = 'cull:';
 const fin = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -95,7 +96,7 @@ export function predictiveMask(hierarchy, state, opts) {
   if (!fin(horizonS) || horizonS < 0) throw new Error(`${ERR} horizonS 는 0 이상의 유한수여야 함: ${String(horizonS)}`);
   if (!Number.isInteger(steps) || steps < 1 || steps > 10000) throw new Error(`${ERR} steps 는 1..10000 의 정수여야 함: ${String(steps)}`);
   if (pointSizeM !== undefined && pointSizeM !== null && !(fin(pointSizeM) && pointSizeM >= 0)) throw new Error(`${ERR} pointSizeM 은 0 이상의 유한수여야 함: ${String(pointSizeM)}`);
-  const { n, mn, mx, empty } = leafBoxes(hierarchy);
+  const { n, mn, mx, empty } = guardHierarchyRead(() => leafBoxes(hierarchy)); // getter·Proxy 예외도 cull: 오류로(F-148)
   const out = new Uint8Array(n);
   const cam = state?.camera;
   const v = vec3(state?.velocityMps, 'velocityMps'); // 형식 오류는 퇴화 카메라보다 먼저 던진다
