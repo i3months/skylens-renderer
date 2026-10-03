@@ -1,7 +1,7 @@
 // 브라우저용 .skla 헤더·평면 읽기. DataView·타입 배열만 쓴다(서버 전용 의존 없음).
 import {
   MAGIC, VERSION_MAJOR, HEADER_SIZE, OFFSETS, RESERVED_BYTES, FORMAT_POINT27, FORMAT_GAUSS56,
-  TYPE_BYTES, AssetFormatError, bodyLayout,
+  TYPE_BYTES, AssetFormatError, bodyLayout, CODEC_RAW_PLANAR, TILE_SIZE_M,
 } from '../../contracts/asset/index.mjs';
 
 /** @param {ArrayBuffer|Uint8Array} bytes */
@@ -9,6 +9,13 @@ function toBytes(bytes) {
   if (bytes instanceof ArrayBuffer) return new Uint8Array(bytes);
   if (bytes instanceof Uint8Array) return bytes;
   throw new AssetFormatError('short', 'input is not bytes');
+}
+
+/** header_size + body_bytes 가 입력 길이와 같아야 한다(짧아도 길어도 거부). */
+function checkLength(len, headerSize, bodyBytes) {
+  if (headerSize + bodyBytes !== len) {
+    throw new AssetFormatError('body', `header_size ${headerSize} + body_bytes ${bodyBytes} != input ${len}`);
+  }
 }
 
 /**
@@ -32,6 +39,17 @@ export function readHeaderClient(bytes) {
   if (u8.length < headerSize) throw new AssetFormatError('short', `header_size ${headerSize} > input ${u8.length}`);
   const format = u8[OFFSETS.format];
   if (format !== FORMAT_POINT27 && format !== FORMAT_GAUSS56) throw new AssetFormatError('format', `unknown format ${format}`);
+  // 명세 §3.2 3·5·6·10, §9: 모르는 codec 은 거부, 최소 의미 검사.
+  const codec = u8[OFFSETS.codec];
+  if (codec !== CODEC_RAW_PLANAR) throw new AssetFormatError('codec', `unknown codec ${codec}`);
+  const pointCount = dv.getUint32(OFFSETS.pointCount, true);
+  if (pointCount < 1) throw new AssetFormatError('field', 'pointCount 0');
+  const tileSizeM = dv.getUint16(OFFSETS.tileSizeM, true);
+  if (tileSizeM !== TILE_SIZE_M) throw new AssetFormatError('field', `tileSizeM ${tileSizeM}`);
+  const quantExp = u8[OFFSETS.quantExp];
+  if (quantExp < 8 || quantExp > 10) throw new AssetFormatError('field', `quantExp ${quantExp}`);
+  const bodyBytes = dv.getUint32(OFFSETS.bodyBytes, true);
+  checkLength(u8.length, headerSize, bodyBytes);
   const segLevel = dv.getUint32(OFFSETS.segLevel, true);
   const f64 = (o) => dv.getFloat64(o, true);
   return {
@@ -39,17 +57,17 @@ export function readHeaderClient(bytes) {
     versionMinor: dv.getUint16(OFFSETS.versionMinor, true),
     headerSize,
     format,
-    codec: u8[OFFSETS.codec],
+    codec,
     segmentId: segLevel >>> 2,
     level: /** @type {0|1|2|3} */ (segLevel & 3),
-    pointCount: dv.getUint32(OFFSETS.pointCount, true),
+    pointCount,
     tileX: dv.getInt32(OFFSETS.tileX, true),
     tileY: dv.getInt32(OFFSETS.tileY, true),
-    tileSizeM: dv.getUint16(OFFSETS.tileSizeM, true),
+    tileSizeM,
     lod: u8[OFFSETS.lod],
-    quantExp: u8[OFFSETS.quantExp],
+    quantExp,
     chunkIndex: dv.getUint32(OFFSETS.chunkIndex, true),
-    bodyBytes: dv.getUint32(OFFSETS.bodyBytes, true),
+    bodyBytes,
     bboxMin: [f64(OFFSETS.bboxMin), f64(OFFSETS.bboxMin + 8), f64(OFFSETS.bboxMin + 16)],
     bboxMax: [f64(OFFSETS.bboxMax), f64(OFFSETS.bboxMax + 8), f64(OFFSETS.bboxMax + 16)],
     anchor: { lat: f64(OFFSETS.anchorLat), lon: f64(OFFSETS.anchorLon), alt: f64(OFFSETS.anchorAlt) },
@@ -64,6 +82,7 @@ const ARRAYS = { u8: Uint8Array, i8: Int8Array, u16: Uint16Array, u32: Uint32Arr
 
 /**
  * 필수 평면을 타입 배열 뷰로 준다(원본 버퍼 공유). 확장 평면은 무시한다.
+ * 주의: 타입 배열 뷰는 호스트 바이트 순서를 쓴다. 파일은 리틀엔디언이고 LE 호스트만 가정한다(BE 호스트 미지원).
  * 입력 뷰의 시작 주소가 정렬되지 않았으면 그 평면만 복사한다.
  * @param {ArrayBuffer|Uint8Array} fileBytes
  * @param {import('../../contracts/asset/index.mjs').AssetHeader} header
@@ -71,9 +90,11 @@ const ARRAYS = { u8: Uint8Array, i8: Int8Array, u16: Uint16Array, u32: Uint32Arr
  */
 export function readPlanesClient(fileBytes, header) {
   const u8 = toBytes(fileBytes);
+  if (header.codec !== CODEC_RAW_PLANAR) throw new AssetFormatError('codec', `unknown codec ${header.codec}`);
+  checkLength(u8.length, header.headerSize, header.bodyBytes);
   const { planes, requiredBytes } = bodyLayout(header.format, header.pointCount);
-  if (u8.length < header.headerSize + requiredBytes) {
-    throw new AssetFormatError('body', `need ${header.headerSize + requiredBytes} bytes, got ${u8.length}`);
+  if (header.bodyBytes < requiredBytes) {
+    throw new AssetFormatError('body', `body_bytes ${header.bodyBytes} < required ${requiredBytes}`);
   }
   const out = {};
   for (const p of planes) {
