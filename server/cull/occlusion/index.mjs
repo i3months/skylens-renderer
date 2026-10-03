@@ -17,6 +17,22 @@
 //    그 사각형과 겹치는 0 단계 칸이 모두 zmin > 칸 값·(1+REL)+ABS 를 만족할 때만 0(제거). 피라미드 위에서부터 내려가며 본다.
 //    사각형이 화면 밖으로 완전히 나가면 남긴다(시야 밖 제거는 frustum 몫).
 // 퇴화 시점(NaN 카메라 등)은 예외 없이 빈 마스크(전부 0). 입력 오류는 'cull:' 오류.
+//
+// 가림막 수 제한(F-121): 시점마다 시야 안 리프의 점 전부를 칠하던 비용(100만 점 35~87 ms)을 두 가지로 줄인다.
+//   (a) 정확한 생략(결과 동일): 블록 하나를 '확실히 덮으려면' 원판 반경이 그 블록의 모서리 픽셀 중심 사이 반대각
+//       rNeed = √((wMin−1)²+(hMin−1)²)/2 이상이어야 한다(wMin·hMin = 가장 좁은 블록의 픽셀 수, 1×1 블록이 있을 수 있으면 0).
+//       리프 노드 상자의 최소 카메라 깊이 zmin 으로 반경 상한 fx·s/(2·zmin) 이 rNeed 보다 작으면 그 리프의 점은 어떤 블록도
+//       덮지 못하므로 투영하지 않는다. 피라미드는 생략 전과 비트 단위로 같다.
+//   (b) 점 수 상한 maxOccluderPoints(기본 DEFAULT_MAX_OCCLUDER_POINTS): 남은 후보 리프를 노드 상자 최소 깊이 오름차순
+//       (같으면 리프 번호)으로 보며, 넣으면 상한을 넘는 리프는 건너뛴다. 가까운 리프가 화면을 가장 넓게 덮는 가림막이다.
+//   픽셀 동일 보장: 가림막은 '참조 렌더에서 실제로 그려지는 점'만 쓸 수 있다. (b) 는 단계 0 점(원본 전부, 참조 렌더가 모두 그림)의
+//   부분집합만 쓰므로 블록 값은 그대로 참조 깊이의 상한이고, 덜 칠한 블록은 +∞(가림막 아님)로 남아 제거가 줄 뿐 거짓 제거는 없다.
+//   occluderLevel ≥ 1 은 쓰지 않았다: 대표점도 원본 부분집합이라 안전하지만, 같은 점 지름으로 성기게 칠해 구멍이 생겨
+//   100만 점 flat_boxes 320×180 시점 4·5·8 의 제거가 1882·1888·1602 → 267·194·0 으로 무너진다.
+//   측정(100만 점 flat_boxes·terrain 시드 1, buildHierarchy edge0M 0.5·levelCount 3·maxLeafPoints 256, 시점 8곳, size 64,
+//   시점당 3회 중 최솟값 ms, 바꾸기 전 → 후):
+//     1280×720 s 0.75: 49~87 → 1.5~44 · s 0.05: 35~77 → 1.4~1.7 · 320×180 s 0.75: 45~74 → 19~37 · s 0.05: 35~75 → 20~26.
+//     제거 리프(flat_boxes 1280×720 s 0.75 시점 4·6·7·8): 2012·135·322·1656 → 1982·129·319·1641, 320×180 시점 4: 1882 → 1877. 나머지 같음(terrain 은 전후 0).
 import { projectMany } from '../../raster_ref/project/index.mjs';
 import { radiusUnchecked } from '../../raster_ref/splat/index.mjs';
 import { boxMayBeVisible } from '../../lod/select/view_check.mjs';
@@ -31,6 +47,8 @@ const ABS = 1e-6;
 /** renderPoints 기본 점 지름(m). */
 export const DEFAULT_POINT_SIZE_M = 0.05;
 const MAX_SUB = 4;
+/** 가림막으로 투영할 점 수 기본 상한(2^18). 측정 전에 정한 값: 20만 점 시험 장면은 상한에 닿지 않아 결과가 그대로다. */
+export const DEFAULT_MAX_OCCLUDER_POINTS = 262144;
 
 const isNum = (x) => typeof x === 'number';
 
@@ -168,10 +186,24 @@ function blockMap(W, Bw) {
 }
 
 /**
+ * 원판이 블록 하나를 '확실히 덮으려면' 필요한 최소 반경(픽셀). 블록 a×b 픽셀의 가장 먼 픽셀 중심까지 거리는
+ * 적어도 √((a−1)²+(b−1)²)/2 이다. 가장 좁은 열·행 블록으로 하한을 잡는다. 1×1 블록이 있을 수 있으면('중심 칸' 규칙) 0.
+ */
+function minCoverRadius(cols, Bw, rows, Bh) {
+  let wMin = Infinity, hMin = Infinity;
+  for (let a = 0; a < Bw; a++) if (cols.start[a] >= 0) wMin = Math.min(wMin, cols.end[a] - cols.start[a] + 1);
+  for (let b = 0; b < Bh; b++) if (rows.start[b] >= 0) hMin = Math.min(hMin, rows.end[b] - rows.start[b] + 1);
+  if (!Number.isFinite(wMin) || !Number.isFinite(hMin)) return 0;
+  return Math.sqrt((wMin - 1) ** 2 + (hMin - 1) ** 2) / 2;
+}
+
+/**
  * 깊이 피라미드를 만든다. opts: size(기본 64, 2 거듭제곱), pointSizeM(기본 0.05, renderPoints 와 같게),
- * occluderLevel(기본 0, 가림막 점을 고를 LOD 단계), occluderMask(길이 leafCount 0/1, 1 인 리프만 가림막. 기본 시야 안 리프 전부).
+ * occluderLevel(기본 0, 가림막 점을 고를 LOD 단계), occluderMask(길이 leafCount 0/1, 1 인 리프만 가림막. 기본 시야 안 리프 전부),
+ * maxOccluderPoints(기본 DEFAULT_MAX_OCCLUDER_POINTS, 투영할 가림막 점 수 상한. 가까운 리프부터. Infinity 면 상한 없음).
  * occluder 는 원본의 부분집합이므로 원본 전체 렌더에서도 그 점들이 그려진다(새 점 없음).
- * @returns {{size:number, levels:Float32Array[], width:number, height:number, pointSizeM:number, cameraKey:string, degenerate:boolean, blocks:{w:number,h:number}}}
+ * @returns {{size:number, levels:Float32Array[], width:number, height:number, pointSizeM:number, cameraKey:string, degenerate:boolean, blocks:{w:number,h:number}, occluderPoints:number}}
+ *   occluderPoints = 실제로 투영한 가림막 점 수(정확한 생략·상한 뒤).
  */
 export function buildDepthPyramid(hierarchy, camera, opts = {}) {
   return buildDepthPyramidWith(hierarchy, camera, opts, {});
@@ -188,9 +220,11 @@ export function buildDepthPyramidWith(hierarchy, camera, opts = {}, mut = {}) {
   if (!Number.isInteger(occLevel) || occLevel < 0 || occLevel >= hierarchy.levels.length) throw new Error(`${ERR} occluderLevel 이 범위 밖: ${String(occLevel)}`);
   const occMask = opts.occluderMask;
   if (occMask !== undefined && (!(occMask instanceof Uint8Array) || occMask.length !== oc.leafCount)) throw new Error(`${ERR} occluderMask 는 길이 leafCount 의 Uint8Array`);
+  const maxOcc = opts.maxOccluderPoints ?? DEFAULT_MAX_OCCLUDER_POINTS;
+  if (!(maxOcc === Infinity || (Number.isInteger(maxOcc) && maxOcc >= 0))) throw new Error(`${ERR} maxOccluderPoints 는 0 이상 정수 또는 Infinity: ${String(maxOcc)}`);
   const degenerate = degenerateCamera(camera);
   const empty = () => buildUpper(new Float32Array(size * size).fill(Infinity), size, {});
-  if (degenerate) return { size, levels: empty(), width: 0, height: 0, pointSizeM, cameraKey: '', degenerate: true, blocks: { w: 0, h: 0 } };
+  if (degenerate) return { size, levels: empty(), width: 0, height: 0, pointSizeM, cameraKey: '', degenerate: true, blocks: { w: 0, h: 0 }, occluderPoints: 0 };
 
   const W = camera.width, H = camera.height;
   const Bw = size * Math.min(MAX_SUB, Math.max(1, Math.floor(W / size)));
@@ -200,14 +234,35 @@ export function buildDepthPyramidWith(hierarchy, camera, opts = {}, mut = {}) {
   const fx = camera.K.fx;
   const lv = hierarchy.levels[occLevel];
   const nodes = leafNodes(oc);
-  let proj = new Float64Array(0);
+  const rNeed = minCoverRadius(cols, Bw, rows, Bh);
+  const { R, t } = camera;
+  // 후보 리프와 노드 상자 최소 카메라 깊이(가까운 순 정렬 키·반경 상한용).
+  const cand = [], key = new Float64Array(oc.leafCount);
   for (let k = 0; k < oc.leafCount; k++) {
     if (occMask && occMask[k] !== 1) continue;
     const node = nodes[k];
     const mn = oc.boxMin.subarray(3 * node, 3 * node + 3), mx = oc.boxMax.subarray(3 * node, 3 * node + 3);
     if (!boxMayBeVisible(camera, mn, mx)) continue;
+    if (lv.leafStart[k + 1] === lv.leafStart[k]) continue;
+    let zmin = Infinity;
+    for (let c = 0; c < 8; c++) {
+      const X = c & 1 ? mx[0] : mn[0], Y = c & 2 ? mx[1] : mn[1], Z = c & 4 ? mx[2] : mn[2];
+      const z = R[6] * X + R[7] * Y + R[8] * Z + t[2];
+      if (z < zmin) zmin = z;
+    }
+    // (a) 정확한 생략: 상자의 모든 점은 깊이 ≥ zmin 이라 반경 ≤ fx·s/(2·zmin). 그것이 rNeed 보다 확실히 작으면 덮는 블록이 없다.
+    if (!mut.noExactSkip && !mut.noShrink && zmin > 0 && rNeed > 0 && ((fx * pointSizeM) / (2 * zmin)) * (1 + 1e-6) < rNeed) continue;
+    key[k] = zmin > 0 ? zmin : 0;
+    cand.push(k);
+  }
+  cand.sort((a, b) => key[a] - key[b] || a - b);
+  let budget = maxOcc, occluderPoints = 0;
+  let proj = new Float64Array(0);
+  for (const k of cand) {
     const s0 = lv.leafStart[k], s1 = lv.leafStart[k + 1];
-    if (s1 === s0) continue;
+    if (s1 - s0 > budget) continue; // (b) 상한을 넘기는 리프는 건너뛴다(가림막을 덜 쓰는 쪽 = 보수적)
+    budget -= s1 - s0;
+    occluderPoints += s1 - s0;
     const pos = lv.positions.subarray(3 * s0, 3 * s1);
     if (proj.length < pos.length) proj = new Float64Array(pos.length);
     projectMany(camera, pos, proj);
@@ -273,7 +328,7 @@ export function buildDepthPyramidWith(hierarchy, camera, opts = {}, mut = {}) {
       level0[cb * size + ca] = m;
     }
   }
-  return { size, levels: buildUpper(level0, size, mut), width: W, height: H, pointSizeM, cameraKey: camKey(camera), degenerate: false, blocks: { w: Bw, h: Bh } };
+  return { size, levels: buildUpper(level0, size, mut), width: W, height: H, pointSizeM, cameraKey: camKey(camera), degenerate: false, blocks: { w: Bw, h: Bh }, occluderPoints };
 }
 
 function assertPyramid(pyr, camera) {
