@@ -97,7 +97,8 @@ for (const [w, hh] of [[2e9, 1080], [1080, 2e9], [1, 67108864], [67108864, 1], [
     assert.equal(p.length, n);
     assert.ok(p.every((v) => v === 0));
     assert.equal(orderChunks(h, c, new Uint8Array(n).fill(1)).length, 0);
-    assert.equal(a.total, 2 * n); // 결과 Float64Array(n) + leafIndex 검사표 Uint8Array(n)(F-152) 뿐: 거친 버퍼·노드 표를 만들지 않는다
-    assert.equal(trackAlloc(() => orderChunks(h, c, new Uint8Array(n).fill(1))).total, 2 * n); // 마스크 + 검사표(F-152) 뿐, 마스크 복제 없이 빈 Uint32Array(0)
+    assert.equal(a.total, n); // 결과 Float64Array(n) 하나뿐: leafIndex 검사표는 결과 버퍼를 빌려 쓰고 거친 버퍼·노드 표는 만들지 않는다
+    const mask = new Uint8Array(n).fill(1);
+    assert.equal(trackAlloc(() => orderChunks(h, c, mask)).total, n); // 점수 버퍼(검사표 겸용) n 하나뿐, 빈 Uint32Array(0) 은 길이 0
   });
 }
