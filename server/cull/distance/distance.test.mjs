@@ -301,3 +301,92 @@ test('거리 컬링: 입력 오류 없음 (퇴화 시점은 빈 마스크)', () 
   assert(mask instanceof Uint8Array);
   assert.equal(mask.length, 2);
 });
+
+// ---- F-115: 내부 노드가 있는 실제 buildHierarchy 계층 ----
+import { generate as flatBoxes } from '../../../fixtures/scenes/flat_boxes/index.mjs';
+import { buildHierarchy } from '../../lod/hierarchy/index.mjs';
+
+const scene = flatBoxes({ seed: 1, count: 20000 });
+const cloud = scene.cloud ?? scene;
+const real = buildHierarchy(cloud, { edge0M: 0.5, levelCount: 6, maxLeafPoints: 512 });
+
+// 리프별 카메라 중심까지의 점 최소 거리(정답)
+function minPointDist(h, C) {
+  const oc = h.octree;
+  const out = new Float64Array(oc.leafCount).fill(Infinity);
+  for (let k = 0; k < oc.leafCount; k++) {
+    for (let q = oc.leafStart[k]; q < oc.leafStart[k + 1]; q++) {
+      const p = oc.order[q] * 3;
+      const d = Math.hypot(cloud.positions[p] - C[0], cloud.positions[p + 1] - C[1], cloud.positions[p + 2] - C[2]);
+      if (d < out[k]) out[k] = d;
+    }
+  }
+  return out;
+}
+
+function lcg(seed) {
+  let s = seed >>> 0;
+  return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
+}
+
+test('거리 컬링: 실제 계층은 내부 노드를 가진다(노드 수 > 리프 수)', () => {
+  assert.equal(real.octree.leafCount, 86);
+  assert.equal(real.octree.nodeCount, 111);
+});
+
+test('거리 컬링: 재현 시점 (0,5,0), maxDistanceM 20 에서 점까지 최소 거리 <= 20 인 리프는 모두 1', () => {
+  const C = [0, 5, 0];
+  const d = minPointDist(real, C);
+  const mask = distanceCull(real, makeCamera(C), { maxDistanceM: 20 });
+  let near = 0;
+  for (let k = 0; k < d.length; k++) {
+    if (d[k] <= 20) { near++; assert.equal(mask[k], 1, `리프 ${k} (점 최소 거리 ${d[k]})`); }
+  }
+  assert.ok(near > 0);
+});
+
+test('거리 컬링: 무작위 시점·여러 maxDistanceM 에서 거짓 제거 0, 멀리 있는 리프는 일부 제거', () => {
+  const rnd = lcg(12345);
+  let removed = 0;
+  for (let i = 0; i < 40; i++) {
+    const C = [(rnd() - 0.5) * 240, rnd() * 80 - 10, (rnd() - 0.5) * 240];
+    const d = minPointDist(real, C);
+    for (const maxD of [1, 5, 20, 60, 150]) {
+      const mask = distanceCull(real, makeCamera(C), { maxDistanceM: maxD });
+      for (let k = 0; k < d.length; k++) {
+        if (d[k] <= maxD) assert.equal(mask[k], 1, `C=${C} maxD=${maxD} 리프 ${k} d=${d[k]}`);
+        else removed += mask[k] === 0 ? 1 : 0;
+      }
+    }
+  }
+  assert.ok(removed > 0, '거리 컬링이 아무것도 제거하지 못함');
+});
+
+test('거리 컬링: 퇴화 카메라(NaN 이동)는 점 있는 리프도 전부 0', () => {
+  const cam = makeCamera([0, 5, 0]);
+  cam.t = new Float32Array([NaN, 0, 0]);
+  for (const maxD of [20, Infinity]) {
+    const mask = distanceCull(real, cam, { maxDistanceM: maxD });
+    assert.equal(mask.length, real.octree.leafCount);
+    assert.equal(mask.reduce((a, b) => a + b, 0), 0);
+  }
+});
+
+test('거리 컬링: 잘못된 계층은 cull: 오류', () => {
+  const cam = makeCamera([0, 5, 0]);
+  const oc = real.octree;
+  const bad = [
+    undefined,
+    {},
+    { octree: null, levels: real.levels },
+    { octree: { ...oc, leafIndex: undefined }, levels: real.levels },
+    { octree: { ...oc, boxMin: new Float32Array(3) }, levels: real.levels },
+    { octree: { ...oc, boxMax: oc.boxMax.subarray(0, 3 * oc.leafCount) }, levels: real.levels },
+    { octree: { ...oc, leafCount: 1.5 }, levels: real.levels },
+    { octree: oc, levels: [] },
+    { octree: oc, levels: [{ leafStart: new Uint32Array(3) }] },
+  ];
+  for (const h of bad) {
+    assert.throws(() => distanceCull(h, cam, { maxDistanceM: 20 }), (e) => !(e instanceof TypeError) && /^cull:/.test(e.message));
+  }
+});
