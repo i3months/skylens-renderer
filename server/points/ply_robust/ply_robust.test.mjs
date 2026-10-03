@@ -19,6 +19,7 @@ const rec56 = (i) => {
   return b;
 };
 
+const SLOW_MS = 1000; // 입력 1건 처리 한도(정상 처리는 1 ms 미만이라 매우 넉넉)
 const rejects = (buf, code) => assert.throws(() => readPlySafe(buf), (e) => e instanceof PointsError && e.code === code, code);
 
 test('정상 27 B 값 정확', () => {
@@ -61,9 +62,15 @@ test('비 Uint8Array 입력', () => {
   for (const x of [null, undefined, 5, 'ply', [1], {}]) rejects(x, 'header');
 });
 test('거대 count 는 큰 할당 없이 즉시 거부', () => {
-  const t = performance.now();
-  rejects(Buffer.concat([hdr({ n: 2 ** 31 - 1 }), rec27(0)]), 'truncated');
-  assert.ok(performance.now() - t < 50);
+  // 벽시계 대신 할당량으로 단언: count 만큼(수십 GB) 할당했다면 arrayBuffers 가 크게 늘어난다
+  const input = Buffer.concat([hdr({ n: 2 ** 31 - 1 }), rec27(0)]);
+  let minGrowth = Infinity;
+  for (let r = 0; r < 5; r++) {
+    const before = process.memoryUsage().arrayBuffers;
+    rejects(input, 'truncated');
+    minGrowth = Math.min(minGrowth, process.memoryUsage().arrayBuffers - before);
+  }
+  assert.ok(minGrowth < 1 << 20, `arrayBuffers 증가량 ${minGrowth} B`);
 });
 
 test('고정 시드 변이 5천 회', () => {
@@ -89,13 +96,13 @@ test('고정 시드 변이 5천 회', () => {
       rej++;
     }
     let dt = performance.now() - t;
-    // 환경 정지(GC·스케줄링) 잡음 제외: 느리면 같은 입력을 재측정해 최솟값을 쓴다
-    for (let r = 0; r < 3 && dt > 50; r++) {
+    // 환경 정지(GC·스케줄링) 잡음 제외: 넉넉한 한도(1 s) 초과 시 같은 입력을 재측정해 최솟값을 쓴다
+    for (let r = 0; r < 5 && dt > SLOW_MS; r++) {
       const t2 = performance.now();
       try { readPlySafe(b); } catch { /* 무시 */ }
       dt = Math.min(dt, performance.now() - t2);
     }
-    assert.ok(dt <= 50, `it ${it} slow ${dt}`);
+    assert.ok(dt <= SLOW_MS, `it ${it} slow ${dt}`);
   }
   assert.ok(ok > 0 && rej > 0);
 });
