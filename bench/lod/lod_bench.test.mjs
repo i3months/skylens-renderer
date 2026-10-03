@@ -22,7 +22,7 @@ test('LOD 벤치: 작은 장면(20k 점) 레벨별 바이트 단조 감소', () 
   // 점 수는 감소해야 함(레벨이 높을수록 거침)
   for (let i = 1; i < points.length; i++) {
     assert.ok(
-      points[i] <= points[i - 1],
+      points[i] < points[i - 1],
       `레벨 ${i}의 점(${points[i]})이 레벨 ${i - 1}(${points[i - 1]})보다 많음`,
     );
   }
@@ -30,7 +30,7 @@ test('LOD 벤치: 작은 장면(20k 점) 레벨별 바이트 단조 감소', () 
   // 바이트도 감소해야 함(더 적은 점 → 더 작은 자산)
   for (let i = 1; i < bytesByLevel.length; i++) {
     assert.ok(
-      bytesByLevel[i] <= bytesByLevel[i - 1],
+      bytesByLevel[i] < bytesByLevel[i - 1],
       `레벨 ${i}의 바이트(${bytesByLevel[i]})가 레벨 ${i - 1}(${bytesByLevel[i - 1]})보다 많음`,
     );
   }
@@ -48,7 +48,7 @@ test('LOD 벤치: 다른 시드(20k 점)도 바이트 단조 감소', () => {
 
     for (let i = 1; i < result.bytesByLevel.length; i++) {
       assert.ok(
-        result.bytesByLevel[i] <= result.bytesByLevel[i - 1],
+        result.bytesByLevel[i] < result.bytesByLevel[i - 1],
         `seed ${seed} 레벨 ${i}에서 단조성 위반`,
       );
     }
