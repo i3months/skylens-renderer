@@ -33,6 +33,7 @@ import { projectMany } from '../../raster_ref/project/index.mjs';
 import { radiusUnchecked } from '../../raster_ref/splat/index.mjs';
 import { boxMayBeVisible } from '../../lod/select/view_check.mjs';
 import { degenerateCamera } from '../degenerate/index.mjs';
+import { guardHierarchyRead } from '../degenerate/hierarchy_guard.mjs';
 export { degenerateCamera };
 
 const ERR = 'cull:';
@@ -52,6 +53,11 @@ const isNum = (x) => typeof x === 'number';
 // ---- 입력 검사 ---------------------------------------------------------------------------
 
 function assertHierarchy(h) {
+  // F-148: 접근자(getter)·Proxy 가 던지는 예외도 'cull:' 오류로 바꾼다(공용 래퍼).
+  guardHierarchyRead(() => assertHierarchyRaw(h));
+}
+
+function assertHierarchyRaw(h) {
   if (!h || typeof h !== 'object') throw new Error(`${ERR} 계층이 객체가 아님`);
   const oc = h.octree;
   if (!oc || typeof oc !== 'object') throw new Error(`${ERR} hierarchy.octree 가 없음`);
@@ -108,14 +114,17 @@ function tightLeafBoxes(h) {
   if (tb && tb.pos === pos && tb.leafStart === lv.leafStart && tb.L === L) return tb;
   const mn = new Float32Array(3 * L).fill(Infinity), mx = new Float32Array(3 * L).fill(-Infinity);
   for (let k = 0; k < L; k++) {
-    for (let s = lv.leafStart[k]; s < lv.leafStart[k + 1]; s++) {
+    // F-149 ③: 유한하지 않은 좌표가 든 리프는 빈 상자(= 판정 포기·남김)로 둔다. 다른 단계(frustum·distance·backface)도 NaN 위치를 통과시킨다.
+    let bad = false;
+    for (let s = lv.leafStart[k]; s < lv.leafStart[k + 1] && !bad; s++) {
       for (let d = 0; d < 3; d++) {
         const x = pos[3 * s + d];
-        if (!Number.isFinite(x)) throw new Error(`${ERR} 리프 ${k} 의 점 좌표가 유한하지 않음`);
+        if (!Number.isFinite(x)) { bad = true; break; }
         if (x < mn[3 * k + d]) mn[3 * k + d] = x;
         if (x > mx[3 * k + d]) mx[3 * k + d] = x;
       }
     }
+    if (bad) for (let d = 0; d < 3; d++) { mn[3 * k + d] = Infinity; mx[3 * k + d] = -Infinity; }
   }
   tb = { mn, mx, pos, leafStart: lv.leafStart, L };
   tightCache.set(h, tb);
@@ -237,8 +246,16 @@ export function buildDepthPyramidWith(hierarchy, camera, opts = {}, mut = {}) {
     occluderPoints += s1 - s0;
     const pos = lv.positions.subarray(3 * s0, 3 * s1);
     if (proj.length < pos.length) proj = new Float64Array(pos.length);
-    projectMany(camera, pos, proj);
+    // 유한하지 않은 점은 가림막이 아니다: 0 으로 바꿔 투영(projectMany 의 raster: 오류 회피)하고 아래에서 건너뛴다.
+    let badPts = null;
+    for (let i = 0; i < pos.length; i += 3) {
+      if (!(Number.isFinite(pos[i]) && Number.isFinite(pos[i + 1]) && Number.isFinite(pos[i + 2]))) (badPts ??= new Set()).add(i / 3);
+    }
+    let src = pos;
+    if (badPts) { src = new Float32Array(pos); for (const q of badPts) src.fill(0, 3 * q, 3 * q + 3); }
+    projectMany(camera, src, proj);
     for (let p = 0; p < s1 - s0; p++) {
+      if (badPts && badPts.has(p)) continue;
       const u = proj[3 * p], v = proj[3 * p + 1], d = proj[3 * p + 2];
       if (!(d > 0) || !Number.isFinite(u) || !Number.isFinite(v)) continue;
       const dS = Math.fround(d);
