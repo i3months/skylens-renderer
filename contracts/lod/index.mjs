@@ -35,6 +35,7 @@
  * @property {number} edgeM
  * @property {number} count
  * @property {Uint32Array} indices    입력 점 번호(부분집합). 리프 순서로 정렬
+ * @property {Float32Array} positions 3·count 대표점 위치(indices 와 같은 순서로 미리 담아 둔다. materialize 가 구간 복사로 쓴다, 결정 0021 후속)
  * @property {Uint32Array} leafStart  길이 leafCount+1. indices[leafStart[k]..leafStart[k+1]) 이 리프 k 의 대표점
  * @property {Float32Array} normals   3·count 단위 길이(길이 0 입력은 (0,0,0) 유지)
  * @property {Uint8Array} colors      3·count 칸 안 점들의 평균색
