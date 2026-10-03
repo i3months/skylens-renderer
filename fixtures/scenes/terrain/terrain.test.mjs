@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generate, heightAt } from './index.mjs';
+import { generate } from './index.mjs';
 import { assertSceneResult, resultHash } from '../../../contracts/scenes/index.mjs';
 
 const N = 20000;
@@ -29,14 +29,14 @@ test('두 형식 모두 assertSceneResult 통과', () => {
 });
 
 for (const seed of [1, 2, 99, 123456]) {
-  test(`높이는 heightAt 과 1e-4 m 이내, 0~30 m, 범위 안 (seed ${seed})`, () => {
+  test(`높이는 시험 안 hRef 와 1e-4 m 이내, 0~30 m, 범위 안 (seed ${seed})`, () => {
     const r = generate({ seed, count: N });
     const { params } = r.truth.heightAt;
     const p = r.cloud.positions;
     for (let i = 0; i < N; i++) {
       const x = p[3 * i], y = p[3 * i + 1], z = p[3 * i + 2];
       assert.ok(Math.abs(x) <= 100 && Math.abs(z) <= 100);
-      assert.ok(Math.abs(y - heightAt(params, x, z)) <= 1e-4);
+      assert.ok(Math.abs(y - hRef(params, x, z)) <= 1e-4);
       assert.ok(y >= 0 && y <= 30);
     }
     for (let a = 0; a < 3; a++) assert.ok(r.truth.bounds.min[a] <= r.truth.bounds.max[a]);
@@ -87,4 +87,14 @@ test('입력 검증: count·seed·format 이상값 거부, count 0·1 통과', (
   assert.equal(generate({ seed: 1, count: 0 }).count, 0);
   assert.equal(generate({ seed: 1, count: 1 }).count, 1);
   assert.equal(resultHash(generate({ count: 10 })), resultHash(generate({ seed: 1, count: 10 })));
+});
+
+test('F-091: 모든 점이 truth.bounds 안에 있다(전수)', () => {
+  const r = generate({ seed: 4, count: N });
+  const { min, max } = r.truth.bounds, p = r.cloud.positions;
+  for (let i = 0; i < N; i++) for (let a = 0; a < 3; a++) assert.ok(p[3 * i + a] >= min[a] && p[3 * i + a] <= max[a], `점 ${i} 축 ${a}`);
+});
+
+test('F-091: opts 가 null 이어도 기본값으로 생성된다', () => {
+  assert.equal(generate(null).count, 200000);
 });

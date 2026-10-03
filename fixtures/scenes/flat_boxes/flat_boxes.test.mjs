@@ -147,3 +147,28 @@ test('format2_위치는_format1과_같고_fdc는_색에서_역변환한_값', ()
   for (let i = 0; i < 3 * 3000; i++) assert.ok(Math.abs(b.cloud.fdc[i] - (a.cloud.colors[i] / 255 - 0.5) / C0) <= 1e-6);
   assert.ok(Math.abs(b.cloud.scales[0] - Math.log(0.05)) <= 1e-6);
 });
+
+test('F-091: 색 무늬가 잡음이 아니라 바닥 4 m 체크와 지붕 2 m 체크에서 온다', () => {
+  const r = generate({ seed: 3, count: 100000 });
+  const P = r.cloud.positions, C = r.cloud.colors;
+  // 바닥: 초록 채널 평균 차(기준 밝은 칸 120 vs 어두운 칸 92, 차 28)
+  const gs = [0, 0], gn = [0, 0];
+  // 지붕: 최댓값 채널 평균 차(v 0.85 vs 0.55, 차 약 76)
+  const rs = [0, 0], rn = [0, 0];
+  for (let i = 0; i < r.count; i++) {
+    const x = P[3 * i], y = P[3 * i + 1], z = P[3 * i + 2];
+    if (y === 0) {
+      const k = (Math.floor((x + 100) / 4) + Math.floor((z + 100) / 4)) & 1;
+      gs[k] += C[3 * i + 1]; gn[k]++;
+      continue;
+    }
+    for (const b of r.truth.buildings) {
+      if (Math.abs(y - b.height) > 1e-4 || x < b.min[0] || x > b.max[0] || z < b.min[2] || z > b.max[2]) continue;
+      const k = (Math.floor((x - b.min[0]) / 2) + Math.floor((z - b.min[2]) / 2)) & 1;
+      rs[k] += Math.max(C[3 * i], C[3 * i + 1], C[3 * i + 2]); rn[k]++;
+    }
+  }
+  assert.ok(gn[0] > 1000 && gn[1] > 1000 && rn[0] > 300 && rn[1] > 300, `${gn} ${rn}`);
+  assert.ok(gs[1] / gn[1] - gs[0] / gn[0] >= 15, `바닥 평균 차 ${gs[1] / gn[1] - gs[0] / gn[0]}`);
+  assert.ok(rs[1] / rn[1] - rs[0] / rn[0] >= 40, `지붕 평균 차 ${rs[1] / rn[1] - rs[0] / rn[0]}`);
+});

@@ -59,7 +59,8 @@ export function makeParams(seed) {
 
 const clamp255 = (v) => Math.max(0, Math.min(255, Math.round(v)));
 
-export function generate(opts = {}) {
+export function generate(options) {
+  const opts = options ?? {};
   const seed = normalizeSeed(opts.seed);
   const n = checkCount(opts.count, DEFAULT_COUNT);
   const format = checkFormat(opts.format);

@@ -77,3 +77,18 @@ test('buildings: format 2 의 positions 는 format 1 과 같고 fdc 는 색과 �
   for (let i = 0; i < 3 * a.count; i++) assert.ok(Math.abs(b.fdc[i] - (a.colors[i] / 255 - 0.5) / C0) < 1e-5);
   assert.ok(b.scales.every((v) => Math.abs(v - Math.log(0.05)) < 1e-6));
 });
+
+test('F-089: 지붕 점의 x·z 는 건물 중심, y 는 건물 높이와 같다(전수)', () => {
+  const r = generate({ seed: 13, count: 300 });
+  assert.equal(r.cloud.count, r.truth.buildings.length);
+  r.truth.buildings.forEach((b, i) => {
+    const c = r.cloud.positions;
+    assert.ok(Math.abs(c[3 * i] - (b.min[0] + b.max[0]) / 2) <= 1e-3, `건물 ${i} x`);
+    assert.ok(Math.abs(c[3 * i + 2] - (b.min[1] + b.max[1]) / 2) <= 1e-3, `건물 ${i} z`);
+    assert.ok(Math.abs(c[3 * i + 1] - b.height) <= 1e-4, `건물 ${i} y`);
+  });
+});
+
+test('F-091: opts 가 null 이어도 기본값으로 생성된다', () => {
+  assert.equal(generate(null).count, 1000);
+});

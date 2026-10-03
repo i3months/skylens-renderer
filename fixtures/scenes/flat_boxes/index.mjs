@@ -107,7 +107,8 @@ function allocate(areas, total) {
   return cnt;
 }
 
-export function generate(opts = {}) {
+export function generate(options) {
+  const opts = options ?? {};
   const seed = normalizeSeed(opts.seed);
   const count = checkCount(opts.count, DEFAULT_COUNT);
   const format = checkFormat(opts.format);

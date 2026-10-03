@@ -29,8 +29,14 @@ export const DOC_K = Object.freeze({ fx: 754.32, fy: 753.85, cx: 480, cy: 270, w
 // 따라서 이 잡음은 부화소 정합을 쓴 실제 복원 오차보다 5~10 배 큰 보수적(나쁜 쪽) 모형이다.
 // 더 극단적인 잡음이 필요한 시험은 b 옵션으로 작은 값(예: 문서 표의 1.04 m, 또는 0.5 m)을 직접 준다.
 export const DEFAULTS = Object.freeze({ f: DOC_K.fx, b: 8.26, count: 200000 });
+// 깊이 5~80 m 는 renderer_basis 가 실제 복원에서 다루는 27.6~52.8 m 보다 일부러 넓다.
+// 이 장면은 합성 전용 시험 범위로, 깊이 오차 모형 d²/(f·b) 가 가까운 곳(5 m)에서 먼 곳(80 m)까지
+// 단조 증가함을 확인하려는 것이지 실제 사용 범위를 뜻하지 않는다.
 /** 정답 깊이 범위(m). */
 export const DEPTH_RANGE = Object.freeze([5, 80]);
+/** 허용 초점거리 f(px)·기선 b(m) 범위. */
+export const F_RANGE = Object.freeze([1, 1e5]);
+export const B_RANGE = Object.freeze([1e-3, 1e3]);
 export const SIGMA_OF_D = 'd^2/(f*b)';
 
 /**
@@ -130,14 +136,18 @@ const BASE = [[200, 80, 60], [70, 160, 90], [60, 110, 200], [210, 180, 60], [160
  * @param {{seed?:number, count?:number, format?:1|2, f?:number, b?:number, noise?:boolean}} [opts]
  * @returns {import('../../../contracts/scenes/index.mjs').SceneResult}
  */
-export function generate(opts = {}) {
+export function generate(options) {
+  const opts = options ?? {};
   const seed = normalizeSeed(opts.seed);
   const count = checkCount(opts.count, DEFAULTS.count);
   const format = checkFormat(opts.format);
   const f = opts.f ?? DEFAULTS.f;
   const b = opts.b ?? DEFAULTS.b;
   const noise = opts.noise ?? true;
-  if (!(f > 0) || !(b > 0)) throw new Error('depth_noise: f, b 는 양수');
+  if (typeof noise !== 'boolean') throw new Error(`depth_noise: noise 는 불리언이어야 함: ${String(noise)}`);
+  // 유한 범위 검사: f=1e-300 이면 K·positions 가 비유한이 되고 f=Infinity 는 무한 반복/NaN 을 부른다.
+  if (!Number.isFinite(f) || f < F_RANGE[0] || f > F_RANGE[1]) throw new Error(`depth_noise: f 는 ${F_RANGE[0]}~${F_RANGE[1]} px 의 유한값: ${String(f)}`);
+  if (!Number.isFinite(b) || b < B_RANGE[0] || b > B_RANGE[1]) throw new Error(`depth_noise: b 는 ${B_RANGE[0]}~${B_RANGE[1]} m 의 유한값: ${String(b)}`);
   const K = makeK(f);
   const planes = buildPlanes(K);
 

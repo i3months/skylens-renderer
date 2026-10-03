@@ -148,3 +148,20 @@ test('levels<4 옵션과 잘못된 옵션', () => {
     assert.deepEqual(steps, LEVEL_STEPS.slice(4 - levels));
   }
 });
+
+test('F-089: 낮은 수준 색인이 엄격 증가하고 서로 다른 위치 키 수가 count 와 같다', () => {
+  const r = generate({ seed: 12, segments: 2, count: 64 });
+  for (const seg of r.truth.segments) {
+    for (const lv of seg.levels) {
+      if (!lv.indices) continue;
+      assert.equal(lv.indices.length, lv.count);
+      for (let j = 1; j < lv.indices.length; j++) assert.ok(lv.indices[j] > lv.indices[j - 1], `수준 ${lv.level} 색인 ${j} 가 증가하지 않음`);
+    }
+    for (let k = 0; k < 4; k++) {
+      const c = levelCloud(r, seg.id, k);
+      const keys = new Set();
+      for (let i = 0; i < c.count; i++) keys.add(key(c, i));
+      assert.equal(keys.size, seg.levels[k].count, `구간 ${seg.id} 수준 ${k}: 서로 다른 위치 ${keys.size}`);
+    }
+  }
+});
