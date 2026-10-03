@@ -7,6 +7,8 @@
 // 대표점 = 조각 안에서 격자 칸 중심 (k+0.5)·edge 에 가장 가까운 점(동률이면 번호 작은 점) — voxelReduce 와 같은 규칙.
 // 법선·색은 조각 안 점들로 구한다(representativeNormals·representativeColors 에 조각을 칸으로 넘긴다).
 // 대표점은 팔진 트리 리프 순서로 정렬해 리프마다 연속 구간을 이룬다. 리프 안에서는 격자 칸 번호(칸 키 사전순) 오름차순.
+// 단계마다 대표점 위치(positions, 3·count)를 indices 와 같은 리프 순서로 미리 담는다(F-099 ③): materialize 가 법선·색처럼
+//   리프 구간을 한 번에 복사하게 해 원본 위치의 무작위 접근을 없앤다. 대가는 대표점당 12 B(Float32 3개).
 import { assertCloud, assertLevelParams, edgeOfLevel } from '../../../contracts/lod/index.mjs';
 import { buildOctree } from '../octree/index.mjs';
 import { voxelReduce } from '../voxel/index.mjs';
@@ -59,6 +61,16 @@ function unitNormal(src, i, out, s) {
   out[3 * s] = x / len; out[3 * s + 1] = y / len; out[3 * s + 2] = z / len;
 }
 
+/** 대표점 위치를 rep 순서로 모은다(입력 위치를 그대로 복사, 새 값 없음). */
+function gatherPositions(src, rep) {
+  const out = new Float32Array(3 * rep.length);
+  for (let s = 0, d = 0; s < rep.length; s++, d += 3) {
+    const b = 3 * rep[s];
+    out[d] = src[b]; out[d + 1] = src[b + 1]; out[d + 2] = src[b + 2];
+  }
+  return out;
+}
+
 /** @returns {import('../../../contracts/lod/index.mjs').Hierarchy} */
 export function buildHierarchy(cloud, opts = {}) {
   const n = assertCloud(cloud);
@@ -87,7 +99,8 @@ export function buildHierarchy(cloud, opts = {}) {
       for (let c = 0; c < pieces.count; c++) leafStart[pieces.leafOfPiece[c] + 1]++;
       for (let k = 0; k < octree.leafCount; k++) leafStart[k + 1] += leafStart[k];
     }
-    levels.push({ level: l, edgeM: edgeOfLevel(edge0M, l), count: rep.length, indices: rep, leafStart, normals, colors });
+    const positions = gatherPositions(cloud.positions, rep);
+    levels.push({ level: l, edgeM: edgeOfLevel(edge0M, l), count: rep.length, indices: rep, positions, leafStart, normals, colors });
   }
   return { cloud, octree, edge0M, levels };
 }

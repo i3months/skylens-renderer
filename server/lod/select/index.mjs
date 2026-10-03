@@ -9,7 +9,7 @@
 //      d_eff = d·cMin² 에 대해 f·edgeM(l)/d_eff ≤ τ 인 가장 큰 l, 최대 단계는 levelCount−1.
 //      카메라가 상자 안(d = 0)이거나 상자가 카메라 평면에 걸치면(cMin ≤ 0) 원본 단계 0.
 //      축 밖 각 α 에서 투영 크기는 f·e/(r·cos²α) 이므로(F-097 ①), 리프 상자 안에 놓인 칸 변은 화면에서 τ 픽셀을 넘지 않는다.
-// materialize: 선택된 단계의 대표점만 모은다. 위치 = 입력 점 위치 그대로, 법선·색 = 그 단계의 대표값. 새 점을 만들지 않는다.
+// materialize: 선택된 단계의 대표점만 모은다. 위치 = 입력 점 위치 그대로(단계별 positions 에 미리 담긴 사본), 법선·색 = 그 단계의 대표값. 새 점을 만들지 않는다.
 //
 // 칸은 (리프, 전역 격자 칸) 조각이라(F-097 ②, hierarchy) 리프 경계를 걸치는 칸이 없다.
 import { NOT_DRAWN, assertCloud } from '../../../contracts/lod/index.mjs';
@@ -32,6 +32,9 @@ function assertHierarchy(h) {
   for (const lv of levels) {
     if (!lv || !(lv.indices instanceof Uint32Array) || !(lv.leafStart instanceof Uint32Array) || lv.leafStart.length !== octree.leafCount + 1) {
       throw new Error(`${ERR} 단계 ${String(lv?.level)} 의 구간 배열이 올바르지 않음`);
+    }
+    if (!(lv.positions instanceof Float32Array) || lv.positions.length !== 3 * lv.indices.length) {
+      throw new Error(`${ERR} 단계 ${String(lv.level)} 의 positions 는 길이 3·indices.length 인 Float32Array`);
     }
   }
 }
@@ -80,7 +83,7 @@ export function selectLevels(hierarchy, camera, opts) {
  */
 export function materialize(hierarchy, selection) {
   assertHierarchy(hierarchy);
-  const { octree, levels, cloud } = hierarchy;
+  const { octree, levels } = hierarchy;
   if (!selection || !(selection.leafLevel instanceof Uint8Array) || selection.leafLevel.length !== octree.leafCount) {
     throw new Error(`${ERR} selection.leafLevel 은 길이 leafCount(${octree.leafCount}) 인 Uint8Array`);
   }
@@ -96,21 +99,17 @@ export function materialize(hierarchy, selection) {
   const positions = new Float32Array(3 * n);
   const normals = new Float32Array(3 * n);
   const colors = new Uint8Array(3 * n);
-  const src = cloud.positions;
   let o = 0;
   for (let k = 0; k < octree.leafCount; k++) {
     const l = leafLevel[k];
     if (l === NOT_DRAWN) continue;
     const lv = levels[l];
-    const s0 = lv.leafStart[k], s1 = lv.leafStart[k + 1], idx = lv.indices;
+    const s0 = lv.leafStart[k], s1 = lv.leafStart[k + 1];
     if (s1 === s0) continue;
-    // 법선·색은 리프 구간이 연속이라 한 번에 복사, 위치만 색인 산술로 모은다.
+    // 위치·법선·색 모두 단계별로 리프 순서로 미리 담겨 있어(hierarchy, F-099 ③) 리프 구간을 한 번에 복사한다.
+    positions.set(lv.positions.subarray(3 * s0, 3 * s1), 3 * o);
     normals.set(lv.normals.subarray(3 * s0, 3 * s1), 3 * o);
     colors.set(lv.colors.subarray(3 * s0, 3 * s1), 3 * o);
-    for (let s = s0, d = 3 * o; s < s1; s++, d += 3) {
-      const b = 3 * idx[s];
-      positions[d] = src[b]; positions[d + 1] = src[b + 1]; positions[d + 2] = src[b + 2];
-    }
     o += s1 - s0;
   }
   return { format: 1, count: n, positions, normals, colors };
