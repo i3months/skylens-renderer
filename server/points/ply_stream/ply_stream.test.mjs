@@ -1,4 +1,6 @@
 import test from 'node:test';
+import v8 from 'node:v8';
+import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { readPlyStream } from './index.mjs';
 import { PROPERTIES, FORMAT_POINT27, FORMAT_GAUSS56, stride } from '../../../contracts/points/index.mjs';
@@ -111,11 +113,15 @@ test('250만 점 27 B 가상 스트림: 추가 메모리 증가 ≤ 32 MB', asyn
     }
   }
   const mem = () => { const m = process.memoryUsage(); return m.arrayBuffers + m.heapUsed; };
-  global.gc?.();
+  // 쓰레기가 아니라 붙들고 있는 양을 재려고 청크마다 GC 를 강제한다(--expose-gc 없이 v8 플래그로 gc 함수를 얻는다)
+  v8.setFlagsFromString('--expose-gc');
+  const gc = vm.runInNewContext('gc');
+  gc();
   const base = mem();
   let peak = 0, pts = 0;
   for await (const c of readPlyStream(gen(), { chunkPoints: 16384 })) {
     pts += c.count;
+    gc();
     peak = Math.max(peak, mem() - base);
   }
   assert.equal(pts, N);
