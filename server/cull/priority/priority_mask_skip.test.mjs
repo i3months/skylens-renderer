@@ -42,13 +42,22 @@ test('orderChunks: 마스크 부분집합의 순서 = 전체 순서를 부분집
 test('orderChunks: 점수는 mask 와 무관하게 leafPriority 로 정해진다(마스크 0 리프도 가림막으로 남는다)', () => {
   const score = leafPriority(h, CAM);
   const mask = new Uint8Array(L);
-  for (let k = 0; k < L; k++) mask[k] = score[k] > 0 ? 1 : 0;
+  const lv = h.levels[0];
+  const pos = lv.positions;
+  // 앞층(z≈1.2)과 뒤층(z≈1.7)을 분리: 앞층은 mask 0, 뒤층은 mask 1
+  for (let k = 0; k < L; k++) {
+    let minZ = Infinity;
+    for (let s = lv.leafStart[k]; s < lv.leafStart[k + 1]; s++) {
+      minZ = Math.min(minZ, pos[3 * s + 2]);
+    }
+    mask[k] = minZ < 1.5 ? 0 : 1;
+  }
   // 마스크 0 리프가 실제로 존재해야 이 시험이 의미 있음
   const maskZeroCount = mask.reduce((s, v) => s + (1 - v), 0);
   assert.ok(maskZeroCount > 0, `마스크 0 리프가 ${maskZeroCount}개 존재해야 함`);
-  // 마스크 0 리프의 일부는 0이 아닌 점수를 가질 수 있음(보조 항에서)
-  const nonZeroMaskZero = Array.from({ length: L }, (_, k) => k).filter((k) => mask[k] === 0 && score[k] !== 0).length;
-  assert.ok(score.some((v, k) => v === 0 && mask[k] === 0), '점수 0인 마스크 0 리프가 존재해야 함');
+  // 마스크 0 리프(앞층) 중 score > 0인 것이 있어야 이 시험이 변이를 잡을 수 있음
+  assert.ok(Array.from({ length: L }, (_, k) => k).some((k) => mask[k] === 0 && score[k] > 0),
+    'mask 0 리프 중 score > 0인 것이 있어야 마스크 0 투영 생략 변이를 잡을 수 있음');
   const got = Array.from(orderChunks(h, CAM, mask));
   const want = Array.from({ length: L }, (_, k) => k).filter((k) => mask[k]).sort((a, b) => score[b] - score[a] || a - b);
   assert.deepEqual(got, want);
