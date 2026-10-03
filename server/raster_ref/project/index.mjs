@@ -23,8 +23,11 @@ function projectInto(camera, x, y, z, out, o) {
   const d = R[6] * x + R[7] * y + R[8] * z + t[2];
   out[o + 2] = d;
   if (d > 0) {
-    out[o] = (K.fx * xc) / d + K.cx;
-    out[o + 1] = (K.fy * yc) / d + K.cy;
+    const u = (K.fx * xc) / d + K.cx;
+    const v = (K.fy * yc) / d + K.cy;
+    // d 가 아주 작으면 u, v 가 ±Infinity 가 될 수 있으므로 NaN 으로 통일
+    out[o] = Number.isFinite(u) ? u : NaN;
+    out[o + 1] = Number.isFinite(v) ? v : NaN;
   } else {
     out[o] = NaN;
     out[o + 1] = NaN;

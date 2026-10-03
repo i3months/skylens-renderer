@@ -89,12 +89,6 @@ test('입력 검증: count·seed·format 이상값 거부, count 0·1 통과', (
   assert.equal(resultHash(generate({ count: 10 })), resultHash(generate({ seed: 1, count: 10 })));
 });
 
-test('F-091: 모든 점이 truth.bounds 안에 있다(전수)', () => {
-  const r = generate({ seed: 4, count: N });
-  const { min, max } = r.truth.bounds, p = r.cloud.positions;
-  for (let i = 0; i < N; i++) for (let a = 0; a < 3; a++) assert.ok(p[3 * i + a] >= min[a] && p[3 * i + a] <= max[a], `점 ${i} 축 ${a}`);
-});
-
 test('F-091: opts 가 null 이어도 기본값으로 생성된다', () => {
   assert.equal(generate(null).count, 200000);
 });

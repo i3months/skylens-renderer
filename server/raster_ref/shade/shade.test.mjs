@@ -38,7 +38,6 @@ test('해석해와 정수 일치(오차 ≤ 1/255 기준)', () => {
     got.forEach((g, c) => {
       assert.ok(Number.isInteger(g));
       assert.ok(Math.abs(g - exact[c]) <= 0.5 + 1e-9);
-      assert.ok(Math.abs(g - exact[c]) / 255 <= 1 / 255);
     });
   }
 });
@@ -65,11 +64,14 @@ test('거부 입력', () => {
 
 // 변이 검출: max 제거, ambient 무시 식은 리터럴을 못 맞춘다.
 test('변이: max 제거·ambient 무시는 실패', () => {
+  // 실제 구현: ambient=0.3 에서 d=-1 일 때 I = 0.3 + 0.7*max(0,-1) = 0.3, 결과 200*0.3 = 60
+  assert.equal(lambert([0, 0, -1], [0, 0, 1], RGB)[0], 60, '실제 구현');
+  // max 제거 돌연변이: d=-1 일 때 I = 0.3 + 0.7*(-1) = -0.4, 결과 0 (음수는 0 으로 반올림)
   const noMax = (d) => Math.round(200 * (0.3 + 0.7 * d));
-  assert.notEqual(noMax(-1), 60); // −1 → 0 이 되어 60 이 아님
+  assert.notEqual(noMax(-1), 60, 'max 제거 돌연변이는 실패');
+  // ambient 무시 돌연변이: d=0 일 때 I = max(0, 0) = 0, 결과 0
   const noAmb = (d) => Math.round(200 * Math.max(0, d));
-  assert.notEqual(noAmb(0), 60);
-  assert.equal(lambert([0, 0, -1], [0, 0, 1], RGB)[0], 60);
+  assert.notEqual(noAmb(0), 60, 'ambient 무시 돌연변이는 실패');
 });
 
 const cam = {

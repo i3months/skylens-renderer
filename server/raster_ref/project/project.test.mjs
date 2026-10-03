@@ -51,9 +51,12 @@ test('카메라 뒤·카메라 평면 위 점은 d 만 주고 u, v 는 NaN', () 
   const zero = project(CAM, [0, 0, -3]);
   assert.equal(zero.d, 0);
   assert.ok(Number.isNaN(zero.u) && Number.isNaN(zero.v));
-  // 바로 앞(d = 1e-9 > 0)은 유한한 u, v
-  const front = project({ ...CAM, R: I3, t: [0, 0, 0] }, [0, 0, 1e-9]);
-  assert.ok(Number.isFinite(front.u) && Number.isFinite(front.v));
+  // d 가 극히 작으면(예: 1e-310) u, v 가 ±Infinity 가 되는데 이를 NaN 으로 통일
+  const tiny = project({ ...CAM, R: I3, t: [0, 0, 0] }, [1, 1, 1e-310]);
+  assert.ok(Number.isNaN(tiny.u) && Number.isNaN(tiny.v), '극히 작은 d → u, v NaN');
+  // 일반적인 아주 작은 양수(d = 1e-9 > 0)는 유한한 u, v
+  const small = project({ ...CAM, R: I3, t: [0, 0, 0] }, [0, 0, 1e-9]);
+  assert.ok(Number.isFinite(small.u) && Number.isFinite(small.v));
 });
 
 // 변이 구현: 시험이 흔한 실수를 잡는지 확인한다. 각 변이는 손계산 정답과 어긋나야 한다.
