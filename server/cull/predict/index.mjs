@@ -87,6 +87,7 @@ function leafBoxes(h) {
  * 현재와 예측 시점들(0..horizonS 를 steps 등분, steps+1 개)의 절두체 판정 합집합.
  * 표본 사이의 시각도 놓치지 않도록 표본마다 상자를 '구간 반폭 h = horizonS/(2·steps)' 동안 카메라가 움직일 수 있는 만큼
  * (이동 |v|·h, 회전 |ω|·h × 거리) 부풀려 판정한다. 속도·각속도가 0 이면 부풀림 0 = 현재 시점 판정과 같다.
+ * 한계: 모든 예측 표본(tau>0)의 부풀림이 비유한이면 표본 사이는 덮지 않는다(현재 시점만 순수 판정, horizon 에 대해 비단조 가능).
  */
 export function predictiveMask(hierarchy, state, opts) {
   if (opts !== undefined && (opts === null || typeof opts !== 'object')) throw new Error(`${ERR} opts 는 객체여야 함`);
