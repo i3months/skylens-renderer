@@ -64,3 +64,19 @@ test('assert_result_rejects_bad', () => {
   const s = ok(); s.cloud.colors = new Uint8Array(3);
   assert.throws(() => assertSceneResult(s), /colors/);
 });
+
+import { checkCount, normalizeSeed, checkFormat } from './index.mjs';
+test('check_count_accepts_integers_and_default', () => {
+  assert.equal(checkCount(0, 5), 0); assert.equal(checkCount(1, 5), 1); assert.equal(checkCount(undefined, 5), 5);
+});
+test('check_count_rejects_bad', () => {
+  for (const v of [NaN, -5, 10.5, Infinity, '3', null]) assert.throws(() => checkCount(v, 5), /count/);
+});
+test('normalize_seed_default_and_rejects', () => {
+  assert.equal(normalizeSeed(undefined), 1); assert.equal(normalizeSeed(0xffffffff), 0xffffffff);
+  for (const v of [1.5, NaN, 'abc', -1, 2 ** 32]) assert.throws(() => normalizeSeed(v), /seed/);
+});
+test('check_format_only_1_or_2', () => {
+  assert.equal(checkFormat(undefined), 1); assert.equal(checkFormat(2), 2);
+  for (const v of [3, 0, '1', null]) assert.throws(() => checkFormat(v), /format/);
+});

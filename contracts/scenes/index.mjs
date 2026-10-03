@@ -149,3 +149,24 @@ export function assertSceneResult(r, expect = {}) {
   if (JSON.stringify(t) === undefined) bad('truth 는 JSON 직렬화 가능해야 함');
   for (let a = 0; a < 3; a++) if (!(t.bounds.min[a] <= t.bounds.max[a])) bad('truth.bounds min>max');
 }
+
+/** 점 수 검증: 0 이상의 정수만 받는다(NaN·음수·소수·문자열 거부). 생략(undefined)이면 기본값. */
+export function checkCount(count, defaultValue) {
+  const v = count === undefined ? defaultValue : count;
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) throw new Error(`scene: count 는 0 이상의 정수여야 함: ${String(v)}`);
+  return v;
+}
+
+/** 시드 검증: uint32 정수만 받는다. 생략(undefined)이면 1(모든 장면 공통 기본값). */
+export function normalizeSeed(seed) {
+  const v = seed === undefined ? 1 : seed;
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 0xffffffff) throw new Error(`scene: seed 는 uint32 정수여야 함: ${String(v)}`);
+  return v;
+}
+
+/** 형식 검증: 1(27 B 점) 또는 2(56 B 가우시안)만. 생략이면 1. */
+export function checkFormat(format) {
+  const v = format === undefined ? FORMAT_POINT27 : format;
+  if (v !== FORMAT_POINT27 && v !== FORMAT_GAUSS56) throw new Error(`scene: format 은 1 또는 2 여야 함: ${String(v)}`);
+  return v;
+}
