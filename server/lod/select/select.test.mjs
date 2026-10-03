@@ -31,7 +31,7 @@
 //   (미달이 아님). 선택이 전부 단계 0 이면 렌더가 원본과 같아 SSIM 이 1.0 으로 단계 선택을 시험하지 못한다.
 //   거친 단계가 쓰이는 조건의 SSIM 은 아래 '거친 단계 시점' 시험(aerial_overview 를 3·4·6 배 멀리, 같은 320×180)과
 //   select_coarse.test.mjs(terrain 시드 1~4)가 단언한다. 거친 단계가 쓰였는지는 구조(단계≥1 리프 존재, 점 비율 상한)로 단언하고
-//   단계 수치는 좁게 박지 않는다. 단계 선택을 0 으로 고정한 가짜 변이는 음성 시험이 실패로 잡는다.
+//   단계 수치는 좁게 박지 않는다. 단계 0 고정 변이는 assertCoarseUsed 의 두 단언(단계≥1 리프, 점 비율 상한)이 잡는다(select_coarse.test.mjs 의 음성 시험이 점 수로 확인; 구현을 거치지 않는 순환 단언은 두지 않는다).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -103,21 +103,13 @@ for (const vp of VP) {
   });
 }
 
-// 구조 단언: 단계 ≥ 1 인 리프가 있고 고른 점 수가 원본의 maxRatio 이하. 단계 0 강제 변이는 이를 통과하지 못한다.
+// 구조 단언: 단계 ≥ 1 인 리프가 있고 고른 점 수가 원본의 maxRatio 이하.
 function assertCoarseUsed(h, sel, total, maxRatio, label) {
   let coarseLeaves = 0;
   for (const l of sel.leafLevel) if (l !== NOT_DRAWN && l >= 1) coarseLeaves++;
   assert.ok(coarseLeaves > 0, `${label}: 단계 ≥ 1 리프 없음`);
   assert.ok(sel.pointCount / total <= maxRatio, `${label}: 점 비율 ${(sel.pointCount / total).toFixed(3)} > ${maxRatio}`);
 }
-// 단계 선택을 0 으로 고정한 가짜 선택(시야 밖 판정은 유지)
-function forceLevel0(h, sel) {
-  const leafLevel = Uint8Array.from(sel.leafLevel, (l) => (l === NOT_DRAWN ? NOT_DRAWN : 0));
-  let pointCount = 0;
-  for (let k = 0; k < leafLevel.length; k++) if (leafLevel[k] !== NOT_DRAWN) pointCount += h.levels[0].leafStart[k + 1] - h.levels[0].leafStart[k];
-  return { leafLevel, pointCount };
-}
-
 // 거친 단계가 실제로 쓰이는 시점: 멀리 간 aerial_overview. 시점 8곳과 달리 SSIM 이 단계 선택을 시험한다.
 for (const f of [3, 4, 6]) {
   test(`거친 단계 시점: aerial_overview ×${f} 에서 단계≥1 사용, 점 비율 ≤ 0.5, SSIM ≥ ${SSIM_MIN}`, (t) => {
@@ -131,8 +123,6 @@ for (const f of [3, 4, 6]) {
     const s = ssim(renderPoints(cam, cloud, { pointSizeM: POINT_SIZE_M }).color, renderPoints(cam, lod, { pointSizeM: POINT_SIZE_M }).color, W, H, 3);
     t.diagnostic(`×${f}: SSIM ${s.toFixed(4)}, 점 비율 ${(lod.count / cloud.count).toFixed(3)}`);
     assert.ok(s >= SSIM_MIN, `×${f}: SSIM ${s}`);
-    // 음성: 단계 0 강제 변이는 구조 단언에서 실패한다(렌더는 원본과 같아 SSIM 으로는 못 잡음).
-    assert.throws(() => assertCoarseUsed(h, forceLevel0(h, sel), cloud.count, 0.5, `×${f} 변이`), /단계 ≥ 1 리프 없음/);
   });
 }
 
