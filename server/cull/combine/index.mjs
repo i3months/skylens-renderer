@@ -138,7 +138,8 @@ function emptyStats(leafCount) {
  */
 export function cullAndSelect(hierarchy, camera, opts) {
   // 계층 필드는 검사 시점에 한 번만 읽는다. leafCount 도 여기서 함께 읽어 재사용하므로 따로 감쌀 필요가 없다
-  // (검사 뒤에 던지기 시작하는 상태 있는 접근자는 계약 밖).
+  // (구조 검사 시점에 던지는 상태 접근자는 contracts/cull 대로 'cull:' 오류로 바뀌며, 이후 호출에서는 다시 던진다.
+  //  검사를 통과한 뒤 처음 던지기 시작하는 접근자는 이 검사가 막지 못하므로 보장하지 않는다).
   const leafCount = guardHierarchyRead(() => {
     try {
       assertHierarchyInput(hierarchy);
