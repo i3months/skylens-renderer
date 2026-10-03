@@ -123,16 +123,18 @@ function oldLevel(h, cam, node) {
 const R0 = camera(320, 180, 90), R1 = camera(960, 540, 754.32), G = generalCamera();
 // center = 정육면체 중심(세계 좌표). cosBelow: cos α 가 이보다 작은 리프를 '모서리' 로 센다.
 // 옛 규칙이 τ 를 넘는 장면이어야 한다(옛 규칙 최대 칸 변이 τ 초과인지는 아래에서 단언한다).
-// 새 규칙 최대 칸 변의 하한 TAU/2 (측정값에 맞춘 수가 아니라 이론 하한):
-//   거리표는 단계 l 마다 칸 변이 2 배(e_l = edge0·2^l)이고, 고른 단계 l 은 f·e_l/d_eff ≤ τ 를 만족하는 가장 거친 단계다
-//   (최상위 단계가 아닐 때). 그래서 한 단계 더 거친 l+1 은 f·e_{l+1}/d_eff > τ, 즉 f·e_l/d_eff > τ/2 이다.
-//   정면 가까이 보이는 리프에서는 투영 칸 변이 이 값에 근접하므로, 장면 전체의 최대는 τ/2 보다 작을 수 없다고 본다.
-//   이 하한은 '한 단계 더 고운 단계를 고르는' 변이(최대 칸 변이 약 절반)를 잡는 용도이며, 시험이 비지 않았음도 보인다.
+// 새 규칙 최대 칸 변(실제 투영)의 하한 minWorstPx — 측정 기반 값이다(이론 하한이 아니다):
+//   증명되는 것은 규칙 추정값 f·e_l/d_eff 의 하한뿐이다. 거리표는 단계마다 칸 변이 2 배(e_l = edge0·2^l)이고, 고른 단계 l 은
+//   f·e_l/d_eff ≤ τ 를 만족하는 가장 거친 단계(최상위가 아닐 때)이므로 l+1 은 f·e_{l+1}/d_eff > τ, 즉 f·e_l/d_eff > τ/2 이다.
+//   실제 투영 칸 변은 추정값보다 작을 수 있으므로(추정은 상계) 이 τ/2 를 실제 값의 하한으로 쓸 수 없다. 그래서 추정값에는
+//   τ/2 를 단언하고(아래 loop), 실제 값 하한은 설정마다 측정해 둔다.
+//   측정(새 규칙 최대 / '단계 l−1 강제' 변이 최대 ≈ 절반): 0.292/0.146, 0.268/0.134, 0.298/0.149, 0.256/0.128 px.
+//   minWorstPx 는 두 값의 중간(반올림). 'd_eff×0.6' 변이는 설정 1 에서 0.274 로 통과하나 설정 2·3 에서 0.134·0.149 로 걸린다.
 const SETTINGS = [
-  { name: '320×180 세로 화각 90° (fx = fy = 90)', cam: R0, center: cornerPoint(R0, 150), cosBelow: 0.5, minWorstPx: TAU / 2 },
-  { name: '960×540 fx = fy = 754.32', cam: R1, center: cornerPoint(R1, 700), cosBelow: 0.85, minWorstPx: TAU / 2 },
-  { name: '회전 yaw 30°·pitch 20°, t ≠ 0, fx 400·fy 800, 주점 (200, 100), 왼쪽 위 모서리', cam: G, center: cornerPoint(G, 600), cosBelow: 0.9, minWorstPx: TAU / 2 },
-  { name: '같은 일반 카메라, 광축을 걸친 큐브(카메라 좌표 (0, 0, 300))', cam: G, center: camToWorld(G, [0, 0, 300]), cosBelow: 1.01, minWorstPx: TAU / 2 },
+  { name: '320×180 세로 화각 90° (fx = fy = 90)', cam: R0, center: cornerPoint(R0, 150), cosBelow: 0.5, minWorstPx: 0.22 },
+  { name: '960×540 fx = fy = 754.32', cam: R1, center: cornerPoint(R1, 700), cosBelow: 0.85, minWorstPx: 0.2 },
+  { name: '회전 yaw 30°·pitch 20°, t ≠ 0, fx 400·fy 800, 주점 (200, 100), 왼쪽 위 모서리', cam: G, center: cornerPoint(G, 600), cosBelow: 0.9, minWorstPx: 0.22 },
+  { name: '같은 일반 카메라, 광축을 걸친 큐브(카메라 좌표 (0, 0, 300))', cam: G, center: camToWorld(G, [0, 0, 300]), cosBelow: 1.01, minWorstPx: 0.19 },
 ];
 
 /** 상자 8 꼭짓점의 카메라 좌표 z 최솟값·최댓값. */
@@ -156,7 +158,7 @@ for (const { name, cam, center, cosBelow, minWorstPx } of SETTINGS) {
     const [cx0, cy0, cz0] = [0, 1, 2].map((r) => cam.R[3 * r] * rule.center[0] + cam.R[3 * r + 1] * rule.center[1] + cam.R[3 * r + 2] * rule.center[2] + cam.t[r]);
     assert.ok(Math.hypot(cx0, cy0, cz0) < 1e-9, `R·C + t = (${cx0}, ${cy0}, ${cz0})`);
     const sel = selectLevels(h, cam, { thresholdPx: TAU });
-    let checked = 0, cornerChecked = 0, oldOver = 0, worstNew = 0, worstOld = 0;
+    let checked = 0, cornerChecked = 0, oldOver = 0, worstNew = 0, worstOld = 0, maxEst = 0;
     for (let k = 0; k < h.octree.leafCount; k++) {
       const l = sel.leafLevel[k];
       if (l === NOT_DRAWN || l === 0) continue; // 단계 0 은 원본(칸 없음)
@@ -165,8 +167,13 @@ for (const { name, cam, center, cosBelow, minWorstPx } of SETTINGS) {
       worstNew = Math.max(worstNew, px);
       assert.ok(px <= TAU + 1e-9, `리프 ${k} 단계 ${l}: 칸 변 ${px.toFixed(4)} px > τ ${TAU}`);
       checked++;
-      const { cosMin } = rule.leaf(h.octree.boxMin.subarray(3 * n, 3 * n + 3), h.octree.boxMax.subarray(3 * n, 3 * n + 3));
+      const cornerInfo = rule.leaf(h.octree.boxMin.subarray(3 * n, 3 * n + 3), h.octree.boxMax.subarray(3 * n, 3 * n + 3));
+      const cosMin = cornerInfo.cosMin;
       if (cosMin < cosBelow) cornerChecked++;
+      // 규칙 추정값 f·e_l/d_eff 는 τ 이하, 최상위 단계가 아니면 τ/2 초과(증명된 하한)
+      const est = rule.focalPx * h.levels[l].edgeM / cornerInfo.effDistM;
+      assert.ok(est <= TAU * (1 + 1e-9), `리프 ${k}: 추정 ${est} > τ`);
+      if (l < LEVELS - 1) { assert.ok(est > TAU / 2 * (1 - 1e-9), `리프 ${k} 단계 ${l}: 추정 ${est} ≤ τ/2`); maxEst = Math.max(maxEst, est); }
       const lo = oldLevel(h, cam, n);
       if (lo > 0) {
         const pxOld = maxCellEdgePx(h, cam, n, k, lo);
