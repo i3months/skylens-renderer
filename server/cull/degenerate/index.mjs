@@ -1,8 +1,9 @@
 // T08.10 퇴화 시점 처리. 계약: contracts/cull/index.mjs 의 "퇴화 시점", CULL_API.degenerate.
-// 퇴화 시점 = 카메라가 NaN·Infinity 를 가지거나, 해상도·초점거리가 유한 양수가 아니거나, 시야각이 1e-6 rad 미만이거나,
+// 퇴화 시점 = 카메라가 NaN·Infinity 를 가지거나, 해상도가 양의 정수가 아니거나 픽셀 수가 MAX_PIXELS 초과이거나, 초점거리가 유한 양수가 아니거나, 시야각이 1e-6 rad 미만이거나,
 // R 이 회전(정규직교·det=+1)이 아니거나, t 가 유한한 3-벡터가 아닌 경우. isDegenerateView 는 어떤 입력에도 던지지 않는다.
 // 지면 아래 카메라(중심이 모든 상자보다 아래)는 퇴화가 아니다: 여기서는 위치를 보지 않는다.
 import { assertHierarchyInput } from '../../lod/select/index.mjs';
+import { MAX_PIXELS } from '../../../contracts/raster/index.mjs';
 
 const ORTHO_TOL = 1e-6;
 /** 시야각 하한(rad). 이보다 좁으면 퇴화. */
@@ -18,12 +19,16 @@ function checkCamera(camera) {
   const { width, height, K, R, t } = camera;
   if (!isPosFin(width) || !isPosFin(height)) return true;
   if (width > MAX_RESOLUTION_PX || height > MAX_RESOLUTION_PX) return true;
+  // 래스터 조건(assertCamera 와 같음): 해상도는 정수, 픽셀 수는 MAX_PIXELS 이하.
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width * height > MAX_PIXELS) return true;
   if (!K || typeof K !== 'object') return true;
   if (!isPosFin(K.fx) || !isPosFin(K.fy) || !isFin(K.cx) || !isFin(K.cy)) return true;
   // 시야각: 가로 2·atan(width/(2fx)), 세로 2·atan(height/(2fy)). 둘 중 하나라도 1e-6 rad 미만이면 퇴화.
   if (2 * Math.atan(width / (2 * K.fx)) < MIN_FOV_RAD || 2 * Math.atan(height / (2 * K.fy)) < MIN_FOV_RAD) return true;
-  if (!Array.isArray(R) || R.length !== 9 || !R.every(isFin)) return true;
-  if (!Array.isArray(t) || t.length !== 3 || !t.every(isFin)) return true;
+  if (!Array.isArray(R) || R.length !== 9) return true;
+  for (let i = 0; i < 9; i++) if (typeof R[i] !== 'number' || !Number.isFinite(R[i])) return true;
+  if (!Array.isArray(t) || t.length !== 3) return true;
+  for (let i = 0; i < 3; i++) if (typeof t[i] !== 'number' || !Number.isFinite(t[i])) return true;
   for (let i = 0; i < 3; i++) {
     for (let j = 0; j < 3; j++) {
       let s = 0;

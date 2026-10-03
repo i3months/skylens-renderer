@@ -11,6 +11,7 @@ const ERR = 'cull:';
 const ROT_TOL = 1e-6;
 const MIN_FOV_RAD = 1e-6; // 서버 degenerate 와 같은 값
 const MAX_RESOLUTION_PX = 1e6; // 서버 degenerate 와 같은 값
+const MAX_PIXELS = 2 ** 26; // 서버 contracts/raster 의 MAX_PIXELS 와 같은 값
 
 /** 카메라가 퇴화 시점이면 true. 던지지 않는다. server/cull/degenerate/index.mjs 의 isDegenerateView 와 같은 식(F-120). */
 export function isDegenerateViewClient(camera) {
@@ -21,6 +22,7 @@ export function isDegenerateViewClient(camera) {
     const { fx, fy, cx, cy } = K;
     const pos = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
     if (!pos(W) || !pos(H) || W > MAX_RESOLUTION_PX || H > MAX_RESOLUTION_PX) return true;
+    if (!Number.isInteger(W) || !Number.isInteger(H) || W * H > MAX_PIXELS) return true;
     if (!pos(fx) || !pos(fy) || !Number.isFinite(cx) || typeof cx !== 'number' || !Number.isFinite(cy) || typeof cy !== 'number') return true;
     if (2 * Math.atan(W / (2 * fx)) < MIN_FOV_RAD || 2 * Math.atan(H / (2 * fy)) < MIN_FOV_RAD) return true;
     if (!Array.isArray(R) || R.length !== 9 || !Array.isArray(t) || t.length !== 3) return true;

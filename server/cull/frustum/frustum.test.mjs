@@ -130,6 +130,13 @@ test('퇴화 시점(NaN·0 초점거리·비회전 R)은 던지지 않고 전부
     { ...ok, width: 0 },
     { ...ok, R: [2, 0, 0, 0, 2, 0, 0, 0, 2] },
     { ...ok, K: { ...ok.K, cx: NaN } },
+    // 정수 아닌 해상도
+    { ...ok, width: 160.5 },
+    { ...ok, height: 120.5 },
+    // MAX_PIXELS 초과: 8193×8193 > 2^26
+    { ...ok, width: 8193, height: 8193, K: { ...ok.K, fx: 6000 } },
+    // 높이만 큼: 1×(2^26+1) > 2^26
+    { ...ok, width: 1, height: 2 ** 26 + 1 },
   ];
   for (const c of bad) {
     assert.equal(isDegenerateViewLocal(c), true);

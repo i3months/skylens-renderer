@@ -27,7 +27,7 @@
 //   opts.requireCover = false 이면 2단계를 끄고 1단계(순수 법선 판정)만 쓴다(기하 성질 시험·비교 측정용).
 import { assertHierarchyInput } from '../../lod/select/index.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
-import { assertCamera } from '../../../contracts/raster/index.mjs';
+import { isDegenerateView } from '../degenerate/index.mjs';
 import { buildDepthPyramid, occlusionCull, NEAR_M } from '../occlusion/index.mjs';
 
 const ERR = 'cull:';
@@ -42,11 +42,6 @@ const F_MARGIN = 1e-3; // f 가 이만큼 음수여야 제거(m)
 
 function checkHierarchy(h) {
   try { assertHierarchyInput(h); } catch (e) { throw new Error(`${ERR} 계층이 올바르지 않음: ${e.message}`); }
-}
-
-// 퇴화 시점(NaN·Infinity·해상도/초점 0 이하·R 이 회전이 아님)이면 true. 던지지 않는다.
-function degenerate(camera) {
-  try { assertCamera(camera); return false; } catch { return true; }
 }
 
 // 리프 k → 노드 번호
@@ -121,7 +116,7 @@ export function backfaceCull(hierarchy, camera, cones, opts) {
   const { octree } = hierarchy;
   const L = octree.leafCount;
   checkCones(cones, L);
-  if (degenerate(camera)) return new Uint8Array(L);
+  if (isDegenerateView(camera)) return new Uint8Array(L);
   const C = cameraCenter(camera);
   const mask = new Uint8Array(L).fill(1);
   const nodes = leafNodes(octree);

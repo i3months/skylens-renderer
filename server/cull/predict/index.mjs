@@ -2,6 +2,7 @@
 // frustumCull(server/cull/frustum)은 다른 하위 작업의 소유라 여기서는 같은 규칙(boxMayBeVisibleSplat)을 직접 쓴다.
 import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
+import { isDegenerateView } from '../degenerate/index.mjs';
 
 const ERR = 'cull:';
 const fin = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -11,26 +12,6 @@ function vec3(v, name) {
   if (!Array.isArray(v) && !ArrayBuffer.isView(v)) throw new Error(`${ERR} ${name} 는 길이 3 의 배열이어야 함`);
   if (v.length !== 3 || typeof v[0] !== 'number' || typeof v[1] !== 'number' || typeof v[2] !== 'number') throw new Error(`${ERR} ${name} 는 수 3개여야 함`);
   return [v[0], v[1], v[2]];
-}
-
-/** 퇴화 시점 판정(NaN·Infinity, 해상도·초점거리 ≤ 0, R 이 회전이 아님). */
-function degenerate(cam) {
-  if (!cam || typeof cam !== 'object') return true;
-  const { R, t, K, width, height } = cam;
-  if (!R || R.length !== 9 || !t || t.length !== 3 || !K) return true;
-  for (let i = 0; i < 9; i++) if (!fin(R[i])) return true;
-  for (let i = 0; i < 3; i++) if (!fin(t[i])) return true;
-  if (![K.fx, K.fy, K.cx, K.cy].every(fin) || !(K.fx > 0) || !(K.fy > 0)) return true;
-  if (!fin(width) || !fin(height) || !(width > 0) || !(height > 0)) return true;
-  for (let i = 0; i < 3; i++) {
-    for (let j = 0; j < 3; j++) {
-      let d = 0;
-      for (let k = 0; k < 3; k++) d += R[i * 3 + k] * R[j * 3 + k];
-      if (Math.abs(d - (i === j ? 1 : 0)) > 1e-6) return true;
-    }
-  }
-  const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
-  return Math.abs(det - 1) > 1e-6;
 }
 
 /** 로드리게스: 축 w/|w|, 각 |w|·dt 의 회전 행렬(행 우선). */
@@ -118,7 +99,7 @@ export function predictiveMask(hierarchy, state, opts) {
   const cam = state?.camera;
   const v = vec3(state?.velocityMps, 'velocityMps'); // 형식 오류는 퇴화 카메라보다 먼저 던진다
   const w = vec3(state?.angularRadPerS, 'angularRadPerS');
-  if (degenerate(cam)) return out;
+  if (isDegenerateView(cam)) return out;
   if (!v.every(fin) || !w.every(fin)) return out; // 퇴화 속도: 빈 마스크
   const speed = Math.hypot(v[0], v[1], v[2]);
   const omega = Math.hypot(w[0], w[1], w[2]);
@@ -128,7 +109,7 @@ export function predictiveMask(hierarchy, state, opts) {
   for (let s = 0; s <= steps; s++) {
     const tau = s * dt;
     const pc = tau === 0 ? cam : predictCamera(cam, { velocityMps: v, angularRadPerS: w }, tau);
-    if (degenerate(pc)) continue;
+    if (isDegenerateView(pc)) continue;
     const C = cameraCenter(pc);
     const moves = speed > 0 || omega > 0;
     for (let k = 0; k < n; k++) {

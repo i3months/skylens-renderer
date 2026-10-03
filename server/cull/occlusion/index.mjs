@@ -36,7 +36,7 @@
 import { projectMany } from '../../raster_ref/project/index.mjs';
 import { radiusUnchecked } from '../../raster_ref/splat/index.mjs';
 import { boxMayBeVisible } from '../../lod/select/view_check.mjs';
-import { MAX_PIXELS } from '../../../contracts/raster/index.mjs';
+import { isDegenerateView } from '../degenerate/index.mjs';
 
 const ERR = 'cull:';
 /** 상자 꼭짓점이 이 깊이(m) 이하이면 가림 판정을 포기한다. */
@@ -89,8 +89,8 @@ function leafNodes(oc) {
 }
 
 /**
- * 카메라 구조 검사. 구조가 틀리면 'cull:' 오류, 값이 퇴화(NaN·Infinity·해상도/초점 ≤ 0·R 비회전)면 true.
- * (server/cull/degenerate 의 isDegenerateView 와 같은 규칙을 이 모듈 안에 둔다: 그 모듈은 다른 하위 작업 소유.)
+ * 카메라 구조 검사. 구조가 틀리면 'cull:' 오류, 값이 퇴화(NaN·비정수/과대 해상도·R 비회전 등)면 true.
+ * 퇴화 판정은 server/cull/degenerate 의 isDegenerateView 하나만 쓴다(규칙 중복 없음).
  */
 export function degenerateCamera(camera) {
   if (!camera || typeof camera !== 'object') throw new Error(`${ERR} 카메라가 객체가 아님`);
@@ -100,19 +100,7 @@ export function degenerateCamera(camera) {
   if (!Array.isArray(t) || t.length !== 3) throw new Error(`${ERR} 카메라 t 는 길이 3 배열이어야 함`);
   const nums = [width, height, K.fx, K.fy, K.cx, K.cy, ...R, ...t];
   if (!nums.every(isNum)) throw new Error(`${ERR} 카메라 값은 수여야 함`);
-  if (!nums.every(Number.isFinite)) return true;
-  if (!(width > 0) || !(height > 0) || !(K.fx > 0) || !(K.fy > 0)) return true;
-  if (!Number.isInteger(width) || !Number.isInteger(height)) throw new Error(`${ERR} 해상도는 정수여야 함: ${width}×${height}`);
-  if (width * height > MAX_PIXELS) throw new Error(`${ERR} 해상도 ${width}×${height} 가 상한을 넘음`);
-  for (let i = 0; i < 3; i++) {
-    for (let j = 0; j < 3; j++) {
-      let s = 0;
-      for (let k = 0; k < 3; k++) s += R[3 * i + k] * R[3 * j + k];
-      if (Math.abs(s - (i === j ? 1 : 0)) > 1e-6) return true;
-    }
-  }
-  const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
-  return Math.abs(det - 1) > 1e-6;
+  return isDegenerateView(camera);
 }
 
 function readSize(size) {

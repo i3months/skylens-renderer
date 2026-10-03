@@ -103,3 +103,42 @@ test('assertHierarchyForCull: 정상은 통과, 변조 계층은 cull: 로 던�
   assert.throws(() => assertHierarchyForCull(null), /^Error: cull:/);
   assert.throws(() => assertHierarchyForCull(undefined), /^Error: cull:/);
 });
+
+test('해상도 경계: 8192x8192(=2^26)는 정상, 8193x8193·2^13 x (2^13+1)은 퇴화', () => {
+  const sized = (w, h) => { const c = good(); c.width = w; c.height = h; return c; };
+  assert.equal(isDegenerateView(sized(8192, 8192)), false);
+  assert.equal(isDegenerateView(sized(8193, 8193)), true);
+  assert.equal(isDegenerateView(sized(8192, 8193)), true);
+  assert.equal(isDegenerateView(sized(8193, 8191)), false); // 67,100,863 < 2^26
+  assert.equal(isDegenerateView(sized(1, 2 ** 26 + 1)), true);
+  assert.equal(isDegenerateView(sized(2 ** 26 + 1, 1)), true);
+  assert.equal(isDegenerateView(sized(64.5, 48)), true);
+  assert.equal(isDegenerateView(sized(64, 48.5)), true);
+});
+
+test('해상도 한 변 경계: 1e6 은 정상(픽셀 수 허용 시), 1e6+1 은 퇴화', () => {
+  const sized = (w, h) => { const c = good(); c.width = w; c.height = h; return c; };
+  assert.equal(isDegenerateView(sized(1e6, 1)), false);
+  assert.equal(isDegenerateView(sized(1e6 + 1, 1)), true);
+  assert.equal(isDegenerateView(sized(1, 1e6 + 1)), true);
+  assert.equal(isDegenerateView(sized(1e6, 67)), false);
+  assert.equal(isDegenerateView(sized(1e6, 68)), true);
+});
+
+test('60000x60000 은 퇴화이고 빠르게 판정한다', () => {
+  const c = good(); c.width = 60000; c.height = 60000;
+  const t0 = performance.now();
+  assert.equal(isDegenerateView(c), true);
+  assert.ok(performance.now() - t0 < 100);
+});
+
+test('R 거의 직교 경계: 오차 1e-6 이하는 정상, 그 위는 퇴화', () => {
+  const rot = (d) => { const c = good(); c.R = [1 + d, 0, 0, 0, 1, 0, 0, 0, 1]; return c; };
+  assert.equal(isDegenerateView(rot(4e-7)), false);
+  assert.equal(isDegenerateView(rot(-4e-7)), false);
+  assert.equal(isDegenerateView(rot(2e-6)), true);
+  assert.equal(isDegenerateView(rot(-2e-6)), true);
+  const skew = (e) => { const c = good(); c.R = [1, e, 0, 0, 1, 0, 0, 0, 1]; return c; };
+  assert.equal(isDegenerateView(skew(5e-7)), false);
+  assert.equal(isDegenerateView(skew(2e-6)), true);
+});
