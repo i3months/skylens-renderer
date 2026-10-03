@@ -16,6 +16,10 @@ import assert from 'node:assert/strict';
 import { emptyRatioPreserved } from './index.mjs';
 import { generate } from '../../../fixtures/scenes/holes/index.mjs';
 import { renderPoints } from '../../raster_ref/zbuffer/index.mjs';
+import { buildHierarchy, selectLevels, materialize } from '../select/index.mjs';
+import { selectWithBudget } from '../budget/index.mjs';
+import { progressiveChunks, applyChunks } from '../progressive/index.mjs';
+import { NOT_DRAWN } from '../../../contracts/lod/index.mjs';
 
 const H = 200, W = 220, R_M = 2, E = 0.5, N = 400000;
 const TOL = 0.022;
@@ -61,6 +65,8 @@ for (const seed of [1, 2, 3]) {
     assert.ok(lodCloud.count < s.cloud.count / 2, 'LOD 가 점을 충분히 줄여야 시험이 의미 있음');
     const r = emptyRatioPreserved(s.cloud, lodCloud, camera, OPTS);
     assert.equal(r.equal, true, JSON.stringify(r));
+    assert.equal(r.filled, 0, JSON.stringify(r)); // 부분집합 LOD 는 원본이 비운 픽셀을 칠하지 못한다
+    assert.equal(r.noFill, true);
     assert.ok(r.original > 0.14); // 둘레 여백 중 원판이 못 닿는 고리만으로 (220²−204²)/220² ≈ 0.14, 빈자리가 더해짐
 
     const a = renderPoints(camera, s.cloud, { pointSizeM: 2 * R_M });
@@ -99,7 +105,70 @@ test('음성: 빈자리에 점을 더하는 가짜 LOD 는 equal=false', () => {
   const r = emptyRatioPreserved(s.cloud, fake, camera, OPTS);
   assert.equal(r.equal, false, JSON.stringify(r));
   assert.ok(r.original - r.lod > TOL);
+  assert.ok(r.filled > 0 && r.noFill === false, JSON.stringify(r));
 });
+
+// 빈자리 k 곳(앞에서부터)만 1 m 간격 점으로 메운 가짜 LOD.
+function fakeFill(s, lodCloud, k) {
+  const extra = [];
+  for (const h of s.truth.holes.slice(0, k)) for (let x = h.min[0] + 0.5; x < h.max[0]; x++) for (let z = h.min[1] + 0.5; z < h.max[1]; z++) extra.push(x, 0, z);
+  const n = lodCloud.count, m = extra.length / 3;
+  const fake = { format: 1, count: n + m, positions: new Float32Array(3 * (n + m)), normals: new Float32Array(3 * (n + m)), colors: new Uint8Array(3 * (n + m)) };
+  fake.positions.set(lodCloud.positions); fake.positions.set(extra, 3 * n);
+  fake.normals.set(lodCloud.normals); fake.colors.set(lodCloud.colors);
+  return fake;
+}
+
+test('음성: 빈자리 한 곳만 메운 가짜 LOD 는 filled > 0 (빈 비율 차가 허용 이내여도 잡는다)', () => {
+  const s = generate({ seed: 1, count: N });
+  assert.ok(s.truth.holes.length >= 2);
+  const lodCloud = firstPerCell(s.cloud, E);
+  assert.equal(emptyRatioPreserved(s.cloud, lodCloud, camera, OPTS).filled, 0);
+  const r = emptyRatioPreserved(s.cloud, fakeFill(s, lodCloud, 1), camera, OPTS);
+  assert.ok(r.filled > 0, JSON.stringify(r));
+  assert.equal(r.noFill, false);
+  // 한 곳 정도는 기존 비율 허용(0.022)에 가려질 수 있음 — 그래서 filled 로 판정한다.
+  assert.ok(r.original - r.lod <= TOL, JSON.stringify(r));
+});
+
+// 실제 산출물 세 경로: 같은 holes 장면·카메라에서 filled 0.
+// 계층: edge0M E, 단계 4(칸 0.5·1·2·4 m), τ 2 px. 카메라 거리 200 m, fx 200 → 단계 l 의 칸이 화면에서 e/1 px 이므로
+// 단계 2(2 m = 2 px)까지 거친 단계가 실제로 선택된다(아래 단언으로 확인).
+const REAL = { edge0M: E, levelCount: 4, maxLeafPoints: 2048 };
+const TAU = 2;
+for (const seed of [1, 2]) {
+  const s = generate({ seed, count: N });
+  const hier = buildHierarchy(s.cloud, REAL);
+  const check = (name, cloud) => {
+    const r = emptyRatioPreserved(s.cloud, cloud, camera, OPTS);
+    assert.equal(r.filled, 0, `${name}: ${JSON.stringify(r)}`);
+    assert.equal(r.noFill, true);
+    assert.ok(r.original > 0.14, name);
+  };
+  test(`holes seed ${seed}: buildHierarchy+selectLevels+materialize 산출물 filled 0`, () => {
+    const sel = selectLevels(hier, camera, { thresholdPx: TAU });
+    const cloud = materialize(hier, sel);
+    assert.ok(cloud.count < s.cloud.count / 2, `거친 단계가 쓰여야 의미 있음: ${cloud.count}`);
+    assert.ok(sel.leafLevel.some((l) => l !== NOT_DRAWN && l >= 1));
+    check('select', cloud);
+  });
+  test(`holes seed ${seed}: selectWithBudget 산출물 filled 0`, () => {
+    for (const budgetPoints of [60000, 5000]) {
+      const sel = selectWithBudget(hier, camera, { budgetPoints, thresholdPx: TAU });
+      assert.ok(sel.pointCount > 0 && sel.pointCount <= budgetPoints);
+      check(`budget ${budgetPoints}`, materialize(hier, sel));
+    }
+  });
+  test(`holes seed ${seed}: progressive applyChunks 산출물 filled 0`, () => {
+    const ch = progressiveChunks(hier, camera, { thresholdPx: TAU });
+    assert.ok(ch.length > 2);
+    for (const k of [1, Math.ceil(ch.length / 2), ch.length]) {
+      const cloud = applyChunks(hier, ch, k);
+      assert.ok(cloud.count > 0);
+      check(`progressive k=${k}`, cloud);
+    }
+  });
+}
 
 test('점 수 정의: count 가 positions.length/3 과 다르면 명시 오류, 기본 허용 0', () => {
   const s = generate({ seed: 1, count: 2000 });
