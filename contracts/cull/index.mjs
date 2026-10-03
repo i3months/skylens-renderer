@@ -7,9 +7,9 @@
 // 입력 오류(계층·카메라 구조: 객체 아님·width/height/K/R/t 누락·수가 아닌 값·R·t 가 일반 배열이 아님·길이 틀림·희소 배열 구멍; 타입 배열 필수; leafIndex 는 Int32Array(같은 realm)이고 모든 값이 정수이며, -1 또는 [0, leafCount) 이고 리프 ↔ 노드 일대일이며 범위 내(server/cull/degenerate/leaf_check.mjs); 리프 노드의 상자 좌표가 ±Infinity 면 = 구조 오류(cull: 오류))는 단계별로 다르게 처리한다(F-155):
 //   checkLeafIndexOneToOne 을 쓰는 단계(frustumCull·distanceCull·occlusionCull·leafPriority·predictiveMask·orderChunks): 검증을 통과한 계층(octree 배열 포함)은 불변으로 가정한다(server/cull/degenerate/leaf_check.mjs 의 캐시 방식). 리프 노드의 ±Infinity 만 거부하고 제자리 수정은 감지 보장이 없다(검증 표본에 걸릴 때만 잡힘). 내용을 바꾸려면 새 typed array 를 만든다. 내부 노드·NaN 은 모두 통과. 할당 실패(RangeError)는 'cull:' 오류 범위 밖.
 //   assertHierarchyInput 을 쓰는 단계(backfaceCull·leafNormalCones·cullAndSelect): 모든 노드의 NaN·±Infinity 거부.
-//   distanceCull: NaN 좌표 축 간격은 0 으로 두고 유한 축만으로 거리 판정(유한 축 간격만으로 확실히 먼 경우 제거, 하한이므로 거짓 제거 아님). leafPriority: NaN 리프는 유한한 점수(점수 합이 NaN 이면 0, 최저, 목록 유지).
+//   distanceCull: NaN-side bound comparison is ignored (finite remaining bound still gives a one-sided gap lower bound); if the sum is not finite (!isFinite, includes ±Infinity) the distance is 0. leafPriority: NaN 리프는 유한한 점수(점수 합이 NaN 이면 0, 최저, 목록 유지).
 //   클라이언트: leafBoxesOf 는 NaN·±Infinity 모두 통과, clientFrustumCull 은 ±Infinity 상자를 cull: 오류로 던지고 NaN 은 통과.
-// NaN 리프 정책표(F-156 ⑦, 시험: server/cull/degenerate/nan_box_policy_table.test.mjs): 상자 좌표에 NaN 이 있는 리프는 보일지 알 수 없으므로 '거짓 제거 0' 원칙에 따라 단독 호출에서 절대 제거하지 않는다. ±Infinity 리프는 모든 서버 단계가 cull: 오류, 아래 표는 NaN 만 다룬다.
+// NaN 리프 정책표(F-156 ⑦, 시험: server/cull/degenerate/nan_box_policy_table.test.mjs): 상자 좌표에 NaN 이 있는 리프는 보일지 알 수 없으므로 '거짓 제거 0' 원칙에 따라 단독 호출에서 절대 제거하지 않는다(distanceCull 제외). ±Infinity 리프는 모든 서버 단계가 cull: 오류, 아래 표는 NaN 만 다룬다.
 //   단계                                    NaN 리프 결과
 //   frustumCull · predictiveMask            1(남김), pointSizeM 유무와 무관
 //   distanceCull                            0 또는 1(유한 축 간격만으로 먼 경우만 0, 하한이므로 거짓 제거 아님)
