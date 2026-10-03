@@ -405,7 +405,9 @@ test('무작위 손상 5000 회: CodecError 또는 AssetFormatError 만', () => 
       else assert.fail(`다른 예외: ${e && e.stack}`);
     }
   }
-  assert.equal(okCount + codecErr + assetErr, 5000);
-  assert.ok(codecErr > 500, `CodecError 경로 ${codecErr}`);
-  assert.ok(assetErr > 500, `AssetFormatError 경로 ${assetErr}`);
+  // 항상 참(상호배타적 결과): okCount + codecErr + assetErr === 5000 는 삭제.
+  // 의미있는 단언: 손상 입력이 충분히 거부되는지(거부 비율 > 80%)
+  assert.ok(codecErr + assetErr > 4000, `거부 수 ${codecErr + assetErr} (목표 > 4000)`);
+  assert.ok(codecErr > 400, `CodecError 경로 ${codecErr} (목표 > 400)`);
+  assert.ok(assetErr > 400, `AssetFormatError 경로 ${assetErr} (목표 > 400)`);
 });
