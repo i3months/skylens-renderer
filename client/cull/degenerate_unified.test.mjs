@@ -22,6 +22,24 @@ const good = (over = {}) => ({ ...viewpointToCamera({ eye: [0, 120, 140], target
 const base = good();
 const withK = (k, over = {}) => ({ ...base, K: { ...base.K, ...k }, ...over });
 
+// 벽시계 대신 작업량(타입 배열 할당 원소 수)을 센다: 전역 생성자를 Proxy 로 감싸 숫자 길이로 만든 배열의 최대·합계 길이를 기록한다. 결정적이다.
+function trackAlloc(fn) {
+  const names = ['Float32Array', 'Float64Array', 'Int32Array', 'Uint32Array', 'Uint8Array'];
+  const orig = {};
+  const st = { max: 0, total: 0 };
+  for (const nm of names) {
+    orig[nm] = globalThis[nm];
+    globalThis[nm] = new Proxy(orig[nm], {
+      construct(t, args, nt) {
+        if (typeof args[0] === 'number') { st.max = Math.max(st.max, args[0]); st.total += args[0]; }
+        return Reflect.construct(t, args, nt === globalThis[nm] ? t : nt);
+      },
+    });
+  }
+  try { st.result = fn(); } finally { for (const nm of names) globalThis[nm] = orig[nm]; }
+  return st;
+}
+
 const DEGENERATE = {
   'width 1 + fx 1e7 (시야각 < 1e-6)': withK({ fx: 1e7 }, { width: 1 }),
   'height 1 + fy 1e7': withK({ fy: 1e7 }, { height: 1 }),
@@ -142,30 +160,27 @@ test('F-120 해상도: 정수가 아니면 퇴화', () => {
 test('F-120 해상도: 60000x60000 은 퇴화이며 빠르게 빈 결과를 내고 던지지 않는다', () => {
   const cam = good({ width: 60000, height: 60000, K: { ...base.K, fx: base.K.fx * 1000, fy: base.K.fy * 1000, cx: 30000, cy: 30000 } });
   assert.equal(isDegenerateView(cam), true);
-  const t0 = performance.now();
-  const score = leafPriority(hier, cam);
-  const order = orderChunks(hier, cam, allOnes);
-  const mask = frustumCull(hier, cam);
-  const ms = performance.now() - t0;
+  const a = trackAlloc(() => ({ score: leafPriority(hier, cam), order: orderChunks(hier, cam, allOnes), mask: frustumCull(hier, cam) }));
+  const { score, order, mask } = a.result;
   assert.equal(score.length, n);
   assert.ok(score.every((v) => v === 0));
   assert.equal(order.length, 0);
   assert.ok(isZero(mask));
-  // 벽시계는 CI 부하에 민감하므로 여유를 크게 둔다(회귀 감지는 퇴화 경로가 버퍼를 할당하지 않는다는 위의 결과 검사가 맡는다).
-  assert.ok(ms < 10000, `60000x60000 처리 ${ms.toFixed(0)} ms`);
+  // 벽시계 대신 작업량: 퇴화 경로는 결과 버퍼(leafPriority n 칸 + frustumCull n 칸)만 만들고 거친 깊이 버퍼는 만들지 않는다.
+  assert.ok(a.max <= n, `퇴화 경로가 ${a.max} 칸 버퍼를 할당함`);
+  assert.ok(a.total <= 2 * n, `퇴화 경로 할당 합계 ${a.total} > 2n`);
 });
 
 test('F-120 정상 큰 해상도(8192x8192)는 우선순위·절두체 모두 던지지 않고 같은 마스크를 낸다', () => {
   const cam = sized(8192, 8192);
   const big = { ...cam, K: { ...cam.K, fx: base.K.fx * 128, fy: base.K.fy * 128 } };
   assert.deepEqual(verdicts(big), [false, false, false]);
-  const t0 = performance.now();
-  const score = leafPriority(hier, big);
-  const order = orderChunks(hier, big, allOnes);
-  const ms = performance.now() - t0;
+  const a = trackAlloc(() => ({ score: leafPriority(hier, big), order: orderChunks(hier, big, allOnes) }));
+  const { score, order } = a.result;
   assert.equal(score.length, n);
   assert.equal(order.length, n);
-  assert.ok(ms < 50000, `8192x8192 우선순위 ${ms.toFixed(0)} ms`);
+  // 벽시계 대신 작업량: 거친 버퍼는 칸 수 상한(4e6, priority/index.mjs MAX_COARSE_CELLS) 이하로 묶인다.
+  assert.ok(a.max <= 4_000_000, `거친 버퍼 ${a.max} 칸 > 상한`);
   assert.deepEqual([...clientFrustumCull(boxes, big, { pointSizeM: 0.2 })], [...frustumCull(hier, big, { pointSizeM: 0.2 })]);
 });
 
