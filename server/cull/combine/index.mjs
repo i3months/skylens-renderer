@@ -137,16 +137,18 @@ function emptyStats(leafCount) {
  * @returns {import('../../../contracts/cull/index.mjs').CombinedResult}
  */
 export function cullAndSelect(hierarchy, camera, opts) {
-  guardHierarchyRead(() => {
+  // 계층 필드는 검사 시점에 한 번만 읽는다. leafCount 도 여기서 함께 읽어 재사용하므로 따로 감쌀 필요가 없다
+  // (검사 뒤에 던지기 시작하는 상태 있는 접근자는 계약 밖).
+  const leafCount = guardHierarchyRead(() => {
     try {
       assertHierarchyInput(hierarchy);
     } catch (e) {
       throw new Error(`${ERR} 계층이 올바르지 않음 (${e.message})`);
     }
+    return hierarchy.octree.leafCount;
   });
   assertCameraShape(camera);
   const stages = assertOpts(opts);
-  const leafCount = guardHierarchyRead(() => hierarchy.octree.leafCount);
 
   const degenerate = (opts.isDegenerateView ?? isDegenerateView)(camera);
   if (degenerate) {
