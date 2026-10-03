@@ -77,12 +77,30 @@ test('unproject_roundtrip_1000_points_per_camera', () => {
   assert.ok(err <= 1e-6, `왕복 최대 오차 ${err} m`);
 });
 
+// renderer_basis §2-3 예제. 문서의 픽셀 (396.27, 139.47) 은 소수 둘째 자리로 반올림된 값이라
+// 픽셀 반올림 한계는 성분당 d·0.005/f (x: 45.28·0.005/754.32 = 3.00e-4 m, y: 45.28·0.005/753.85 = 3.00e-4 m)다.
+// 기대 X_c 는 반올림 전 값 (−5.02611, −7.84, 45.28) 이고, 허용은 그 한계에 여유 3% 만 둔 3.1e-4 m 다.
+const BASIS_CAM = { width: 960, height: 540, K: { ...K0 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+const BASIS_XC = [-5.02611, -7.84, 45.28];
+const BASIS_TOL = 3.1e-4;
+
+function maxBasisErr(fn) {
+  const q = fn(BASIS_CAM, 396.27, 139.47, 45.28);
+  return Math.max(...q.map((x, i) => Math.abs(x - BASIS_XC[i])));
+}
+
 test('unproject_basis_example_reproduces_xc', () => {
-  // renderer_basis §2-3: X_c=(−5.03,−7.84,45.28), 픽셀 (396.27,139.47), d=45.28. R=I, t=0 이면 X_w = X_c.
-  const cam = { width: 960, height: 540, K: { ...K0 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
-  const q = unproject(cam, 396.27, 139.47, 45.28);
-  const want = [-5.03, -7.84, 45.28];
-  for (let i = 0; i < 3; i += 1) assert.ok(Math.abs(q[i] - want[i]) <= 0.01, `성분 ${i}: ${q[i]} vs ${want[i]}`);
+  // R=I, t=0 이면 X_w = X_c.
+  const err = maxBasisErr(unproject);
+  assert.ok(err <= BASIS_TOL, `성분 최대 오차 ${err} m > ${BASIS_TOL}`);
+});
+
+test('unproject_basis_example_mutant_pixel_offset_fails', () => {
+  // 변이: 픽셀 u 에 0.05 px 오프셋 → x 가 d·0.05/fx = 3.0e-3 m 어긋나 허용(3.1e-4)을 넘어야 한다.
+  const err = maxBasisErr((cam, u, v, d) => unproject(cam, u + 0.05, v, d));
+  assert.ok(err > BASIS_TOL, `변이가 통과함: ${err}`);
+  const errV = maxBasisErr((cam, u, v, d) => unproject(cam, u, v - 0.05, d));
+  assert.ok(errV > BASIS_TOL, `v 변이가 통과함: ${errV}`);
 });
 
 test('unproject_mutants_fail_roundtrip', () => {

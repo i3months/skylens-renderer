@@ -11,7 +11,9 @@ export function splatRadiusPx(camera, depth, sizeM) {
   assertCamera(camera);
   if (!isFiniteNum(depth) || !(depth > 0)) throw new Error(`${ERR} 깊이는 양의 유한 수여야 함: ${String(depth)}`);
   if (!isFiniteNum(sizeM) || !(sizeM > 0)) throw new Error(`${ERR} sizeM 은 양의 유한 수여야 함: ${String(sizeM)}`);
-  return (camera.K.fx * sizeM) / (2 * depth);
+  const r = (camera.K.fx * sizeM) / (2 * depth);
+  if (!Number.isFinite(r)) throw new Error(`${ERR} 원판 반경이 유한하지 않음(깊이 ${depth}, sizeM ${sizeM} 이 너무 극단적임)`);
+  return r;
 }
 
 /**
