@@ -92,15 +92,12 @@ function staleVsFreshLeafStartOnly(cull) {
   const origLeafStart = h.levels[0].leafStart;
 
   // 캐시에 원본 상자를 채운다
-  cull(h);
+  const before = cull(h);
 
-  // leafStart를 수정: 모든 점을 리프 0에 압축(나머지는 비운다)
-  const modifiedLeafStart = new Uint32Array(L + 1);
-  modifiedLeafStart[0] = 0;
-  modifiedLeafStart[L] = origLeafStart[L];  // 전체 점 개수
-  for (let i = 1; i < L; i++) {
-    modifiedLeafStart[i] = origLeafStart[L];  // 빈 리프
-  }
+  // leafStart를 수정: 모든 내부 경계를 한 리프씩 뒤로 옮겨 리프마다 점 집합(딱 맞는 상자)을 바꾼다.
+  // 모든 점을 한 리프에 몰면 새 객체에서도 제거되는 리프가 0 개라 비교를 지워도 못 잡는다(낡은 캐시와 결과가 같다).
+  const modifiedLeafStart = Uint32Array.from(origLeafStart);
+  for (let i = 1; i < L; i++) modifiedLeafStart[i] = origLeafStart[i + 1];
 
   // leafStart만 교체한다
   h.levels[0].leafStart = modifiedLeafStart;
@@ -111,15 +108,21 @@ function staleVsFreshLeafStartOnly(cull) {
   // 캐시가 있는 h에서 다시 실행(leafStart 비교가 없으면 캐시를 재사용하므로 wrong result)
   const got = cull(h);
 
-  return { fresh, got };
+  return { before, fresh, got };
 }
 
 test('F-143 ③ occlusion: leafStart만 교체했을 때 결과가 새 객체와 같다', () => {
-  const { fresh, got } = staleVsFreshLeafStartOnly(occ);
+  const { before, fresh, got } = staleVsFreshLeafStartOnly(occ);
+  // 전제: 새 객체에서 제거가 있고, 경계 이동이 판정을 바꿔야 낡은 캐시가 결과 차이로 드러난다.
+  assert.ok(fresh.includes(0), '시험 장면에서 제거가 있어야 의미가 있다');
+  assert.notEqual(diff(before, fresh), 0, '경계 이동이 판정을 바꾸지 못하면 시험이 의미 없다');
   assert.equal(diff(got, fresh), 0, 'leafStart 변경시 상자 캐시가 다시 계산되어야 한다');
 });
 
 test('F-143 ③ backface: leafStart만 교체했을 때 결과가 같은 필드의 새 객체와 같다', () => {
-  const { fresh, got } = staleVsFreshLeafStartOnly(bface);
+  const { before, fresh, got } = staleVsFreshLeafStartOnly(bface);
+  // 전제: 새 객체에서 제거가 있고, 경계 이동이 판정을 바꿔야 낡은 캐시가 결과 차이로 드러난다.
+  assert.ok(fresh.includes(0), '시험 장면에서 제거가 있어야 의미가 있다');
+  assert.notEqual(diff(before, fresh), 0, '경계 이동이 판정을 바꾸지 못하면 시험이 의미 없다');
   assert.equal(diff(got, fresh), 0, 'leafStart 변경시 상자 캐시가 다시 계산되어야 한다');
 });
