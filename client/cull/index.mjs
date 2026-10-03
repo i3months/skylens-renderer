@@ -105,12 +105,23 @@ export function clientFrustumCull(leafBoxes, camera, opts) {
     if (pointSizeM !== undefined && !(typeof pointSizeM === 'number' && Number.isFinite(pointSizeM) && pointSizeM >= 0)) throw new Error(`${ERR} pointSizeM 은 0 이상의 유한 수여야 함: ${String(pointSizeM)}`);
   }
   const lateral = pointSizeM !== undefined;
-  if (!leafBoxes || !(leafBoxes.boxMin instanceof Float32Array) || !(leafBoxes.boxMax instanceof Float32Array)) throw new Error(`${ERR} leafBoxes 는 {boxMin, boxMax: Float32Array}`);
-  const { boxMin, boxMax } = leafBoxes;
-  if (boxMin.length % 3 !== 0 || boxMin.length !== boxMax.length) throw new Error(`${ERR} boxMin·boxMax 는 같은 길이의 3의 배수여야 함`);
-  const n = boxMin.length / 3;
+  // F-152 ⑤: 접근자(getter)·Proxy 가 던져도 원래 오류가 새지 않게 'cull:' 로 감싼다(서버 가드와 같은 방식).
+  let boxMin, boxMax, n;
+  try {
+    if (!leafBoxes || !(leafBoxes.boxMin instanceof Float32Array) || !(leafBoxes.boxMax instanceof Float32Array)) throw new Error(`${ERR} leafBoxes 는 {boxMin, boxMax: Float32Array}`);
+    ({ boxMin, boxMax } = leafBoxes);
+    if (boxMin.length % 3 !== 0 || boxMin.length !== boxMax.length) throw new Error(`${ERR} boxMin·boxMax 는 같은 길이의 3의 배수여야 함`);
+    n = boxMin.length / 3;
+  } catch (e) {
+    if (String(e?.message ?? e).startsWith(ERR)) throw e;
+    throw new Error(`${ERR} leafBoxes 필드를 읽지 못함: ${String(e?.message ?? e)}`, { cause: e });
+  }
   // F-148 ②: 상자 0 개는 빈 마스크가 아니라 구조 오류(계약: 빈 마스크를 돌려주지 않는다). 카메라 검사·퇴화 판정보다 먼저.
   if (n < 1) throw new Error(`${ERR} 상자가 0 개(n < 1): 빈 마스크를 돌려주지 않음`);
+  // F-150 ②: ±Infinity 좌표는 상자를 조용히 제거하지 않고 구조 오류로 던진다(NaN 은 기존 정책 유지).
+  for (let i = 0; i < boxMin.length; i++) {
+    if (boxMin[i] === Infinity || boxMin[i] === -Infinity || boxMax[i] === Infinity || boxMax[i] === -Infinity) throw new Error(`${ERR} 상자 좌표에 ±Infinity (상자 ${Math.floor(i / 3)})`);
+  }
   const out = new Uint8Array(n);
   assertCameraShapeClient(camera);
   if (isDegenerateViewClient(camera)) return out;
