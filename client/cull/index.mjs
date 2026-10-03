@@ -1,37 +1,49 @@
-// 클라이언트 절두체 컬링(T08.7). 서버 frustumCull(= boxMayBeVisible 규칙)과 같은 마스크를 독립 구현으로 낸다.
+// 클라이언트 절두체 컬링(T08.7). 서버 frustumCull(= boxMayBeVisibleSplat 규칙, 같은 pointSizeM)과 같은 마스크를 독립 구현으로 낸다.
 // 브라우저에서도 돌아야 하므로 node: 내장 모듈·서버 모듈을 import 하지 않는다(순수 ESM, 의존성 없음).
 // 규칙: 앞 z > 0, 좌·우·위·아래는 등호를 안으로 본다. 상자 8 꼭짓점이 모두 한 반공간 밖일 때만 제거(보수적).
 // F-116 원판 여유: 점은 반경 r = fx·pointSizeM/(2z) px 원판으로 그려진다(위·아래도 fx). 좌·우·위·아래 평면에
 //   m = fx·pointSizeM/2 를 더해 바깥으로 민다: fx·x + cx·z + m ≥ 0, fx·x + (cx − W)·z − m ≤ 0, fy·y + cy·z + m ≥ 0,
 //   fy·y + (cy − H)·z − m ≤ 0. X_c 의 1차식이라 8 꼭짓점 판정이 정확하다.
 // opts.pointSizeM 이 없으면 원판 크기를 모르므로 좌·우·위·아래로는 아무것도 버리지 않는다(앞 z > 0 만 판정).
-// 퇴화 시점(NaN·Infinity, 해상도·초점거리 ≤ 0, R 이 회전 아님)이면 던지지 않고 전부 0 을 돌려준다.
+// 퇴화 시점(서버 isDegenerateView 와 같은 식: NaN·Infinity, 해상도·초점거리 ≤ 0 또는 해상도 > 1e6, 시야각 < 1e-6 rad, R 이 회전 아님)이면 던지지 않고 전부 0 을 돌려준다.
 // 입력 오류(leafBoxes 형식)는 'cull:' 오류.
 const ERR = 'cull:';
 const ROT_TOL = 1e-6;
+const MIN_FOV_RAD = 1e-6; // 서버 degenerate 와 같은 값
+const MAX_RESOLUTION_PX = 1e6; // 서버 degenerate 와 같은 값
 
-/** 카메라가 퇴화 시점이면 true. 던지지 않는다. */
+/** 카메라가 퇴화 시점이면 true. 던지지 않는다. server/cull/degenerate/index.mjs 의 isDegenerateView 와 같은 식(F-120). */
 export function isDegenerateViewClient(camera) {
-  if (!camera || typeof camera !== 'object') return true;
-  const { R, t, K, width: W, height: H } = camera;
-  if (!K || !R || !t || R.length !== 9 || t.length !== 3) return true;
-  const { fx, fy, cx, cy } = K;
-  for (const v of [W, H, fx, fy, cx, cy]) if (typeof v !== 'number' || !Number.isFinite(v)) return true;
-  for (let i = 0; i < 9; i++) if (typeof R[i] !== 'number' || !Number.isFinite(R[i])) return true;
-  for (let i = 0; i < 3; i++) if (typeof t[i] !== 'number' || !Number.isFinite(t[i])) return true;
-  if (!(W > 0) || !(H > 0) || !(fx > 0) || !(fy > 0)) return true;
-  // 정규직교(R·Rᵀ = I)와 det = +1
-  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
-    const d = R[3 * i] * R[3 * j] + R[3 * i + 1] * R[3 * j + 1] + R[3 * i + 2] * R[3 * j + 2];
-    if (Math.abs(d - (i === j ? 1 : 0)) > ROT_TOL) return true;
-  }
-  const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
-  return !(Math.abs(det - 1) <= ROT_TOL);
+  try {
+    if (!camera || typeof camera !== 'object') return true;
+    const { R, t, K, width: W, height: H } = camera;
+    if (!K || typeof K !== 'object') return true;
+    const { fx, fy, cx, cy } = K;
+    const pos = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+    if (!pos(W) || !pos(H) || W > MAX_RESOLUTION_PX || H > MAX_RESOLUTION_PX) return true;
+    if (!pos(fx) || !pos(fy) || !Number.isFinite(cx) || typeof cx !== 'number' || !Number.isFinite(cy) || typeof cy !== 'number') return true;
+    if (2 * Math.atan(W / (2 * fx)) < MIN_FOV_RAD || 2 * Math.atan(H / (2 * fy)) < MIN_FOV_RAD) return true;
+    if (!Array.isArray(R) || R.length !== 9 || !Array.isArray(t) || t.length !== 3) return true;
+    for (let i = 0; i < 9; i++) if (typeof R[i] !== 'number' || !Number.isFinite(R[i])) return true;
+    for (let i = 0; i < 3; i++) if (typeof t[i] !== 'number' || !Number.isFinite(t[i])) return true;
+    // 정규직교(R·Rᵀ = I)와 det = +1
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      const d = R[3 * i] * R[3 * j] + R[3 * i + 1] * R[3 * j + 1] + R[3 * i + 2] * R[3 * j + 2];
+      if (!(Math.abs(d - (i === j ? 1 : 0)) <= ROT_TOL)) return true;
+    }
+    const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
+    return !(Math.abs(det - 1) <= ROT_TOL);
+  } catch { return true; }
 }
 
 /** 팔진 트리에서 리프 번호 순서의 상자를 모은다(순수 함수). octree: {leafCount, leafIndex, boxMin, boxMax}. */
 export function leafBoxesOf(octree) {
   const { leafCount, leafIndex, boxMin, boxMax } = octree;
+  if (!Number.isInteger(leafCount) || leafCount < 0 || !leafIndex || !boxMin || !boxMax) throw new Error(`${ERR} octree 형식이 올바르지 않음`);
+  // F-122 ⑥: 짧은 boxMin/boxMax 는 subarray 가 조용히 잘려 NaN·0 상자가 되므로 길이를 먼저 검사한다.
+  if (boxMin.length < 3 * leafIndex.length || boxMax.length < 3 * leafIndex.length) {
+    throw new Error(`${ERR} boxMin(${boxMin.length})·boxMax(${boxMax.length}) 길이가 3×노드 수(${3 * leafIndex.length}) 보다 짧음`);
+  }
   const mn = new Float32Array(3 * leafCount), mx = new Float32Array(3 * leafCount);
   const seen = new Uint8Array(leafCount);
   for (let node = 0; node < leafIndex.length; node++) {

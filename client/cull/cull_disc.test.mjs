@@ -3,7 +3,6 @@
 // 수치는 모두 고정 시드로 미리 구워 둔 값이다(사후 문턱 없음). 서버 모듈은 시험에서만 import 한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { clientFrustumCull } from './index.mjs';
 import { renderPoints } from '../../server/raster_ref/zbuffer/index.mjs';
 import { frustumCull } from '../../server/cull/frustum/index.mjs';
@@ -115,13 +114,5 @@ for (const [seed, n, pointCount, visible, kept, mutFalse] of EDGE_CASES) {
   });
 }
 
-test('F-116 변이(클라이언트): index.mjs 소스에서 원판 여유 항을 지우면 가장자리 장면에서 거짓 제거가 생긴다', async () => {
-  const src = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
-  const MARGIN = '0.5 * fx * pointSizeM';
-  assert.equal(src.split(MARGIN).length, 2, '원판 여유 식이 소스에 정확히 한 번 있어야 함');
-  const mutated = await import(`data:text/javascript;base64,${Buffer.from(src.replace(MARGIN, '0')).toString('base64')}`);
-  const [seed, n, , , , mutFalse] = EDGE_CASES[0];
-  const { cloud, leafStart } = edgeScene(seed, n);
-  const boxes = tightBoxes(cloud, leafStart);
-  assert.equal(audit(cloud, leafStart, mutated.clientFrustumCull(boxes, CAM, { pointSizeM: SIZE_M })).falseRemoved, mutFalse);
-});
+// F-127 ⑤: 소스 문자열을 바꾸는 변이 테스트는 삭제했다. 같은 보증(원판 여유가 없으면 거짓 제거가 생김)은
+// 위 EDGE_CASES 루프의 pointSizeM:0 대조(mutFalse)가 동작으로 확인한다.
