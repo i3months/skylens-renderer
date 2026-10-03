@@ -136,17 +136,22 @@ export function materialize(hierarchy, selection) {
   const positions = new Float32Array(3 * n);
   const normals = new Float32Array(3 * n);
   const colors = new Uint8Array(3 * n);
+  const src = cloud.positions;
   let o = 0;
   for (let k = 0; k < octree.leafCount; k++) {
     const l = leafLevel[k];
     if (l === NOT_DRAWN) continue;
     const lv = levels[l];
-    for (let s = lv.leafStart[k]; s < lv.leafStart[k + 1]; s++, o++) {
-      const i = lv.indices[s];
-      positions.set(cloud.positions.subarray(3 * i, 3 * i + 3), 3 * o);
-      normals.set(lv.normals.subarray(3 * s, 3 * s + 3), 3 * o);
-      colors.set(lv.colors.subarray(3 * s, 3 * s + 3), 3 * o);
+    const s0 = lv.leafStart[k], s1 = lv.leafStart[k + 1], idx = lv.indices;
+    if (s1 === s0) continue;
+    // 법선·색은 리프 구간이 연속이라 한 번에 복사, 위치만 색인 산술로 모은다.
+    normals.set(lv.normals.subarray(3 * s0, 3 * s1), 3 * o);
+    colors.set(lv.colors.subarray(3 * s0, 3 * s1), 3 * o);
+    for (let s = s0, d = 3 * o; s < s1; s++, d += 3) {
+      const b = 3 * idx[s];
+      positions[d] = src[b]; positions[d + 1] = src[b + 1]; positions[d + 2] = src[b + 2];
     }
+    o += s1 - s0;
   }
   return { format: 1, count: n, positions, normals, colors };
 }

@@ -127,16 +127,20 @@ export function applyChunks(hierarchy, chunks, k) {
   let n = 0;
   for (const l of leaves) n += cur.get(l).indices.length;
   const positions = new Float32Array(3 * n), normals = new Float32Array(3 * n), colors = new Uint8Array(3 * n);
+  const src = cloud.positions;
   let o = 0;
   for (const l of leaves) {
-    const c = cur.get(l), lv = levels[c.level], s0 = lv.leafStart[l];
-    for (let j = 0; j < c.indices.length; j++, o++) {
+    const c = cur.get(l), lv = levels[c.level], s0 = lv.leafStart[l], m = c.indices.length, lidx = lv.indices;
+    if (m === 0) continue;
+    for (let j = 0, d = 3 * o; j < m; j++, d += 3) {
       const i = c.indices[j];
-      if (i !== lv.indices[s0 + j]) throw new Error(`${ERR} 조각 점 번호가 단계 ${c.level} 의 대표점과 다름`);
-      positions.set(cloud.positions.subarray(3 * i, 3 * i + 3), 3 * o);
-      normals.set(lv.normals.subarray(3 * (s0 + j), 3 * (s0 + j) + 3), 3 * o);
-      colors.set(lv.colors.subarray(3 * (s0 + j), 3 * (s0 + j) + 3), 3 * o);
+      if (i !== lidx[s0 + j]) throw new Error(`${ERR} 조각 점 번호가 단계 ${c.level} 의 대표점과 다름`);
+      const b = 3 * i;
+      positions[d] = src[b]; positions[d + 1] = src[b + 1]; positions[d + 2] = src[b + 2];
     }
+    normals.set(lv.normals.subarray(3 * s0, 3 * (s0 + m)), 3 * o);
+    colors.set(lv.colors.subarray(3 * s0, 3 * (s0 + m)), 3 * o);
+    o += m;
   }
   return { format: 1, count: n, positions, normals, colors };
 }
