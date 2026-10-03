@@ -66,3 +66,57 @@ test('결정성: 같은 시드 JSON 동일, 다른 시드 다름', () => {
     assert.notEqual(JSON.stringify(g({ seed: 3 })), JSON.stringify(g({ seed: 4 })));
   }
 });
+
+// ---- F-085 ⑥·F-088 ⑤·F-086 ④ ----
+test('드론: 프레임 간 이동 ≤ 한 바퀴 둘레/frames + 지터 여유(7바퀴 변형 차단)', () => {
+  // 반경 60·300프레임: 한 프레임 호 = 2π·60/300 ≈ 1.257 m. 지터 변화 포함 상한 3 m 로 고정.
+  for (const seed of [1, 2, 3, 99]) {
+    const p = dronePath({ seed });
+    for (let i = 1; i < p.frames.length; i++) {
+      const d = norm(sub(p.frames[i].eye, p.frames[i - 1].eye));
+      assert.ok(d <= 3, `seed ${seed} 프레임 ${i} 이동 ${d} m`);
+    }
+    // 시간 속도(30 fps)도 15 m/s 이하
+    assert.ok(norm(sub(p.frames[1].eye, p.frames[0].eye)) * 30 <= 90);
+  }
+});
+
+test('자유: 시선 pitch 는 여러 시드에서 ±30° 이내(오버슈트 36.6° 시드 939 포함)', () => {
+  const seeds = [939, ...Array.from({ length: 150 }, (_, i) => i + 1)];
+  for (const seed of seeds) {
+    for (const f of freePath({ seed }).frames) {
+      const d = dir(f);
+      const pitch = Math.asin(d[1]) * 180 / Math.PI;
+      assert.ok(Math.abs(pitch) <= 30 + 1e-3, `seed ${seed} pitch ${pitch}`);
+    }
+  }
+});
+
+test('입력 거부: frames·fps·center·bounds·seed 검증(명시적 Error)', () => {
+  const bad = (fn, re = /paths:|scene:/) => assert.throws(fn, re);
+  for (const g of [dronePath, freePath]) {
+    bad(() => g({ seed: 1, fps: 0 }));
+    bad(() => g({ seed: 1, fps: -30 }));
+    bad(() => g({ seed: 1, fps: NaN }));
+    bad(() => g({ seed: 1, fps: Infinity }));
+    bad(() => g({ seed: 1, frames: -1 }));
+    bad(() => g({ seed: 1, frames: 2.5 }));
+    bad(() => g({ seed: 1, frames: NaN }));
+    bad(() => g({ seed: 1.5 }));
+    bad(() => g({ seed: 'abc' }));
+    bad(() => g({ seed: NaN }));
+    assert.equal(g({ seed: 1, frames: 0 }).frames.length, 0);
+    assert.equal(g({ seed: 1, frames: 1 }).frames.length, 1);
+  }
+  bad(() => dronePath({ seed: 1, center: [0, 0] }));
+  bad(() => dronePath({ seed: 1, center: [0, NaN, 0] }));
+  bad(() => dronePath({ seed: 1, center: [0, Infinity, 0] }));
+  const mk = (min, max) => ({ min, max });
+  bad(() => freePath({ seed: 1, bounds: mk([0, 0, 0], [0, 1, 1]) })); // 퇴화
+  bad(() => freePath({ seed: 1, bounds: mk([1, 0, 0], [0, 1, 1]) })); // 뒤집힘
+  bad(() => freePath({ seed: 1, bounds: mk([0, 0, NaN], [1, 1, 1]) }));
+  bad(() => freePath({ seed: 1, bounds: mk([0, 0], [1, 1, 1]) }));
+  bad(() => freePath({ seed: 1, bounds: null }));
+  // fps 오류가 t=Infinity 프레임으로 새지 않는다
+  assert.throws(() => dronePath({ seed: 1, fps: 0 }), /fps/);
+});
