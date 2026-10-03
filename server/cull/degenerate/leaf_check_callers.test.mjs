@@ -1,61 +1,72 @@
 import { strict as assert } from 'assert';
 import { test } from 'node:test';
-import { readFileSync, readdirSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url)).replace(/\/$/, '');
 const cullingRootDir = join(__dirname, '..');
 
-// Read all stage directories
-const stageNames = readdirSync(cullingRootDir).filter((name) => {
-  const fullPath = join(cullingRootDir, name);
+const REQUIRED_STAGES = ['frustum', 'distance', 'predict', 'occlusion', 'priority'];
+
+// Matches static import/export-from statements and dynamic import() of leaf_check.mjs.
+const LEAF_CHECK_IMPORT_RE =
+  /(?:^|\n)\s*(?:import|export)\b[^;]*?\bfrom\s*['"][^'"]*\/leaf_check\.mjs['"]|(?:^|\n)\s*import\s*['"][^'"]*\/leaf_check\.mjs['"]|\bimport\s*\(\s*['"][^'"]*\/leaf_check\.mjs['"]\s*\)/;
+
+// Returns file content, or null only when the file does not exist. Other errors propagate.
+function readIfExists(path) {
   try {
-    return statSync(fullPath).isDirectory() && name !== 'degenerate';
-  } catch {
-    return false;
+    return readFileSync(path, 'utf-8');
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return null;
+    throw e;
   }
-});
+}
+
+// Read all stage directories
+const stageNames = readdirSync(cullingRootDir).filter(
+  (name) => statSync(join(cullingRootDir, name)).isDirectory() && name !== 'degenerate',
+);
 
 // Find modules that import leaf_check.mjs
 const importingModules = new Map(); // stageName -> filePath
 
 for (const stageName of stageNames) {
   const indexPath = join(cullingRootDir, stageName, 'index.mjs');
-  try {
-    const content = readFileSync(indexPath, 'utf-8');
-    if (content.includes("from '../degenerate/leaf_check.mjs'") ||
-        content.includes('from "../degenerate/leaf_check.mjs"') ||
-        content.includes('leaf_check')) {
-      importingModules.set(stageName, indexPath);
-    }
-  } catch (e) {
-    // File doesn't exist or can't be read, skip
+  const content = readIfExists(indexPath);
+  if (content !== null && LEAF_CHECK_IMPORT_RE.test(content)) {
+    importingModules.set(stageName, indexPath);
   }
 }
 
-// Also check client/cull/index.mjs
-const clientCullPath = join(cullingRootDir, '..', 'client', 'cull', 'index.mjs');
-try {
-  const clientContent = readFileSync(clientCullPath, 'utf-8');
-  if (clientContent.includes("from '../degenerate/leaf_check.mjs'") ||
-      clientContent.includes('from "../degenerate/leaf_check.mjs"') ||
-      clientContent.includes('leaf_check')) {
-    importingModules.set('client', clientCullPath);
-  }
-} catch (e) {
-  // File doesn't exist or can't be read, skip
+// Also check client/cull/index.mjs (optional: it may not import leaf_check)
+const clientDir = join(cullingRootDir, '..', '..', 'client');
+const clientCullPath = join(clientDir, 'cull', 'index.mjs');
+const clientContent = readIfExists(clientCullPath);
+if (clientContent !== null && LEAF_CHECK_IMPORT_RE.test(clientContent)) {
+  importingModules.set('client', clientCullPath);
 }
 
 // Read leaf_check.mjs header
 const leafCheckPath = join(__dirname, 'leaf_check.mjs');
 const leafCheckContent = readFileSync(leafCheckPath, 'utf-8');
 const headerEndIndex = leafCheckContent.indexOf('\n\n');
-const header = leafCheckContent.substring(0, headerEndIndex || 500);
+const header = headerEndIndex === -1 ? leafCheckContent : leafCheckContent.substring(0, headerEndIndex);
 
 // 단계 이름 목록이 비어있지 않음을 확인 (leaf_check.mjs 에서 frustum·distance·predict·occlusion·priority 5개 필요)
 test('stageNames is not empty', () => {
   assert(stageNames.length >= 5, `Expected at least 5 stage names, but got ${stageNames.length}`);
+});
+
+test('client directory path exists', () => {
+  assert(existsSync(clientDir), `client directory not found: ${clientDir}`);
+  assert(existsSync(join(clientDir, 'cull')), 'client/cull directory not found');
+});
+
+test('importingModules contains all required stages', () => {
+  for (const stage of REQUIRED_STAGES) {
+    assert(importingModules.has(stage), `stage "${stage}" must import leaf_check.mjs (found: ${[...importingModules.keys()].sort().join(', ') || 'none'})`);
+  }
 });
 
 // Test: each importing module's stage name must be mentioned in the header
