@@ -55,8 +55,10 @@ export function assertCameraShape(camera) {
   const { K, R, t } = camera;
   if (typeof camera.width !== 'number' || typeof camera.height !== 'number') throw new Error(`${ERR} 카메라 width·height 는 수여야 함`);
   if (!K || typeof K !== 'object' || !['fx', 'fy', 'cx', 'cy'].every((n) => typeof K[n] === 'number')) throw new Error(`${ERR} 카메라 K 는 fx·fy·cx·cy 수를 가진 객체여야 함`);
-  if (!Array.isArray(R) || R.length !== 9 || !R.every((x) => typeof x === 'number')) throw new Error(`${ERR} 카메라 R 은 수 9개 배열이어야 함`);
-  if (!Array.isArray(t) || t.length !== 3 || !t.every((x) => typeof x === 'number')) throw new Error(`${ERR} 카메라 t 는 수 3개 배열이어야 함`);
+  if (!Array.isArray(R) || R.length !== 9) throw new Error(`${ERR} 카메라 R 은 수 9개 배열이어야 함`);
+  for (let i = 0; i < 9; i++) if (typeof R[i] !== 'number') throw new Error(`${ERR} 카메라 R 은 수 9개 배열이어야 함`);
+  if (!Array.isArray(t) || t.length !== 3) throw new Error(`${ERR} 카메라 t 는 수 3개 배열이어야 함`);
+  for (let i = 0; i < 3; i++) if (typeof t[i] !== 'number') throw new Error(`${ERR} 카메라 t 는 수 3개 배열이어야 함`);
 }
 
 /** 모든 컬링 단계의 카메라 입구: 구조 오류는 'cull:' 로 던지고, 값 퇴화면 true 를 돌려준다(F-132). */

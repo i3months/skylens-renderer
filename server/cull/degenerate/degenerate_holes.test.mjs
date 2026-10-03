@@ -3,7 +3,7 @@
 // 접근자가 던져도 던지지 않고 true 반환.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isDegenerateView } from './index.mjs';
+import { isDegenerateView, assertCameraShape } from './index.mjs';
 
 const good = () => ({
   width: 64,
@@ -117,7 +117,19 @@ test('정상 카메라는 퇴화가 아님', () => {
 
 test('정상 카메라 (Array 명시)', () => {
   const c = good();
-  assert.ok(Array.isArray(c.R));
-  assert.ok(Array.isArray(c.t));
   assert.equal(isDegenerateView(c), false);
+});
+
+test('R 희소 배열 구멍은 assertCameraShape 에서 던짐', () => {
+  const c = good();
+  c.R = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  delete c.R[1]; // 구멍 생성: undefined
+  assert.throws(() => assertCameraShape(c), /cull:.*R.*수/);
+});
+
+test('t 희소 배열 구멍은 assertCameraShape 에서 던짐', () => {
+  const c = good();
+  c.t = [0, 0, 0];
+  delete c.t[1]; // 구멍 생성: undefined
+  assert.throws(() => assertCameraShape(c), /cull:.*t.*수/);
 });
