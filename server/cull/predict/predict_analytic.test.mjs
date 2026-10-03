@@ -104,8 +104,7 @@ test('직선 이동(해석 배치): 표본 사이에만 보이는 리프는 마�
     assert.ok(!seenAtSamples(0, IMPL_REL * v[0] * (hh / 2) + IMPL_ABS), `전제: 반폭 h/2 부풀림은 상자 A 를 놓침 (steps=${steps})`);
     // 전제(상한 판별, 해석): 상자 B 는 하한·상한 밖이고, ×1.2 부풀림이면 마지막 표본에서 보인다.
     const U = v[0] * hh;
-    // 전제: edgeBox 의 고정점 반복으로 설정된 xc 에서 상한(1.0001·U·KAPPA)은 G = KAPPA·MID·U 에 못 닿고
-    //   (MID=1.1 이므로 1.0001 < 1.1), ×1.2 부풀림은 1.2·1.0001·KAPPA·U >= 1.1·KAPPA·U 로 닿는다
+    // 전제: 상한 부풀림 U·(1+REL)+EPS 는 G 에 못 닿고, ×1.2 부풀림은 닿는다. :102 와 :109 는 식으로 경계 거리를 단언한다.
     assert.ok(KAPPA * (U * (1 + REL) + EPS) < G && KAPPA * 1.2 * (IMPL_REL * U + IMPL_ABS) >= G, '전제: 식으로 본 경계 거리');
     assert.ok(!lower.has(1) && !allowed.has(1), `전제: 상자 B 는 허용 밖 (steps=${steps})`);
     assert.ok(seenAtSamples(1, 1.2 * (IMPL_REL * U + IMPL_ABS)), `전제: ×1.2 부풀림은 상자 B 를 넣음 (steps=${steps})`);
