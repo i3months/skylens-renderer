@@ -17,7 +17,7 @@ import { degenerateCamera } from '../degenerate/index.mjs';
 const ERR = 'cull:';
 const NEAR_M = 0.01;
 const SCALE = 0.5; // 거친 깊이 버퍼 해상도 비율(기본)
-const MAX_COARSE_CELLS = 4_000_000; // 거친 버퍼 칸 수 상한: 큰 해상도에서는 비율을 줄여 시간·메모리를 묶는다(F-120)
+export const MAX_COARSE_CELLS = 4_000_000; // 거친 버퍼 칸 수 상한: 큰 해상도에서는 비율을 줄여 시간·메모리를 묶는다(F-120)
 
 function assertHierarchy(h) {
   const oc = h?.octree;

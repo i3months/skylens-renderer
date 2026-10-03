@@ -7,7 +7,7 @@ import { viewpointToCamera } from '../../tools/render_views/index.mjs';
 import { buildHierarchy } from '../../server/lod/hierarchy/index.mjs';
 import { isDegenerateView } from '../../server/cull/degenerate/index.mjs';
 import { frustumCull, isDegenerateViewLocal } from '../../server/cull/frustum/index.mjs';
-import { leafPriority, orderChunks } from '../../server/cull/priority/index.mjs';
+import { leafPriority, orderChunks, MAX_COARSE_CELLS } from '../../server/cull/priority/index.mjs';
 import { backfaceCull, leafNormalCones } from '../../server/cull/backface/index.mjs';
 import { occlusionCull, buildDepthPyramid } from '../../server/cull/occlusion/index.mjs';
 import { distanceCull } from '../../server/cull/distance/index.mjs';
@@ -23,6 +23,8 @@ const base = good();
 const withK = (k, over = {}) => ({ ...base, K: { ...base.K, ...k }, ...over });
 
 // 벽시계 대신 작업량(타입 배열 할당 원소 수)을 센다: 전역 생성자를 Proxy 로 감싸 숫자 길이로 만든 배열의 최대·합계 길이를 기록한다. 결정적이다.
+// 제한: 일반 Array·ArrayBuffer·TypedArray.from 등은 감시하지 않는다 (Proxy 생성자를 타지 않음).
+// 현재 감시 대상은 크기 있는 생성자 호출뿐 (new Float32Array(n) 형태).
 function trackAlloc(fn) {
   const names = ['Float32Array', 'Float64Array', 'Int32Array', 'Uint32Array', 'Uint8Array'];
   const orig = {};
@@ -179,8 +181,8 @@ test('F-120 정상 큰 해상도(8192x8192)는 우선순위·절두체 모두 �
   const { score, order } = a.result;
   assert.equal(score.length, n);
   assert.equal(order.length, n);
-  // 벽시계 대신 작업량: 거친 버퍼는 칸 수 상한(4e6, priority/index.mjs MAX_COARSE_CELLS) 이하로 묶인다.
-  assert.ok(a.max <= 4_000_000, `거친 버퍼 ${a.max} 칸 > 상한`);
+  // 벽시계 대신 작업량: 거친 버퍼는 칸 수 상한(MAX_COARSE_CELLS) 이하로 묶인다.
+  assert.ok(a.max <= MAX_COARSE_CELLS, `거친 버퍼 ${a.max} 칸 > 상한`);
   assert.deepEqual([...clientFrustumCull(boxes, big, { pointSizeM: 0.2 })], [...frustumCull(hier, big, { pointSizeM: 0.2 })]);
 });
 
@@ -214,6 +216,8 @@ const STRUCTURAL = {
   'R 길이 8': good({ R: [1, 0, 0, 0, 1, 0, 0, 0] }),
   'R Float32Array': good({ R: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]) }),
   "width '640'": good({ width: '640' }),
+  'R 구멍': (() => { const c = good(); delete c.R[1]; return c; })(),
+  't 구멍': good({ t: [0, , 0] }),
 };
 for (const [name, cam] of Object.entries(STRUCTURAL)) {
   test(`F-133 구조 오류: ${name} -> clientFrustumCull 은 'cull:' 오류를 던진다`, () => {
