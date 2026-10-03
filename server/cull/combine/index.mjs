@@ -22,7 +22,7 @@
 import { CULL_API, CULL_STAGES, andMasks, chunksOfMask, assertLeafMask } from '../../../contracts/cull/index.mjs';
 import { NOT_DRAWN } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
-import { isDegenerateView } from '../degenerate/index.mjs';
+import { isDegenerateView, assertCameraShape } from '../degenerate/index.mjs';
 import { selectLevels, assertHierarchyInput } from '../../lod/select/index.mjs';
 
 const ERR = 'cull:';
@@ -77,21 +77,6 @@ export async function cullAndSelectDefault(hierarchy, camera, opts = {}) {
   });
 }
 
-/** 카메라 구조 검사(구조 위반만 오류; 값이 NaN·0 이하·비회전인 것은 퇴화 시점으로 넘긴다). */
-function assertCameraShape(camera) {
-  if (!camera || typeof camera !== 'object') throw new Error(`${ERR} 카메라가 객체가 아님`);
-  const { K, R, t } = camera;
-  if (typeof camera.width !== 'number' || typeof camera.height !== 'number') throw new Error(`${ERR} 카메라 width·height 는 수여야 함`);
-  if (!K || typeof K !== 'object' || !['fx', 'fy', 'cx', 'cy'].every((n) => typeof K[n] === 'number')) throw new Error(`${ERR} 카메라 K 는 fx·fy·cx·cy 수를 가진 객체여야 함`);
-  if (!Array.isArray(R) || R.length !== 9 || !R.every((x) => typeof x === 'number')) throw new Error(`${ERR} 카메라 R 은 수 9개 배열이어야 함`);
-  if (!Array.isArray(t) || t.length !== 3 || !t.every((x) => typeof x === 'number')) throw new Error(`${ERR} 카메라 t 는 수 3개 배열이어야 함`);
-}
-
-/** 주입이 없을 때의 퇴화 판정: 계약상 퇴화 조건은 raster 카메라 검사 실패와 같다(구조 검사는 앞에서 끝남). */
-function localIsDegenerate(camera) {
-  return isDegenerateView(camera);
-}
-
 function assertOpts(opts) {
   if (!opts || typeof opts !== 'object') throw new Error(`${ERR} opts 가 객체가 아님`);
   const { thresholdPx, maxDistanceM, prioritize, pointSizeM } = opts;
@@ -139,7 +124,7 @@ export function cullAndSelect(hierarchy, camera, opts) {
   const stages = assertOpts(opts);
   const leafCount = hierarchy.octree.leafCount;
 
-  const degenerate = (opts.isDegenerateView ?? localIsDegenerate)(camera);
+  const degenerate = (opts.isDegenerateView ?? isDegenerateView)(camera);
   if (degenerate) {
     return {
       cull: { mask: new Uint8Array(leafCount), chunks: new Uint32Array(0), stats: { ...emptyStats(leafCount), degenerate: true } },

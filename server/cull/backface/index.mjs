@@ -27,7 +27,7 @@
 //   opts.requireCover = false 이면 2단계를 끄고 1단계(순수 법선 판정)만 쓴다(기하 성질 시험·비교 측정용).
 import { assertHierarchyInput } from '../../lod/select/index.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
-import { isDegenerateView } from '../degenerate/index.mjs';
+import { degenerateCamera } from '../degenerate/index.mjs';
 import { buildDepthPyramid, occlusionCull, NEAR_M } from '../occlusion/index.mjs';
 
 const ERR = 'cull:';
@@ -116,7 +116,7 @@ export function backfaceCull(hierarchy, camera, cones, opts) {
   const { octree } = hierarchy;
   const L = octree.leafCount;
   checkCones(cones, L);
-  if (isDegenerateView(camera)) return new Uint8Array(L);
+  if (degenerateCamera(camera)) return new Uint8Array(L);
   const C = cameraCenter(camera);
   const mask = new Uint8Array(L).fill(1);
   const nodes = leafNodes(octree);
