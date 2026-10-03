@@ -5,7 +5,7 @@
 //   축척 s(X)     = (d_j/f_j)/(d_i/f_i),  f = K.fx
 //   축척 점수 w_s = 1 (1/band ≤ s ≤ band),  (band/max(s,1/s))² 그 밖
 //   합산 점수     = Σ_{X∈S_ij} w_θ(X)·w_s(X)
-// 문서 §3-5 의 "공유 점이 화면에 고루 퍼진 정도" 가산 항은 계약에 없으므로 넣지 않는다.
+// 문서 §3-5 의 "공유 점이 화면에 고루 퍼진 정도" 가산 항은 넣지 않는다(결정 0020 ①: 생략의 대가로 §3-6 순위 세 쌍이 뒤바뀐다).
 // 입력(카메라, 점, 후보 배열)은 읽기만 하고 바꾸지 않는다.
 import { VIEW_SCORE_CONSTANTS } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
