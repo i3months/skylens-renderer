@@ -7,6 +7,10 @@
 // 대표점 = 조각 안에서 격자 칸 중심 (k+0.5)·edge 에 가장 가까운 점(동률이면 번호 작은 점) — voxelReduce 와 같은 규칙.
 // 법선·색은 조각 안 점들로 구한다(representativeNormals·representativeColors 에 조각을 칸으로 넘긴다).
 // 대표점은 팔진 트리 리프 순서로 정렬해 리프마다 연속 구간을 이룬다. 리프 안에서는 격자 칸 번호(칸 키 사전순) 오름차순.
+// 단계마다 대표점 위치도 리프 순서로 미리 담아 둔다(levels[l].positions = cloud.positions 를 indices 순서로 모은 것, F-099 ③).
+//   materialize 가 법선·색처럼 리프 구간을 한 번에 복사하게 해, 선택 때마다 입력 위치를 무작위 접근(gather)하지 않는다.
+//   대가: 대표점당 12 B(Float32 ×3) 추가 메모리와 build 때 단계마다 한 번의 gather. 250만 점 terrain(edge0M 0.05, 4단계)은
+//   대표점 합 5,635,019 개 → 약 67.6 MB(단계 0 만 30 MB, 입력 positions 의 리프 순서 사본). 대신 184만 점 materialize 최댓값 약 130 → 50~70 ms.
 import { assertCloud, assertLevelParams, edgeOfLevel } from '../../../contracts/lod/index.mjs';
 import { buildOctree } from '../octree/index.mjs';
 import { voxelReduce } from '../voxel/index.mjs';
@@ -87,7 +91,13 @@ export function buildHierarchy(cloud, opts = {}) {
       for (let c = 0; c < pieces.count; c++) leafStart[pieces.leafOfPiece[c] + 1]++;
       for (let k = 0; k < octree.leafCount; k++) leafStart[k + 1] += leafStart[k];
     }
-    levels.push({ level: l, edgeM: edgeOfLevel(edge0M, l), count: rep.length, indices: rep, leafStart, normals, colors });
+    const positions = new Float32Array(3 * rep.length);
+    const src = cloud.positions;
+    for (let s = 0, d = 0; s < rep.length; s++, d += 3) {
+      const b = 3 * rep[s];
+      positions[d] = src[b]; positions[d + 1] = src[b + 1]; positions[d + 2] = src[b + 2];
+    }
+    levels.push({ level: l, edgeM: edgeOfLevel(edge0M, l), count: rep.length, indices: rep, leafStart, positions, normals, colors });
   }
   return { cloud, octree, edge0M, levels };
 }
