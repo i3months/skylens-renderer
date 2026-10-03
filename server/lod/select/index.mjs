@@ -23,6 +23,8 @@ import { boxMayBeVisible } from './view_check.mjs';
 export { buildHierarchy } from '../hierarchy/index.mjs';
 
 const ERR = 'lod:';
+/** 노드 훑기를 통과한 팔진 트리(약한 참조). 통과 당시의 배열 참조를 함께 기억한다. */
+const scanned = new WeakMap();
 
 /**
  * 계층 입력 검사(구조·길이·타입). select·budget·progressive 가 공용으로 쓴다(F-107 ①). 오류는 모두 'lod:' 로 시작.
@@ -54,17 +56,33 @@ export function assertHierarchyInput(h) {
       if (ls[k] > ls[k + 1]) throw new Error(`${ERR} 단계 ${String(lv.level)} 의 leafStart 가 감소함 (k=${k})`);
     }
   }
-  // 노드 한 번 훑기: leafIndex 는 -1(내부 노드) 또는 0..leafCount-1, 상자는 유한하고 boxMin ≤ boxMax.
+  // 노드 한 번 훑기(O(노드)): 같은 팔진 트리 객체가 이미 통과했으면 건너뛴다(F-112 ③).
+  // 계약: 검증 통과 뒤 같은 객체의 배열 "내용" 을 바꾸면(예: leafIndex[3] = -2) 이 캐시는 못 잡는다.
+  // 배열 자체를 바꿔 끼우거나 길이·타입·nodeCount 가 달라진 경우는 위의 O(1) 검사와 아래 참조 비교로 매번 잡힌다.
+  // 변조 가능성을 없애려면 계층을 불변으로 다루거나 새 객체로 복사해서 넘길 것.
   const { leafIndex, boxMin, boxMax, leafCount } = octree;
+  const done = scanned.get(octree);
+  if (done && done.leafIndex === leafIndex && done.boxMin === boxMin && done.boxMax === boxMax && done.nc === nc && done.leafCount === leafCount) return;
+  // leafIndex: 내부 노드는 -1, 리프는 0..leafCount-1 을 정확히 한 번씩(중복·누락 없음; F-112 ①).
+  const seen = new Uint8Array(leafCount);
+  let leaves = 0;
   for (let i = 0; i < nc; i++) {
     const v = leafIndex[i];
-    if (v !== -1 && !(v >= 0 && v < leafCount)) throw new Error(`${ERR} octree.leafIndex[${i}] = ${v} 가 -1 또는 0..${leafCount - 1} 범위 밖`);
+    if (v !== -1) {
+      if (!(v >= 0 && v < leafCount)) throw new Error(`${ERR} octree.leafIndex[${i}] = ${v} 가 -1 또는 0..${leafCount - 1} 범위 밖`);
+      if (seen[v]) throw new Error(`${ERR} octree.leafIndex[${i}] = ${v} 리프 번호가 중복됨`);
+      seen[v] = 1;
+      leaves++;
+    }
+    // 상자: 값이 NaN 이 아니고 boxMin ≤ boxMax. buildOctree 는 Float32 최댓값으로 잘라 유한하게 만든다.
     for (let a = 3 * i; a < 3 * i + 3; a++) {
       const lo = boxMin[a], hi = boxMax[a];
       if (!Number.isFinite(lo) || !Number.isFinite(hi)) throw new Error(`${ERR} 노드 ${i} 의 상자에 유한하지 않은 값이 있음`);
       if (lo > hi) throw new Error(`${ERR} 노드 ${i} 의 boxMin 이 boxMax 보다 큼`);
     }
   }
+  if (leaves !== leafCount) throw new Error(`${ERR} octree.leafIndex 의 리프 수(${leaves}) 가 leafCount(${leafCount}) 와 다름(누락)`);
+  scanned.set(octree, { leafIndex, boxMin, boxMax, nc, leafCount });
 }
 
 /** 카메라 검사 오류를 'lod:' 오류로 옮긴다. */

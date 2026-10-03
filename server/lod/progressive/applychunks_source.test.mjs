@@ -27,7 +27,7 @@ test('F-107 ③: 건너뛸 조각(추월당한 거친 조각)의 틀린 점 번�
   assert.throws(() => applyChunks(hier, [fine, badCoarse], 2), /lod:.*점 번호/, '고운 조각이 먼저(거친 조각은 건너뛰는 자리)');
 });
 
-test('F-107 ④: 결과 동등', () => {
+test('F-107 ④: applyChunks 결과 materialize 와 바이트 동일, cloud 변경 후 불변', () => {
   const a = applyChunks(hier, ch, ch.length);
   const leafLevel = new Uint8Array(hier.octree.leafCount).fill(NOT_DRAWN);
   for (const c of ch) leafLevel[c.leaf] = Math.min(leafLevel[c.leaf], c.level); // 가장 고운 조각 단계(NOT_DRAWN=255 가 최대)
@@ -40,16 +40,6 @@ test('F-107 ④: 결과 동등', () => {
   s.cloud.positions = new Float32Array(saved.length).fill(99999.5);
   try {
     const after = applyChunks(hier, ch, ch.length);
-    assert.ok(bytes(a.positions).equals(bytes(after.positions)), 'cloud 변경 후 applyChunks 결과 동일');
-  } finally { s.cloud.positions = saved; }
-});
-
-test('F-107 ④: applyChunks 는 cloud.positions 를 읽지 않는다(만든 뒤 cloud 가 바뀌어도 결과 불변)', () => {
-  const before = applyChunks(hier, ch, ch.length);
-  const saved = s.cloud.positions;
-  s.cloud.positions = new Float32Array(saved.length).fill(12345.5);
-  try {
-    const after = applyChunks(hier, ch, ch.length);
-    assert.ok(bytes(before.positions).equals(bytes(after.positions)));
+    for (const f of ['positions', 'normals', 'colors']) assert.ok(bytes(a[f]).equals(bytes(after[f])), `cloud 변경 후 ${f} 동일`);
   } finally { s.cloud.positions = saved; }
 });

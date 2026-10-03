@@ -13,7 +13,10 @@ function withSortSpy(fn) {
 
   const spySort = function (cmp) {
     sortCalls.push({ type: this.constructor.name, hasComparator: arguments.length > 0 });
-    return originalSort.call(this, cmp);
+    const original = this.constructor.prototype.sort === spySort
+      ? (this.constructor === Uint32Array ? originalUint32Sort : this.constructor === Float64Array ? originalFloat64Sort : originalSort)
+      : this.constructor.prototype.sort;
+    return original.call(this, cmp);
   };
 
   Array.prototype.sort = spySort;
@@ -60,7 +63,7 @@ test('useKey 활성화와 비활성화 결과가 바이트 동일: terrain 30000
   });
 
   withSortSpy((sortCalls) => {
-    const h3 = buildHierarchy(cloud, { edge0M: 0.4, levelCount: 4, maxLeafPoints: 1024 });
+    buildHierarchy(cloud, { edge0M: 0.4, levelCount: 4, maxLeafPoints: 1024 });
     sortCallsNormal = sortCalls;
   });
 
@@ -107,7 +110,7 @@ for (const [n, seed, spread, e0m, mLeafPoints] of [
     });
 
     withSortSpy((sortCalls) => {
-      const h3 = buildHierarchy(cloud, { edge0M, levelCount, maxLeafPoints });
+      buildHierarchy(cloud, { edge0M, levelCount, maxLeafPoints });
       sortCallsNormal = sortCalls;
     });
 

@@ -152,7 +152,9 @@ function useSeed(seed) {
 const ssimOf = (cam, i, sel) => ssim(ref[i], renderPoints(cam, materializeLocal(hier, sel), { pointSizeM: POINT_SIZE_M }).color, W, H, 3);
 
 // 예산별 한계. minGap = 합 선택 − 합 균일 의 하한, minWins = 균일보다 WIN 넘게 나은 시점 수의 하한.
-// 근거(F-102 ⑥, 사전 규칙): 시드 1·2·3 의 측정 최솟값(머리 표)의 절반. minGap 은 소수 둘째 자리 내림, minWins 는 내림.
+// 근거(F-102 ⑥, 사전 규칙): 한계 = max(이전 한계, 새 측정 최솟값(머리 표, 시드 1·2·3)의 절반). minGap 은 소수 둘째 자리 내림, minWins 는 내림.
+// 문턱은 올리기만 하므로 이전 한계가 새 측정 절반보다 크면 이전 한계를 유지한다(10000: 이전 0.28·3 > 절반 0.23·2 -> 0.28·3).
+// 나머지 행은 이전 한계 <= 절반이라 절반 그대로다. 아래 MEASURED 표로 시험이 이 계산값을 DISCRIM 과 대조한다.
 // 측정 뒤에 통과하도록 낮춘 값이 아니다. 예: 20000 의 합 차 최솟값 1.2555 → 0.62, 이긴 시점 최솟값 6 → 3.
 // SLACK 은 최댓값형 한계(시점별로 균일보다 낮아도 되는 폭)라 절반 규칙을 쓸 수 없다. 측정한 최악 부족분 −0.0024
 // (시드 1, 예산 10000)보다 훨씬 넉넉한 0.025 로 두었다(문턱은 올리기만 하므로 낮추지 않았다).
@@ -163,6 +165,14 @@ const DISCRIM = [
   { budget: 20000, minGap: 0.62, minWins: 3 },
   { budget: 10000, minGap: 0.28, minWins: 3 },
 ];
+// 머리 표의 시드별 [합 선택, 합 균일, 이긴 시점 수] (시드 1, 2, 3 순). 사전 규칙 계산의 입력.
+const MEASURED = {
+  100000: { prev: null, seeds: [[7.2994, 6.1955, 8], [7.3209, 6.3343, 7], [7.3292, 6.1746, 8]] },
+  80000: { prev: null, seeds: [[6.7907, 6.1955, 7], [6.8213, 5.7968, 7], [6.8750, 6.1746, 8]] },
+  45000: { prev: null, seeds: [[5.3268, 3.6647, 8], [5.4404, 3.6664, 8], [5.4561, 3.7676, 8]] },
+  20000: { prev: null, seeds: [[3.8137, 2.5582, 7], [3.8073, 2.5144, 6], [4.1156, 2.8022, 7]] },
+  10000: { prev: { minGap: 0.28, minWins: 3 }, seeds: [[2.9183, 2.4581, 5], [2.9083, 2.3616, 5], [3.1736, 2.7106, 6]] },
+};
 const WIN = 0.01; // 이긴 시점의 기준: 선택 − 균일 > WIN
 const SLACK = 0.025;
 
@@ -222,5 +232,17 @@ test('음성: 효율식 반전 변이는 판별 예산 둘 이상에서 위 조�
     }
     assert.ok(failed >= 2, `시드 ${seed}: 변이가 실패한 예산 수 ${failed}`);
     assert.equal(failed, DISCRIM.length, `시드 ${seed}: 변이가 모든 판별 예산에서 실패해야 함`);
+  }
+});
+
+test('규칙 계산값(max(이전 한계, 측정 최솟값의 절반))이 모든 행에서 DISCRIM 값과 같다', () => {
+  assert.deepEqual(DISCRIM.map((c) => c.budget).sort(), Object.keys(MEASURED).map(Number).sort());
+  for (const c of DISCRIM) {
+    const { prev, seeds } = MEASURED[c.budget];
+    const halfGap = Math.floor((Math.min(...seeds.map(([a, b]) => a - b)) / 2) * 100 + 1e-9) / 100;
+    const halfWins = Math.floor(Math.min(...seeds.map((r) => r[2])) / 2);
+    const gap = Math.max(prev?.minGap ?? 0, halfGap), wins = Math.max(prev?.minWins ?? 0, halfWins);
+    assert.equal(c.minGap, gap, `예산 ${c.budget} minGap 계산값`);
+    assert.equal(c.minWins, wins, `예산 ${c.budget} minWins 계산값`);
   }
 });
