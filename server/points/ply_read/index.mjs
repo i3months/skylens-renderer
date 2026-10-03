@@ -1,11 +1,12 @@
 // 이진 PLY 전체 읽기(T04.1). 열 배열로 한 번에 채우고 점당 할당은 하지 않는다.
-import { parsePlyHeader } from '../../../contracts/ply/index.mjs';
+import { parsePlyHeader, PLY_HEADER_MAX_BYTES } from '../../../contracts/ply/index.mjs';
 import { PointsError, detectFormat, FORMAT_POINT27, FORMAT_GAUSS56, RECORD_BYTES } from '../../../contracts/points/index.mjs';
 
 /** @param {Uint8Array} bytes @returns {import('../../../contracts/points/index.mjs').Point27Cloud | import('../../../contracts/points/index.mjs').Gauss56Cloud} */
 export function readPly(bytes) {
   let h;
-  try { h = parsePlyHeader(bytes); } catch (e) { throw new PointsError('header', e.message); }
+  // 헤더 상한 view 만 넘겨 복사를 피한다
+  try { h = parsePlyHeader(bytes.subarray(0, PLY_HEADER_MAX_BYTES)); } catch (e) { throw new PointsError('header', e.message); }
   const format = detectFormat(h.properties);
   if (format === null) throw new PointsError('format', 'unknown vertex layout');
   const stride = RECORD_BYTES[format];

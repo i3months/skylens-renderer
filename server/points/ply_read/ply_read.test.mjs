@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readPly } from './index.mjs';
+import { parsePlyHeader, PLY_HEADER_MAX_BYTES } from '../../../contracts/ply/index.mjs';
 import { PointsError, POINT27_PROPERTIES, GAUSS56_PROPERTIES } from '../../../contracts/points/index.mjs';
 
 // 헤더 문자열 합성
@@ -73,4 +74,30 @@ test('ply_read_golden', () => {
   // 형식 불명(xyz 만)
   const unk = [{ name: 'x', type: 'float' }, { name: 'y', type: 'float' }, { name: 'z', type: 'float' }];
   assert.equal(code(() => readPly(Buffer.concat([header(1, unk), Buffer.alloc(12)]))), 'format');
+});
+
+test('ply_read_header_alloc: 헤더 단계 추가 할당은 본문 크기와 무관하게 ≈ 0', () => {
+  const measure = (b) => {
+    const before = process.memoryUsage().arrayBuffers;
+    for (let i = 0; i < 20; i++) parsePlyHeader(b.subarray(0, PLY_HEADER_MAX_BYTES));
+    parsePlyHeader(b); // 공개 서명에 전체 버퍼를 넘겨도 복사하지 않아야 한다
+    return process.memoryUsage().arrayBuffers - before;
+  };
+  const n = 2_500_000;
+  for (const [name, stride, props] of [['27B', 27, POINT27_PROPERTIES], ['56B', 56, GAUSS56_PROPERTIES]]) {
+    const h = header(n, props);
+    const b = Buffer.alloc(h.length + stride * n); h.copy(b);
+    const body = b.length;
+    const delta = measure(b);
+    console.log(`header alloc ${name}: body=${body} B, extra arrayBuffers=${delta} B`);
+    assert.ok(Math.abs(delta) < 64 * 1024, `${name}: ${delta}`);
+    // readPly 전체 경로도 헤더 단계에서 본문 크기만큼 늘지 않음: 결과 열 배열 외 추가 복사 없음
+    const before = process.memoryUsage().arrayBuffers;
+    const c = readPly(b);
+    const out = process.memoryUsage().arrayBuffers - before;
+    const cols = stride === 27 ? 27 * n : (3 + 3 + 1 + 3 + 4) * 4 * n;
+    console.log(`readPly ${name}: arrayBuffers +${out} B (열 배열 ${cols} B)`);
+    assert.ok(out <= cols + 64 * 1024);
+    assert.equal(c.count, n);
+  }
 });
