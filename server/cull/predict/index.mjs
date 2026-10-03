@@ -87,7 +87,7 @@ function leafBoxes(h) {
  * 현재와 예측 시점들(0..horizonS 를 steps 등분, steps+1 개)의 절두체 판정 합집합.
  * 표본 사이의 시각도 놓치지 않도록 표본마다 상자를 '구간 반폭 h = horizonS/(2·steps)' 동안 카메라가 움직일 수 있는 만큼
  * (이동 |v|·h, 회전 |ω|·h × 거리) 부풀려 판정한다. 속도·각속도가 0 이면 부풀림 0 = 현재 시점 판정과 같다.
- * 한계: 모든 예측 표본(tau>0)의 부풀림이 비유한이면 표본 사이는 덮지 않는다(현재 시점만 순수 판정, horizon 에 대해 비단조 가능).
+ * 한계: 예측 표본(tau>0)이 모두 퇴화면 표본 사이는 덮지 않음(horizon 에 대해 비단조 가능).
  */
 export function predictiveMask(hierarchy, state, opts) {
   if (opts !== undefined && (opts === null || typeof opts !== 'object')) throw new Error(`${ERR} opts 는 객체여야 함`);
@@ -125,7 +125,7 @@ export function predictiveMask(hierarchy, state, opts) {
         far = Math.hypot(dx, dy, dz);
         m = 1.0001 * (speed * h + omega * h * (far + speed * h)) + 1e-9;
         // 부풀림이 유한수로 표현되지 않으면 상한을 잡을 수 없다: 현재 시점(tau=0)은 부풀림 없이 판정하고, 예측 시점은 보수적으로 남긴다(거짓 제거 방지).
-        // 알려진 한계(F-138 ⑦): tau=0 은 순수 절두체 판정으로 두므로 예측 표본이 모두 퇴화인 극단 입력(v=1e10·horizon 1e300)에서는 horizon 을 늘려도 단조가 아닐 수 있다. 비현실 입력이라 기존 계약(s=0 은 순수 절두체)을 유지한다.
+        // 알려진 한계(F-138 ⑦): tau=0 은 순수 절두체 판정으로 두므로 예측 표본(tau>0)이 모두 퇴화인 극단 입력(v=1e10·horizon 1e300)에서는 horizon 을 늘려도 비단조 가능하다. 비현실 입력이라 기존 계약(tau=0 은 순수 절두체)을 유지한다.
         if (!Number.isFinite(m)) {
           if (tau === 0) m = 0;
           else { out[k] = 1; continue; }
