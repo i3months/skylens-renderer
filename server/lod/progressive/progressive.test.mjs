@@ -194,3 +194,48 @@ test('카메라 검사: NaN t·NaN R·영행렬 R·width 0·f 0 은 lod: 오류,
   assert.ok(a.length > 0);
   a.forEach((c, i) => { assert.equal(c.level, b[i].level); assert.equal(c.leaf, b[i].leaf); assert.deepEqual(c.indices, b[i].indices); });
 });
+
+// F-101: 조각 도착 순서와 무관하게 같은 결과
+function sameCloud(a, b, msg) {
+  assert.equal(a.count, b.count, `${msg}: count`);
+  assert.ok(Buffer.from(a.positions.buffer, a.positions.byteOffset, a.positions.byteLength).equals(Buffer.from(b.positions.buffer, b.positions.byteOffset, b.positions.byteLength)), `${msg}: positions`);
+  assert.deepEqual(a.normals, b.normals, `${msg}: normals`);
+  assert.deepEqual(a.colors, b.colors, `${msg}: colors`);
+}
+
+test('도착 순서 무관: 역순·섞인 순서 적용 결과 = 정순 결과(count·positions 바이트 동일)', () => {
+  for (const vp of vps) {
+    const ch = chunksOf(camOf(vp));
+    const fwd = applyChunks(h, ch, ch.length);
+    sameCloud(applyChunks(h, [...ch].reverse(), ch.length), fwd, `시점 ${vp.id} 역순`);
+    // 결정적 섞기(고정 곱셈 순열)
+    const n = ch.length;
+    let step = 7; while (n % step === 0 || step >= n) step = step >= n ? 1 : step + 2;
+    const mixed = Array.from({ length: n }, (_, i) => ch[(i * step) % n]);
+    assert.equal(new Set(mixed).size, n);
+    sameCloud(applyChunks(h, mixed, n), fwd, `시점 ${vp.id} 섞임`);
+  }
+});
+
+test('같은 단계 조각이 다시 오면 교체(결과 동일), 더 거친 조각은 고운 조각을 덮지 못함', () => {
+  const ch = chunksOf(camOf(vps[3]));
+  const two = [...byLeaf(ch).values()].find((l) => l.length === 2);
+  const [coarse, fine] = two;
+  const ref = applyChunks(h, [coarse, fine], 2);
+  sameCloud(applyChunks(h, [fine, coarse], 2), ref, '고운 뒤 거친');
+  sameCloud(applyChunks(h, [fine, fine], 2), applyChunks(h, [fine], 1), '같은 단계 재도착');
+});
+
+test('음성(F-104): null 조각·잘못된 계층/조각 입력은 lod: 오류', () => {
+  const cam = camOf(vps[0]);
+  const ch = chunksOf(cam);
+  assert.throws(() => applyChunks(h, [null], 1), /^Error: lod:/);
+  assert.throws(() => applyChunks(h, [undefined], 1), /^Error: lod:/);
+  assert.throws(() => applyChunks(h, [{ level: 0, leaf: 0 }], 1), /^Error: lod:/);
+  assert.throws(() => applyChunks(h, [{ level: 0, leaf: 0, indices: [] }], 1), /^Error: lod:/);
+  assert.throws(() => applyChunks(null, ch, 0), /^Error: lod:/);
+  assert.throws(() => applyChunks({}, ch, 0), /^Error: lod:/);
+  assert.throws(() => progressiveChunks({ ...h, octree: null }, cam, {}), /^Error: lod:/);
+  assert.throws(() => progressiveChunks({ ...h, levels: [null] }, cam, {}), /^Error: lod:/);
+  assert.throws(() => progressiveChunks({ ...h, cloud: null }, cam, {}), /^Error: lod:/);
+});
