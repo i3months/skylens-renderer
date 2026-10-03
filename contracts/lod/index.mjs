@@ -3,12 +3,13 @@
 //
 // 단계(level): 0 = 원본 전부. 단계 l 은 한 변 edgeM(l) = edge0M·2^l 인 격자 칸마다 대표점 1개만 남긴다.
 //   칸당 한 점이므로 면 위 점 밀도는 단계마다 약 1/4 로 준다(4^-l).
-// 거리 근거(renderer_basis §3-7 과 SPEC §3 의 Δd ≈ d²/(f·b) 를 화면 공간 오차로 옮긴 것):
-//   카메라와 거리 d 에서 한 칸이 화면에서 차지하는 크기 = f·edgeM/d 픽셀. 여기서 d 는 d_eff(server/lod/select/screen_error.mjs 의 effectiveDistance), f = max(fx,fy).
+// 거리 근거(renderer_basis §3-7 과 SPEC §3 의 Δd ≈ d²/(f_camera·b) 를 화면 공간 오차로 옮긴 것):
+//   Δd 는 edge0M 하한에만 쓴다.
+//   카메라와 거리 d 에서 한 칸이 화면에서 차지하는 크기 = f_view·edgeM/d 픽셀. 여기서 d 는 d_eff(server/lod/select/screen_error.mjs 의 effectiveDistance), f_view = max(fx,fy).
 //   허용 오차 thresholdPx(τ) 이하이면 그 단계로 충분하다.
-//   단계 l 이 쓰이기 시작하는 거리(하한) maxDistanceM(l) = f·edgeM(l)/τ — 이름과 달리 '최대' 가 아니다.
-//   단계 l 의 사용 구간은 [maxDistanceM(l), maxDistanceM(l+1)) 이고 마지막 단계는 그 위로 열려 있다. 거리 d 에는 f·edgeM(l)/d ≤ τ 를 만족하는 가장 큰 l 을 쓴다.
-//   edge0M 하한(참고용, 강제 안 함): 깊이 해상도 Δd(d_c, b) = d_c²/(f·b) 보다 촘촘하게 둘 필요 없다(T07.3 이 표로 기록). buildHierarchy 는 이 하한을 적용하지 않는다(결정 0020 ③).
+//   단계 l 이 쓰이기 시작하는 거리(하한) maxDistanceM(l) = f_view·edgeM(l)/τ — 이름과 달리 '최대' 가 아니다.
+//   단계 l 의 사용 구간은 [maxDistanceM(l), maxDistanceM(l+1)) 이고 마지막 단계는 그 위로 열려 있다. 거리 d 에는 f_view·edgeM(l)/d ≤ τ 를 만족하는 가장 큰 l 을 쓴다.
+//   edge0M 하한(참고용, 강제 안 함): 깊이 해상도 Δd(d_c, b) = d_c²/(f_camera·b) 보다 촘촘하게 둘 필요 없다(T07.3 이 표로 기록). buildHierarchy 는 이 하한을 적용하지 않는다(결정 0020 ③).
 // 점 수 정의: 점 수는 positions.length/3 이고 cloud.count 와 같아야 한다(다르면 명시 오류).
 
 /**
