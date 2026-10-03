@@ -32,15 +32,18 @@ test('viewpointToCamera: aerial_overview 정답 검사', async (t) => {
 
   const camera = viewpointToCamera(vp);
 
-  // 검사 1: fy = 360/tan(25°) = 771.97…
-  const expectedFy = 360 / Math.tan((50 * Math.PI) / 360);
-  assert.ok(Math.abs(camera.K.fy - expectedFy) < 0.01, `fy 오차: ${Math.abs(camera.K.fy - expectedFy)}`);
+  // 검사 1: 리터럴. fy = 360/tan(25°) = 772.02249…(손계산: tan 25° = 0.4663076582 → 360/0.4663076582), cx = 640, cy = 360.
+  // 구현과 같은 식으로 기대값을 만들지 않는다.
+  assert.ok(Math.abs(camera.K.fy - 772.0224913834) < 1e-6, `fy: ${camera.K.fy}`);
+  assert.ok(Math.abs(camera.K.fx - 772.0224913834) < 1e-6, `fx: ${camera.K.fx}`);
+  assert.strictEqual(camera.K.cx, 640);
+  assert.strictEqual(camera.K.cy, 360);
 
   // 검사 2: target이 화면 중앙(cx, cy)으로 투영되는지
   const targetWorld = [0, 5, 0];
   const projection = project(camera, targetWorld);
-  const cx = camera.K.cx;
-  const cy = camera.K.cy;
+  const cx = 640; // 카메라 객체가 아니라 리터럴과 비교한다
+  const cy = 360;
   const uError = Math.abs(projection.u - cx);
   const vError = Math.abs(projection.v - cy);
   assert.ok(uError < 0.01 && vError < 0.01, `target 투영 오차: u=${uError.toFixed(4)}, v=${vError.toFixed(4)}`);
@@ -176,4 +179,61 @@ test('renderViews: viewpoints 내 null 시점 거부', async (t) => {
     /render_views:|extrinsics:/,
     'null 시점은 거부'
   );
+});
+
+// F-094 ③: eye.x ≠ 0 시점의 R·t 와 한 점의 u·v 를 손계산 리터럴로 고정한다(부호 반전 변이를 잡는다).
+// 시점: eye (3,0,4), target 원점, up +y, 640x360, fov 60°. GL 기저(손계산):
+//   z_gl = (eye−target)/5 = (0.6, 0, 0.8), x_gl = up×z_gl = (0.8, 0, −0.6), y_gl = z_gl×x_gl = (0, 1, 0)
+//   OpenCV R 의 행 = (x_gl, −y_gl, −z_gl) = (0.8,0,−0.6), (0,−1,0), (−0.6,0,−0.8), t = −R_gl·eye 에 y,z 부호 반전 = (0, 0, 5)
+//   fy = 180/tan 30° = 311.7691453624
+//   세계점 (1,0,0): X_c = (0.8, 0, 4.4) → u = 320 + 311.7691453624·0.8/4.4 = 376.6852991568, v = 180, d = 4.4
+//   세계점 (0,1,0): X_c = (0, −1, 5) → u = 320, v = 180 − 311.7691453624/5 = 117.6461709275 (위쪽 점은 v 가 작다)
+test('viewpointToCamera: eye.x ≠ 0 시점의 R·t·K 와 한 점의 u·v 리터럴, 좌우 방향', () => {
+  const cam = viewpointToCamera({ eye: [3, 0, 4], target: [0, 0, 0], up: [0, 1, 0], width: 640, height: 360, fov_y_deg: 60 });
+  const wantR = [0.8, 0, -0.6, 0, -1, 0, -0.6, 0, -0.8];
+  wantR.forEach((x, i) => assert.ok(Math.abs(cam.R[i] - x) < 1e-12, `R[${i}] = ${cam.R[i]} vs ${x}`));
+  [0, 0, 5].forEach((x, i) => assert.ok(Math.abs(cam.t[i] - x) < 1e-12, `t[${i}] = ${cam.t[i]} vs ${x}`));
+  assert.ok(Math.abs(cam.K.fy - 311.7691453624) < 1e-9);
+  assert.strictEqual(cam.K.cx, 320);
+  assert.strictEqual(cam.K.cy, 180);
+  const right = project(cam, [1, 0, 0]);
+  assert.ok(Math.abs(right.u - 376.6852991568) < 1e-8, `u ${right.u}`);
+  assert.ok(Math.abs(right.v - 180) < 1e-9, `v ${right.v}`);
+  assert.ok(Math.abs(right.d - 4.4) < 1e-12);
+  assert.ok(right.u > 320, '카메라 오른쪽(x_gl 방향) 점은 u > cx');
+  const left = project(cam, [-1, 0, 0]);
+  assert.ok(left.u < 320, '반대쪽 점은 u < cx');
+  const up = project(cam, [0, 1, 0]);
+  assert.ok(Math.abs(up.u - 320) < 1e-9 && Math.abs(up.v - 117.6461709275) < 1e-8, `up ${up.u},${up.v}`);
+});
+
+// F-093 ①: fov 와 해상도 검사.
+test('viewpointToCamera: fov 거부(0·180·400·음수·문자열·NaN·Infinity·극단 1e-300), 정상 경계 허용', () => {
+  const base = { eye: [3, 0, 4], target: [0, 0, 0], up: [0, 1, 0], width: 640, height: 360 };
+  for (const bad of [0, 180, 400, -10, '60', NaN, Infinity, null, undefined, 1e-300, 1e-4]) {
+    assert.throws(() => viewpointToCamera({ ...base, fov_y_deg: bad }), /^Error: render_views:/, `fov ${String(bad)}`);
+  }
+  assert.throws(() => viewpointToCamera({ ...base, width: 0, fov_y_deg: 60 }), /^Error: render_views:/);
+  assert.throws(() => viewpointToCamera({ ...base, height: 1.5, fov_y_deg: 60 }), /^Error: render_views:/);
+  for (const ok of [0.001, 1, 179.9]) {
+    const c = viewpointToCamera({ ...base, fov_y_deg: ok });
+    assert.ok(Number.isFinite(c.K.fy) && c.K.fy > 0, `fov ${ok}`);
+  }
+});
+
+// F-094 ④: 시점별 칠한 픽셀 수 리터럴. 출처: flat_boxes seed 1(점 200000개) 을 fixtures/viewpoints/synthetic.json 8시점으로
+// 이 저장소의 renderViews 가 처음 통과한 시점에 한 번 실행해 센 값이다(독립 구현이 없어 회귀 고정용 골든이며,
+// 시점 변환·투영·원판 규칙이 바뀌면 이 숫자가 달라진다). 시점 순서: aerial_overview, aerial_oblique_ne, top_down,
+// street_level, low_close_box, tower_high, tower_mid, edge_far.
+const FILLED_005 = [131848, 126594, 139606, 77917, 74189, 110872, 98886, 99822];
+const FILLED_020 = [135766, 164581, 139606, 284826, 280093, 167311, 218371, 267421];
+
+test('renderViews: 시점별 칠한 픽셀 수 리터럴(pointSizeM 0.05 와 0.2)과 opts 반영', async () => {
+  const { generate } = await import('../../fixtures/scenes/flat_boxes/index.mjs');
+  const viewpoints = JSON.parse(await readFile(join(here, '../../fixtures/viewpoints/synthetic.json'), 'utf8')).viewpoints;
+  const cloud = generate({ seed: 1, scene: 'flat_boxes' }).cloud;
+  const count = (r) => { let n = 0; for (let j = 0; j < r.index.length; j++) if (r.index[j] !== -1) n++; return n; };
+  assert.deepStrictEqual(renderViews(cloud, viewpoints, { pointSizeM: 0.05 }).map(count), FILLED_005);
+  assert.deepStrictEqual(renderViews(cloud, viewpoints, { pointSizeM: 0.2 }).map(count), FILLED_020);
+  assert.deepStrictEqual(renderViews(cloud, viewpoints).map(count), FILLED_005, '기본 pointSizeM 은 0.05');
 });

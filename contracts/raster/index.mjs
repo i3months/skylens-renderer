@@ -43,7 +43,9 @@ export const RASTER_API = Object.freeze({
   unproject: { module: 'server/raster_ref/unproject/index.mjs', fn: 'unproject(camera, u, v, d) -> [xw, yw, zw]' },
   intrinsics: { module: 'server/raster_ref/intrinsics/index.mjs', fn: 'scaleIntrinsics(K, fromW, fromH, toW, toH) -> Intrinsics' },
   splat: { module: 'server/raster_ref/splat/index.mjs', fn: 'splatRadiusPx(camera, depth, sizeM) -> number  (= fx·sizeM/(2·d))' },
-  zbuffer: { module: 'server/raster_ref/zbuffer/index.mjs', fn: 'renderPoints(camera, cloud, opts?) -> RenderResult  (opts.pointSizeM 기본 0.05)' },
+  // 56 B 점(형식 2)에서 opacity·scale·rot 는 쓰지 않는다: 모든 점을 opts.pointSizeM 고정 지름의 불투명 원판으로
+  // 그리고 색은 fdc 만 쓴다(참조 래스터는 점 구름 기준선이며 가우시안 스플랫 모양을 재현하지 않는다). 시험으로 고정.
+  zbuffer: { module: 'server/raster_ref/zbuffer/index.mjs', fn: 'renderPoints(camera, cloud, opts?) -> RenderResult  (opts.pointSizeM 기본 0.05; 점 수 = positions.length/3; opacity·scale·rot 무시)' },
   shade: { module: 'server/raster_ref/shade/index.mjs', fn: 'lambert(normalWorld, lightDirWorld, rgb) -> [r,g,b]' },
   no_fill: { module: 'server/raster_ref/no_fill/index.mjs', fn: 'countEmpty(result) -> number' },
   ssim: { module: 'server/metrics/ssim/index.mjs', fn: 'ssim(a, b, width, height, channels) -> number' },
@@ -59,6 +61,21 @@ function assertResolution(width, height) {
     if (!Number.isInteger(v) || v <= 0) throw new Error(`${ERR} ${n} 는 양의 정수여야 함: ${String(v)}`);
   }
   if (width * height > MAX_PIXELS) throw new Error(`${ERR} 해상도 ${width}×${height} 가 상한 ${MAX_PIXELS} 픽셀을 넘음`);
+}
+
+/**
+ * 점 수의 단일 정의: positions.length / 3. cloud.count 가 있으면 그 값과 같아야 한다.
+ * zbuffer 와 no_fill 이 같은 함수를 써서 불일치를 두 곳에서 같은 'raster:' 오류로 거부한다.
+ */
+export function pointCount(cloud) {
+  if (!cloud || !(cloud.positions instanceof Float32Array) || cloud.positions.length % 3 !== 0) {
+    throw new Error(`${ERR} cloud.positions 는 길이가 3 의 배수인 Float32Array 여야 함`);
+  }
+  const n = cloud.positions.length / 3;
+  if (cloud.count !== undefined && cloud.count !== n) {
+    throw new Error(`${ERR} cloud.count ${String(cloud.count)} 가 positions.length/3 = ${n} 과 다름`);
+  }
+  return n;
 }
 
 /** 카메라가 계약대로인지 검사한다. 틀리면 'raster:' 로 시작하는 Error. */
