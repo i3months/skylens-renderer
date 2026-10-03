@@ -8,7 +8,7 @@ import { frustumCull } from './frustum/index.mjs';
 import { backfaceCull, leafNormalCones } from './backface/index.mjs';
 import { occlusionCull, buildDepthPyramid } from './occlusion/index.mjs';
 import { distanceCull } from './distance/index.mjs';
-import { predictiveMask } from './predict/index.mjs';
+import { predictiveMask, predictCamera } from './predict/index.mjs';
 import { leafPriority, orderChunks } from './priority/index.mjs';
 import { cullAndSelect, cullAndSelectDefault } from './combine/index.mjs';
 import { clientFrustumCull, leafBoxesOf } from '../../client/cull/index.mjs';
@@ -32,6 +32,7 @@ const BAD_SHAPE = {
   'R 길이 8': good({ R: [1, 0, 0, 0, 1, 0, 0, 0] }),
   "width '640'": good({ width: '640' }),
   't 길이 2': good({ t: [0, 0] }),
+  't Float32Array 6개': good({ t: new Float32Array(6) }),
 };
 const BAD_VALUE = {
   'NaN K': good({ K: { ...base.K, fx: NaN } }),
@@ -48,6 +49,7 @@ const STAGES = {
   'occlusionCull(피라미드 있음)': (c) => occlusionCull(hier, c, pyramid),
   distanceCull: (c) => distanceCull(hier, c, { maxDistanceM: Infinity }),
   predictiveMask: (c) => predictiveMask(hier, { camera: c, velocityMps: [0, 0, 0], angularRadPerS: [0, 0, 0] }, { horizonS: 1, steps: 2, pointSizeM: 0.1 }),
+  predictCamera: (c) => predictCamera(c, { velocityMps: [1, 0, 0], angularRadPerS: [0, 0, 0] }, 1),
   leafPriority: (c) => leafPriority(hier, c),
   orderChunks: (c) => orderChunks(hier, c, ones),
   clientFrustumCull: (c) => clientFrustumCull(boxes, c, { pointSizeM: 0.1 }),
@@ -72,7 +74,18 @@ for (const [stage, f] of Object.entries(STAGES)) {
         assert.equal(r.cull.stats.degenerate, true);
         assert.equal(r.selection.pointCount, 0);
       }
-      if (stage === 'buildDepthPyramid') return; // 피라미드는 마스크가 아니다: 던지지 않으면 충분
+      if (stage === 'predictCamera') { // 마스크가 아니라 카메라: NaN 이 그대로 퍼진다(던지지 않음)
+        assert.ok(r && typeof r === 'object' && Array.isArray(r.R) && r.R.length === 9);
+        return;
+      }
+      if (stage === 'buildDepthPyramid') { // 빈 피라미드: 퇴화 표지·크기 0·모든 깊이 Infinity
+        assert.equal(r.degenerate, true);
+        assert.equal(r.width, 0);
+        assert.equal(r.height, 0);
+        assert.equal(r.occluderPoints, 0);
+        assert.ok(r.levels.length > 0 && r.levels.every((l) => l.every((v) => v === Infinity)), '빈 피라미드는 모든 깊이가 Infinity'); // 가릴 것이 없다
+        return;
+      }
       assert.ok(arr.every((v) => v === 0), `${stage} 가 비어 있지 않음`);
     });
   }

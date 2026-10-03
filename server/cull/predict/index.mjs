@@ -2,7 +2,7 @@
 // frustumCull(server/cull/frustum)은 다른 하위 작업의 소유라 여기서는 같은 규칙(boxMayBeVisibleSplat)을 직접 쓴다.
 import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
-import { isDegenerateView, degenerateCamera } from '../degenerate/index.mjs';
+import { isDegenerateView, degenerateCamera, assertCameraShape } from '../degenerate/index.mjs';
 
 const ERR = 'cull:';
 const fin = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -35,7 +35,7 @@ function rodrigues(w, dt) {
 export function predictCamera(camera, motion, dtS) {
   if (motion !== undefined && (motion === null || typeof motion !== 'object')) throw new Error(`${ERR} motion 은 객체여야 함`);
   const { velocityMps, angularRadPerS } = motion ?? {};
-  if (!camera || typeof camera !== 'object' || !camera.R || !camera.t) throw new Error(`${ERR} camera 는 R·t 를 가진 객체여야 함`);
+  assertCameraShape(camera); // 다른 단계와 같은 입구 검사(F-136)
   if (typeof dtS !== 'number' || Number.isNaN(dtS)) throw new Error(`${ERR} dtS 는 수여야 함: ${String(dtS)}`);
   const v = vec3(velocityMps, 'velocityMps');
   const w = vec3(angularRadPerS, 'angularRadPerS');
@@ -124,6 +124,7 @@ export function predictiveMask(hierarchy, state, opts) {
         far = Math.hypot(dx, dy, dz);
         m = 1.0001 * (speed * h + omega * h * (far + speed * h)) + 1e-9;
         // 부풀림이 유한수로 표현되지 않으면 상한을 잡을 수 없다: 현재 시점(tau=0)은 부풀림 없이 판정하고, 예측 시점은 보수적으로 남긴다(거짓 제거 방지).
+        // 알려진 한계(F-138 ⑦): tau=0 은 순수 절두체 판정으로 두므로 예측 표본이 모두 퇴화인 극단 입력(v=1e10·horizon 1e300)에서는 horizon 을 늘려도 단조가 아닐 수 있다. 비현실 입력이라 기존 계약(s=0 은 순수 절두체)을 유지한다.
         if (!Number.isFinite(m)) {
           if (tau === 0) m = 0;
           else { out[k] = 1; continue; }
