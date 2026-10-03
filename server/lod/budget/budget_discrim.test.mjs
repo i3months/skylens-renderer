@@ -59,7 +59,7 @@ function materializeLocal(h, sel) {
 // U 는 합이 예산 이하가 되는 가장 작은 값. 예산이 충분하면 U = 0 이라 목표 단계 그대로(selectWithBudget 과 같은 출발점).
 // 모두 최대 단계로도 넘으면 selectWithBudget 과 같은 규칙(먼 리프부터, 동률은 번호 큰 쪽부터)으로 뺀다.
 function uniformSelect(h, camera, budget) {
-  const { visible, distM, target, countAt, levelCount } = leafTargets(h, camera, TAU);
+  const { visible, distM, effDistM, target, countAt, levelCount, focalPx } = leafTargets(h, camera, TAU);
   const L = visible.length;
   const lvl = (k, u) => Math.min(target[k] + u, levelCount - 1);
   const sumAt = (u) => { let s = 0; for (let k = 0; k < L; k++) if (visible[k]) s += countAt(k, lvl(k, u)); return s; };
@@ -92,17 +92,17 @@ function selectionCount(h, sel) {
 // 효율식 변이 사본: selectWithBudget 의 4)단계(탐욕적 거칠게 하기)·5)단계를 그대로 옮기되 invert 면 효율 부호를 뒤집는다.
 // invert=false 사본이 selectWithBudget 과 같은 선택을 내는지 아래 시험이 확인해 변이가 충실함을 보인다.
 function greedySelect(h, camera, budget, invert) {
-  const { visible, distM, target, countAt, levelCount } = leafTargets(h, camera, TAU);
+  const { visible, distM, effDistM, target, countAt, levelCount, focalPx } = leafTargets(h, camera, TAU);
   const L = target.length;
   const leafLevel = Uint8Array.from(target);
   let total = 0;
   for (let k = 0; k < L; k++) if (visible[k]) total += countAt(k, leafLevel[k]);
   if (total <= budget) return { leafLevel, pointCount: total };
-  const fx = camera.K.fx;
+  const fx = focalPx; // F-097 ①: f = max(fx, fy), 실효 거리 d_eff = d·cMin²
   const e = (l) => edgeOfLevel(h.edge0M, l);
   const best = (k, l) => {
     let b = null;
-    const d = Math.max(distM[k], 1e-3);
+    const d = Math.max(effDistM[k], 1e-3);
     for (let m = l + 1; m < levelCount; m++) {
       const saved = countAt(k, l) - countAt(k, m);
       if (saved <= 0) continue;
