@@ -81,18 +81,20 @@ f64 필드는 모두 8바이트 정렬 위치에 있다. 헤더 128 B 는 점 �
 ### 3.2 필드 규칙 (엄격 읽기·검증기가 검사)
 1. magic 일치, version_major = 1 (§9).
 2. header_size ≥ 128, 4의 배수, 파일 길이 이하.
-3. format ∈ {1, 2}, codec 은 읽는 쪽이 아는 값(v1.0 은 0 만).
+3. format ∈ {1, 2}, codec 은 읽는 쪽이 아는 값(0, 1). codec 1 은 format 1 만.
 4. level = seg_level & 3 은 자동으로 0..3, segment_id = seg_level >>> 2 는 0..2^30−1.
 5. point_count ≥ 1. 점이 없는 조각은 만들지 않는다("없음"은 전송 규약이 알린다, T11).
 6. tile_size_m = 64, lod ≤ 7, quant_exp ∈ {8, 9, 10}.
 7. bbox_min·bbox_max 유한, 축마다 min ≤ max, (max − min)·2^quant_exp ≤ 65535.
 8. bbox 의 e·n 범위가 (tile_x, tile_y) 타일 안(§1.2).
 9. anchor 세 값 유한.
-10. body_bytes ≥ 필수 평면 합(§4), header_size + body_bytes = 파일 길이.
+10. codec 0: body_bytes ≥ 필수 평면 합(§4). codec 1: body_bytes ≥ 16 이고 §4.3 본문 길이 규칙. 둘 다 header_size + body_bytes = 파일 길이.
 11. version_minor = 0 이면 reserved 12바이트가 모두 0. version_minor > 0 이면 reserved 를 검사하지 않는다(상위 부 버전이 쓸 수 있다).
 12. checksum 일치(§7).
 
 `parseHeader`(계약)는 1·2·3 의 format 만 본다(최소 검사). 나머지는 T03.1 `readHeaderStrict` 와 T03.6 `validateAsset` 이 한다.
+
+**codec 1 검증**: codec 1 형식의 엄격한 검증(헤더 필드 규칙 3·10 외에도 본문 배치·stream 길이·엔트로피 복호 검사)은 `server/codec/chunk` 모듈의 `decodeChunk` 함수가 담당한다. `tools/asset_validate` 모듈의 `readHeaderStrict` 함수는 codec 0 만 검증하고, codec 1 파일은 `decodeChunk` 를 통해 손상을 검증한다.
 
 ## 4. 본문 배치 — 필드별 평면 배열(SoA)
 
@@ -146,6 +148,13 @@ codec 0 은 평면을 그대로 둔다(바이트 분리·차분·엔트로피 �
 - 형식 2: `3·pad4(2n) + 7·pad4(n) + 4n` — n 이 4의 배수면 17n.
 
 골든 확인: 형식 1, n = 32 → 3·64 + 5·32 = 352. 형식 2, n = 21 → 3·44 + 7·24 + 84 = 384.
+
+### 4.3 codec 1 (SKLC1) 압축 본문
+codec 1 은 §5 의 양자화 값(u16 위치·u8 색·snorm8 팔면체 법선)을 **바꾸지 않고** 점 순서 재배치와 스트림 부호화만 더한다. 따라서 §8 오차 상한이 그대로 성립한다(색 손실 모드만 예외). 형식 1(27 B 점)만 받는다.
+- 점 순서: 모턴 키(3 축 × 16 비트 = 48 비트, 키 비트 3i = e, 3i+1 = n, 3i+2 = u 의 i 번 비트) 오름차순, 키가 같으면 원래 인덱스 오름차순. 점은 집합이라 원래 순서는 담지 않는다.
+- 본문 = `[u8 version=1][u8 color_mode][u16 0][u32 posLen][u32 nrmLen][u32 colLen][pos][normal][color]`. 스트림 길이 합 + 16 = body_bytes 이어야 한다. 각 스트림은 엔트로피 컨테이너(`[u8 mode][LEB128 rawLen][payload]`, mode 0 저장 / 1 적응형 이진 범위 부호화).
+- 원스트림 정의(위치 키 차분 LEB128, 법선 차분 지그재그 평면, 색 모드 0 차분·1 하위 2 비트 손실·2 팔레트)와 범위 부호화 상수는 `contracts/codec/index.mjs` 가 단일 출처다.
+- 복호 방어 상한: 점 수 ≤ 2^22, 스트림 원바이트 ≤ 16·2^22. 넘으면 거부.
 
 ## 5. 부호화 식 (원본 → 저장 값)
 
@@ -217,7 +226,8 @@ PLY `scale_k` 는 ln s 다. `q = clamp(round((scale_k + 10)·16), 0, 255)`. 표�
 |---|---|---|
 | 위치(축마다, f64 복원) | 2^-(quant_exp+1) m: qexp 10 → **0.48828125 mm**, 9 → **0.9765625 mm**, 8 → **1.953125 mm** | 반 단계 |
 | 위치(축마다, f32 원본 레코드) | 위 값 + f32 반올림. \|좌표\| < 4096 m 에서 + 2^-13 m = 0.1220703125 mm → qexp 10 이면 **0.6103515625 mm** | \|좌표\| ≥ 4096 m 면 f32 반 ulp 만큼 더 커진다 |
-| 색(형식 1) | **0** | 손실 없음 |
+| 색(형식 1) | **0** | 무손실 (codec 0·1 모두). codec 1 의 색 모드 1(QUANT2 손실)은 아래 참조 |
+| 색(형식 1, codec 1 QUANT2 손실 모드) | 채널당 평균 절대 오차 **≤ 2/255 ≈ 0.00784**, 채널별 최대 편차 ±2 | 왕복(원본 → QUANT2 부호화 → 복호화) 누적 오차, §4.3 COLOR_MODE.QUANT2 참조. decodeChunk(codec 1)·decodeChunkClient 결과의 color_mode 필드로 손실 모드 표시 |
 | f_dc(형식 2) | **0.5 / (255·C0) = 0.0069507** | 0.5 + C0·f_dc ∈ [0, 1] 인 원본만. 밖은 잘림(오차 = 범위까지 거리 + 위 값) |
 | 법선 각 | **1.0°** | 측정 최대 0.954°(무작위 400만 방향), 0.952°(팔면체 격자 2,500만 점) |
 | 불투명도 α | **1/510 = 0.0019608** | 시그모이드 뒤 α 기준. 로짓 값 자체의 상한은 두지 않는다(α → 0·1 에서 발산) |

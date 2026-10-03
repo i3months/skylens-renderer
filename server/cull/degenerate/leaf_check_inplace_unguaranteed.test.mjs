@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkLeafIndexOneToOne } from './leaf_check.mjs';
+import { checkLeafIndexOneToOne, SENTINEL_SAMPLES } from './leaf_check.mjs';
 
 // F-162①: 제자리 수정은 감지를 보장하지 않는다.
 // 계약(contracts/cull/index.mjs): 검증을 통과한 계층은 불변이며, 제자리 수정은 표본에 걸릴 때만 감지된다.
@@ -22,10 +22,21 @@ const make = () => {
   };
 };
 
-// 표본 단계(SENTINEL_SAMPLES=32에서 계산)로 구한 표본 밖 노드
-const step = Math.floor(NODES / 32);
+// 표본 단계(SENTINEL_SAMPLES에서 계산)로 구한 표본 밖 노드
+const step = Math.floor(NODES / SENTINEL_SAMPLES);
 const LEAF = Math.floor(step / 2);
 const OTHER = LEAF + 1;
+
+// LEAF와 OTHER가 표본 집합 밖인지 사전 단언
+{
+  const samples = new Set();
+  for (let n = 0; n < NODES; n += step) {
+    samples.add(n);
+  }
+  samples.add(NODES - 1); // 마지막 노드도 표본에 포함됨
+  assert(!samples.has(LEAF), `LEAF=${LEAF}가 표본 집합에 포함됨`);
+  assert(!samples.has(OTHER), `OTHER=${OTHER}가 표본 집합에 포함됨`);
+}
 
 test('cull: 표본 밖 리프의 제자리 수정(상자 Infinity, leafIndex 중복)은 재검사에서 감지되지 않는다 - update when detection improves(보장하지 않음이 계약)', () => {
   const oc = make();

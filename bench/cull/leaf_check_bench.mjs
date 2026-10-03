@@ -19,6 +19,7 @@ import { leafBoxesOf, clientFrustumCull } from '../../client/cull/index.mjs';
 
 const USAGE = 'usage: node bench/cull/leaf_check_bench.mjs [--scale small|large] [--runs N] [--points N] [--json path]\n  --runs, --points: positive integers; --scale: small (default) or large';
 const die = (msg) => { console.error(`error: ${msg}\n${USAGE}`); process.exit(1); };
+const knownFlags = new Set(['--scale', '--runs', '--points', '--json', '--help', '-h']);
 const arg = (name, dflt) => {
   const i = process.argv.indexOf(name);
   if (i < 0) return dflt;
@@ -32,6 +33,29 @@ const posInt = (name, dflt) => {
   if (!/^[1-9][0-9]*$/.test(v) || !Number.isSafeInteger(Number(v))) die(`${name} must be a positive integer, got '${v}'`);
   return Number(v);
 };
+
+// --help/-h 처리
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  console.log(USAGE);
+  process.exit(0);
+}
+
+// 알 수 없는 플래그·중복 플래그 검사
+const flagCounts = {};
+for (let i = 2; i < process.argv.length; i++) {
+  const arg = process.argv[i];
+  if (arg.startsWith('--')) {
+    if (!knownFlags.has(arg)) die(`unknown flag: ${arg}`);
+    flagCounts[arg] = (flagCounts[arg] || 0) + 1;
+    if (flagCounts[arg] > 1) die(`duplicate flag: ${arg}`);
+    // 플래그에 값이 필요한 경우 여기서 검사
+    if (['--scale', '--runs', '--points', '--json'].includes(arg)) {
+      if (i + 1 >= process.argv.length || process.argv[i + 1].startsWith('--')) {
+        die(`${arg} needs a value`);
+      }
+    }
+  }
+}
 const SCALE = arg('--scale', 'small');
 if (SCALE !== 'small' && SCALE !== 'large') die(`--scale must be small or large, got '${SCALE}'`);
 const RUNS = posInt('--runs', 15);
@@ -100,7 +124,7 @@ for (const name of Object.keys(hitStages)) {
   }
 
   result[name] = {
-    firstCall: firstCallTime,
+    'warm-JIT 첫 호출': firstCallTime,
     miss: minMiss,
     hit: minHit
   };
@@ -123,7 +147,7 @@ for (let r = 0; r < RUNS; r++) {
 }
 let lcHit = Infinity;
 for (let r = 0; r < RUNS; r++) lcHit = Math.min(lcHit, timeIt(() => checkLeafIndexOneToOne(lcOc)));
-result.leaf_check = { firstCall: lcFirst, miss: lcMiss, hit: lcHit };
+result.leaf_check = { 'warm-JIT 첫 호출': lcFirst, miss: lcMiss, hit: lcHit };
 
 const info = {
   scale: SCALE,
@@ -137,12 +161,16 @@ const info = {
 };
 
 console.log(JSON.stringify(info));
-console.log('stage\tfirstCall ms\tmiss ms\thit ms');
+console.log('stage\twarm-JIT 첫 호출 ms\tmiss ms\thit ms');
 for (const [k, v] of Object.entries(result)) {
-  console.log(`${k}\t${v.firstCall.toFixed(3)}\t${v.miss.toFixed(3)}\t${v.hit.toFixed(3)}`);
+  console.log(`${k}\t${v['warm-JIT 첫 호출'].toFixed(3)}\t${v.miss.toFixed(3)}\t${v.hit.toFixed(3)}`);
 }
 
 const jsonPath = arg('--json');
 if (jsonPath) {
-  writeFileSync(jsonPath, JSON.stringify({ ...info, measurements: result }, null, 2));
+  try {
+    writeFileSync(jsonPath, JSON.stringify({ ...info, measurements: result }, null, 2));
+  } catch (err) {
+    die(`failed to write JSON file: ${err.message}`);
+  }
 }
