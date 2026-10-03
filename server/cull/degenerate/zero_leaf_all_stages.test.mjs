@@ -73,7 +73,7 @@ test('리프 0 개 계층(leafCount 0): cullAndSelect 는 cull: 오류 (계층 �
 
 test('리프 0 개 계층(leafCount 0): backface 기본 구현(loadDefaultImpls)도 cull: 오류', async () => {
   const d = await loadDefaultImpls();
-  assert.throws(() => d.stageImpls.backface(zeroLeafHierarchy(), good(), { pointSizeM: 0.1 }), CULL);
+  assert.throws(() => d.stageImpls.backface(zeroLeafHierarchy(), good(), { pointSizeM: 0.1 }), (e) => CULL.test(String(e)) && /^Error: cull: 계층이 올바르지 않음: lod: 계층의 팔진 트리가 올바르지 않음/.test(String(e)));
 });
 
 // ---- 양성 대조: leafCount ≥ 1 인 같은 구성의 정상 계층은 던지지 않는다 -----------------------
