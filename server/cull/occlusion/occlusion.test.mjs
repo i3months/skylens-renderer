@@ -11,7 +11,23 @@
 //   flat_boxes(리프 1484): 시점 4 street_level 제거 29, 시점 5 low_close_box 66, 그 외 6곳 0. 거짓 0.
 //   terrain·holes: 8곳 모두 제거 0(가리는 물체가 거의 없는 장면), 거짓 0.
 //   → 이 거친 판정은 낮은 시점의 건물 뒤에서만 효과가 있다. 제거율 표는 보고에 남긴다.
-// 기준(사후에 낮추지 않음): 거짓 제거 0(MAX_FALSE_REMOVALS), flat_boxes 8곳 제거 합 ≥ 95(측정값 그대로).
+// 기준: 거짓 제거 0(MAX_FALSE_REMOVALS). 효과 하한은 측정값이 아니라 장면 구조에서 미리 정한다(F-119 ③):
+//   flat_boxes 시점 4(street_level, 눈 높이 1.7 m, 원점 앵커 건물을 약 90 m 앞에서 정면으로 봄)와
+//   시점 5(low_close_box, 눈 높이 3 m, (22,22) 앵커 건물을 약 25 m 앞에서 봄)는 각각 제거 ≥ 1.
+//   이유: 생성기가 이 두 시점의 시선 위에 앵커 건물(바닥 8~14 m, 높이 12~40 m, ANCHORS)을 반드시 두고, 눈은 그 지붕보다 낮다.
+//   그래서 건물 뒤 바닥은 장면 끝(z = −100)까지 화면에서 건물 윤곽 안에 든다(건물 아래쪽 행은 더 가까운 바닥이 덮는다).
+//   점은 면적 비례(20만 점 / 약 5.6만 m² ≈ 3.6 점/m², 평균 간격 약 0.5 m < 점 지름 0.75 m)라 벽·바닥은 막힌 면으로 칠해진다.
+//   바닥 리프는 팔진 트리 칸 200/32 = 6.25 m(6.25² × 3.6 ≈ 140 ≤ 256 점, 한 단계 위 12.5 m 는 약 560 점이라 쪼개짐).
+//   fy ≈ 193(320×180, fov 50°), 0 단계 칸 5×2.8 px.
+//   - 시점 5: 앵커 건물이 약 25 m 앞 → 폭 ≥ 8 m 가 약 60 px 이상. 그 뒤 바닥 리프(먼 쪽에서 리프 하나 + 여유 ≈ 10 px 남짓)는
+//     덮인 칸 안에 넉넉히 든다.
+//   - 시점 4: 앵커 건물 앞면이 약 86 m 앞 → 장면 끝(약 190 m)에서 건물이 가리는 띠는 ≥ 8·190/86 ≈ 18 px, 바닥 리프 사각형은
+//     6.25 m ≈ 6.4 px + 양쪽 여유 약 1.4 px ≈ 10 px. 칸 정렬(5 px)로 양쪽 최대 4 px 를 잃어도 10 px 가 남아 먼 줄 리프 중
+//     적어도 하나는 든다(여유가 좁아 하한을 1 로 둔다).
+//   둘 중 한 곳이라도 0 이면 판정이 효과를 잃은 것이다(예: 피라미드가 비거나, 깊이 비교 방향이 뒤집히거나, 사각형이 화면 전체로
+//   커짐, 가림막 상한·생략이 가까운 건물을 빼먹음). 높은 시점(1·2·3·6)은 내려다보아 가림이 보장되지 않고, 7·8 은 앵커 건물이
+//   시선 위에 있다는 보장이 없어 하한을 두지 않는다.
+//   하한은 측정값(29·66)에서 끌어낸 것이 아니라 위 구조 논증에서 나온 것이며, 측정값에 맞춰 올리거나 내리지 않는다.
 //
 // 변이 확인(아래 마지막 시험): 빈 블록 무시(emptyAsOccluder) · 점 크기 줄이지 않음(noShrink) · 원판 반경 여유 없음(noSplatMargin)
 //   · 피라미드 최솟값(pyramidMin) 네 가지 모두 이 장면들에서 거짓 제거를 낸다.
@@ -76,16 +92,17 @@ test('고정 시점 8곳', () => assert.equal(VP.length, 8));
 
 for (const name of Object.keys(SCENES)) {
   test(`${name}: 시점 8곳에서 거짓 제거 0, 제거율 기록`, () => {
-    const rows = [];
-    let removedSum = 0;
+    const rows = [], removedOf = {};
     for (const vp of VP) {
       const r = check(name, vp);
       rows.push(`${vp.id}:${r.removed}/${r.leaves}(보임 ${r.visible})`);
-      removedSum += r.removed;
+      removedOf[vp.id] = r.removed;
       assert.ok(r.falseRemoved <= MAX_FALSE_REMOVALS, `${name} 시점 ${vp.id} 거짓 제거 ${r.falseRemoved}`);
     }
     console.log(`# ${name} 제거/리프: ${rows.join(' ')}`);
-    if (name === 'flat_boxes') assert.ok(removedSum >= 95, `flat_boxes 가림 제거 합 ${removedSum} < 95`);
+    if (name === 'flat_boxes') {
+      for (const id of [4, 5]) assert.ok(removedOf[id] >= 1, `flat_boxes 시점 ${id}(앵커 건물 앞 낮은 눈) 가림 제거 ${removedOf[id]} < 1`);
+    }
   });
 }
 
