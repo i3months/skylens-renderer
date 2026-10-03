@@ -3,7 +3,7 @@ import { crc32 } from 'node:zlib';
 import {
   FORMAT_POINT27, FORMAT_GAUSS56, CODEC_RAW_PLANAR, VERSION_MAJOR, VERSION_MINOR, HEADER_SIZE, TILE_SIZE_M,
   POSITION_Q_MAX, SH_C0, SCALE_LOG_MIN, SCALE_LOG_STEPS_PER_UNIT, OCT_SNORM_MAX, ROT_COMPONENT_CENTER,
-  ROT_COMPONENT_MAX, OFFSETS, AssetFormatError, bodyLayout, serializeHeader,
+  ROT_COMPONENT_MAX, LOD_MAX, OFFSETS, AssetFormatError, bodyLayout, serializeHeader,
 } from '../../../contracts/asset/index.mjs';
 
 // 명세 §5.0 반올림(0.5 는 올림)
@@ -85,6 +85,8 @@ function pointCountOf(format, f) {
 export function packChunk(input) {
   const { format, segmentId, level, lod, chunkIndex, anchor, fields } = input;
   if (format !== FORMAT_POINT27 && format !== FORMAT_GAUSS56) throw new AssetFormatError('format', `unknown format ${format}`);
+  // lod 는 정수 0..LOD_MAX 만 허용(검증기·엄격 읽기와 일치)
+  if (!Number.isInteger(lod) || lod < 0 || lod > LOD_MAX) throw new AssetFormatError('field', `lod ${lod} not an integer in 0..${LOD_MAX}`);
   const n = pointCountOf(format, fields);
   const pos = fields.positions;
   assertFinite(pos, 'positions');
