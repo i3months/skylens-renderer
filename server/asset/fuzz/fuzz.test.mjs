@@ -50,31 +50,32 @@ for (const { path, names } of SIBLINGS) {
     for (const n of names) skipped.push(`${n}: ${path} 없음`);
     continue;
   }
+  // 파일이 있는데 import 가 실패하면(문법 오류 등) skip 이 아니라 실패다
   let mod;
   try {
     mod = await import(pathToFileURL(file).href);
   } catch (e) {
-    for (const n of names) skipped.push(`${n}: ${path} 불러오기 실패(${e.message})`);
-    continue;
+    throw new Error(`형제 모듈 ${path} 불러오기 실패(파일은 존재함): ${e?.message}`, { cause: e });
   }
   for (const n of names) {
-    if (typeof mod[n] !== 'function') skipped.push(`${n}: ${path} 에 export 없음`);
+    if (typeof mod[n] !== 'function') throw new Error(`형제 모듈 ${path} 에 export ${n} 없음`);
     else targets[n] = { fn: mod[n], noThrow: n === 'validateAsset' || n === 'checkCompat' };
   }
 }
 for (const s of skipped) console.log(`[fuzz] skip ${s}`);
 
 // ---- 입력 생성 ----
+// [이름, 오프셋, 크기, 종류, 축]. 이름은 OFFSETS 키(bboxMin·bboxMax 는 +8*축, anchor 는 anchorLat 기준 +8*축)
 const FIELDS = [
-  ['versionMajor', 4, 2, 'u16'], ['versionMinor', 6, 2, 'u16'], ['headerSize', 8, 2, 'u16'],
-  ['format', 10, 1, 'u8'], ['codec', 11, 1, 'u8'], ['segLevel', 12, 4, 'u32'],
-  ['pointCount', 16, 4, 'u32'], ['pointCount', 16, 4, 'u32'], ['tileX', 20, 4, 'i32'], ['tileY', 24, 4, 'i32'],
-  ['tileSizeM', 28, 2, 'u16'], ['lod', 30, 1, 'u8'], ['quantExp', 31, 1, 'u8'],
-  ['chunkIndex', 32, 4, 'u32'], ['bodyBytes', 36, 4, 'u32'], ['bodyBytes', 36, 4, 'u32'],
-  ['bboxMin', 40, 8, 'f64'], ['bboxMin', 48, 8, 'f64'], ['bboxMin', 56, 8, 'f64'],
-  ['bboxMax', 64, 8, 'f64'], ['bboxMax', 72, 8, 'f64'], ['bboxMax', 80, 8, 'f64'],
-  ['anchor', 88, 8, 'f64'], ['anchor', 96, 8, 'f64'], ['anchor', 104, 8, 'f64'],
-  ['checksum', 112, 4, 'u32'], ['reserved', 116, 4, 'u32'],
+  ['versionMajor', 4, 2, 'u16', 0], ['versionMinor', 6, 2, 'u16', 0], ['headerSize', 8, 2, 'u16', 0],
+  ['format', 10, 1, 'u8', 0], ['codec', 11, 1, 'u8', 0], ['segLevel', 12, 4, 'u32', 0],
+  ['pointCount', 16, 4, 'u32', 0], ['pointCount', 16, 4, 'u32', 0], ['tileX', 20, 4, 'i32', 0], ['tileY', 24, 4, 'i32', 0],
+  ['tileSizeM', 28, 2, 'u16', 0], ['lod', 30, 1, 'u8', 0], ['quantExp', 31, 1, 'u8', 0],
+  ['chunkIndex', 32, 4, 'u32', 0], ['bodyBytes', 36, 4, 'u32', 0], ['bodyBytes', 36, 4, 'u32', 0],
+  ['bboxMin', 40, 8, 'f64', 0], ['bboxMin', 48, 8, 'f64', 1], ['bboxMin', 56, 8, 'f64', 2],
+  ['bboxMax', 64, 8, 'f64', 0], ['bboxMax', 72, 8, 'f64', 1], ['bboxMax', 80, 8, 'f64', 2],
+  ['anchor', 88, 8, 'f64', 0], ['anchor', 96, 8, 'f64', 1], ['anchor', 104, 8, 'f64', 2],
+  ['checksum', 112, 4, 'u32', 0], ['reserved', 116, 4, 'u32', 0],
 ];
 const BIG_FIELDS = new Set(['pointCount', 'bodyBytes']);
 const INT_EDGES = [0, 1, 2, 0x7f, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0xffff, 0x7fffffff, 0x80000000, 0xfffffffe, 0xffffffff];
@@ -168,7 +169,9 @@ function callTarget(name, t, bytes, measureAlloc, stat) {
     else { kind = 'fail'; why = `${e?.name}: ${e?.message}`; }
   }
   let ms = performance.now() - t0;
-  if (ms > MAX_CALL_MS) { // GC 정지 같은 일시 지연은 재시도로 걸러낸다(진짜 느림은 재현된다)
+  // 상한(MAX_CALL_MS)은 유지한다. 부하·GC 정지로 한 번 튄 값은 최대 3회 재시도해 그중 최솟값으로 판정한다.
+  // 진짜 느린 입력은 매번 느려 최솟값도 상한을 넘으므로 잡히고, 일시 지연은 한 번이라도 빠르면 통과한다.
+  if (ms > MAX_CALL_MS) {
     for (let r = 0; r < 3 && ms > MAX_CALL_MS; r++) {
       const t1 = performance.now();
       try { t.fn(...args); } catch { /* 첫 호출에서 이미 분류함 */ }
@@ -180,6 +183,11 @@ function callTarget(name, t, bytes, measureAlloc, stat) {
   if (measureAlloc) {
     const d = arrayBuffers() - a0;
     if (d > MAX_ALLOC_BYTES) { kind = 'fail'; why = `과도한 할당 ${d} B`; }
+  }
+  // 검증기의 내부 예외는 던지지 않고 위반 메시지로 나오므로 따로 걸러낸다
+  if (kind === 'ok' && name === 'validateAsset' && Array.isArray(res) && res.some((v) => /validator failure/.test(v?.message ?? ''))) {
+    kind = 'fail';
+    why = `validator failure(내부 예외): ${res.find((v) => /validator failure/.test(v?.message ?? '')).message}`;
   }
   if (kind === 'ok' && res !== undefined) {
     const ob = outBytes(res);
@@ -244,10 +252,23 @@ for (const s of skipped) {
   test(`fuzz_target_${name}`, { skip: s }, () => {});
 }
 
-// 변이 필드 오프셋이 계약과 어긋나지 않는지
+// 변이 필드 오프셋이 계약 OFFSETS 와 정확히 같은지
 test('fuzz_field_table', () => {
-  const keyOf = { bboxMin: 'bboxMin', bboxMax: 'bboxMax', anchor: 'anchorLat' };
-  for (const [name, off] of FIELDS) {
-    assert.ok(off >= 0 && off < HEADER_SIZE && OFFSETS[keyOf[name] ?? name] !== undefined, name);
+  const ANCHOR = ['anchorLat', 'anchorLon', 'anchorAlt'];
+  const covered = new Set();
+  for (const [name, off, size, kind, axis] of FIELDS) {
+    const key = name === 'anchor' ? ANCHOR[axis] : name;
+    assert.ok(OFFSETS[key] !== undefined, `${name}: OFFSETS 에 없음`);
+    // bbox 는 OFFSETS[key]+8*축, anchor 는 축별 키의 값과 직접 비교
+    const expected = name === 'anchor' ? OFFSETS[key] : OFFSETS[key] + 8 * axis;
+    assert.equal(expected, off, `${name}[${axis}] 오프셋이 계약과 다름`);
+    if (axis > 0) assert.equal(kind, 'f64', `${name}: 축은 f64 만`);
+    assert.equal(size, { u8: 1, u16: 2, u32: 4, i32: 4, f64: 8 }[kind], `${name}: 크기·종류 불일치`);
+    assert.ok(off + size <= HEADER_SIZE, `${name}: 헤더 밖`);
+    covered.add(key);
+  }
+  // 계약의 모든 필드(magic 제외)가 변이 대상에 들어 있어야 한다
+  for (const k of Object.keys(OFFSETS)) {
+    if (k !== 'magic') assert.ok(covered.has(k), `${k}: 변이 대상에서 빠짐`);
   }
 });
