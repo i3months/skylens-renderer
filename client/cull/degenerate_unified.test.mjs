@@ -178,8 +178,8 @@ test('F-120 해상도: 60000x60000 은 퇴화이며 빠르게 빈 결과를 내�
   assert.ok(isZero(mask));
   // 벽시계 대신 작업량: 퇴화 경로는 결과 버퍼(leafPriority n 칸 + frustumCull n 칸 + leafIndex 검사표 n 칸)만 만들고 거친 깊이 버퍼는 만들지 않는다.
   assert.ok(a.max <= n, `퇴화 경로가 ${a.max} 칸 버퍼를 할당함`);
-  // F-152 ①: frustumCull 은 결과 마스크를 leafIndex 검사표로 재사용하므로 단독 할당 합계는 n(아래 단언). 세 함수 합계 문턱은 F-152 ⑧ 이 priority 에 넣은 검사표(leafPriority·orderChunks 각 n)만큼 늘어 4n 이내로 둔다(올리기만 함).
-  assert.ok(a.total <= 4 * n, `퇴화 경로 할당 합계 ${a.total} > 4n`);
+  // F-152 ①: frustumCull 은 결과 마스크를 leafIndex 검사표로 재사용하므로 단독 할당 합계는 n(아래 단언). 세 함수 합계는 leafPriority·orderChunks·frustumCull 이 각자 n 칸 버퍼 하나씩(검사표는 결과 버퍼 재사용)이라 3n 이다(F-155 ①: 4n 에서 되돌림, 호출자 마스크는 0/1 값이라 검사표로 못 씀).
+  assert.ok(a.total <= 3 * n, `퇴화 경로 할당 합계 ${a.total} > 3n`);
   const f = trackAlloc(() => frustumCull(hier, cam));
   assert.ok(f.total <= n, `frustumCull 퇴화 경로 할당 합계 ${f.total} > n`);
 });
