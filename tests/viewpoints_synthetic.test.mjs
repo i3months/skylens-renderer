@@ -48,3 +48,103 @@ test('synthetic_viewpoints_coord_says_enu_meter', () => {
   assert.match(doc.coord, /ENU/);
   assert.match(doc.coord, /1 unit = 1 m/);
 });
+
+test('synthetic_viewpoints_fixed_values', () => {
+  // 8개 위치의 고정된 eye/target/up/width/height/fov_y_deg 값
+  const expectedViewpoints = [
+    {
+      id: 1,
+      name: 'aerial_overview',
+      eye: [0, 120, 140],
+      target: [0, 5, 0],
+      up: [0, 1, 0],
+      width: 1280,
+      height: 720,
+      fov_y_deg: 50,
+    },
+    {
+      id: 2,
+      name: 'aerial_oblique_ne',
+      eye: [90, 60, -90],
+      target: [0, 8, 0],
+      up: [0, 1, 0],
+      width: 1280,
+      height: 720,
+      fov_y_deg: 50,
+    },
+    {
+      id: 3,
+      name: 'top_down',
+      eye: [0, 200, 1],
+      target: [0, 0, 0],
+      up: [0, 1, 0],
+      width: 1280,
+      height: 720,
+      fov_y_deg: 50,
+    },
+    {
+      id: 4,
+      name: 'street_level',
+      eye: [0, 1.7, 90],
+      target: [0, 6, 0],
+      up: [0, 1, 0],
+      width: 1280,
+      height: 720,
+      fov_y_deg: 50,
+    },
+    {
+      id: 5,
+      name: 'low_close_box',
+      eye: [30, 3, 45],
+      target: [20, 8, 20],
+      up: [0, 1, 0],
+      width: 1280,
+      height: 720,
+      fov_y_deg: 50,
+    },
+    {
+      id: 6,
+      name: 'tower_high',
+      eye: [0, 80, 60],
+      target: [0, 0, -20],
+      up: [0, 1, 0],
+      width: 1280,
+      height: 720,
+      fov_y_deg: 50,
+    },
+    {
+      id: 7,
+      name: 'tower_mid',
+      eye: [-60, 30, 70],
+      target: [0, 5, 0],
+      up: [0, 1, 0],
+      width: 1280,
+      height: 720,
+      fov_y_deg: 50,
+    },
+    {
+      id: 8,
+      name: 'edge_far',
+      eye: [-95, 6, 95],
+      target: [40, 5, -40],
+      up: [0, 1, 0],
+      width: 1280,
+      height: 720,
+      fov_y_deg: 50,
+    },
+  ];
+
+  // JSON의 값과 고정된 값 비교
+  for (let i = 0; i < doc.viewpoints.length; i++) {
+    const jsonVp = doc.viewpoints[i];
+    const expectedVp = expectedViewpoints[i];
+    assert.deepEqual(jsonVp.id, expectedVp.id, `viewpoint ${i} id`);
+    assert.deepEqual(jsonVp.name, expectedVp.name, `viewpoint ${i} name`);
+    assert.deepEqual(jsonVp.eye, expectedVp.eye, `viewpoint ${i} eye`);
+    assert.deepEqual(jsonVp.target, expectedVp.target, `viewpoint ${i} target`);
+    assert.deepEqual(jsonVp.up, expectedVp.up, `viewpoint ${i} up`);
+    assert.deepEqual(jsonVp.width, expectedVp.width, `viewpoint ${i} width`);
+    assert.deepEqual(jsonVp.height, expectedVp.height, `viewpoint ${i} height`);
+    assert.deepEqual(jsonVp.fov_y_deg, expectedVp.fov_y_deg, `viewpoint ${i} fov_y_deg`);
+  }
+});
