@@ -53,8 +53,8 @@ function decode(format, c, i, dv, o) {
  * @param {AsyncIterable<Uint8Array>|Iterable<Uint8Array>} source
  * @param {{chunkPoints?: number}} [opts]
  */
-export async function* readPlyStream(source, opts = {}) {
-  const chunkPoints = opts.chunkPoints ?? DEFAULT_CHUNK;
+export async function* readPlyStream(source, opts) {
+  const chunkPoints = (opts ?? {}).chunkPoints ?? DEFAULT_CHUNK;
   if (!Number.isInteger(chunkPoints) || chunkPoints < 1 || chunkPoints > MAX_CHUNK_POINTS) throw new PointsError('range', `chunkPoints ${chunkPoints}`);
   if (source == null || (typeof source[Symbol.asyncIterator] !== 'function' && typeof source[Symbol.iterator] !== 'function')) {
     throw new PointsError('header', 'source is not iterable');
@@ -81,14 +81,18 @@ export async function* readPlyStream(source, opts = {}) {
     let bytes = raw;
     if (!hdr) {
       // 끝 표시를 바이트 단위 KMP 로 찾는다(할당 없이 청크 경계를 넘어 이어 간다)
+      // 머리 상한 안에서만 찾는다: 이미 쌓인 길이를 뺀 남은 칸 밖은 훑지도 복사하지도 않는다
+      const room = MAX_HEADER - headLen;
+      const scanEnd = Math.min(raw.length, room);
       let found = -1;
-      for (let j = 0; j < raw.length; j++) {
+      for (let j = 0; j < scanEnd; j++) {
         const c = raw[j];
         while (m > 0 && c !== MARKER[m]) m = FAIL[m - 1];
         if (c === MARKER[m]) m++;
         if (m === MARKER.length) { found = j; break; }
       }
       if (found < 0) {
+        if (raw.length > room) throw new PointsError('header', 'end_header not found within limit');
         // 작은 청크는 4 KiB 블록에 모아 복사한다(호출자가 버퍼를 재사용해도 안전하고 객체 수도 줄어든다)
         if (raw.length > BLOCK - blockLen) {
           if (blockLen > 0) { headParts.push(block.subarray(0, blockLen)); block = Buffer.allocUnsafe(BLOCK); blockLen = 0; }
@@ -96,20 +100,19 @@ export async function* readPlyStream(source, opts = {}) {
           else { block.set(raw, 0); blockLen = raw.length; }
         } else { block.set(raw, blockLen); blockLen += raw.length; }
         headLen += raw.length;
-        if (headLen > MAX_HEADER) throw new PointsError('header', 'end_header not found within limit');
         return;
       }
-      const end = headLen + found + 1; // 표시 끝까지 포함한 머리 길이
-      const head = Buffer.concat([...headParts, block.subarray(0, blockLen), raw]);
+      // 머리는 표시 끝까지만 합치고, 본문은 복사 없이 뷰로 넘긴다
+      const end = headLen + found + 1;
+      const head = Buffer.concat([...headParts, block.subarray(0, blockLen), raw.subarray(0, found + 1)], end);
       headParts = null; block = null;
-      if (end > MAX_HEADER) throw new PointsError('header', 'end_header not found within limit');
-      try { hdr = parsePlyHeader(head.subarray(0, end)); } catch (e) { throw new PointsError('header', e.message); }
+      try { hdr = parsePlyHeader(head); } catch (e) { throw new PointsError('header', e.message); }
       if (!(hdr.vertexCount <= MAX_VERTEX_COUNT)) throw new PointsError('range', `vertexCount ${hdr.vertexCount}`);
       format = detectFormat(hdr.properties);
       if (!format) throw new PointsError('format', 'unknown vertex layout');
       part = new Uint8Array(hdr.stride);
       partDv = new DataView(part.buffer);
-      bytes = head.subarray(hdr.headerBytes);
+      bytes = raw.subarray(found + 1);
     }
     if (bytes.length === 0) return;
 

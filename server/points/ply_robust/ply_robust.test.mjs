@@ -1,5 +1,8 @@
 import test from 'node:test';
+import v8 from 'node:v8';
+import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import { countCopies } from '../test_util/copies.mjs';
 import { readPlySafe } from './index.mjs';
 import { PointsError, POINT27_PROPERTIES, GAUSS56_PROPERTIES } from '../../../contracts/points/index.mjs';
 
@@ -62,15 +65,21 @@ test('비 Uint8Array 입력', () => {
   for (const x of [null, undefined, 5, 'ply', [1], {}]) rejects(x, 'header');
 });
 test('거대 count 는 큰 할당 없이 즉시 거부', () => {
-  // 벽시계 대신 할당량으로 단언: count 만큼(수십 GB) 할당했다면 arrayBuffers 가 크게 늘어난다
+  // 벽시계 대신 할당량으로 단언: count 만큼(수십 GB) 할당했다면 arrayBuffers 가 크게 늘어난다.
+  // 측정 전에 GC 를 강제해 앞선 테스트의 버퍼 회수가 섞이지 않게 하고, 증가량만(한쪽) 본다.
+  v8.setFlagsFromString('--expose-gc');
+  const gc = vm.runInNewContext('gc');
   const input = Buffer.concat([hdr({ n: 2 ** 31 - 1 }), rec27(0)]);
-  let minGrowth = Infinity;
   for (let r = 0; r < 5; r++) {
+    gc(); gc();
     const before = process.memoryUsage().arrayBuffers;
-    rejects(input, 'truncated');
-    minGrowth = Math.min(minGrowth, process.memoryUsage().arrayBuffers - before);
+    // 결정적 계수: Buffer 로 복사·할당된 바이트도 입력 길이에 비해 무시할 만해야 한다
+    const copied = countCopies(() => rejects(input, 'truncated'));
+    // 호출 뒤에는 GC 하지 않는다: 만들어졌다 버려진 큰 버퍼도 증가량으로 보이게 한다(자연 GC 는 증가를 줄일 뿐이라 단언은 안전하다)
+    const growth = process.memoryUsage().arrayBuffers - before;
+    assert.ok(growth < 1 << 20, `arrayBuffers 증가량 ${growth} B`);
+    assert.ok(copied < 1 << 16, `Buffer 복사량 ${copied} B`);
   }
-  assert.ok(minGrowth < 1 << 20, `arrayBuffers 증가량 ${minGrowth} B`);
 });
 
 test('고정 시드 변이 5천 회', () => {

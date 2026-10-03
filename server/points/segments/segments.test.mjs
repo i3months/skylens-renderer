@@ -29,9 +29,9 @@ test('빈 목록은 빈 결과', () => assert.deepEqual(identifySegments([]), []
 test('규칙 밖 이름은 rejected 로 분리', () => {
   for (const n of [
     'SEG0_step00250.ply', 'seg0_step00250.PLY', 'seg0_step00250.ply.bak', 'seg0_step00250.txt',
-    'seg00_step00250.ply', 'seg_step00250.ply', 'seg-1_step00250.ply',
+    'seg0_STEP00250.ply', 'seg01_step00250.ply', 'seg0_step000250.ply', 'seg00_step00250.ply', 'seg_step00250.ply', 'seg-1_step00250.ply',
     'seg0_step00123.ply', 'seg0_step0250.ply', 'seg0_step00001.ply',
-    'dir/seg0_step00250.ply', 'seg0_step00250.ply\n', 'seg1073741824_step00250.ply', 42,
+    'dir/seg0_step00250.ply', 'dir\\seg0_step00250.ply', 'seg0_step00250.ply\n', 'seg1073741824_step00250.ply', 42,
   ]) {
     const got = identifySegments([n]);
     assert.deepEqual(got, []);
