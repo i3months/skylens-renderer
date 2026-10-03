@@ -1,163 +1,109 @@
 // 장면 미리보기 렌더링 도구(T05.10). PNG 인코딩은 node:zlib 을 쓴다.
-// 입력: Point27Cloud, GL 규약 시점(eye/target/up/fov_y_deg/width/height)
+// 입력: Point27Cloud(format 1), GL 규약 시점(eye/target/up/fov_y_deg/width/height). 잘못된 입력은 'scene_preview:' Error.
 // 출력: 렌더링된 이미지(rgb 색상, z-버퍼로 가장 가까운 점 우선)
 
 import { deflateSync } from 'node:zlib';
+import { cameraExtrinsics } from '../../bench/baseline/ref_images/index.mjs';
 
-/**
- * 3D 점 하나를 카메라 공간으로 변환하고 투영한다.
- * @param {[number, number, number]} point 월드 공간 점 (x, y, z)
- * @param {[number, number, number]} eye 카메라 위치 (GL 규약)
- * @param {[number, number, number][]} basis [right, up, backward] 카메라 기저 벡터 (정규화됨)
- * @returns {{u: number, v: number, d: number} | null} 화면 좌표 및 깊이, 또는 null (카메라 뒤)
- */
-function projectPoint(point, eye, basis, focalLength, cx, cy) {
-  const [px, py, pz] = point;
-  const [ex, ey, ez] = eye;
+// 카메라 외부 행렬은 기준 이미지 생성기(bench/baseline/ref_images)의 cameraExtrinsics 를 그대로 쓴다(같은 제품 저장소,
+// 읽기 전용 재사용). GL 오른손 규약: z_c = normalize(eye − target), x_c = normalize(up × z_c), y_c = z_c × x_c.
+// 시선 forward = −z_c 로 쓰면 right = normalize(forward × up), upNorm = right × forward 와 같다.
+// 투영·픽셀 매핑은 아래에 스칼라로 따로 적는다(시험이 ref_images projectCamera 와 독립 대조할 수 있도록).
+//   d = −X_c.z, u = cx + f·X_c.x/d, v = cy − f·X_c.y/d, 픽셀 (floor(u), floor(v)) — 픽셀 (i,j) 는 [i,i+1)×[j,j+1).
 
-  // 월드→카메라 공간: 상대 위치를 기저로 표현
-  const relx = px - ex;
-  const rely = py - ey;
-  const relz = pz - ez;
+const ERR = 'scene_preview:';
 
-  const [right, up, backward] = basis;
-
-  // 카메라 공간 좌표
-  // right, up은 이미 정규화됨
-  const camx = relx * right[0] + rely * right[1] + relz * right[2];
-  const camy = relx * up[0] + rely * up[1] + relz * up[2];
-  const camz = relx * backward[0] + rely * backward[1] + relz * backward[2];
-
-  // z > 0은 카메라가 바라보는 방향이므로 투영
-  // z <= 0은 카메라 뒤에 있으므로 투영하지 않음
-  if (camz <= 0) return null;
-
-  // 투시 투영: u = cx + f*x/z, v = cy - f*y/z (GL: y 상향)
-  const u = cx + focalLength * camx / camz;
-  const v = cy - focalLength * camy / camz;
-
-  return { u, v, d: camz };
+function isVec3(v) {
+  return Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === 'number' && Number.isFinite(x));
 }
 
 /**
- * 세 벡터의 외적을 계산한다: a × b
- * @param {[number, number, number]} a
- * @param {[number, number, number]} b
- * @returns {[number, number, number]}
+ * 시점 입력을 검사한다. 틀리면 'scene_preview:' 로 시작하는 Error.
+ * @param {Object} viewpoint
  */
-function cross(a, b) {
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
+export function assertPreviewViewpoint(viewpoint) {
+  if (!viewpoint || typeof viewpoint !== 'object') throw new Error(`${ERR} 시점(viewpoint)이 객체가 아님`);
+  const { eye, target, up, width, height, fov_y_deg } = viewpoint;
+  for (const [name, v] of [['eye', eye], ['target', target], ['up', up]]) {
+    if (!isVec3(v)) throw new Error(`${ERR} ${name} 는 유한한 3-벡터여야 함: ${JSON.stringify(v)}`);
+  }
+  for (const [name, v] of [['width', width], ['height', height]]) {
+    if (!Number.isInteger(v) || v <= 0) throw new Error(`${ERR} ${name} 는 양의 정수여야 함: ${String(v)}`);
+  }
+  if (width * height * 3 > 0x7fffffff) throw new Error(`${ERR} 이미지가 너무 큼: ${width}×${height}`);
+  if (typeof fov_y_deg !== 'number' || !Number.isFinite(fov_y_deg) || !(fov_y_deg > 0 && fov_y_deg < 180)) {
+    throw new Error(`${ERR} fov_y_deg 는 0 초과 180 미만의 유한 수여야 함: ${String(fov_y_deg)}`);
+  }
+  const f = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
+  const fl = Math.hypot(f[0], f[1], f[2]);
+  if (!(fl > 1e-9)) throw new Error(`${ERR} eye 와 target 이 같음`);
+  const ul = Math.hypot(up[0], up[1], up[2]);
+  if (!(ul > 1e-9)) throw new Error(`${ERR} up 이 영벡터임`);
+  const c = [f[1] * up[2] - f[2] * up[1], f[2] * up[0] - f[0] * up[2], f[0] * up[1] - f[1] * up[0]];
+  // 시선과 up 사이 각의 사인 < 1e-6 이면 평행으로 본다(ref_images cameraExtrinsics 의 판정과 같은 문턱).
+  if (!(Math.hypot(c[0], c[1], c[2]) >= 1e-6 * fl * ul)) throw new Error(`${ERR} up 이 시선과 평행함`);
 }
 
 /**
- * 벡터의 정규화
- * @param {[number, number, number]} v
- * @returns {[number, number, number]}
+ * 점군 입력을 검사한다. 미리보기는 27 B(format 1, colors 필요) 만 받는다.
+ * @param {Object} cloud
  */
-function normalize(v) {
-  const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-  if (len === 0) return [0, 0, 0];
-  return [v[0] / len, v[1] / len, v[2] / len];
+export function assertPreviewCloud(cloud) {
+  if (!cloud || typeof cloud !== 'object') throw new Error(`${ERR} 점군(cloud)이 객체가 아님`);
+  if (!Number.isInteger(cloud.count) || cloud.count < 0) throw new Error(`${ERR} count 는 0 이상의 정수여야 함: ${String(cloud.count)}`);
+  if (!(cloud.colors instanceof Uint8Array)) {
+    throw new Error(`${ERR} colors(Uint8Array)가 없음 — 56 B(format 2) 점군은 미리보기할 수 없으니 format 1 로 생성할 것 (format ${String(cloud.format)})`);
+  }
+  if (!(cloud.positions instanceof Float32Array || cloud.positions instanceof Float64Array)) {
+    throw new Error(`${ERR} positions 는 Float32Array 여야 함`);
+  }
+  if (cloud.positions.length < 3 * cloud.count) throw new Error(`${ERR} positions 길이 ${cloud.positions.length} < 3·count ${3 * cloud.count}`);
+  if (cloud.colors.length < 3 * cloud.count) throw new Error(`${ERR} colors 길이 ${cloud.colors.length} < 3·count ${3 * cloud.count}`);
 }
 
 /**
- * 카메라 기저 벡터 계산 (GL 규약: y-up, 카메라는 -z 바라봄)
- * backward: eye에서 target으로의 방향 (카메라가 보는 방향의 반대)
- * @param {[number, number, number]} eye
- * @param {[number, number, number]} target
- * @param {[number, number, number]} up
- * @returns {[number, number, number][]} [right, up_norm, backward]
- */
-function computeBasis(eye, target, up) {
-  // forward: eye에서 target으로의 방향
-  const forward = [
-    target[0] - eye[0],
-    target[1] - eye[1],
-    target[2] - eye[2],
-  ];
-  const forwardNorm = normalize(forward);
-
-  // right = up × forward
-  const right = cross(normalize(up), forwardNorm);
-  const rightNorm = normalize(right);
-
-  // up_norm = forward × right
-  const upNorm = cross(forwardNorm, rightNorm);
-
-  // backward = forward (카메라 공간의 z축, 양수가 카메라 앞)
-  const backward = forwardNorm;
-
-  return [rightNorm, upNorm, backward];
-}
-
-/**
- * 점군을 시점으로 렌더링한다.
- * @param {import('../../contracts/scenes/index.mjs').Point27Cloud | import('../../contracts/scenes/index.mjs').Gauss56Cloud} cloud 점군
- * @param {Object} viewpoint 시점 정보
+ * 점군을 시점으로 렌더링한다(점 크기 1 px, z-버퍼로 가장 가까운 점, 같은 깊이면 먼저 온 점).
+ * @param {import('../../contracts/scenes/index.mjs').Point27Cloud} cloud 27 B 점군
+ * @param {Object} viewpoint 시점 정보 (GL 규약)
  * @param {[number, number, number]} viewpoint.eye 카메라 위치
  * @param {[number, number, number]} viewpoint.target 바라보는 점
  * @param {[number, number, number]} viewpoint.up 상향 벡터
- * @param {number} viewpoint.width 이미지 너비
- * @param {number} viewpoint.height 이미지 높이
- * @param {number} viewpoint.fov_y_deg 수직 FOV (도)
- * @returns {{width: number, height: number, rgb: Uint8Array}} 렌더링된 이미지
+ * @param {number} viewpoint.width 이미지 너비 (양의 정수)
+ * @param {number} viewpoint.height 이미지 높이 (양의 정수)
+ * @param {number} viewpoint.fov_y_deg 수직 FOV (도, 0 초과 180 미만)
+ * @returns {{width: number, height: number, rgb: Uint8Array}} 렌더링된 이미지 (배경 검정)
  */
 export function renderPreview(cloud, viewpoint) {
+  assertPreviewViewpoint(viewpoint);
+  assertPreviewCloud(cloud);
   const { eye, target, up, width, height, fov_y_deg } = viewpoint;
 
-  // 카메라 파라미터
-  const fovRad = fov_y_deg * Math.PI / 180;
-  const focalLength = (height / 2) / Math.tan(fovRad / 2);
+  const f = (height / 2) / Math.tan((fov_y_deg * Math.PI) / 360);
   const cx = width / 2;
   const cy = height / 2;
+  const { R, t } = cameraExtrinsics({ eye, target, up });
 
-  // 카메라 기저
-  const basis = computeBasis(eye, target, up);
-
-  // RGB 이미지 버퍼 (각 픽셀 3 바이트)
   const rgb = new Uint8Array(width * height * 3);
-
-  // Z-버퍼 (각 픽셀 깊이)
-  const zBuffer = new Float32Array(width * height).fill(Infinity);
-
-  // 모든 점을 투영하고 렌더링
-  const n = cloud.count;
-  const positions = cloud.positions;
-  const colors = cloud.colors;
+  const zBuffer = new Float64Array(width * height).fill(Infinity);
+  const { count: n, positions, colors } = cloud;
 
   for (let i = 0; i < n; i++) {
-    const point = [
-      positions[3 * i],
-      positions[3 * i + 1],
-      positions[3 * i + 2],
-    ];
-
-    const proj = projectPoint(point, eye, basis, focalLength, cx, cy);
-    if (proj === null) continue; // 카메라 뒤에 있음
-
-    const { u, v, d } = proj;
-
-    // 화면 범위 체크
-    const px = Math.round(u);
-    const py = Math.round(v);
-
-    if (px < 0 || px >= width || py < 0 || py >= height) continue;
-
+    const x = positions[3 * i];
+    const y = positions[3 * i + 1];
+    const z = positions[3 * i + 2];
+    const d = -(R[6] * x + R[7] * y + R[8] * z + t[2]);
+    if (!(d > 0)) continue; // 카메라 뒤(또는 비유한)
+    const xc = R[0] * x + R[1] * y + R[2] * z + t[0];
+    const yc = R[3] * x + R[4] * y + R[5] * z + t[1];
+    const px = Math.floor(cx + (f * xc) / d);
+    const py = Math.floor(cy - (f * yc) / d);
+    if (!(px >= 0 && px < width && py >= 0 && py < height)) continue;
     const pixelIdx = py * width + px;
-
-    // Z-버퍼 테스트 (가장 가까운 점만 유지)
     if (d < zBuffer[pixelIdx]) {
       zBuffer[pixelIdx] = d;
-
-      // RGB 색상 쓰기
-      const colorIdx = 3 * i;
-      rgb[3 * pixelIdx] = colors[colorIdx];
-      rgb[3 * pixelIdx + 1] = colors[colorIdx + 1];
-      rgb[3 * pixelIdx + 2] = colors[colorIdx + 2];
+      rgb[3 * pixelIdx] = colors[3 * i];
+      rgb[3 * pixelIdx + 1] = colors[3 * i + 1];
+      rgb[3 * pixelIdx + 2] = colors[3 * i + 2];
     }
   }
 
@@ -172,6 +118,13 @@ export function renderPreview(cloud, viewpoint) {
  * @returns {Uint8Array} PNG 파일 바이트
  */
 export function encodePng(width, height, rgb) {
+  // PNG IHDR 의 너비·높이는 1 ~ 2^31−1 (PNG 명세 11.2.2). 스캔라인 버퍼는 JS 배열 한도 안이어야 한다.
+  for (const [name, v] of [['width', width], ['height', height]]) {
+    if (!Number.isInteger(v) || v <= 0 || v > 0x7fffffff) throw new Error(`${ERR} encodePng ${name} 는 1~2147483647 정수여야 함: ${String(v)}`);
+  }
+  if (height * (1 + width * 3) > 0x7fffffff) throw new Error(`${ERR} encodePng 이미지가 너무 큼: ${width}×${height}`);
+  if (!(rgb instanceof Uint8Array)) throw new Error(`${ERR} encodePng rgb 는 Uint8Array 여야 함`);
+  if (rgb.length !== width * height * 3) throw new Error(`${ERR} encodePng rgb 길이 ${rgb.length} ≠ width·height·3 = ${width * height * 3}`);
   // PNG 파일 구조:
   // 1. PNG 시그니처 (8 바이트)
   // 2. IHDR 청크 (이미지 정보)

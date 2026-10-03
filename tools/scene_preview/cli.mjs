@@ -9,6 +9,21 @@ import { renderPreview, encodePng } from './index.mjs';
 
 const __dirname = import.meta.dirname || join(fileURLToPath(import.meta.url), '..');
 
+/**
+ * 시드 인자를 엄격히 읽는다: 10진 숫자만(부호·소수점·지수·공백·접미 문자 금지), 0~4294967295.
+ * parseInt 는 '12abc'→12, '1e3'→1 로 조용히 받으므로 쓰지 않는다.
+ * @param {string} s
+ * @returns {number}
+ */
+export function parseSeedArg(s) {
+  if (typeof s !== 'string' || !/^[0-9]{1,10}$/.test(s)) {
+    throw new Error(`scene_preview: 시드는 0~4294967295 범위의 10진 정수여야 함: ${JSON.stringify(s)}`);
+  }
+  const v = Number(s);
+  if (v > 0xffffffff) throw new Error(`scene_preview: 시드는 0~4294967295 범위의 10진 정수여야 함: ${JSON.stringify(s)}`);
+  return v;
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
@@ -18,10 +33,11 @@ async function main() {
   }
 
   const [sceneName, seedStr, outputDir] = args;
-  const seed = parseInt(seedStr, 10);
-
-  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
-    console.error('오류: 시드는 0~4294967295 범위의 정수여야 함');
+  let seed;
+  try {
+    seed = parseSeedArg(seedStr);
+  } catch (e) {
+    console.error(e.message);
     process.exit(1);
   }
 
@@ -136,7 +152,10 @@ async function main() {
   console.log('완료');
 }
 
-main().catch(e => {
-  console.error('예기치 않은 오류:', e);
-  process.exit(1);
-});
+// 직접 실행할 때만 main 을 돈다(시험이 parseSeedArg 를 import 할 수 있도록).
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(e => {
+    console.error('예기치 않은 오류:', e);
+    process.exit(1);
+  });
+}
