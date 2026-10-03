@@ -1,5 +1,6 @@
 // T07.9 점진 순서(거친 단계 먼저). 계약: contracts/lod/index.mjs 의 LOD_API.progressive.
-// select 모듈에 의존하지 않는다: 리프의 목표 단계는 이 모듈 안에서 distance_table 로 직접 계산한다.
+// selectLevels 결과에 의존하지 않는다: 리프의 목표 단계는 이 모듈 안에서 계산하되, 화면 오차 규칙
+// (f = max(fx,fy), d_eff = d·cMin², 거리표)은 server/lod/select/screen_error.mjs 의 공용 함수를 그대로 쓴다.
 //
 // 델레이 패턴(RULES §1.1): 같은 구간(리프)의 낮은 단계는 높은 단계로 "교체"한다(누적 아님),
 //   이미 추월당한 중간 단계는 건너뛴다. 그래서 한 리프의 조각은 최대 2개다.
@@ -7,20 +8,10 @@
 //     목표 T <  최대 단계  -> [최대 단계 조각, T 단계 조각]   (사이 단계는 보내지 않음)
 // 조각 순서: 거친 단계(큰 level) 먼저, 같은 단계 안에서는 카메라에 가까운 리프 먼저(동률이면 리프 번호).
 import { assertCamera } from '../../../contracts/raster/index.mjs';
-import { buildDistanceTable, levelForDistance } from '../distance_table/index.mjs';
+import { screenErrorRule } from '../select/screen_error.mjs';
 
 const ERR = 'lod:';
 const NEAR_EPS = 1e-6; // 카메라 앞 판정 하한(m)
-const MIN_DIST_M = 1e-9; // 거리 0(카메라가 상자 안) 일 때 distance_table 에 넘길 최소 거리
-
-/** 카메라 중심(세계 좌표): X_c = R·X_w + t 이므로 C = −Rᵀ·t. */
-function cameraCenter({ R, t }) {
-  return [
-    -(R[0] * t[0] + R[3] * t[1] + R[6] * t[2]),
-    -(R[1] * t[0] + R[4] * t[1] + R[7] * t[2]),
-    -(R[2] * t[0] + R[5] * t[1] + R[8] * t[2]),
-  ];
-}
 
 /** 상자(min,max)가 시야 절두체와 겹칠 수 있는가(보수적: 확실히 밖일 때만 false). */
 function boxInView(camera, bmin, bmax) {
@@ -49,16 +40,6 @@ function boxInView(camera, bmin, bmax) {
   return true;
 }
 
-/** 점 C 에서 상자까지의 최단 거리. */
-function distToBox(c, bmin, bmax) {
-  let s = 0;
-  for (let a = 0; a < 3; a++) {
-    const d = c[a] < bmin[a] ? bmin[a] - c[a] : c[a] > bmax[a] ? c[a] - bmax[a] : 0;
-    s += d * d;
-  }
-  return Math.sqrt(s);
-}
-
 /** 리프 번호 -> 노드 번호(octree.leafIndex 의 역) */
 function leafNodes(octree) {
   const m = new Int32Array(octree.leafCount);
@@ -68,7 +49,8 @@ function leafNodes(octree) {
 
 /**
  * 시야 안 리프마다 목표 단계를 정하고 점진 전송 조각 열을 만든다.
- * 리프 목표 단계 = levelForDistance(거리표, 카메라~리프 상자 최단 거리) (최대 단계로 제한).
+ * 리프 목표 단계 = 공용 화면 오차 규칙(screen_error.mjs)으로 d_eff = d·cMin² 에서 고른 단계(최대 단계로 제한).
+ * 같은 단계 안 순서의 '가까움' 은 카메라~리프 상자 최단 거리 d.
  * @returns {{level:number, leaf:number, indices:Uint32Array}[]}  indices 는 그 단계 대표점의 입력 점 번호(해당 리프 구간)
  */
 export function progressiveChunks(hierarchy, camera, opts) {
@@ -80,8 +62,7 @@ export function progressiveChunks(hierarchy, camera, opts) {
   }
   const { octree, levels, edge0M } = hierarchy;
   const maxLevel = levels.length - 1;
-  const table = buildDistanceTable({ fx: camera.K.fx, thresholdPx: opts?.thresholdPx, edge0M, levelCount: levels.length });
-  const center = cameraCenter(camera);
+  const rule = screenErrorRule(camera, { thresholdPx: opts?.thresholdPx, edge0M, levelCount: levels.length });
   const node = leafNodes(octree);
 
   const out = [];
@@ -90,8 +71,8 @@ export function progressiveChunks(hierarchy, camera, opts) {
     const bmin = octree.boxMin.subarray(3 * node[k], 3 * node[k] + 3);
     const bmax = octree.boxMax.subarray(3 * node[k], 3 * node[k] + 3);
     if (!boxInView(camera, bmin, bmax)) continue; // 시야 밖 리프는 조각 0
-    const dist = distToBox(center, bmin, bmax);
-    const target = Math.min(maxLevel, levelForDistance(table, Math.max(dist, MIN_DIST_M)));
+    const { distM: dist, level } = rule.leaf(bmin, bmax);
+    const target = Math.min(maxLevel, level);
     // 최초 거친 조각 -> 목표 단계 조각(중간 단계는 건너뜀)
     const want = target === maxLevel ? [maxLevel] : [maxLevel, target];
     for (const l of want) {
