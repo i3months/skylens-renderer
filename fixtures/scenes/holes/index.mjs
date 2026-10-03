@@ -1,7 +1,7 @@
 // 'holes' 장면: 무늬 없는 영역(흰 지붕·물)에는 실제 복원에서 점이 생기지 않는다(renderer_basis §7-3).
 // x,z ∈ [-100,100] 평지(y=0, 법선 (0,1,0))에 무늬 있는 땅 점을 뿌리되, 시드로 정한 직사각형 빈자리 6곳
 // (지붕 4·물 2, 한 변 10~30 m, 서로 겹치지 않음)에는 점을 만들지 않는다. 빈자리는 메우지 않는다(RULES §1.2).
-import { mulberry32, subSeed, makeResult, FORMAT_POINT27 } from '../../../contracts/scenes/index.mjs';
+import { mulberry32, subSeed, makeResult, FORMAT_POINT27, checkCount, normalizeSeed, checkFormat } from '../../../contracts/scenes/index.mjs';
 
 const HALF = 100;
 const AREA_M2 = (2 * HALF) * (2 * HALF);
@@ -41,9 +41,10 @@ function color(x, z, rnd) {
 }
 
 /** @param {import('../../../contracts/scenes/index.mjs').GenerateOptions} opts */
-export function generate(opts) {
-  const seed = opts.seed >>> 0;
-  const n = opts.count ?? DEFAULT_COUNT;
+export function generate(opts = {}) {
+  const seed = normalizeSeed(opts.seed);
+  const n = checkCount(opts.count, DEFAULT_COUNT);
+  const format = checkFormat(opts.format);
   const holes = placeHoles(seed);
   const rnd = mulberry32(subSeed(seed, 2));
   const positions = new Float32Array(3 * n);
@@ -64,5 +65,5 @@ export function generate(opts) {
     bounds: { min: [-HALF, 0, -HALF], max: [HALF, 0, HALF] },
     holes, holeAreaM2, areaM2: AREA_M2, holeFraction: holeAreaM2 / AREA_M2,
   };
-  return makeResult('holes', seed, opts.format ?? FORMAT_POINT27, { format: FORMAT_POINT27, count: n, positions, normals, colors }, truth);
+  return makeResult('holes', seed, format, { format: FORMAT_POINT27, count: n, positions, normals, colors }, truth);
 }

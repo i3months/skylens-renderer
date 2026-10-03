@@ -77,3 +77,73 @@ test('시점_8곳_시선_원뿔_안에_상자_점이_있다', () => {
     }
   }
 });
+
+// ---- 반려 수정(F-085 ②, F-086, F-083): 시험 안에서 독립적으로 정답을 만든다 ----
+const C0 = 0.28209479177387814; // SH 0차 계수(해석값)
+const TOL = 1e-4;
+
+test('상자_면_위_점은_면_위_1e-4_이내이고_바깥_법선', () => {
+  for (const seed of [1, 9, 77]) {
+    const r = generate({ seed, count: 60000 });
+    const { positions: P, normals: Nn } = r.cloud;
+    const B = r.truth.buildings;
+    let wall = 0;
+    for (let i = 0; i < r.count; i++) {
+      const x = P[3 * i], y = P[3 * i + 1], z = P[3 * i + 2];
+      if (y === 0) continue;
+      const n = [Nn[3 * i], Nn[3 * i + 1], Nn[3 * i + 2]];
+      let ok = false;
+      for (const b of B) {
+        const inX = x >= b.min[0] - TOL && x <= b.max[0] + TOL;
+        const inY = y >= -TOL && y <= b.max[1] + TOL;
+        const inZ = z >= b.min[2] - TOL && z <= b.max[2] + TOL;
+        if (!(inX && inY && inZ)) continue;
+        // 면: [축, 면 위치, 바깥 법선]
+        const faces = [[0, b.max[0], [1, 0, 0]], [0, b.min[0], [-1, 0, 0]], [2, b.max[2], [0, 0, 1]], [2, b.min[2], [0, 0, -1]], [1, b.max[1], [0, 1, 0]]];
+        for (const [axis, pos, fn] of faces) {
+          const c = axis === 0 ? x : axis === 1 ? y : z;
+          if (Math.abs(c - pos) <= TOL && fn.every((v, k) => Math.abs(v - n[k]) <= 1e-6)) ok = true;
+        }
+      }
+      assert.ok(ok, `시드 ${seed} 점 ${i} (${x},${y},${z}) 법선 ${n}: 어느 상자 면 위의 바깥 법선도 아님`);
+      wall++;
+    }
+    assert.ok(wall > 10000);
+    // 네 방향 벽이 모두 존재(+x 벽은 법선 [1,0,0])
+    const seen = new Set();
+    for (let i = 0; i < r.count; i++) if (P[3 * i + 1] !== 0) seen.add(`${Nn[3 * i]},${Nn[3 * i + 1]},${Nn[3 * i + 2]}`);
+    for (const k of ['1,0,0', '-1,0,0', '0,0,1', '0,0,-1', '0,1,0']) assert.ok(seen.has(k), `법선 ${k} 없음`);
+  }
+});
+
+test('y0_바닥_점은_모든_상자_밑면_밖', () => {
+  for (const seed of [1, 4, 33]) {
+    const r = generate({ seed, count: 60000 });
+    const { positions: P } = r.cloud;
+    let ground = 0;
+    for (let i = 0; i < r.count; i++) {
+      if (P[3 * i + 1] !== 0) continue;
+      ground++;
+      const x = P[3 * i], z = P[3 * i + 2];
+      for (const b of r.truth.buildings) {
+        assert.ok(!(x > b.min[0] && x < b.max[0] && z > b.min[2] && z < b.max[2]), `시드 ${seed}: 바닥 점 (${x},${z}) 가 상자 밑면 안`);
+      }
+    }
+    assert.ok(ground > 10000);
+  }
+});
+
+test('잘못된_개수_시드_형식은_거부하고_0_1은_통과', () => {
+  for (const count of [NaN, -5, 10.5, 'abc', Infinity]) assert.throws(() => generate({ seed: 1, count }), /scene:/);
+  for (const seed of [NaN, -5, 10.5, 'abc', 2 ** 32]) assert.throws(() => generate({ seed, count: 10 }), /scene:/);
+  for (const format of [0, 3, '1', NaN]) assert.throws(() => generate({ seed: 1, count: 10, format }), /scene:/);
+  assert.equal(generate({ seed: 1, count: 0 }).count, 0);
+  assert.equal(generate({ seed: 1, count: 1 }).count, 1);
+});
+
+test('format2_위치는_format1과_같고_fdc는_색에서_역변환한_값', () => {
+  const a = generate({ seed: 6, count: 3000, format: 1 }), b = generate({ seed: 6, count: 3000, format: 2 });
+  assert.deepEqual([...b.cloud.positions], [...a.cloud.positions]);
+  for (let i = 0; i < 3 * 3000; i++) assert.ok(Math.abs(b.cloud.fdc[i] - (a.cloud.colors[i] / 255 - 0.5) / C0) <= 1e-6);
+  assert.ok(Math.abs(b.cloud.scales[0] - Math.log(0.05)) <= 1e-6);
+});
