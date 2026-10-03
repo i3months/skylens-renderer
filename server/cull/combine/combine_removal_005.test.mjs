@@ -242,3 +242,13 @@ test('F-133④ 변이 자기 점검: 가림 피라미드 원판 지름 ×1.01 �
   };
   for (const seed of GAP_SEEDS) assert.throws(() => checkGap(seed, 'occlusion', mutated), /keep: 제거 1/, `시드 ${seed}`);
 });
+
+test('F-137③ 변이 자기 점검: 뒷면 coverFilter 원판 지름 ×1.01 이면 시드 1..12 모두 격자 경계 고정값이 깨진다', () => {
+  const bf = defaults.stageImpls.backface;
+  const mutated = {
+    ...defaults.stageImpls,
+    // 뒷면 단계의 덮임 판정(coverFilter)에 들어가는 원판 지름만 1 % 키운다. 단계 구현은 pointSizeM 을 coverFilter 에만 쓴다.
+    backface: (h, cam, o) => bf(h, cam, { ...o, pointSizeM: o.pointSizeM * 1.01 }),
+  };
+  for (const seed of GAP_SEEDS) assert.throws(() => checkGap(seed, 'backface', mutated), /keep: 제거 1/, `시드 ${seed}`);
+});
