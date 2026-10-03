@@ -7,6 +7,8 @@ import { assertHierarchyInput } from '../../lod/select/index.mjs';
 const ORTHO_TOL = 1e-6;
 /** 시야각 하한(rad). 이보다 좁으면 퇴화. */
 export const MIN_FOV_RAD = 1e-6;
+/** 해상도 한 변 상한(px). 이보다 크면 퇴화(버퍼 할당 불가·비현실). 클라이언트 복제본과 같은 값. */
+export const MAX_RESOLUTION_PX = 1e6;
 
 const isFin = (v) => typeof v === 'number' && Number.isFinite(v);
 const isPosFin = (v) => isFin(v) && v > 0;
@@ -15,6 +17,7 @@ function checkCamera(camera) {
   if (!camera || typeof camera !== 'object') return true;
   const { width, height, K, R, t } = camera;
   if (!isPosFin(width) || !isPosFin(height)) return true;
+  if (width > MAX_RESOLUTION_PX || height > MAX_RESOLUTION_PX) return true;
   if (!K || typeof K !== 'object') return true;
   if (!isPosFin(K.fx) || !isPosFin(K.fy) || !isFin(K.cx) || !isFin(K.cy)) return true;
   // 시야각: 가로 2·atan(width/(2fx)), 세로 2·atan(height/(2fy)). 둘 중 하나라도 1e-6 rad 미만이면 퇴화.

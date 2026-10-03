@@ -1,6 +1,6 @@
 // T07.5 점 예산 상한 하의 단계 선택. 계약: contracts/lod/index.mjs 의 LOD_API.budget, Selection, NOT_DRAWN.
 //
-// selectWithBudget(hierarchy, camera, {budgetPoints, thresholdPx}) -> Selection,  pointCount ≤ budgetPoints 를 항상 지킨다.
+// selectWithBudget(hierarchy, camera, {budgetPoints, thresholdPx, pointSizeM?}) -> Selection,  pointCount ≤ budgetPoints 를 항상 지킨다.
 //
 // server/lod/select(selectLevels) 결과에 의존하지 않는다: 리프별 목표 단계를 이 모듈 안에서 계산하되,
 // 화면 오차 규칙(f = max(fx,fy), d_eff = max(d·cMin², z_P·c_P), 거리표)은 server/lod/select/screen_error.mjs 의 공용 함수를 그대로 쓴다.
@@ -9,6 +9,8 @@
 //  1) 시야 판정(../select/view_check.mjs 공용): 리프 상자 8 꼭짓점을 카메라 좌표로 옮겨, 한 절두체 평면(근평면 z>0, 화면 좌·우·위·아래)의
 //     바깥에 8 점이 모두 있으면 시야 밖 → NOT_DRAWN. 상자는 볼록이므로 이 판정은 보수적이다(보이는 리프를 버리지 않음).
 //     점이 하나도 없는 리프도 그릴 것이 없으므로 NOT_DRAWN.
+//     opts.pointSizeM(래스터 원판 지름 m)을 주면 좌·우·위·아래 평면을 원판 반경만큼 민 판정(boxMayBeVisibleSplat)을 쓴다(F-126).
+//     없으면 원판 중심 규칙 그대로(기존 결과 불변). 판정 고르기는 view_check.mjs 의 lodVisibilityTest 한 곳.
 //  2) 거리 d: 카메라 중심에서 리프 상자까지의 최단 거리(상자 안이면 0). 실효 거리 d_eff = max(d·cMin², z_P·c_P)
 //     (cMin = 상자 꼭짓점의 광축 각 cos 최솟값, 가장자리 투영 확대 1/cos²α 보정, screen_error.mjs 머리 주석).
 //  3) 목표 단계 = 공용 규칙(f = max(fx,fy), τ = thresholdPx, edge0M·levelCount 는 계층 값)으로 d_eff 에서 고른 단계.
@@ -33,11 +35,11 @@
 //    바꾸면 호출 쪽 버그를 숨기므로 던진다.
 //  - thresholdPx 는 distance_table 의 검사(양의 유한수, 'lod:' 오류)를 그대로 따른다. 카메라는 raster 계약 검사를 하되 오류는 select·progressive 와 같이 'lod:' 로 감싼다.
 
-import { NOT_DRAWN, edgeOfLevel, assertCloud } from '../../../contracts/lod/index.mjs';
+import { NOT_DRAWN, edgeOfLevel } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { assertHierarchyInput } from '../select/index.mjs';
 import { screenErrorRule } from '../select/screen_error.mjs';
-import { boxMayBeVisible } from '../select/view_check.mjs';
+import { lodVisibilityTest } from '../select/view_check.mjs';
 
 const ERR = 'lod:';
 // 거리 하한(m). 탐욕 단계의 ΔE 분모(d_eff)가 0 이 되지 않게 막는다(d_eff = 0 인 리프는 ΔE 가 매우 커서 맨 나중에 거칠어진다).
@@ -96,15 +98,17 @@ function heapPop(h) {
 /**
  * 리프별 시야·거리·목표 단계를 계산한다(예산과 무관). 시험과 비교 기준이 같은 값을 쓰도록 내보낸다.
  * distM = 카메라 중심~상자 최소 거리(먼 리프부터 빼는 순서), effDistM = d_eff(= max(d·cMin², z_P·c_P), screen_error.mjs 참조)(화면 오차·목표 단계에 쓰는 실효 거리).
+ * opts.pointSizeM(선택): 래스터 원판 지름(m). 주면 시야 판정에 원판 반경 여유를 둔다(F-126). 없으면 원판 중심 규칙.
  * @returns {{visible: Uint8Array, distM: Float64Array, effDistM: Float64Array, target: Uint8Array, countAt: (leaf:number, level:number)=>number, levelCount: number, focalPx: number}}
  */
-export function leafTargets(hierarchy, camera, thresholdPx) {
+export function leafTargets(hierarchy, camera, thresholdPx, opts) {
   assertHierarchyInput(hierarchy);
   try {
     assertCamera(camera);
   } catch (e) {
     throw new Error(`${ERR} 카메라가 올바르지 않음 (${e.message})`);
   }
+  const mayBeVisible = lodVisibilityTest(opts?.pointSizeM);
   const { octree, levels, edge0M } = hierarchy;
   const levelCount = levels.length;
   const rule = screenErrorRule(camera, { thresholdPx, edge0M, levelCount });
@@ -121,7 +125,7 @@ export function leafTargets(hierarchy, camera, thresholdPx) {
     const mn = octree.boxMin.subarray(3 * n, 3 * n + 3);
     const mx = octree.boxMax.subarray(3 * n, 3 * n + 3);
     // 빈 리프·시야 밖 판정을 rule.leaf 앞에 둔다: d 가 Infinity 여도 select·progressive 와 같이 빈 결과(F-107 ②).
-    if (countAt(k, 0) === 0 || !boxMayBeVisible(camera, mn, mx)) continue;
+    if (countAt(k, 0) === 0 || !mayBeVisible(camera, mn, mx)) continue;
     const e = rule.leaf(mn, mx);
     distM[k] = e.distM;
     effDistM[k] = e.effDistM;
@@ -151,14 +155,14 @@ function bestStep(k, l, d, ctx) {
  * 점 예산 상한 하에서 리프별 단계를 고른다. 머리 주석의 절차·음성 규칙 참조.
  * @param {import('../../../contracts/lod/index.mjs').Hierarchy} hierarchy
  * @param {import('../../../contracts/raster/index.mjs').Camera} camera
- * @param {{budgetPoints:number, thresholdPx:number}} opts
+ * @param {{budgetPoints:number, thresholdPx:number, pointSizeM?:number}} opts
  * @returns {import('../../../contracts/lod/index.mjs').Selection}
  */
 export function selectWithBudget(hierarchy, camera, opts) {
   if (!opts || typeof opts !== 'object') throw new Error(`${ERR} 옵션이 객체가 아님`);
   const { budgetPoints, thresholdPx } = opts;
   assertBudget(budgetPoints);
-  const { visible, distM, effDistM, target, countAt, levelCount, focalPx } = leafTargets(hierarchy, camera, thresholdPx);
+  const { visible, distM, effDistM, target, countAt, levelCount, focalPx } = leafTargets(hierarchy, camera, thresholdPx, { pointSizeM: opts.pointSizeM });
   const L = target.length;
   const leafLevel = Uint8Array.from(target);
   let total = 0;

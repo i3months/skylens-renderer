@@ -5,30 +5,12 @@
 // 빈 리프(levels[0] 구간이 빈 리프)는 그릴 점이 없으므로 0. 퇴화 시점이면 던지지 않고 전부 0.
 import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 
+import { isDegenerateView } from '../degenerate/index.mjs';
+
 const ERR = 'cull:';
 
-/**
- * 퇴화 시점 최소 판정(T08.10 의 server/cull/degenerate 가 생기면 그쪽으로 교체).
- * NaN·Infinity, 해상도·초점거리 ≤ 0, R 이 회전이 아님이면 true. 던지지 않는다.
- */
-export function isDegenerateViewLocal(camera) {
-  if (!camera || typeof camera !== 'object') return true;
-  const { width, height, K, R, t } = camera;
-  if (!(Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0)) return true;
-  if (!K || !(Number.isFinite(K.fx) && K.fx > 0 && Number.isFinite(K.fy) && K.fy > 0 && Number.isFinite(K.cx) && Number.isFinite(K.cy))) return true;
-  if (!R || R.length !== 9 || !t || t.length !== 3) return true;
-  for (let i = 0; i < 9; i++) if (typeof R[i] !== 'number' || !Number.isFinite(R[i])) return true;
-  for (let i = 0; i < 3; i++) if (typeof t[i] !== 'number' || !Number.isFinite(t[i])) return true;
-  for (let i = 0; i < 3; i++) {
-    for (let j = 0; j < 3; j++) {
-      let s = 0;
-      for (let k = 0; k < 3; k++) s += R[i * 3 + k] * R[j * 3 + k];
-      if (Math.abs(s - (i === j ? 1 : 0)) > 1e-6) return true;
-    }
-  }
-  const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
-  return !(Math.abs(det - 1) <= 1e-6);
-}
+/** 하위 호환 별칭: 판정은 degenerate/index.mjs 의 isDegenerateView 하나만 쓴다(F-120). */
+export const isDegenerateViewLocal = isDegenerateView;
 
 function assertHierarchyLocal(h) {
   const oc = h?.octree;
@@ -64,7 +46,7 @@ export function frustumCull(hierarchy, camera, opts) {
   const pointSizeM = pointSizeOf(opts);
   const oc = hierarchy.octree;
   const mask = new Uint8Array(oc.leafCount);
-  if (isDegenerateViewLocal(camera)) return mask;
+  if (isDegenerateView(camera)) return mask;
   const ls = hierarchy.levels[0].leafStart;
   const mn = [0, 0, 0], mx = [0, 0, 0];
   for (let node = 0; node < oc.nodeCount; node++) {

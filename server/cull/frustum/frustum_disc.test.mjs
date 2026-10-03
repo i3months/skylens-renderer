@@ -3,7 +3,6 @@
 // 수치는 모두 고정 시드로 미리 구워 둔 값이다(사후 문턱 없음).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { renderPoints } from '../../raster_ref/zbuffer/index.mjs';
 import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 import { frustumCull } from './index.mjs';
@@ -149,18 +148,8 @@ for (const [seed, n, pointCount, visible, kept, mutFalse] of EDGE_CASES) {
   });
 }
 
-test('F-116 변이: view_check.mjs 소스에서 원판 여유 항을 지우면 가장자리 장면에서 거짓 제거가 생긴다', async () => {
-  const url = new URL('../../lod/select/view_check.mjs', import.meta.url);
-  const src = readFileSync(url, 'utf8');
-  const MARGIN = '0.5 * camera.K.fx * pointSizeM';
-  assert.equal(src.split(MARGIN).length, 2, '원판 여유 식이 소스에 정확히 한 번 있어야 함');
-  const mutated = await import(`data:text/javascript;base64,${Buffer.from(src.replace(MARGIN, '0')).toString('base64')}`);
-  const [seed, n, , , , mutFalse] = EDGE_CASES[0];
-  const { cloud, h } = scene(seed, n);
-  const mask = maskWith(h, (mn, mx) => mutated.boxMayBeVisibleSplat(CAM, mn, mx, SIZE_M));
-  assert.equal(audit(h, cloud, mask).falseRemoved, mutFalse);
-});
-
+// F-127 ⑤: 소스 문자열을 바꾸는 변이 테스트는 삭제했다. 같은 보증(원판 여유가 없으면 거짓 제거가 생김)은
+// 위 EDGE_CASES 루프의 pointSizeM:0 대조(mutFalse)가 동작으로 확인한다.
 test('F-116 회전 카메라에서도 원판 여유가 유지된다(8 꼭짓점 아핀 판정)', () => {
   // y 축 둘레로 0.4 rad 돌린 카메라, 같은 K. 카메라 좌표에서 가장자리 바깥 0~r px 에 점을 둔 뒤 세계로 되돌린다.
   const c = Math.cos(0.4), s = Math.sin(0.4);

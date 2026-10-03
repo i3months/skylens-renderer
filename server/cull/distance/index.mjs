@@ -14,6 +14,21 @@ function assertHierarchy(h) {
     || oc.leafIndex.length < oc.nodeCount || oc.boxMin.length < 3 * oc.nodeCount || oc.boxMax.length < 3 * oc.nodeCount) {
     throw new Error(`${ERR} octree 배열 길이가 nodeCount·leafCount 와 맞지 않음`);
   }
+  // leafIndex: 값은 -1(내부 노드) 또는 [0, leafCount), 리프<->노드 일대일
+  const seen = new Uint8Array(oc.leafCount);
+  let leaves = 0;
+  for (let n = 0; n < oc.nodeCount; n++) {
+    const k = oc.leafIndex[n];
+    if (k === -1) continue;
+    if (k < 0 || k >= oc.leafCount || seen[k]) {
+      throw new Error(`${ERR} leafIndex[${n}]=${k} 가 범위를 벗어났거나 중복됨`);
+    }
+    seen[k] = 1;
+    leaves++;
+  }
+  if (leaves !== oc.leafCount) {
+    throw new Error(`${ERR} leafIndex 의 리프 수(${leaves})가 leafCount(${oc.leafCount}) 와 다름`);
+  }
   const l0 = h.levels?.[0]?.leafStart;
   if (!(l0 instanceof Uint32Array) || l0.length !== oc.leafCount + 1) {
     throw new Error(`${ERR} levels[0].leafStart 길이가 leafCount+1 이 아님`);
@@ -27,7 +42,21 @@ function isDegenerateCamera(camera) {
   if (!R || R.length !== 9 || !t || t.length !== 3) return true;
   for (let i = 0; i < 9; i++) if (typeof R[i] !== 'number' || !Number.isFinite(R[i])) return true;
   for (let i = 0; i < 3; i++) if (typeof t[i] !== 'number' || !Number.isFinite(t[i])) return true;
-  return false;
+  return !isRotation(R);
+}
+
+// R 이 회전(정규직교·det=+1)인지. 0 행렬·2I·반사 등은 거부. (isDegenerateView 는 width/height/K 까지 요구해 쓸 수 없음)
+function isRotation(R) {
+  const TOL = 1e-6;
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      let s = 0;
+      for (let k = 0; k < 3; k++) s += R[i * 3 + k] * R[j * 3 + k];
+      if (!(Math.abs(s - (i === j ? 1 : 0)) <= TOL)) return false;
+    }
+  }
+  const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
+  return Math.abs(det - 1) <= TOL;
 }
 
 /**
@@ -41,7 +70,11 @@ function isDegenerateCamera(camera) {
  * @returns {Uint8Array} LeafMask 길이 leafCount, 1 = 남김, 0 = 제거
  */
 export function distanceCull(hierarchy, camera, opts = {}) {
-  const { maxDistanceM } = opts;
+  if (opts === null || typeof opts !== 'object') throw new Error(`${ERR} opts 는 객체여야 함`);
+  let { maxDistanceM } = opts;
+  // undefined = 생략(전부 남김). 그 외 비숫자(null·문자열 등)는 오류.
+  if (maxDistanceM === undefined) maxDistanceM = Infinity;
+  else if (typeof maxDistanceM !== 'number') throw new Error(`${ERR} maxDistanceM 은 숫자여야 함`);
   assertHierarchy(hierarchy);
   const { octree, levels } = hierarchy;
   const { leafCount, nodeCount, boxMin, boxMax, leafIndex } = octree;
