@@ -36,6 +36,17 @@ function trackAlloc(fn) {
   return st;
 }
 
+// 하한 증인 점: 마지막 비어 있지 않은 리프(번호 ≥ 1, 아래 mask[0]=0 에 걸리지 않는다)의 첫 단계 0 대표점. 카메라 광축이 정확히 이 점을 지나도록 둔다.
+let wk = n - 1;
+while (wk > 0 && h.levels[0].leafStart[wk + 1] === h.levels[0].leafStart[wk]) wk--;
+assert.ok(wk >= 1, '증인 리프 없음');
+const wp = [0, 1, 2].map((i) => h.levels[0].positions[3 * h.levels[0].leafStart[wk] + i]);
+const wnode = (() => { for (let i = 0; i < h.octree.nodeCount; i++) if (h.octree.leafIndex[i] === wk) return i; return -1; })();
+function camThrough(width, height, f = 500) {
+  const R = [1, 0, 0, 0, -1, 0, 0, 0, -1]; // 카메라 z = 월드 -z. 점 wp 의 카메라 좌표 = (0, 0, 60)
+  return { width, height, K: { fx: f, fy: f, cx: width / 2, cy: height / 2 }, R, t: [-wp[0], wp[1], wp[2] + 60] };
+}
+
 // 한 변 상한 1e6 때문에 1x2^26 같은 가는 해상도는 불법. 합법 극단: 정사각 상한, 2^26 경계, 한 변 1e6.
 const LEGAL = [[8192, 8192], [1000, 67108], [67108, 1000], [1e6, 67], [67, 1e6], [1e6, 1], [1, 1e6], [1, 1]];
 for (const [w, hh] of LEGAL) {
@@ -54,6 +65,25 @@ for (const [w, hh] of LEGAL) {
     assert.ok(a1.max <= MAX_COARSE_CELLS, `거친 버퍼 ${a1.max} 칸 > 상한`);
     assert.ok(a2.max <= MAX_COARSE_CELLS, `거친 버퍼 ${a2.max} 칸 > 상한`);
     assert.ok(a2.total <= a1.total + 2 * n, `orderChunks 할당 ${a2.total} > leafPriority ${a1.total} + 2n`);
+  });
+  // 0 점수 퇴행(예: 큰 해상도에서 전부 0 반환) 방지: 구조 논증으로 정한 하한. 임의 수치가 아니다.
+  // 카메라는 대표점 wp 를 광축(화면 중앙 (W/2,H/2)) 위 깊이 60 m 에 둔다. 그러면
+  //  (1) wp 는 카메라 앞(z=60>0)이고 중앙에 투영되며 원판 반지름 ≥ 0.5 칸이라 중앙 칸을 반드시 덮는다(칸은 [0,w)x[0,h) 안, 중앙은 안쪽 또는 1칸 버퍼의 칸 0).
+  //      깊이 버퍼 소유권은 '덮인 칸은 어떤 리프든 한 리프가 가진다' 이므로 그 칸 1개는 어느 리프의 이긴 칸이 된다. 이긴 칸 수 ≥ 1 이고 px 환산 계수는 1/(sx*sy) ≥ 1
+  //      (거친 폭·높이 w=max(1,round(W*scale)) ≤ W 이므로 sx,sy ≤ 1). 따라서 점수 최댓값 ≥ 1 px.
+  //  (2) wp 의 리프 상자는 wp 를 품으므로 투영 경계상자가 중앙을 가로질러 화면과 양의 면적으로 겹친다(A>0). 보조 항 0.5*A/(1+A) > 0 이므로 그 리프 점수 > 0.
+  //  (3) 마스크에서 0번만 빼므로 wk ≥ 1 인 그 리프가 남아 orderChunks 의 첫 항목 점수는 > 0 이어야 한다(점수 내림차순이므로 첫 항목이 최대).
+  test(`합법 ${w}x${hh} 0 이 아닌 점수`, () => {
+    const c = camThrough(w, hh);
+    const bmin = [0, 1, 2].map((i) => h.octree.boxMin[3 * wnode + i]), bmax = [0, 1, 2].map((i) => h.octree.boxMax[3 * wnode + i]);
+    assert.ok([0, 1, 2].every((i) => bmin[i] <= wp[i] && wp[i] <= bmax[i]), '증인 점이 자기 리프 상자 안에 있어야 한다');
+    const p = leafPriority(h, c);
+    assert.ok(p[wk] > 0, `증인 리프 점수 ${p[wk]} 는 > 0 이어야 함`);
+    assert.ok(Math.max(...p) >= 1, `점수 최댓값 ${Math.max(...p)} 는 ≥ 1 px 이어야 함`);
+    const mask = new Uint8Array(n).fill(1);
+    mask[0] = 0;
+    const o = orderChunks(h, c, mask);
+    assert.ok(p[o[0]] > 0, `첫 순위 리프 점수 ${p[o[0]]} 는 > 0 이어야 함`);
   });
 }
 
