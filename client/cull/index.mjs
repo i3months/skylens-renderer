@@ -6,7 +6,7 @@
 //   fy·y + (cy − H)·z − m ≤ 0. X_c 의 1차식이라 8 꼭짓점 판정이 정확하다.
 // opts.pointSizeM 이 없으면 원판 크기를 모르므로 좌·우·위·아래로는 아무것도 버리지 않는다(앞 z > 0 만 판정).
 // 퇴화 시점(서버 isDegenerateView 와 같은 식: NaN·Infinity, 해상도·초점거리 ≤ 0, 해상도 > 1e6, 해상도가 정수 아님, 픽셀 수 > 2^26, 시야각 < 1e-6 rad, R 이 회전 아님)이면 던지지 않고 전부 0 을 돌려준다.
-// 카메라 구조 오류(객체 아님·width/height/K·R·t 누락·수가 아닌 값·R·t 가 일반 배열이 아님·길이 틀림, 서버 assertCameraShape 와 같은 규칙)와 입력 오류(leafBoxes 형식)는 'cull:' 오류(F-132).
+// 카메라 구조 오류(객체 아님·width/height/K·R·t 누락·수가 아닌 값·R·t 가 일반 배열이 아님·길이 틀림·희소 배열 구멍, 서버 assertCameraShape 와 같은 규칙)와 입력 오류(octree·leafBoxes 형식: 리프 0 개, boxMin·boxMax 가 Float32Array 아님)는 'cull:' 오류(F-132). 카메라·octree 필드를 읽다가 접근자·Proxy 가 던져도 'cull:' 오류로 바꾼다(F-143 ⑨, F-146).
 const ERR = 'cull:';
 const ROT_TOL = 1e-6;
 const MIN_FOV_RAD = 1e-6; // 서버 degenerate 와 같은 값
@@ -62,10 +62,22 @@ function assertCameraShapeBody(camera) {
 
 /** 팔진 트리에서 리프 번호 순서의 상자를 모은다(순수 함수). octree: {leafCount, leafIndex, boxMin, boxMax}. */
 export function leafBoxesOf(octree) {
+  try {
+    return leafBoxesOfBody(octree);
+  } catch (e) {
+    // 접근자(getter)·Proxy 가 던져도 원래 TypeError 가 새지 않게 'cull:' 로 감싼다(F-146 ①).
+    if (String(e?.message ?? e).startsWith(ERR)) throw e;
+    throw new Error(`${ERR} octree 필드를 읽지 못함: ${String(e?.message ?? e)}`, { cause: e });
+  }
+}
+
+function leafBoxesOfBody(octree) {
   if (!octree || typeof octree !== 'object') throw new Error(`${ERR} octree 는 객체여야 함`);
   const { leafCount, leafIndex, boxMin, boxMax } = octree;
   // 리프 0 개 계층은 서버 predict·lod·occlusion 과 같이 거부한다(계층 계약: leafCount ≥ 1).
   if (!Number.isInteger(leafCount) || leafCount < 1 || !leafIndex || !boxMin || !boxMax) throw new Error(`${ERR} octree 형식이 올바르지 않음`);
+  // F-146 ①: 일반 배열 boxMin/boxMax 는 subarray 가 없어 TypeError 가 새므로 타입배열인지 먼저 검사한다.
+  if (!(boxMin instanceof Float32Array) || !(boxMax instanceof Float32Array)) throw new Error(`${ERR} octree boxMin·boxMax 는 Float32Array 여야 함`);
   // F-122 ⑥: 짧은 boxMin/boxMax 는 subarray 가 조용히 잘려 NaN·0 상자가 되므로 길이를 먼저 검사한다.
   if (boxMin.length < 3 * leafIndex.length || boxMax.length < 3 * leafIndex.length) {
     throw new Error(`${ERR} boxMin(${boxMin.length})·boxMax(${boxMax.length}) 길이가 3×노드 수(${3 * leafIndex.length}) 보다 짧음`);

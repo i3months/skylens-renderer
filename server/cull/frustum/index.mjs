@@ -12,17 +12,27 @@ const ERR = 'cull:';
 /** 하위 호환 별칭: 판정은 degenerate/index.mjs 의 isDegenerateView 하나만 쓴다(F-120). */
 export const isDegenerateViewLocal = isDegenerateView;
 
-function assertHierarchyLocal(h) {
+function assertHierarchyChecked(h) {
   const oc = h?.octree;
   if (!oc || !(oc.leafIndex instanceof Int32Array) || !(oc.boxMin instanceof Float32Array) || !(oc.boxMax instanceof Float32Array)) {
     throw new Error(`${ERR} 계층(octree)이 올바르지 않음`);
   }
-  if (!Number.isInteger(oc.leafCount) || oc.leafCount < 0 || !Number.isInteger(oc.nodeCount)
+  if (!Number.isInteger(oc.leafCount) || oc.leafCount < 1 || !Number.isInteger(oc.nodeCount)
     || oc.leafIndex.length < oc.nodeCount || oc.boxMin.length < 3 * oc.nodeCount || oc.boxMax.length < 3 * oc.nodeCount) {
     throw new Error(`${ERR} octree 배열 길이가 nodeCount·leafCount 와 맞지 않음`);
   }
   const l0 = h.levels?.[0]?.leafStart;
   if (!(l0 instanceof Uint32Array) || l0.length !== oc.leafCount + 1) throw new Error(`${ERR} levels[0].leafStart 길이가 leafCount+1 이 아님`);
+}
+
+/** 계층 구조 검사. 필드 읽기 중 예외(접근자·Proxy)도 'cull:' 오류로 바꿔 던진다(F-145). 리프 0 개(leafCount < 1)는 거부. */
+function assertHierarchyLocal(h) {
+  try {
+    assertHierarchyChecked(h);
+  } catch (e) {
+    if (typeof e?.message === 'string' && e.message.startsWith(ERR)) throw e;
+    throw new Error(`${ERR} 계층 필드를 읽는 중 예외: ${String(e?.message ?? e)}`);
+  }
 }
 
 /** opts 검사 후 pointSizeM(없으면 undefined)을 돌려준다. */

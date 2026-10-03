@@ -3,12 +3,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generate as terrain } from '../../../fixtures/scenes/terrain/index.mjs';
 import { buildHierarchy } from '../../lod/hierarchy/index.mjs';
-import { leafPriority, orderChunks } from './index.mjs';
+import { leafPriority, orderChunks, MAX_COARSE_CELLS as IMPL_MAX_COARSE_CELLS } from './index.mjs';
 
 const { cloud } = terrain({ seed: 1, count: 20000 });
 const h = buildHierarchy(cloud, { edge0M: 0.5, levelCount: 4, maxLeafPoints: 512 });
 const n = h.octree.leafCount;
 const MAX_COARSE_CELLS = 4_000_000; // priority/index.mjs 의 거친 버퍼 칸 수 상한과 같은 값
+assert.equal(IMPL_MAX_COARSE_CELLS, MAX_COARSE_CELLS, '구현 상수가 시험 예상값과 같아야 함');
 
 // 장면 중심을 내려다보는 카메라(R = 아래를 향함). 해상도·초점거리만 바꾼다.
 function cam(width, height, f = 500) {
@@ -77,6 +78,7 @@ for (const [w, hh] of LEGAL) {
     const c = camThrough(w, hh);
     const bmin = [0, 1, 2].map((i) => h.octree.boxMin[3 * wnode + i]), bmax = [0, 1, 2].map((i) => h.octree.boxMax[3 * wnode + i]);
     assert.ok([0, 1, 2].every((i) => bmin[i] <= wp[i] && wp[i] <= bmax[i]), '증인 점이 자기 리프 상자 안에 있어야 한다');
+    assert.ok(bmax[0] > bmin[0] && bmax[1] > bmin[1], '증인 리프는 x·y 폭이 > 0 이어야 한다');
     const p = leafPriority(h, c);
     assert.ok(p[wk] > 0, `증인 리프 점수 ${p[wk]} 는 > 0 이어야 함`);
     assert.ok(Math.max(...p) >= 1, `점수 최댓값 ${Math.max(...p)} 는 ≥ 1 px 이어야 함`);
