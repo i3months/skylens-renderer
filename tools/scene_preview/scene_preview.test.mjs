@@ -86,29 +86,12 @@ function createSyntheticCloud() {
 test('모든 8개 시점에서 이미지 생성', (t) => {
   const cloud = createSyntheticCloud();
 
-  const viewpoints = [
-    { eye: [0, 120, 140], target: [0, 5, 0], name: 'aerial_overview' },
-    { eye: [90, 60, -90], target: [0, 8, 0], name: 'aerial_oblique_ne' },
-    { eye: [0, 200, 1], target: [0, 0, 0], name: 'top_down' },
-    { eye: [0, 1.7, 90], target: [0, 6, 0], name: 'street_level' },
-    { eye: [30, 3, 45], target: [20, 8, 20], name: 'low_close_box' },
-    { eye: [0, 80, 60], target: [0, 0, -20], name: 'tower_high' },
-    { eye: [-60, 30, 70], target: [0, 5, 0], name: 'tower_mid' },
-    { eye: [-95, 6, 95], target: [40, 5, -40], name: 'edge_far' },
-  ];
+  const viewpoints = SYNTHETIC_VIEWPOINTS;
 
   const results = [];
 
   for (const vp of viewpoints) {
-    const viewpoint = {
-      ...vp,
-      up: [0, 1, 0],
-      width: 1280,
-      height: 720,
-      fov_y_deg: 50,
-    };
-
-    const { width, height, rgb } = renderPreview(cloud, viewpoint);
+    const { width, height, rgb } = renderPreview(cloud, vp);
 
     assert.equal(width, 1280, `${vp.name}: 너비 체크`);
     assert.equal(height, 720, `${vp.name}: 높이 체크`);
@@ -688,5 +671,56 @@ test('F-088 ⑮: CLI 시드는 10진 정수만(12abc·1e3 등 거부)', () => {
     const r = spawnSync(process.execPath, [cli, 'flat_boxes', s, '/nonexistent-scene-preview-out'], { encoding: 'utf-8' });
     assert.notEqual(r.status, 0, `cli ${s} 종료 코드`);
     assert.match(r.stderr, /^scene_preview: /, `cli ${s} stderr`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// F-090 ⑤·F-091: 상한·경계·동률 시험.
+
+test('F-091 ①: 같은 깊이면 먼저 온 점이 이긴다', () => {
+  const cloud = {
+    format: 1,
+    count: 2,
+    positions: Float32Array.of(0, 0, 0, 0, 0, 0),
+    normals: Float32Array.of(0, 1, 0, 0, 1, 0),
+    colors: Uint8Array.of(11, 22, 33, 44, 55, 66),
+  };
+  const { rgb } = renderPreview(cloud, okVp);
+  const o = (24 * 64 + 32) * 3;
+  assert.deepEqual(Array.from(rgb.subarray(o, o + 3)), [11, 22, 33]);
+});
+
+test('F-090 ⑤: 픽셀 수 상한(1.6e7) 초과는 할당 전에 거부', () => {
+  assert.throws(() => renderPreview(okCloud(), { ...okVp, width: 4001, height: 4000 }), { name: 'Error', message: /^scene_preview: .*너무 큼/ });
+  assert.throws(() => renderPreview(okCloud(), { ...okVp, width: 20000, height: 20000 }), { name: 'Error', message: /^scene_preview: .*너무 큼/ });
+  // 바이트 수 기준(×3 ≤ 2^31)으로는 통과했을 크기도 거부해야 한다
+  assert.throws(() => renderPreview(okCloud(), { ...okVp, width: 20000, height: 1000 }), { name: 'Error', message: /^scene_preview: .*너무 큼/ });
+  const ok = renderPreview({ format: 1, count: 0, positions: new Float32Array(0), normals: new Float32Array(0), colors: new Uint8Array(0) }, { ...okVp, width: 4000, height: 4000 });
+  assert.equal(ok.rgb.length, 4000 * 4000 * 3, '경계값(정확히 1.6e7)은 통과');
+});
+
+test('F-091 ②: colors 길이 부족·positions 길이 부족·거의 평행한 up 거부', () => {
+  const c = okCloud();
+  assert.throws(() => renderPreview({ ...c, count: 2, positions: new Float32Array(6), colors: Uint8Array.of(1, 2, 3, 4, 5) }, okVp), { name: 'Error', message: /^scene_preview: .*colors/ }, 'colors 길이 < 3·count');
+  assert.throws(() => renderPreview({ ...c, colors: [9, 9, 9] }, okVp), { name: 'Error', message: /^scene_preview: .*colors/ }, 'colors 가 Uint8Array 아님');
+  assert.throws(() => renderPreview({ ...c, count: 2, positions: Float32Array.of(0, 0, 0), colors: new Uint8Array(6) }, okVp), { name: 'Error', message: /^scene_preview: .*positions/ }, 'positions 길이 < 3·count');
+  // 시선과 up 사이 각의 사인이 문턱(1e-6) 바로 아래면 거부, 바로 위면 통과
+  const base = { ...okVp, eye: [0, 0, 0], target: [0, 1, 0], up: [0, 1, 0] };
+  assert.throws(() => renderPreview(c, { ...base, up: [0.5e-6, 1, 0] }), { name: 'Error', message: /^scene_preview: .*평행/ }, 'sin 5e-7');
+  assert.doesNotThrow(() => renderPreview(c, { ...base, up: [2e-6, 1, 0] }), 'sin 2e-6');
+});
+
+test('F-091 ②: encodePng 스캔라인 버퍼 상한 초과는 rgb 길이 검사 전에 거부', () => {
+  // 폭 715827883·높이 3 → 스캔라인 3·(1+3·715827883) > 2^31−1. 폭·높이 개별 상한은 통과한다.
+  assert.throws(() => encodePng(715827883, 3, new Uint8Array(3)), { name: 'Error', message: /^scene_preview: .*너무 큼/ });
+  assert.throws(() => encodePng(3, 715827883, new Uint8Array(3)), { name: 'Error', message: /^scene_preview: .*너무 큼/ });
+});
+
+test('F-091 ⑤: CLI 는 Object.prototype 이름(__proto__·toString)을 장면으로 받지 않는다', () => {
+  const cli = fileURLToPath(new URL('./cli.mjs', import.meta.url));
+  for (const name of ['__proto__', 'toString', 'constructor', 'hasOwnProperty']) {
+    const r = spawnSync(process.execPath, [cli, name, '1', '/nonexistent-scene-preview-out'], { encoding: 'utf-8' });
+    assert.notEqual(r.status, 0, `${name} 종료 코드`);
+    assert.match(r.stderr, /알 수 없는 장면/, `${name} stderr`);
   }
 });
