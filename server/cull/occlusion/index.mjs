@@ -34,6 +34,7 @@ import { radiusUnchecked } from '../../raster_ref/splat/index.mjs';
 import { boxMayBeVisible } from '../../lod/select/view_check.mjs';
 import { degenerateCamera } from '../degenerate/index.mjs';
 import { guardHierarchyRead } from '../degenerate/hierarchy_guard.mjs';
+import { checkLeafIndexOneToOne } from '../degenerate/leaf_check.mjs';
 export { degenerateCamera };
 
 const ERR = 'cull:';
@@ -68,6 +69,8 @@ function assertHierarchyRaw(h) {
   if (!(leafIndex instanceof Int32Array) || leafIndex.length !== nodeCount) throw new Error(`${ERR} octree.leafIndex 길이가 nodeCount 가 아님`);
   if (!(boxMin instanceof Float32Array) || boxMin.length !== 3 * nodeCount) throw new Error(`${ERR} octree.boxMin 길이가 3·nodeCount 가 아님`);
   if (!(boxMax instanceof Float32Array) || boxMax.length !== 3 * nodeCount) throw new Error(`${ERR} octree.boxMax 길이가 3·nodeCount 가 아님`);
+  // F-150: 리프 ↔ 노드 일대일·범위, 리프 상자의 ±Infinity 는 공용 검사로 거른다(NaN 상자는 리프를 남기는 기존 정책 그대로).
+  checkLeafIndexOneToOne(oc);
   if (!Array.isArray(h.levels) || h.levels.length < 1) throw new Error(`${ERR} hierarchy.levels 가 비었음`);
   for (const lv of h.levels) {
     if (!lv || !(lv.positions instanceof Float32Array) || !(lv.leafStart instanceof Uint32Array) || lv.leafStart.length !== leafCount + 1
@@ -77,17 +80,13 @@ function assertHierarchyRaw(h) {
   }
 }
 
-/** 리프 번호 → 노드 번호. */
+/** 리프 번호 → 노드 번호. 일대일·범위는 assertHierarchy 의 공용 검사가 이미 보장한다. */
 function leafNodes(oc) {
   const out = new Int32Array(oc.leafCount).fill(-1);
   for (let node = 0; node < oc.nodeCount; node++) {
     const k = oc.leafIndex[node];
-    if (k >= 0) {
-      if (k >= oc.leafCount || out[k] !== -1) throw new Error(`${ERR} octree.leafIndex 가 리프 번호를 한 번씩 쓰지 않음`);
-      out[k] = node;
-    }
+    if (k >= 0) out[k] = node;
   }
-  for (let k = 0; k < oc.leafCount; k++) if (out[k] < 0) throw new Error(`${ERR} 리프 ${k} 의 노드가 없음`);
   return out;
 }
 
@@ -241,16 +240,18 @@ export function buildDepthPyramidWith(hierarchy, camera, opts = {}, mut = {}) {
   let proj = new Float64Array(0);
   for (const k of cand) {
     const s0 = lv.leafStart[k], s1 = lv.leafStart[k + 1];
-    if (s1 - s0 > budget) continue; // (b) 상한을 넘기는 리프는 건너뛴다(가림막을 덜 쓰는 쪽 = 보수적)
-    budget -= s1 - s0;
-    occluderPoints += s1 - s0;
     const pos = lv.positions.subarray(3 * s0, 3 * s1);
-    if (proj.length < pos.length) proj = new Float64Array(pos.length);
     // 유한하지 않은 점은 가림막이 아니다: 0 으로 바꿔 투영(projectMany 의 raster: 오류 회피)하고 아래에서 건너뛴다.
     let badPts = null;
     for (let i = 0; i < pos.length; i += 3) {
       if (!(Number.isFinite(pos[i]) && Number.isFinite(pos[i + 1]) && Number.isFinite(pos[i + 2]))) (badPts ??= new Set()).add(i / 3);
     }
+    // F-152: 건너뛰는 비유한 점은 점 수·상한에 세지 않는다(실제로 쓰는 점만 센다).
+    const used = (s1 - s0) - (badPts ? badPts.size : 0);
+    if (used > budget) continue; // (b) 상한을 넘기는 리프는 건너뛴다(가림막을 덜 쓰는 쪽 = 보수적)
+    budget -= used;
+    occluderPoints += used;
+    if (proj.length < pos.length) proj = new Float64Array(pos.length);
     let src = pos;
     if (badPts) { src = new Float32Array(pos); for (const q of badPts) src.fill(0, 3 * q, 3 * q + 3); }
     projectMany(camera, src, proj);
