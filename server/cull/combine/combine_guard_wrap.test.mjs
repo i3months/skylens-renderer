@@ -37,13 +37,28 @@ test('검사 시점에 첫 읽기부터 던지는 Proxy octree 도 cull: 오류'
 test('leafCount 는 검사 블록에서 읽은 값을 그대로 쓴다(마스크 길이가 첫 읽기 값)', () => {
   const h = scene();
   const real = h.octree.leafCount;
-  // 접근자를 거쳐도 결과 길이는 검사 때 읽은 값과 같다
+  // 접근자를 거쳐도 결과 길이는 검사 때 읽은 값과 같다.
+  // 검사 블록 안에서는 항상 real 을 반환하고, 검사 완료 뒤 재독이 생기면 다른 값을 반환한다.
   let reads = 0;
-  const probe = withLeafCount(h, () => { reads++; return real; });
+  // 처음 N 번 읽기는 guardHierarchyRead 안(F-148: assertHierarchyInput 등)에서 일어난다.
+  // 추가 읽기가 있으면 그것은 검사 뒤 재독이므로 다른 값을 반환해 뮤턴트를 잡는다.
+  let readsInGuard = 0;
+  const guardReadCount = 47; // 측정한 값: assertHierarchyInput 등에서의 읽기 수
+  const probe = withLeafCount(h, () => {
+    reads++;
+    if (reads <= guardReadCount) {
+      return real;
+    }
+    // 검사 뒤 재독: 다른 값을 반환해서 뮤턴트를 잡는다
+    return real + 1;
+  });
   const r = cullAndSelect(probe, CAM, OPTS);
+  // 뮤턴트가 검사 뒤 재독을 하면 다른 값을 썼을 것이다.
+  // 하지만 실제 코드는 검사 중에 읽은 real 값만 쓰므로 마스크 길이는 real 이어야 한다.
   assert.equal(r.cull.mask.length, real);
   assert.equal(r.cull.stats.leafCount, real);
-  assert.ok(reads >= 1);
+  // 검사 블록 안의 읽기만 일어나야 한다
+  assert.equal(reads, guardReadCount, `정확히 ${guardReadCount}회 읽어야 함(검사 뒤 재독 없음)`);
 });
 
 test('정상 입력 결과는 그대로', () => {
