@@ -29,8 +29,6 @@ test('① minCosToAxis: 좌표 1e200 에서도 0 이 되지 않고 정확한 cos
   const want = 2 / Math.sqrt(1.5 * 1.5 + 1.5 * 1.5 + 4);
   assert.ok(c > 0, `cMin ${c}`);
   assert.ok(Math.abs(c - want) < 1e-12, `cMin ${c} ≠ ${want}`);
-  // 옛 식은 여기서 넘친다(시험 장면이 실제로 문제를 드러냄)
-  assert.equal(2 * s / Math.sqrt((1.5 * s) ** 2 + (1.5 * s) ** 2 + (2 * s) ** 2), 0);
   // 아주 작은 좌표(밑넘침)도 마찬가지
   const u = 1e-200;
   assert.ok(Math.abs(minCosToAxis(cam, [u, u, 2 * u], [1.5 * u, 1.5 * u, 3 * u]) - want) < 1e-12);
@@ -233,7 +231,8 @@ test('측정: terrain 시점 8곳(select_coarse 와 같은 설정)에서 새 규
 
 test('카메라 평면에 걸친 상자가 더는 무조건 단계 0 이 아니다(카메라 중심이 상자 밖이면 z_P·c_P)', () => {
   const cam = { width: 320, height: 180, K: { fx: 90, fy: 90, cx: 160, cy: 90 }, R: ID, t: [0, 0, 0] };
-  const rule = screenErrorRule(cam, { thresholdPx: 0.5, edge0M: 0.05, levelCount: 5 });
+  const rule = screenErrorRule(cam, { thresholdPx: 0.5, edge0M: 0.05, levelCount: 8 });
+  // 단계 수를 넉넉히(8, 칸 변 최대 6.4 m) 둬서 단계가 위로 잘리지 않는다: 잘못 거친 단계를 고르면 실제로 τ 를 넘는다.
   // 옆으로 놓였으나 z 가 −100~600 m 로 카메라 평면에 걸친 상자(화면 오른쪽 아래 모서리 부근만 보임)
   const mn = [300, 300, -100], mx = [600, 600, 600];
   assert.ok(boxMayBeVisible(cam, mn, mx));
@@ -244,6 +243,52 @@ test('카메라 평면에 걸친 상자가 더는 무조건 단계 0 이 아니�
   assert.ok(e.effDistM > 0 && e.level >= 1, `단계 ${e.level}, d_eff ${e.effDistM}`);
   // 카메라 중심이 상자 안이면 여전히 단계 0
   assert.equal(rule.leaf([-1, -1, -1], [1, 1, 1]).level, 0);
-  // 칸 변 상한: 이 단계의 칸 변 e 가 보이는 곳 어디서든 τ 이하(f·e/d_eff ≤ τ)
-  assert.ok((rule.focalPx * edgeOfLevel(0.05, e.level)) / e.effDistM <= 0.5 + 1e-12);
+  // 칸 변 상한: 고른 단계의 격자 칸(상자로 자름) 변을 시야 사각뿔로 잘라 실제로 투영해 길이를 잰다(규칙 식을 되풀이하지 않음).
+  // 표본: 보이는 부분의 가장 가까운 점 부근(화면 모서리 광선이 상자에 들어가는 곳, 가장 엄한 곳)과 상자 전체의 무작위 점.
+  const edge = edgeOfLevel(0.05, e.level);
+  const rnd = rng(31);
+  const near = (() => { // 모서리 (320, 180) 광선 s·(1.778.., 1, 1) 이 y = 300 면에 닿는 점 (카메라 = 월드)
+    const dx = (320 - 160) / 90, dy = (180 - 90) / 90;
+    const s = 300 / dy;
+    return [s * dx, 300, s];
+  })();
+  let worstPx = 0, cells = 0;
+  for (let i = 0; i < 1500; i++) {
+    const p = i < 1000
+      ? [0, 1, 2].map((a) => Math.min(Math.max(near[a] + (rnd() - 0.5) * 6, mn[a]), mx[a]))
+      : [0, 1, 2].map((a) => mn[a] + rnd() * (mx[a] - mn[a]));
+    const lo = p.map((x, a) => Math.max(Math.floor(x / edge) * edge, mn[a]));
+    const hi = p.map((x, a) => Math.min((Math.floor(x / edge) + 1) * edge, mx[a]));
+    for (let a = 0; a < 8; a++) for (let b = a + 1; b < 8; b++) {
+      const x = a ^ b;
+      if (x !== 1 && x !== 2 && x !== 4) continue;
+      const A = [0, 1, 2].map((q) => (a >> q & 1 ? hi[q] : lo[q])), B = [0, 1, 2].map((q) => (b >> q & 1 ? hi[q] : lo[q]));
+      const cl = clipToView(cam.K, cam.width, cam.height, toCam(cam, A), toCam(cam, B));
+      if (!cl) continue;
+      const at = (q) => [0, 1, 2].map((r) => A[r] + q * (B[r] - A[r]));
+      const a0 = toCam(cam, at(cl[0])), a1 = toCam(cam, at(cl[1]));
+      if (!(a0[2] > 0 && a1[2] > 0)) continue;
+      const pr = (v) => [(cam.K.fx * v[0]) / v[2] + cam.K.cx, (cam.K.fy * v[1]) / v[2] + cam.K.cy];
+      const q0 = pr(a0), q1 = pr(a1);
+      worstPx = Math.max(worstPx, Math.hypot(q1[0] - q0[0], q1[1] - q0[1]));
+      cells++;
+    }
+  }
+  assert.ok(cells > 1000 && worstPx > 0, `표본 선분 ${cells}, 최대 ${worstPx}`);
+  assert.ok(worstPx <= 0.5 + 1e-9, `실제 투영 칸 변 최대 ${worstPx} px > τ 0.5`);
+});
+
+test('visiblePartBound: 화면 모서리 광선이 cos 최솟값을 정하는 상자 (손계산 리터럴)', () => {
+  // 200×200 화면, fx = fy = 100, 주점 (100, 100), R = I, t = 0, C = 원점. 시야는 |x| ≤ z, |y| ≤ z (모서리 광선 방향 (±1, ±1, 1)).
+  // 상자 [50,100]×[0,70]×[10,200]. 상자 ∩ 시야 = {z ≥ x, z ≥ y} 부분(z = 10 쪽은 x ≥ 50 > z 라 시야 밖).
+  //   z 최솟값: z ≥ x ≥ 50 이므로 50.
+  //   cos α = z/|p| 의 최솟값: (x²+y²)/z² ≤ 2 (x ≤ z, y ≤ z), 같음은 x = y = z ∈ [50, 70] 에서 → cos = 1/√3.
+  //   이 최솟값 점들은 상자 꼭짓점도, 상자 모서리 ∩ 시야 옆면도 아니다(모서리 후보 중 가장 작은 cos 는 (50,70,70) 의 70/√12300 ≈ 0.631).
+  //   오직 화면 모서리 광선 (1,1,1)·s 가 상자 면 x = 50 에 들어가는 점 (50,50,50) 만이 1/√3 ≈ 0.577 을 준다.
+  const cam = { width: 200, height: 200, K: { fx: 100, fy: 100, cx: 100, cy: 100 }, R: ID, t: [0, 0, 0] };
+  const v = visiblePartBound(cam, [0, 0, 0], [50, 0, 10], [100, 70, 200]);
+  assert.ok(v, 'P 가 비었음');
+  // 구현은 경계 판정을 상대 1e-9 넓게 받아 최솟값이 아주 조금 작아질 뿐이다(보수적) → 허용 오차 1e-7.
+  assert.ok(Math.abs(v.cosMin - 1 / Math.sqrt(3)) < 1e-7, `cosMin ${v.cosMin} ≠ ${1 / Math.sqrt(3)}`);
+  assert.ok(Math.abs(v.zMinM - 50) < 50e-7, `zMinM ${v.zMinM} ≠ 50`);
 });

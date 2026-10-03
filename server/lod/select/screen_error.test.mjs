@@ -121,13 +121,18 @@ function oldLevel(h, cam, node) {
 }
 
 const R0 = camera(320, 180, 90), R1 = camera(960, 540, 754.32), G = generalCamera();
-// center = 정육면체 중심(세계 좌표). cosBelow: cos α 가 이보다 작은 리프를 '모서리' 로 센다. oldExceeds: minWorstPx: 새 규칙 최대 칸 변의 하한(측정 0.292·0.268·0.298·0.256 의 내림, 0.5 에 못 미치되 시험이 비지 않았음을 보인다).
-// 옛 규칙이 τ 를 넘는 장면이어야 한다(측정 최대 2.314·0.537·0.596·0.511 px).
+// center = 정육면체 중심(세계 좌표). cosBelow: cos α 가 이보다 작은 리프를 '모서리' 로 센다.
+// 옛 규칙이 τ 를 넘는 장면이어야 한다(옛 규칙 최대 칸 변이 τ 초과인지는 아래에서 단언한다).
+// 새 규칙 최대 칸 변의 하한 TAU/2 (측정값에 맞춘 수가 아니라 이론 하한):
+//   거리표는 단계 l 마다 칸 변이 2 배(e_l = edge0·2^l)이고, 고른 단계 l 은 f·e_l/d_eff ≤ τ 를 만족하는 가장 거친 단계다
+//   (최상위 단계가 아닐 때). 그래서 한 단계 더 거친 l+1 은 f·e_{l+1}/d_eff > τ, 즉 f·e_l/d_eff > τ/2 이다.
+//   정면 가까이 보이는 리프에서는 투영 칸 변이 이 값에 근접하므로, 장면 전체의 최대는 τ/2 보다 작을 수 없다고 본다.
+//   이 하한은 '한 단계 더 고운 단계를 고르는' 변이(최대 칸 변이 약 절반)를 잡는 용도이며, 시험이 비지 않았음도 보인다.
 const SETTINGS = [
-  { name: '320×180 세로 화각 90° (fx = fy = 90)', cam: R0, center: cornerPoint(R0, 150), cosBelow: 0.5, minWorstPx: 0.29 },
-  { name: '960×540 fx = fy = 754.32', cam: R1, center: cornerPoint(R1, 700), cosBelow: 0.85, minWorstPx: 0.26 },
-  { name: '회전 yaw 30°·pitch 20°, t ≠ 0, fx 400·fy 800, 주점 (200, 100), 왼쪽 위 모서리', cam: G, center: cornerPoint(G, 600), cosBelow: 0.9, minWorstPx: 0.29 },
-  { name: '같은 일반 카메라, 광축을 걸친 큐브(카메라 좌표 (0, 0, 300))', cam: G, center: camToWorld(G, [0, 0, 300]), cosBelow: 1.01, minWorstPx: 0.25 },
+  { name: '320×180 세로 화각 90° (fx = fy = 90)', cam: R0, center: cornerPoint(R0, 150), cosBelow: 0.5, minWorstPx: TAU / 2 },
+  { name: '960×540 fx = fy = 754.32', cam: R1, center: cornerPoint(R1, 700), cosBelow: 0.85, minWorstPx: TAU / 2 },
+  { name: '회전 yaw 30°·pitch 20°, t ≠ 0, fx 400·fy 800, 주점 (200, 100), 왼쪽 위 모서리', cam: G, center: cornerPoint(G, 600), cosBelow: 0.9, minWorstPx: TAU / 2 },
+  { name: '같은 일반 카메라, 광축을 걸친 큐브(카메라 좌표 (0, 0, 300))', cam: G, center: camToWorld(G, [0, 0, 300]), cosBelow: 1.01, minWorstPx: TAU / 2 },
 ];
 
 /** 상자 8 꼭짓점의 카메라 좌표 z 최솟값·최댓값. */
@@ -192,15 +197,17 @@ test('카메라 평면을 걸친 리프는 단계 0, 그 밖의 칸 변은 ≤ �
       straddle++;
       assert.equal(minCosToAxis(cam, mn, mx) <= 0, true, `리프 ${k}: 평면을 걸쳤는데 cMin > 0`);
       assert.ok(l === NOT_DRAWN || l === 0, `리프 ${k}: 평면을 걸친 리프의 단계 ${l}`);
-      if (l === 0) straddleDrawn++;
+      if (l === 0 && boxDistanceM(cameraCenter(cam), mn, mx) > 0) straddleDrawn++; // 카메라가 든 리프는 제외(그것은 항상 단계 0)
     } else if (l !== NOT_DRAWN && l > 0) {
       coarse++;
       assert.ok(maxCellEdgePx(h, cam, node[k], k, l) <= TAU + 1e-9);
     }
     if (boxDistanceM(cameraCenter(cam), mn, mx) === 0) { inside++; assert.equal(l, 0); }
   }
-  // 측정: 평면을 걸친 리프 126(그중 그려진 것 6), 카메라가 든 리프 1. 이 거리(큐브 6.4 m)에서는 단계 ≥ 1 이 없다(f·edge/d_eff 가 크다).
-  assert.ok(straddle >= 100 && straddleDrawn >= 6 && inside === 1, `걸침 ${straddle}, 그려진 걸침 ${straddleDrawn}, 카메라 포함 ${inside}, 거친 ${coarse}`);
+  // 개수는 팔진트리 분할이 정하는 값이라 이론값이 없다(측정은 걸침 126·그려진 걸침 6). 그래서 '> 0' 만 단언한다:
+  // 걸친 리프가 있어야 위 단언들이 비지 않고, 그중 카메라가 들지 않았는데도 그려진(단계 0) 것이 있어야 NOT_DRAWN 으로 통째 빠진 장면이 아니다.
+  // 카메라 중심 (0.3, 0.2, 0) 은 한 리프 상자 안에 있도록 만들었으므로 카메라 포함 리프는 정확히 1 이다.
+  assert.ok(straddle > 0 && straddleDrawn > 0 && inside === 1, `걸침 ${straddle}, 그려진 걸침 ${straddleDrawn}, 카메라 포함 ${inside}, 거친 ${coarse}`);
 });
 
 test('cameraCenter = −Rᵀ·t (손계산 리터럴)', () => {
