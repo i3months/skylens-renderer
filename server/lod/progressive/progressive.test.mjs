@@ -6,7 +6,6 @@ import { readFileSync } from 'node:fs';
 import { generate } from '../../../fixtures/scenes/flat_boxes/index.mjs';
 import { buildHierarchy } from '../hierarchy/index.mjs';
 import { buildDistanceTable, levelForDistance } from '../distance_table/index.mjs';
-import { effectiveDistance } from '../select/screen_error.mjs';
 import { viewpointToCamera } from '../../../tools/render_views/index.mjs';
 import { renderPoints } from '../../raster_ref/zbuffer/index.mjs';
 import { ssim } from '../../metrics/ssim/index.mjs';
@@ -35,6 +34,61 @@ function pointInView(cam, i) {
   const u = K.fx * (R[0] * x + R[1] * y + R[2] * z + t[0]) / zc + K.cx;
   const v = K.fy * (R[3] * x + R[4] * y + R[5] * z + t[1]) / zc + K.cy;
   return u >= 0 && u < W && v >= 0 && v < H;
+}
+
+// 독립 기준 구현: d_eff = max(d·cMin², z_P·c_P). P = 상자 ∩ 시야 사각뿔(z>0).
+// P 의 꼭짓점을 "평면 세 개의 교점(상자 면 6 + 옆면 4)" 전수 열거로 구한다(구현 쪽의 모서리·광선 열거와 다른 방법).
+function refEffDist(cam, C, mn, mx) {
+  const { R, t, K, width: Wd, height: Ht } = cam;
+  const { fx, fy, cx, cy } = K;
+  const toCam = (X) => [0, 1, 2].map((r) => R[3 * r] * X[0] + R[3 * r + 1] * X[1] + R[3 * r + 2] * X[2] + t[r]);
+  const cosOf = (p) => p[2] / Math.hypot(p[0], p[1], p[2]);
+  let d2 = 0;
+  for (let a = 0; a < 3; a++) { const g = Math.max(mn[a] - C[a], 0, C[a] - mx[a]); d2 += g * g; }
+  const d = Math.sqrt(d2);
+  if (!(d > 0)) return 0;
+  // 상자 8 꼭짓점의 cos 최솟값(z<=0 이 하나라도 있으면 0)
+  let cMin = Infinity;
+  for (let k = 0; k < 8; k++) {
+    const p = toCam([k & 1 ? mx[0] : mn[0], k & 2 ? mx[1] : mn[1], k & 4 ? mx[2] : mn[2]]);
+    cMin = p[2] > 0 ? Math.min(cMin, cosOf(p)) : 0;
+    if (cMin === 0) break;
+  }
+  let eff = d * cMin * cMin;
+  // 반공간 n·X + c >= 0 (세계 좌표). 옆면은 카메라 좌표 식 a·p + b·z >= 0 을 p = R·X + t 로 옮긴 것.
+  const planes = [];
+  for (let a = 0; a < 3; a++) {
+    const e = [0, 0, 0]; e[a] = 1; planes.push({ n: e, c: -mn[a] });
+    planes.push({ n: e.map((v) => -v), c: mx[a] });
+  }
+  const side = (row, coef, zc) => { // coef·p[row] + zc·p[2] >= 0
+    const n = [0, 1, 2].map((j) => coef * R[3 * row + j] + zc * R[6 + j]);
+    planes.push({ n, c: coef * t[row] + zc * t[2] });
+  };
+  side(0, fx, cx); side(0, -fx, Wd - cx); side(1, fy, cy); side(1, -fy, Ht - cy);
+  const det3 = (a, b, c) => a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  let zP = Infinity, cP = Infinity;
+  for (let i = 0; i < planes.length; i++) for (let j = i + 1; j < planes.length; j++) for (let k = j + 1; k < planes.length; k++) {
+    const A = planes[i], B = planes[j], D = planes[k];
+    const det = det3(A.n, B.n, D.n);
+    if (Math.abs(det) < 1e-9) continue;
+    // n_i·X = -c_i 의 해(크라메르 공식)
+    const x1 = cross(B.n, D.n), x2 = cross(D.n, A.n), x3 = cross(A.n, B.n);
+    const X = [0, 1, 2].map((a) => (-A.c * x1[a] - B.c * x2[a] - D.c * x3[a]) / det);
+    let ok = true;
+    for (const pl of planes) {
+      const v = pl.n[0] * X[0] + pl.n[1] * X[1] + pl.n[2] * X[2] + pl.c;
+      const scale = Math.abs(pl.n[0] * X[0]) + Math.abs(pl.n[1] * X[1]) + Math.abs(pl.n[2] * X[2]) + Math.abs(pl.c);
+      if (v < -1e-9 * scale) { ok = false; break; }
+    }
+    if (!ok) continue;
+    const p = toCam(X);
+    if (!(p[2] > 1e-9)) continue;
+    zP = Math.min(zP, p[2]); cP = Math.min(cP, cosOf(p));
+  }
+  if (Number.isFinite(zP)) eff = Math.max(eff, zP * cP);
+  return eff;
 }
 
 test('조각 순서: 거친 단계 먼저, 한 리프는 최대 2개(교체열)이고 중간 단계는 건너뜀', () => {
@@ -69,12 +123,12 @@ test('같은 단계 안에서는 카메라에 가까운 리프 먼저', () => {
   };
   for (let i = 1; i < ch.length; i++) if (ch[i - 1].level === ch[i].level) assert.ok(dist(ch[i - 1].leaf) <= dist(ch[i].leaf) + 1e-9);
   // 목표 단계는 거리표와 일치: 목표(마지막 조각 단계)는 거리가 멀수록 작아지지 않는다
-  // F-097 ①·F-104 ②: 공용 규칙 effectiveDistance 의 d_eff, f = max(fx, fy)
+  // F-097 ①·F-104 ②·F-108: 기대 d_eff = max(d·cMin², z_P·c_P) 를 구현 함수 없이 시험 안에서 직접 계산한다. f = max(fx, fy)
   const table = buildDistanceTable({ fx: Math.max(cam.K.fx, cam.K.fy), thresholdPx: TAU, edge0M: h.edge0M, levelCount: LEVELS });
   for (const [leaf, list] of byLeaf(ch)) {
     const T = list[list.length - 1].level;
     const n = node.get(leaf);
-    const dEff = effectiveDistance(cam, C, h.octree.boxMin.subarray(3 * n, 3 * n + 3), h.octree.boxMax.subarray(3 * n, 3 * n + 3)).effDistM;
+    const dEff = refEffDist(cam, C, h.octree.boxMin.subarray(3 * n, 3 * n + 3), h.octree.boxMax.subarray(3 * n, 3 * n + 3));
     const expect = dEff > 0 ? Math.min(LEVELS - 1, levelForDistance(table, dEff)) : 0;
     assert.equal(T, expect, `리프 ${leaf} 목표 단계`);
   }
@@ -197,8 +251,11 @@ test('F-101 ①: 역순·섞인 순서로 조각열을 적용해도 정순 결�
   const cam = { width: 220, height: 220, K: { fx: 200, fy: 200, cx: 110, cy: 110 }, R: [1, 0, 0, 0, 0, 1, 0, -1, 0], t: [0, 0, 200] };
   const ch = progressiveChunks(hier, cam, { thresholdPx: 2 });
   const fwd = applyChunks(hier, ch, ch.length);
-  // 시험이 의미 있으려면 고운 조각이 실제로 있어야 한다(기준값은 정순 실행에서 측정해 고정, 사후 조정 금지).
-  assert.equal(fwd.count, 34937);
+  // 시험이 의미 있으려면(F-108): 조각이 2개 이상인 리프가 있고, 건너뛰기 없이 "마지막 조각이 이긴다" 로 적용하면 정순 결과와 달라져야 한다.
+  assert.ok([...byLeaf(ch).values()].some((l) => l.length >= 2), '조각 2개 이상인 리프 존재');
+  const lastWins = (list) => { const m = new Map(); for (const c of list) m.set(c.leaf, c); return [...m.values()].reduce((n, c) => n + c.indices.length, 0); };
+  assert.equal(lastWins(ch), fwd.count, '정순에서는 건너뛰기 없이도 같다');
+  assert.notEqual(lastWins([...ch].reverse()), fwd.count, '역순에서는 건너뛰기가 없으면 결과가 달라진다(건너뛰기 발생)');
   const same = (a, b, name) => {
     assert.equal(a.count, b.count, `${name}: count ${a.count} != ${b.count}`);
     for (const f of ['positions', 'normals', 'colors']) assert.ok(Buffer.from(a[f].buffer, a[f].byteOffset, a[f].byteLength).equals(Buffer.from(b[f].buffer, b[f].byteOffset, b[f].byteLength)), `${name}: ${f}`);
@@ -224,6 +281,18 @@ test('F-101 ①: 같은 단계 조각이 다시 도착하면 덮어쓴다(결과
   const r = applyChunks(hier, dup, dup.length);
   assert.equal(r.count, base.count);
   assert.deepEqual(r.positions, base.positions);
+  // 이미 고운 조각이 있는 리프의 거친 조각이 뒤늦게 오면 무시: 결과 단계·바이트가 그대로여야 한다.
+  const two = [...byLeaf(ch).values()].find((l) => l.length === 2 && l[0].indices.length !== l[1].indices.length);
+  assert.ok(two, '거친·고운 조각의 점 수가 다른 리프가 있어야 함');
+  const [coarse, fine] = two;
+  assert.ok(coarse.level > fine.level);
+  const late = [...ch, coarse];
+  const got = applyChunks(hier, late, late.length);
+  assert.equal(got.count, base.count, '거친 조각이 단계를 되돌리지 않음');
+  for (const f of ['positions', 'normals', 'colors']) assert.ok(Buffer.from(got[f].buffer, got[f].byteOffset, got[f].byteLength).equals(Buffer.from(base[f].buffer, base[f].byteOffset, base[f].byteLength)), f);
+  // 그 리프만 따로 적용하면 고운 단계 점 수가 나온다(거친 조각이 늦게 와도 마찬가지)
+  assert.equal(applyChunks(hier, [fine, coarse], 2).count, fine.indices.length);
+  assert.equal(applyChunks(hier, [coarse, fine], 2).count, fine.indices.length);
 });
 
 // F-104 ③: hierarchy·조각 입력 검사. 깨진 입력은 TypeError 가 아니라 'lod:' 오류.
