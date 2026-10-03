@@ -1,0 +1,55 @@
+// T08.10 퇴화 시점 처리. 계약: contracts/cull/index.mjs 의 "퇴화 시점", CULL_API.degenerate.
+// 퇴화 시점 = 카메라가 NaN·Infinity 를 가지거나, 해상도·초점거리가 유한 양수가 아니거나, 시야각이 1e-6 rad 미만이거나,
+// R 이 회전(정규직교·det=+1)이 아니거나, t 가 유한한 3-벡터가 아닌 경우. isDegenerateView 는 어떤 입력에도 던지지 않는다.
+// 지면 아래 카메라(중심이 모든 상자보다 아래)는 퇴화가 아니다: 여기서는 위치를 보지 않는다.
+import { assertHierarchyInput } from '../../lod/select/index.mjs';
+
+const ORTHO_TOL = 1e-6;
+/** 시야각 하한(rad). 이보다 좁으면 퇴화. */
+export const MIN_FOV_RAD = 1e-6;
+
+const isFin = (v) => typeof v === 'number' && Number.isFinite(v);
+const isPosFin = (v) => isFin(v) && v > 0;
+
+function checkCamera(camera) {
+  if (!camera || typeof camera !== 'object') return true;
+  const { width, height, K, R, t } = camera;
+  if (!isPosFin(width) || !isPosFin(height)) return true;
+  if (!K || typeof K !== 'object') return true;
+  if (!isPosFin(K.fx) || !isPosFin(K.fy) || !isFin(K.cx) || !isFin(K.cy)) return true;
+  // 시야각: 가로 2·atan(width/(2fx)), 세로 2·atan(height/(2fy)). 둘 중 하나라도 1e-6 rad 미만이면 퇴화.
+  if (2 * Math.atan(width / (2 * K.fx)) < MIN_FOV_RAD || 2 * Math.atan(height / (2 * K.fy)) < MIN_FOV_RAD) return true;
+  if (!Array.isArray(R) || R.length !== 9 || !R.every(isFin)) return true;
+  if (!Array.isArray(t) || t.length !== 3 || !t.every(isFin)) return true;
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      let s = 0;
+      for (let k = 0; k < 3; k++) s += R[i * 3 + k] * R[j * 3 + k];
+      if (!(Math.abs(s - (i === j ? 1 : 0)) <= ORTHO_TOL)) return true;
+    }
+  }
+  const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
+  return !(Math.abs(det - 1) <= ORTHO_TOL);
+}
+
+/** 퇴화 시점이면 true. 절대 던지지 않는다(접근자가 던져도 true). */
+export function isDegenerateView(camera) {
+  try { return checkCamera(camera); } catch { return true; }
+}
+
+/** 빈 마스크: 길이 leafCount, 전부 0(아무것도 남기지 않음). 계층이 올바르지 않으면 'cull:' 오류. */
+export function emptyMask(hierarchy) {
+  assertHierarchyForCull(hierarchy);
+  return new Uint8Array(hierarchy.octree.leafCount);
+}
+
+/** 계층 입력 검사. assertHierarchyInput 의 'lod:' 오류를 'cull:' 로 바꿔 던진다(원인 메시지 보존). */
+export function assertHierarchyForCull(hierarchy) {
+  try {
+    assertHierarchyInput(hierarchy);
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    if (msg.startsWith('lod:')) throw new Error(`cull:${msg.slice(4)}`, { cause: e });
+    throw new Error(`cull: ${msg}`, { cause: e });
+  }
+}
