@@ -2,7 +2,7 @@
 // 검증하지 못한다. 여기서는 거친 단계가 실제로 쓰이는 조건에서 시점마다
 //   (a) level ≥ 1 리프의 점이 선택에 실제로 있고, 8곳 평균 점 비율 ≤ 0.6
 //   (b) 참조 래스터라이저로 원본 대비 SSIM ≥ 0.95 (기준을 낮추지 않는다)
-// 를 단언한다.
+// 를 단언한다. 시드 1~4 모두에서 시드별 최소 SSIM ≥ 0.95 를 단언한다(F-096).
 //
 // 장면: fixtures/scenes/terrain (시드 1, 점 20만). 200 m × 200 m 평면 투영 넓이 A = 40000 m² 에 균일 난수로 뿌린다.
 //   색은 높이 음영 + 4 m 체크 무늬 + ±4% 잡음이라 매끄럽다(0.5 m 잡음 칸이 있는 flat_boxes 와 다름).
@@ -67,13 +67,37 @@ const VP = [
   { name: 'inside_100', eye: [-50, 100, -50], target: [50, 10, 50] },
 ];
 
-let cached;
-function scene() {
-  if (!cached) {
-    const { cloud } = generate({ seed: 1, count: N });
-    cached = { cloud, h: buildHierarchy(cloud, { edge0M: EDGE0_M, levelCount: LEVEL_COUNT, maxLeafPoints: MAX_LEAF }) };
+// 시드별 최소 SSIM 측정값(리터럴 기록, 시점 8곳 중 최소, 항상 inside_100). 기준 SSIM_MIN 0.95 는 그대로이고
+// 아래 단언은 기준만 쓴다(측정값은 참고용 진단 출력에만 쓰며 사후 기준 조정에 쓰지 않는다).
+const MEASURED_MIN_SSIM = { 1: 0.9524, 2: 0.9578, 3: 0.9542, 4: 0.9524 };
+const SEEDS = [1, 2, 3, 4];
+
+const cache = new Map();
+function scene(seed = 1) {
+  if (!cache.has(seed)) {
+    const { cloud } = generate({ seed, count: N });
+    cache.set(seed, { cloud, h: buildHierarchy(cloud, { edge0M: EDGE0_M, levelCount: LEVEL_COUNT, maxLeafPoints: MAX_LEAF }) });
   }
-  return cached;
+  return cache.get(seed);
+}
+
+// 선택에서 단계 ≥ 1 리프의 점 수와 최대 단계
+function coarseStats(h, sel) {
+  let coarsePts = 0, maxLevel = 0;
+  for (let k = 0; k < sel.leafLevel.length; k++) {
+    const l = sel.leafLevel[k];
+    if (l === NOT_DRAWN) continue;
+    if (l > maxLevel) maxLevel = l;
+    if (l >= 1) coarsePts += h.levels[l].leafStart[k + 1] - h.levels[l].leafStart[k];
+  }
+  return { coarsePts, maxLevel };
+}
+// 단계 선택을 0 으로 고정한 가짜 선택(시야 밖 판정은 유지)
+function forceLevel0(h, sel) {
+  const leafLevel = Uint8Array.from(sel.leafLevel, (l) => (l === NOT_DRAWN ? NOT_DRAWN : 0));
+  let pointCount = 0;
+  for (let k = 0; k < leafLevel.length; k++) if (leafLevel[k] !== NOT_DRAWN) pointCount += h.levels[0].leafStart[k + 1] - h.levels[0].leafStart[k];
+  return { leafLevel, pointCount };
 }
 const camOf = (vp) => viewpointToCamera({ eye: vp.eye, target: vp.target, up: [0, 1, 0], width: W, height: H, fov_y_deg: FOV_Y_DEG });
 
@@ -84,32 +108,51 @@ test('terrain 시점 8곳', () => {
   assert.equal(VP.length, 8);
 });
 
-for (const vp of VP) {
-  test(`거친 단계 사용 + SSIM ≥ ${SSIM_MIN}: ${vp.name}`, (t) => {
-    const { cloud, h } = scene();
-    const cam = camOf(vp);
-    const sel = selectLevels(h, cam, { thresholdPx: THRESHOLD_PX });
-    const lod = materialize(h, sel);
-    assert.equal(lod.count, sel.pointCount);
-    let coarsePts = 0, maxLevel = 0;
-    for (let k = 0; k < sel.leafLevel.length; k++) {
-      const l = sel.leafLevel[k];
-      if (l === NOT_DRAWN) continue;
-      if (l > maxLevel) maxLevel = l;
-      if (l >= 1) coarsePts += h.levels[l].leafStart[k + 1] - h.levels[l].leafStart[k];
-    }
-    const a = renderPoints(cam, cloud, { pointSizeM: POINT_SIZE_M });
-    const b = renderPoints(cam, lod, { pointSizeM: POINT_SIZE_M });
-    const s = ssim(a.color, b.color, W, H, 3);
-    const ratio = lod.count / cloud.count;
-    ratios.push(ratio);
-    const line = `${vp.name}: SSIM ${s.toFixed(4)}, 점 비율 ${ratio.toFixed(3)}, 최대 단계 ${maxLevel}, 단계≥1 점 ${coarsePts}`;
-    t.diagnostic(line);
-    table.push(line);
-    assert.ok(coarsePts > 0, `단계 ≥ 1 점이 없음: ${line}`);
-    assert.ok(s >= SSIM_MIN, line);
+for (const seed of SEEDS) {
+  const minOf = [];
+  for (const vp of VP) {
+    test(`거친 단계 사용 + SSIM ≥ ${SSIM_MIN}: 시드 ${seed} ${vp.name}`, (t) => {
+      const { cloud, h } = scene(seed);
+      const cam = camOf(vp);
+      const sel = selectLevels(h, cam, { thresholdPx: THRESHOLD_PX });
+      const lod = materialize(h, sel);
+      assert.equal(lod.count, sel.pointCount);
+      const { coarsePts, maxLevel } = coarseStats(h, sel);
+      const a = renderPoints(cam, cloud, { pointSizeM: POINT_SIZE_M });
+      const b = renderPoints(cam, lod, { pointSizeM: POINT_SIZE_M });
+      const s = ssim(a.color, b.color, W, H, 3);
+      const ratio = lod.count / cloud.count;
+      if (seed === 1) ratios.push(ratio);
+      minOf.push(s);
+      const line = `시드 ${seed} ${vp.name}: SSIM ${s.toFixed(4)}, 점 비율 ${ratio.toFixed(3)}, 최대 단계 ${maxLevel}, 단계≥1 점 ${coarsePts}`;
+      t.diagnostic(line);
+      table.push(line);
+      assert.ok(coarsePts > 0, `단계 ≥ 1 점이 없음: ${line}`);
+      assert.ok(s >= SSIM_MIN, line);
+    });
+  }
+  test(`시드 ${seed}: 시점 8곳 최소 SSIM ≥ ${SSIM_MIN}`, (t) => {
+    assert.equal(minOf.length, VP.length, '시점별 시험이 모두 돌지 않음');
+    const m = Math.min(...minOf);
+    t.diagnostic(`시드 ${seed} 최소 SSIM ${m.toFixed(4)} (기록 ${MEASURED_MIN_SSIM[seed]})`);
+    assert.ok(m >= SSIM_MIN, `시드 ${seed} 최소 SSIM ${m}`);
   });
 }
+
+// 음성 시험: 단계 선택을 0 으로 고정한 가짜 변이는 '거친 단계 사용' 구조 단언(단계≥1 점 > 0, 점 비율 상한)에서 실패해야 한다.
+// 단계 0 선택은 렌더가 원본과 같아 SSIM 으로는 못 잡으므로 구조로 잡는다.
+test('음성: 단계 0 고정 변이는 거친 단계 사용·점 비율 단언에서 실패한다', () => {
+  const { cloud, h } = scene(1);
+  for (const vp of VP) {
+    const sel = selectLevels(h, camOf(vp), { thresholdPx: THRESHOLD_PX });
+    assert.ok(coarseStats(h, sel).coarsePts > 0, `정상 선택은 통과해야 함: ${vp.name}`);
+    const bad = forceLevel0(h, sel);
+    assert.equal(coarseStats(h, bad).coarsePts, 0, `변이 ${vp.name}: 단계≥1 점이 남음`);
+    assert.ok(bad.pointCount > sel.pointCount, `변이 ${vp.name}: 점 수가 줄지 않음`);
+  }
+  const meanBad = VP.reduce((acc, vp) => acc + forceLevel0(h, selectLevels(h, camOf(vp), { thresholdPx: THRESHOLD_PX })).pointCount / cloud.count, 0) / VP.length;
+  assert.ok(meanBad > MEAN_RATIO_MAX, `변이의 평균 점 비율 ${meanBad.toFixed(3)} 가 상한 ${MEAN_RATIO_MAX} 이하`);
+});
 
 test(`시점 8곳 평균 점 비율 ≤ ${MEAN_RATIO_MAX}`, () => {
   assert.equal(ratios.length, VP.length, '시점별 시험이 모두 돌지 않음');

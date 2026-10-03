@@ -26,6 +26,12 @@
 //   단계별로 원판을 키워도(√2·edgeM) τ 1 에서 top_down 0.717 로 미달 → 원인은 구멍보다 텍스처(0.5 m 잡음 칸)의 앨리어싱.
 //   → 이론값 edge0M = s0(0.5), τ = 0.5 를 채택. 이때 고정 시점 8곳은 모두 거리표의 단계 0 구간(d < f·2·edge0M/τ ≈ 386 m)
 //     이라 점 감소는 시야 밖 리프 제외에서 온다. 단계 ≥1 이 실제로 쓰이는 것은 "멀어지면 점 수 감소" 시험이 확인한다.
+//
+// 주의(F-096): 위 '시점 8곳' 시험에서는 거친 단계(level ≥ 1)가 쓰이지 않는다 → 단계 선택은 이 시험들에서 '해당 없음'
+//   (미달이 아님). 선택이 전부 단계 0 이면 렌더가 원본과 같아 SSIM 이 1.0 으로 단계 선택을 시험하지 못한다.
+//   거친 단계가 쓰이는 조건의 SSIM 은 아래 '거친 단계 시점' 시험(aerial_overview 를 3·4·6 배 멀리, 같은 320×180)과
+//   select_coarse.test.mjs(terrain 시드 1~4)가 단언한다. 거친 단계가 쓰였는지는 구조(단계≥1 리프 존재, 점 비율 상한)로 단언하고
+//   단계 수치는 좁게 박지 않는다. 단계 선택을 0 으로 고정한 가짜 변이는 음성 시험이 실패로 잡는다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -96,6 +102,47 @@ for (const vp of VP) {
     assert.ok(ratio <= 1);
   });
 }
+
+// 구조 단언: 단계 ≥ 1 인 리프가 있고 고른 점 수가 원본의 maxRatio 이하. 단계 0 강제 변이는 이를 통과하지 못한다.
+function assertCoarseUsed(h, sel, total, maxRatio, label) {
+  let coarseLeaves = 0;
+  for (const l of sel.leafLevel) if (l !== NOT_DRAWN && l >= 1) coarseLeaves++;
+  assert.ok(coarseLeaves > 0, `${label}: 단계 ≥ 1 리프 없음`);
+  assert.ok(sel.pointCount / total <= maxRatio, `${label}: 점 비율 ${(sel.pointCount / total).toFixed(3)} > ${maxRatio}`);
+}
+// 단계 선택을 0 으로 고정한 가짜 선택(시야 밖 판정은 유지)
+function forceLevel0(h, sel) {
+  const leafLevel = Uint8Array.from(sel.leafLevel, (l) => (l === NOT_DRAWN ? NOT_DRAWN : 0));
+  let pointCount = 0;
+  for (let k = 0; k < leafLevel.length; k++) if (leafLevel[k] !== NOT_DRAWN) pointCount += h.levels[0].leafStart[k + 1] - h.levels[0].leafStart[k];
+  return { leafLevel, pointCount };
+}
+
+// 거친 단계가 실제로 쓰이는 시점: 멀리 간 aerial_overview. 시점 8곳과 달리 SSIM 이 단계 선택을 시험한다.
+for (const f of [3, 4, 6]) {
+  test(`거친 단계 시점: aerial_overview ×${f} 에서 단계≥1 사용, 점 비율 ≤ 0.5, SSIM ≥ ${SSIM_MIN}`, (t) => {
+    const { cloud, h } = scene();
+    const vp = VP.find((v) => v.name === 'aerial_overview');
+    const eye = vp.eye.map((e, a) => vp.target[a] + f * (e - vp.target[a]));
+    const cam = camOf({ ...vp, eye });
+    const sel = selectLevels(h, cam, { thresholdPx: THRESHOLD_PX });
+    assertCoarseUsed(h, sel, cloud.count, 0.5, `×${f}`);
+    const lod = materialize(h, sel);
+    const s = ssim(renderPoints(cam, cloud, { pointSizeM: POINT_SIZE_M }).color, renderPoints(cam, lod, { pointSizeM: POINT_SIZE_M }).color, W, H, 3);
+    t.diagnostic(`×${f}: SSIM ${s.toFixed(4)}, 점 비율 ${(lod.count / cloud.count).toFixed(3)}`);
+    assert.ok(s >= SSIM_MIN, `×${f}: SSIM ${s}`);
+    // 음성: 단계 0 강제 변이는 구조 단언에서 실패한다(렌더는 원본과 같아 SSIM 으로는 못 잡음).
+    assert.throws(() => assertCoarseUsed(h, forceLevel0(h, sel), cloud.count, 0.5, `×${f} 변이`), /단계 ≥ 1 리프 없음/);
+  });
+}
+
+test('음성: 공식 시점 8곳은 단계 0 이라 구조 단언(단계≥1 리프)이 성립하지 않는다(해당 없음 확인)', () => {
+  const { cloud, h } = scene();
+  for (const vp of VP) {
+    const sel = selectLevels(h, camOf(vp), { thresholdPx: THRESHOLD_PX });
+    assert.throws(() => assertCoarseUsed(h, sel, cloud.count, 0.5, vp.name), /단계 ≥ 1 리프 없음/);
+  }
+});
 
 test('시야 밖 리프는 NOT_DRAWN 이고 그 점은 화면에 하나도 투영되지 않는다', () => {
   const { cloud, h } = scene();
