@@ -182,3 +182,39 @@ test('점 수 정의: count 가 positions.length/3 과 다르면 명시 오류, 
   assert.equal(emptyRatioPreserved(s.cloud, dropped, camera, { pointSizeM: 1 }).equal, false);
   assert.throws(() => emptyRatioPreserved(s.cloud, s.cloud, camera, { tolerance: -1 }), /lod:/);
 });
+
+// 단계 0~3 이 모두 선택되는 비스듬한 카메라: 높이 100 m, 아래 방향에서 x축 둘레로 1.0 rad 기울임, τ 6 px.
+// (가까운 쪽은 고운 단계, 먼 쪽은 거친 단계가 골라진다. 단계 2 대표점 이동은 최대 2√2 ≈ 2.83 m 로 원판 반지름 2 m 보다 크다.)
+// 카메라·τ 는 선택된 단계 분포를 보고 정했고, 단언(집합 ⊇ {0,1,2,3}, filled 0)은 그 뒤에도 사후 조정하지 않는다.
+{
+  const TILT = 1.0, CH = 100, TAU4 = 6;
+  const c = Math.cos(TILT), sn = Math.sin(TILT);
+  // R = Rt · R0, R0 = 수직 하향, Rt = x축 회전
+  const R0 = [[1, 0, 0], [0, 0, 1], [0, -1, 0]], Rt = [[1, 0, 0], [0, c, -sn], [0, sn, c]];
+  const R = Rt.map((r) => [0, 1, 2].map((j) => r[0] * R0[0][j] + r[1] * R0[1][j] + r[2] * R0[2][j])).flat();
+  const obl = { width: W, height: W, K: { fx: 200, fy: 200, cx: 110, cy: 110 }, R, t: [0, 0, CH] };
+  for (const seed of [1, 2]) {
+    const s = generate({ seed, count: N });
+    const hier = buildHierarchy(s.cloud, REAL);
+    const check = (name, cloud) => {
+      const r = emptyRatioPreserved(s.cloud, cloud, obl, OPTS);
+      assert.equal(r.filled, 0, `${name}: ${JSON.stringify(r)}`);
+      assert.equal(r.noFill, true);
+    };
+    test(`holes seed ${seed}: 단계 0~3 이 모두 선택되는 카메라에서 세 경로 filled 0`, () => {
+      const sel = selectLevels(hier, obl, { thresholdPx: TAU4 });
+      const levels = new Set(Array.from(sel.leafLevel).filter((l) => l !== NOT_DRAWN));
+      for (const l of [0, 1, 2, 3]) assert.ok(levels.has(l), `단계 ${l} 미선택: ${[...levels]}`);
+      check('select', materialize(hier, sel));
+
+      const bsel = selectWithBudget(hier, obl, { budgetPoints: 60000, thresholdPx: TAU4 });
+      assert.ok(bsel.pointCount > 0 && bsel.pointCount <= 60000);
+      check('budget', materialize(hier, bsel));
+
+      const ch = progressiveChunks(hier, obl, { thresholdPx: TAU4 });
+      const chLevels = new Set(ch.map((x) => x.level));
+      for (const l of [0, 1, 2, 3]) assert.ok(chLevels.has(l), `조각 단계 ${l} 없음: ${[...chLevels]}`);
+      for (const k of [1, Math.ceil(ch.length / 2), ch.length]) check(`progressive k=${k}`, applyChunks(hier, ch, k));
+    });
+  }
+}
