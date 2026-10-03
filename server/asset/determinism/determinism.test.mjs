@@ -153,7 +153,10 @@ test('determinism_real_pack_gauss56: packFn 생략 → identical true', () => {
 });
 
 test('determinism_default_is_packChunk: 명시한 packChunk 와 결과 같음', () => {
-  assert.deepEqual(checkDeterminism(point27Input(), 2, packChunk), checkDeterminism(point27Input()));
+  const withExplicit = checkDeterminism(point27Input(), 2, packChunk);
+  const withDefault = checkDeterminism(point27Input());
+  assert.deepEqual(withExplicit, withDefault);
+  assert.equal(withDefault.identical, true);
 });
 
 // times 검증

@@ -81,11 +81,25 @@ test('손상: tileX 2(bbox 가 타일 밖)', () => {
   assert.deepEqual(v.map((x) => x.code), ['tile']);
   assert.match(v[0].message, /axis 0/);
 });
+
+test('손상: tileY 손상(y축 범위가 타일 밖)', () => {
+  const v = validateAsset(corrupt('point27.skla', (b, dv) => dv.setInt32(24, 0, true)));
+  assert.deepEqual(v.map((x) => x.code), ['tile']);
+  assert.match(v[0].message, /axis 1/);
+});
 test('손상: codec 1', () => {
   assert.deepEqual(codes(corrupt('point27.skla', (b) => { b[11] = 1; })), ['codec']);
 });
 test('손상: anchor 위도 NaN', () => {
   assert.deepEqual(codes(corrupt('point27.skla', (b, dv) => dv.setFloat64(88, NaN, true))), ['field']);
+});
+
+test('손상: anchor 경도 Infinity', () => {
+  assert.deepEqual(codes(corrupt('point27.skla', (b, dv) => dv.setFloat64(96, Infinity, true))), ['field']);
+});
+
+test('손상: anchor 고도 -Infinity', () => {
+  assert.deepEqual(codes(corrupt('point27.skla', (b, dv) => dv.setFloat64(104, -Infinity, true))), ['field']);
 });
 test('손상: point_count 0', () => {
   assert.deepEqual(codes(corrupt('point27.skla', (b, dv) => dv.setUint32(16, 0, true))), ['field']);
