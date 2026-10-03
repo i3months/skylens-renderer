@@ -266,7 +266,7 @@ test('F-071 손계산 값: 등장방형 근사 식 그대로', () => {
   near(g.lat, 61, 1e-12, 'lat'); near(g.lon, 11, 1e-12, 'lon'); near(g.alt, 50, 1e-12, 'alt');
 });
 
-test('F-073⑥ enuToGps 결과가 비유한이면 GeoError(range)', () => {
+test('F-073⑥ enuToGps 거대 입력은 상한 검사에서 GeoError(range) (결과 비유한 검사는 상한 때문에 도달 불가한 방어 코드)', () => {
   const isRange = (e) => e instanceof GeoError && e.code === 'range';
   const pole = { lat: 90, lon: 0, alt: 0 };
   // cos(90°) ≈ 6.1e−17 → e/(R·cos) 가 넘쳐 Infinity
@@ -279,6 +279,20 @@ test('F-073⑥ enuToGps 결과가 비유한이면 GeoError(range)', () => {
   assert.throws(() => sceneToGps([1e300, 0, 0], pole), isRange);
   // 극 앵커라도 e=0 이면 유한
   assert.deepEqual(enuToGps([0, -10, 0], pole), { lat: 90 - 10 / REF_R / REF_DEG, lon: 0, alt: 0 });
+});
+
+test('F-090④ 극 근처 앵커에서 경도 증분이 1440° 를 넘으면 감싸기 전에 GeoError(range)', () => {
+  const isRange = (e) => e instanceof GeoError && e.code === 'range' && /경도 증분/.test(e.message);
+  const nearPole = { lat: 89.99999999, lon: 0, alt: 0 };
+  assert.throws(() => enuToGps([1e8, 0, 0], nearPole), isRange);
+  assert.throws(() => enuToGps([-1e8, 0, 0], nearPole), isRange);
+  assert.throws(() => sceneToGps([1e8, 0, 0], nearPole), isRange);
+  // 정상 경로: 극 근처 앵커에서도 1 µm 는 통과하고(1 m 는 이미 ≈5e4° 라 거부) 1440° 이내이며, 적도 3바퀴 이상은 그대로 감싼다
+  const g = enuToGps([1e-6, 0, 0], nearPole);
+  assert.ok(g.lon > -180 && g.lon <= 180 && Number.isFinite(g.lon));
+  const eq = enuToGps([3.5 * 2 * Math.PI * REF_R, 0, 0], { lat: 0, lon: 0, alt: 0 });
+  near(g.lat, 89.99999999, 1e-12, 'lat');
+  assert.ok(Math.abs(Math.abs(eq.lon) - 180) < 1e-6);
 });
 
 // F-076: 결과 범위·극 앵커·경도 감싸기·유한성·array-like
