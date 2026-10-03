@@ -128,8 +128,8 @@ test('드론: 한 바퀴(회전 합 +2π±0.05)·프레임 이동 0.7~1.8 m·지
     assert.ok(Math.abs(rot - 2 * Math.PI) <= 0.05, `seed ${seed} 회전 합 ${rot}`);
     assert.ok(Math.max(...r) - Math.min(...r) > 1.0, `seed ${seed} 반경 지터 없음`);
     assert.ok(altitudeMax - altitudeMin > 1.0, `seed ${seed} 고도 폭 ${altitudeMax - altitudeMin} m`);
-    // 접선 지터 jt(진폭 ≤ 1.5 m, 사인 합이라 최대-최소 폭: 이론 ≈1.76 m, 측정 ≈1.79~3 m)는 궤도 진행을 뺀 접선 잔차(원형 평균 제거 각 × 반경 60 m)의 폭으로 드러난다.
-    // jt=0 이면 잔차는 반올림 오차(~1e-6 m)뿐이므로 1.3 m 한계는 양쪽에서 큰 마진을 갖는다(jt 0.4배 변이도 감지; 한계 설정 근거: 이론 폭 상한 ≈1.76 m, 안전율 약 1.36배).
+    // 접선 지터 jt(진폭 ≤ 1.5 m, 사인 합이라 최대-최소 폭: 실측 ≈2.52~2.98 m)는 궤도 진행을 뺀 접선 잔차(원형 평균 제거 각 × 반경 60 m)의 폭으로 드러난다.
+    // jt=0 이면 잔차는 반올림 오차(~1e-6 m)뿐이므로 1.3 m 한계는 양쪽에서 큰 마진을 갖는다(jt 0.4배 변이도 감지; 한계 설정 근거: 실측 폭 최대값 ≈1.19 m, 안전율 약 1.09배).
     const c = Math.atan2(angRes.reduce((s, v) => s + Math.sin(v), 0), angRes.reduce((s, v) => s + Math.cos(v), 0));
     const tRes = angRes.map((v) => Math.atan2(Math.sin(v - c), Math.cos(v - c)) * 60);
     const tWidth = Math.max(...tRes) - Math.min(...tRes);
