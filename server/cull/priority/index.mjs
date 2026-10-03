@@ -27,11 +27,12 @@ export const MAX_COARSE_CELLS = 4_000_000; // 거친 버퍼 칸 수 상한: 큰 
 // nodeCount·배열 길이·leafIndex 범위/중복·상자 유한성·positions 길이 검사(F-152): 어긋나면 점수만 틀어지므로 'cull:' 오류로 막는다.
 // 검사하며 읽은 값을 스냅숏으로 돌려주고 이후 계산은 이것만 쓴다(계산 중에는 계층 접근자를 다시 읽지 않는다 → 계산 단계 오류가 계층 오류로 오인되지 않음).
 const isTyped = (a) => ArrayBuffer.isView(a) && !(a instanceof DataView);
-function readHierarchy(h) {
-  return guardHierarchyRead(() => {
+function readHierarchy(h, makeBuf) {
+  // 1단계: octree 필드 스냅숏(접근자 예외는 가드가 'cull:' 오류로 바꾼다).
+  const oc = guardHierarchyRead(() => {
     const oc = h?.octree;
     if (!oc || !Number.isInteger(oc.leafCount) || oc.leafCount < 1 || !(oc.leafStart instanceof Uint32Array)
-      || !isTyped(oc.leafIndex) || !isTyped(oc.boxMin) || !isTyped(oc.boxMax) || oc.leafStart.length !== oc.leafCount + 1) {
+      || !(oc.leafIndex instanceof Int32Array) || !isTyped(oc.boxMin) || !isTyped(oc.boxMax) || oc.leafStart.length !== oc.leafCount + 1) {
       throw new Error(`${ERR} 계층(octree)이 올바르지 않음`);
     }
     const { leafCount, leafStart, leafIndex, boxMin, boxMax } = oc;
@@ -39,13 +40,22 @@ function readHierarchy(h) {
     if (!Number.isInteger(nodeCount) || nodeCount < leafCount) throw new Error(`${ERR} octree.nodeCount(${nodeCount}) 가 올바르지 않음`);
     if (leafIndex.length < nodeCount) throw new Error(`${ERR} leafIndex 길이(${leafIndex.length}) 가 nodeCount(${nodeCount}) 보다 짧음`);
     if (boxMin.length < 3 * nodeCount || boxMax.length < 3 * nodeCount) throw new Error(`${ERR} boxMin/boxMax 길이가 3*nodeCount(${3 * nodeCount}) 보다 짧음`);
-    checkLeafIndexOneToOne({ leafIndex, boxMin, boxMax, leafCount, nodeCount });
+    return { leafCount, leafStart, leafIndex, boxMin, boxMax, nodeCount };
+  });
+  // makeBuf 가 있으면 길이 leafCount 의 0 으로 채워진 버퍼를 만들어 검사표로 빌려 쓰고(추가 할당 없음) 검사 뒤 0 으로 비운다. 없으면 검사표를 새로 만든다.
+  // 할당 실패는 계층 읽기 오류가 아니므로 가드 밖에서 만든다.
+  const buf = makeBuf ? makeBuf(oc.leafCount) : undefined;
+  checkLeafIndexOneToOne(oc, buf);
+  if (buf) buf.fill(0);
+  // 2단계: levels[0] 검사.
+  return guardHierarchyRead(() => {
+    const { leafCount } = oc;
     const lv = Array.isArray(h.levels) ? h.levels[0] : undefined;
     if (!lv || !isTyped(lv.positions)) throw new Error(`${ERR} 계층 levels[0].positions 가 올바르지 않음`);
     const positions = lv.positions, lvStart = lv.leafStart, edgeM = lv.edgeM;
     if (!(lvStart instanceof Uint32Array) || lvStart.length !== leafCount + 1) throw new Error(`${ERR} 계층 levels[0].leafStart 가 올바르지 않음`);
     if (3 * lvStart[leafCount] > positions.length) throw new Error(`${ERR} levels[0].positions 길이(${positions.length}) 가 leafStart 가 가리키는 점 수보다 짧음`);
-    return { leafCount, leafStart, leafIndex, boxMin, boxMax, nodeCount, positions, lvStart, edgeM };
+    return { ...oc, positions, lvStart, edgeM, buf };
   });
 }
 
@@ -126,9 +136,14 @@ function coarseWins(hd, camera) {
  * @returns {Float64Array} 길이 leafCount
  */
 export function leafPriority(hierarchy, camera) {
-  const oc = readHierarchy(hierarchy);
-  const out = new Float64Array(oc.leafCount);
+  // 결과 버퍼를 leafIndex 검사표로 빌려 쓴다(퇴화 경로 추가 할당 없음).
+  const oc = readHierarchy(hierarchy, (n) => new Float64Array(n));
+  const out = oc.buf;
   if (degenerateCamera(camera)) return out;
+  return scoreInto(oc, camera, out);
+}
+
+function scoreInto(oc, camera, out) {
   const node = new Int32Array(oc.leafCount).fill(-1);
   for (let i = 0; i < oc.nodeCount; i++) if (oc.leafIndex[i] >= 0) node[oc.leafIndex[i]] = i;
   const wins = coarseWins(oc, camera); // 계층 읽기는 readHierarchy 에서 끝났으므로 여기서는 가드하지 않는다(할당 등 다른 오류를 계층 오류로 오인하지 않게, F-152)
@@ -148,11 +163,13 @@ export function leafPriority(hierarchy, camera) {
  * @returns {Uint32Array}
  */
 export function orderChunks(hierarchy, camera, mask) {
-  const n = readHierarchy(hierarchy).leafCount;
+  // 점수 버퍼를 먼저 만들어 leafIndex 검사표로 빌려 쓴다(별도 n 칸 할당 없음). 퇴화면 쓰지 않고 버려진다.
+  const oc = readHierarchy(hierarchy, (len) => new Float64Array(len));
+  const n = oc.leafCount;
   if (!(mask instanceof Uint8Array) || mask.length !== n) throw new Error(`${ERR} 마스크는 길이 ${n} 의 Uint8Array 여야 함`);
   for (let i = 0; i < n; i++) if (mask[i] !== 0 && mask[i] !== 1) throw new Error(`${ERR} 마스크[${i}] = ${mask[i]} 는 0/1 이 아님`);
   if (degenerateCamera(camera)) return new Uint32Array(0); // 퇴화 시점: 계약(T08.10)상 아무것도 남기지 않는다
-  const score = leafPriority(hierarchy, camera);
+  const score = scoreInto(oc, camera, oc.buf);
   const ids = [];
   for (let i = 0; i < n; i++) if (mask[i]) ids.push(i);
   ids.sort((a, b) => score[b] - score[a] || a - b);

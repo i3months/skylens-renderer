@@ -75,7 +75,7 @@ function leafBoxesOfBody(octree) {
   if (!octree || typeof octree !== 'object') throw new Error(`${ERR} octree 는 객체여야 함`);
   const { leafCount, leafIndex, boxMin, boxMax } = octree;
   // 리프 0 개 계층은 서버 predict·lod·occlusion 과 같이 거부한다(계층 계약: leafCount ≥ 1).
-  if (!Number.isInteger(leafCount) || leafCount < 1 || !leafIndex || !boxMin || !boxMax) throw new Error(`${ERR} octree 형식이 올바르지 않음`);
+  if (!Number.isInteger(leafCount) || leafCount < 1 || !(leafIndex instanceof Int32Array) || !boxMin || !boxMax) throw new Error(`${ERR} octree 형식이 올바르지 않음`);
   // F-146 ①: 일반 배열 boxMin/boxMax 는 subarray 가 없어 TypeError 가 새므로 타입배열인지 먼저 검사한다.
   if (!(boxMin instanceof Float32Array) || !(boxMax instanceof Float32Array)) throw new Error(`${ERR} octree boxMin·boxMax 는 Float32Array 여야 함`);
   // F-122 ⑥: 짧은 boxMin/boxMax 는 subarray 가 조용히 잘려 NaN·0 상자가 되므로 길이를 먼저 검사한다.
