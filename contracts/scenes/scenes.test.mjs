@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mulberry32, subSeed, point27ToGauss56, makeResult, packRecords, resultHash, assertSceneResult, LEVEL_STEPS, SCENES, FORMAT_POINT27, FORMAT_GAUSS56 } from './index.mjs';
 
 const cloud = (n) => {
@@ -145,4 +146,58 @@ test('assert_result_checks_27b_normals_finite_and_unit', () => {
   for (const v of [NaN, Infinity]) { const r = ok(); r.cloud.normals[4] = v; assert.throws(() => assertSceneResult(r), /normals/); }
   const z = ok(); z.cloud.normals.fill(0); assert.throws(() => assertSceneResult(z), /단위 길이/);
   const l = ok(); l.cloud.normals[3] = 0.5; l.cloud.normals[4] = 1; assert.throws(() => assertSceneResult(l), /단위 길이/);
+});
+
+// resultHash 리터럴 고정(F-091): 포장 구현을 바꿔도 해시 값은 정확히 같아야 한다.
+const hashCloud = (n, s) => {
+  const r = mulberry32(s);
+  const positions = new Float32Array(3 * n).map(() => r() * 10 - 5);
+  const normals = new Float32Array(3 * n).map(() => r() * 2 - 1);
+  const colors = new Uint8Array(3 * n).map(() => Math.floor(r() * 256));
+  return { format: FORMAT_POINT27, count: n, positions, normals, colors };
+};
+test('result_hash_literals_unchanged', () => {
+  const t = { bounds: { min: [0, 0, 0], max: [1, 1, 1] } };
+  const want = [
+    [0, 1, 1, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'],
+    [0, 1, 2, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'],
+    [1, 2, 1, 'a5ba2addd1afd0cb4567acb860e6d98af7fac40a223d2255079aae4f79f164f4'],
+    [1, 2, 2, '815707d235206534ec76f4d7b9f1d1c9d468d7046f78b901789de4d2405a073f'],
+    [7, 3, 1, '998e0c1c8ec0ed8deec97a6cea79ac9728840dbc2bc916544e34bbea70ab4c89'],
+    [7, 3, 2, '581887646b15a4c439a34c02abaf39324dcad1ded9a04b9b7b72522fca95836d'],
+    [1000, 4, 1, '2c83a609c409161db3a975e940f9a1ff1209c07ae4cbe7f7ec0cd1ac3098d753'],
+    [1000, 4, 2, '6dc7edbc56d578fcc3a7d4b5e0541db6eb1dccd0e368e356e85febfc3657d037'],
+  ];
+  for (const [n, s, f, h] of want) assert.equal(resultHash(makeResult('terrain', s, f, hashCloud(n, s), t)), h, `n=${n} format=${f}`);
+});
+test('result_hash_chunk_boundary_matches_packRecords', () => {
+  // 청크 경계(65536 점)를 넘는 크기에서 청크 해시가 전체 바이트 해시와 같아야 한다.
+  const t = { bounds: { min: [0, 0, 0], max: [1, 1, 1] } };
+  for (const f of [1, 2]) {
+    const r = makeResult('terrain', 5, f, hashCloud(65536 * 2 + 3, 5), t);
+    assert.equal(resultHash(r), createHash('sha256').update(packRecords(r.cloud)).digest('hex'));
+  }
+});
+
+// F-090: format 2 의 유한성·사원수 길이, format 1 색 길이 거부 시험.
+test('assert_result_rejects_bad_gauss56_and_colors', () => {
+  const ok = () => makeResult('terrain', 3, FORMAT_GAUSS56, cloud(4), truth);
+  assertSceneResult(ok());
+  for (const k of ['fdc', 'opacity', 'scales', 'rotations']) {
+    for (const v of [NaN, Infinity, -Infinity]) {
+      const r = ok(); r.cloud[k][1] = v;
+      assert.throws(() => assertSceneResult(r), new RegExp(k), `${k}=${v}`);
+    }
+  }
+  const z = ok(); z.cloud.rotations.fill(0);
+  assert.throws(() => assertSceneResult(z), /rotations/);
+  const l = ok(); l.cloud.rotations[4] = 1.01;
+  assert.throws(() => assertSceneResult(l), /rotations/);
+  const s = ok(); s.cloud.rotations[0] = 1.0005; assertSceneResult(s);
+});
+test('assert_result_rejects_nan_opacity_and_zero_quaternions_end_to_end', () => {
+  const a = makeResult('terrain', 3, FORMAT_GAUSS56, cloud(4), truth); a.cloud.opacity[2] = NaN;
+  assert.throws(() => assertSceneResult(a), /opacity/);
+  const b = makeResult('terrain', 3, FORMAT_GAUSS56, cloud(4), truth); b.cloud.rotations.fill(0);
+  assert.throws(() => assertSceneResult(b), /rotations/);
 });

@@ -78,6 +78,29 @@ test('holes_평지_법선_단위_색_무늬', () => {
   assert.ok(new Set(r.cloud.colors).size > 50);
 });
 
+test('F-091: 색 무늬가 잡음이 아니라 2 m 체크에서 온다(밝은 칸 R 평균이 어두운 칸보다 40 이상 큼)', () => {
+  const r = generate({ seed: 2, count: 20000 });
+  const p = r.cloud.positions, c = r.cloud.colors;
+  const sum = [0, 0], n = [0, 0];
+  for (let i = 0; i < r.count; i++) {
+    const k = ((Math.floor(p[3 * i] / 2) + Math.floor(p[3 * i + 2] / 2)) & 1) === 0 ? 0 : 1;
+    sum[k] += c[3 * i]; n[k]++;
+  }
+  assert.ok(n[0] > 1000 && n[1] > 1000);
+  // 기준: 밝은 칸 150, 어두운 칸 70 (차 80, 잡음 ±25 는 평균에서 상쇄)
+  assert.ok(sum[0] / n[0] - sum[1] / n[1] >= 40, `칸 평균 차 ${sum[0] / n[0] - sum[1] / n[1]}`);
+});
+
+test('F-091: 모든 점이 truth.bounds 안에 있다(전수)', () => {
+  const r = generate({ seed: 6 });
+  const { min, max } = r.truth.bounds, p = r.cloud.positions;
+  for (let i = 0; i < r.count; i++) for (let a = 0; a < 3; a++) assert.ok(p[3 * i + a] >= min[a] && p[3 * i + a] <= max[a], `점 ${i} 축 ${a}`);
+});
+
+test('F-091: opts 가 null 이어도 기본값으로 생성된다', () => {
+  assert.equal(generate(null).count, 100000);
+});
+
 test('holes_같은_시드_바이트_동일_다른_시드_다름_두_형식', () => {
   for (const format of [1, 2]) {
     const a = generate({ seed: 4, count: 3000, format }), b = generate({ seed: 4, count: 3000, format });
@@ -118,7 +141,7 @@ test('holes_구멍_가장자리_바깥_0_1m_띠에_점_밀도_하한', () => {
     for (const h of H) holeArea += (h.max[0] - h.min[0]) * (h.max[1] - h.min[1]);
     const expected = r.count / (40000 - holeArea) * bandArea; // 균일 분포일 때 띠 안 점 수
     assert.ok(bandArea > 100, `띠 면적 ${bandArea}`);
-    assert.ok(pts >= 0.8 * expected, `시드 ${seed}: 띠 점 ${pts} < 기대 ${expected} 의 80%`);
+    assert.ok(pts >= 0.9 * expected, `시드 ${seed}: 띠 점 ${pts} < 기대 ${expected} 의 90%`);
     assert.ok(pts <= 1.2 * expected);
   }
 });

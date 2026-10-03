@@ -13,7 +13,8 @@ const GAP = 1;
 const r2 = (v) => Math.round(v * 100) / 100;
 
 /** @param {{seed:number,count?:number,format?:1|2}} opts */
-export function generate(opts = {}) {
+export function generate(options) {
+  const opts = options ?? {};
   const seed = normalizeSeed(opts.seed);
   const n = checkCount(opts.count, 1000);
   const format = checkFormat(opts.format);

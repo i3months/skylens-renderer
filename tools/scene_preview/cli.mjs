@@ -53,7 +53,7 @@ async function main() {
   }
 
   // 장면 모듈 확인
-  if (!(sceneName in SCENES)) {
+  if (!Object.hasOwn(SCENES, sceneName)) {
     console.error(`오류: 알 수 없는 장면 "${sceneName}"`);
     console.error(`알려진 장면: ${Object.keys(SCENES).join(', ')}`);
     process.exit(1);

@@ -6,14 +6,25 @@ import { mulberry32, subSeed, normalizeSeed } from '../../contracts/scenes/index
 const UP = [0, 1, 0];
 const TAU = Math.PI * 2;
 const PITCH_MAX = (30 * Math.PI) / 180; // freePath 시선 pitch 상한(자름)
+const FPS_MIN = 1e-3; // 이보다 작으면 t=i/fps 가 비현실적으로 커진다(1e-320 은 Infinity 가 됨)
+const FRAMES_MAX = 1e6; // 메모리 보호용 프레임 수 상한
 
 const fail = (msg) => { throw new Error(`paths: ${msg}`); };
 const isFin = (v) => typeof v === 'number' && Number.isFinite(v);
 function checkFrames(frames) {
   if (typeof frames !== 'number' || !Number.isInteger(frames) || frames < 0) fail(`frames 는 0 이상의 정수여야 함: ${String(frames)}`);
+  if (frames > FRAMES_MAX) fail(`frames 는 ${FRAMES_MAX} 이하여야 함: ${String(frames)}`);
 }
 function checkFps(fps) {
   if (!isFin(fps) || !(fps > 0)) fail(`fps 는 양의 유한수여야 함: ${String(fps)}`);
+  if (fps < FPS_MIN) fail(`fps 는 ${FPS_MIN} 이상이어야 함: ${String(fps)}`);
+}
+// 결과의 모든 수가 유한한지 검사한다(극단 입력이 Infinity·NaN 으로 새는 것을 막는다).
+function checkResult(res) {
+  for (const f of res.frames) {
+    if (!isFin(f.t) || !f.eye.every(isFin) || !f.target.every(isFin)) fail('결과에 유한하지 않은 값이 생김(입력이 너무 큼)');
+  }
+  return res;
 }
 function checkVec3(v, name) {
   if (!Array.isArray(v) || v.length !== 3 || !v.every(isFin)) fail(`${name} 는 유한한 수 3개의 배열이어야 함: ${String(v)}`);
@@ -24,7 +35,8 @@ const round = (v) => Math.round(v * 1e6) / 1e6; // 직렬화 안정화(위치값
  * 드론 추적 경로: center 둘레 원형 비행, 항상 center 를 바라본다.
  * 지터는 시드별 위상의 저주파 사인 합이며 반경·고도·접선 방향 각각 최대 1.5 m(< 2 m).
  */
-export function dronePath({ seed, frames = 300, fps = 30, center = [0, 0, 0], radius = 60, altitude = 40 } = {}) {
+export function dronePath(opts) {
+  let { seed, frames = 300, fps = 30, center = [0, 0, 0], radius = 60, altitude = 40 } = opts ?? {};
   seed = normalizeSeed(seed);
   checkFrames(frames); checkFps(fps); checkVec3(center, 'center');
   if (!isFin(radius) || !isFin(altitude)) fail('radius·altitude 는 유한수여야 함');
@@ -48,7 +60,7 @@ export function dronePath({ seed, frames = 300, fps = 30, center = [0, 0, 0], ra
     ].map(round);
     out.push({ t: i / fps, eye, target: [...center], up: [...UP] });
   }
-  return { fps, frames: out };
+  return checkResult({ fps, frames: out });
 }
 
 // 균일 Catmull-Rom (닫힌 루프) 한 점. p0..p3 는 스칼라 또는 배열.
@@ -73,13 +85,17 @@ function loopAt(pts, u) { // u ∈ [0, n) 루프 매개변수; 각 점은 숫자
  * Catmull-Rom 오버슈트(웨이포인트 ±30° 에서 최대 약 36.6°)가 있으므로 pitch 는 ±30° 로 잘라 상한을 보장한다.
  * bounds: {min:[x,y,z], max:[x,y,z]}. 기본은 flat_boxes 장면 위 공중.
  */
-export function freePath({ seed, frames = 600, fps = 30, bounds } = {}) {
+export function freePath(opts) {
+  let { seed, frames = 600, fps = 30, bounds } = opts ?? {};
   seed = normalizeSeed(seed);
   checkFrames(frames); checkFps(fps);
   const b = bounds === undefined ? { min: [-90, 20, -90], max: [90, 90, 90] } : bounds;
   if (b === null || typeof b !== 'object') fail('bounds 는 {min, max} 객체여야 함');
   checkVec3(b.min, 'bounds.min'); checkVec3(b.max, 'bounds.max');
-  for (let c = 0; c < 3; c++) if (!(b.min[c] < b.max[c])) fail(`bounds.min < bounds.max 여야 함(축 ${c})`);
+  for (let c = 0; c < 3; c++) {
+    if (!(b.min[c] < b.max[c])) fail(`bounds.min < bounds.max 여야 함(축 ${c})`);
+    if (!isFin(b.max[c] - b.min[c])) fail(`bounds 폭이 너무 큼(축 ${c})`);
+  }
   const rnd = mulberry32(subSeed(seed, 2));
   const N = 8;
   const speed = 10; // m/s (상한 15)
@@ -128,5 +144,5 @@ export function freePath({ seed, frames = 600, fps = 30, bounds } = {}) {
     const eye = p.map(round);
     out.push({ t, eye, target: eye.map((v, c) => round(v + 50 * d[c])), up: [...UP] });
   }
-  return { fps, frames: out };
+  return checkResult({ fps, frames: out });
 }

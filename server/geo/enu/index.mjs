@@ -1,3 +1,6 @@
+// 범위 차이(결정 0017·0018): skylens geo.ts 와 달리 이 모듈은 (a) gpsToEnu 에서 |Δλ| > 180° 를 짧은 쪽(±360°)으로 감싸고
+// (결정 0017), (b) 극 앵커(|cos φ0| < 1e-12)에서 eastScale 을 0 으로 두어 e 를 0 으로 만들고 enuToGps 는 e ≠ 0 을 거부한다(결정 0018).
+// 두 경우 모두 geo.ts 와 결과가 다를 수 있는 범위이며, 그 밖의 입력은 geo.ts 와 비트까지 같다.
 // T04.5 GPS ↔ ENU. 기본 경로(gpsToEnu·enuToGps)는 skylens develop src/shared/geo.ts
 // (NET-Challenge-S13/skylens, 커밋 59edcf9b38b0887cb63dcaa2daa07a123f81dd95)와 같은 등장방형 소영역 근사다(F-071).
 // 식만 맞추고 코드는 따로 썼다:
@@ -19,6 +22,9 @@ const DEG = Math.PI / 180;
 // 1e300 같은 값은 경도 모듈로가 부동소수점 정밀도를 모두 잃은 임의의 수를 '정상 결과'로 돌려주므로 조용히 받지 않고 거부한다.
 // 4바퀴 안에서는 e/(R cosφ0)/DEG 의 상대 오차가 1e-16 수준이라 감싼 경도의 오차는 1e-9° 이하다(적도 앵커 기준).
 export const MAX_ENU_ABS_M = 4 * 2 * Math.PI * EARTH_RADIUS_M;
+// enuToGps 경도 증분(감싸기 전, 도 단위) 상한: 4바퀴 = 1440°. 미터 상한만으로는 극 근처 앵커(cos φ0 → 0)에서
+// 같은 e 가 수십조 도로 커져 모듈로가 정밀도를 잃으므로, 감싸기 전에 도 단위로도 거부한다.
+export const MAX_LON_INCREMENT_DEG = 1440;
 
 // 입력 검사: 유한·위도 −90..90·경도 −180..180
 function checkGps(g, name) {
@@ -160,7 +166,7 @@ export function gpsToEnu(gps, anchor) {
 
 /**
  * ENU [e, n, u] → GPS(gpsToEnu 의 역). GeoError('range') 조건: 입력 비유한·anchor 범위 밖, 결과가 비유한,
- * 성분 |e|·|n|·|u| > MAX_ENU_ABS_M(지구 둘레 4배 ≈ 1.6e8 m),
+ * 성분 |e|·|n|·|u| > MAX_ENU_ABS_M(지구 둘레 4배 ≈ 1.6e8 m), 감싸기 전 경도 증분 |Δλ| > 1440°(극 근처 앵커 보호),
  * 결과 |lat| > 90(1e-9° 이내 초과는 ±90 으로 붙임), 극 앵커(|cos φ0| < 1e-12)에서 e ≠ 0(경도가 정의되지 않음; e = 0 이면 lon 은 anchor 그대로 통과).
  * 결과 경도가 (−180, 180] 밖(−180 자체 포함)이면 (−180, 180] 로 감싼다(−180 은 180)(날짜변경선 왕복용; 범위 안의 값은 그대로이므로 기본 경로 값은
  * skylens geo.ts 와 같다). 위도는 감싸지 않고 거부한다. enu 가 Array 가 아닌 array-like 이면 TypeError.
@@ -182,7 +188,11 @@ export function enuToGps(enu, anchor) {
   // 1e-9° (약 0.1 mm) 이내의 초과는 반올림 잡음으로 보고 ±90 으로 붙인다. 그보다 크면 아래에서 거부한다.
   if (lat > 90 && lat - 90 <= 1e-9) lat = 90;
   else if (lat < -90 && -90 - lat <= 1e-9) lat = -90;
-  let lon = Math.abs(cosPhi0) < 1e-12 ? anchor.lon : anchor.lon + e / (EARTH_RADIUS_M * cosPhi0) / DEG;
+  const dLonDeg = Math.abs(cosPhi0) < 1e-12 ? 0 : e / (EARTH_RADIUS_M * cosPhi0) / DEG;
+  if (Math.abs(dLonDeg) > MAX_LON_INCREMENT_DEG + 1e-6) {
+    throw new GeoError('range', `enuToGps 경도 증분이 상한(${MAX_LON_INCREMENT_DEG}°) 초과: ${dLonDeg}° (앵커 lat ${anchor.lat}, e ${e})`);
+  }
+  let lon = anchor.lon + dLonDeg;
   const alt = anchor.alt + u;
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(alt)) {
     throw new GeoError('range', `enuToGps 결과가 유한하지 않다: ${lat}, ${lon}, ${alt}`);

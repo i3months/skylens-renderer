@@ -97,3 +97,7 @@ test('large 장면: format 2 의 positions 는 format 1 과 같고 fdc 는 색�
   for (let i = 0; i < 3 * 500; i++) assert.ok(Math.abs(b.fdc[i] - (a.colors[i] / 255 - 0.5) / C0) < 1e-5);
   assert.ok(b.scales.every((v) => Math.abs(v - Math.log(0.05)) < 1e-6));
 });
+
+test('F-091: opts 가 null 이어도 기본값으로 생성된다', () => {
+  assert.equal(generate(null).count, 2500000);
+});

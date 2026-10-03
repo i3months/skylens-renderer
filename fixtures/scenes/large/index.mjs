@@ -8,7 +8,8 @@ import { mulberry32, makeResult, checkCount, normalizeSeed, checkFormat, FORMAT_
  * @param {{seed: number, count?: number, format?: 1|2}} opts
  * @returns {import('../../../contracts/scenes/index.mjs').SceneResult}
  */
-export function generate(opts = {}) {
+export function generate(options) {
+  const opts = options ?? {};
   const count = checkCount(opts.count, 2500000);
   const seed = normalizeSeed(opts.seed);
   const format = checkFormat(opts.format);

@@ -31,11 +31,16 @@ export function parsePlyHeader(buf, maxHeaderBytes = PLY_HEADER_MAX_BYTES) {
       if (inVertex) {
         // 십진 정수만 받는다 (0x10, 1e3 등 다른 형식 거부)
         if (!/^\d+$/.test(t[2])) throw new Error('ply: element vertex missing');
+        // element vertex 는 한 번만 허용한다(뒤의 선언이 앞의 것을 덮어쓰지 못하게)
+        if (vertexCount !== null) throw new Error('ply: duplicate element vertex');
         vertexCount = Number(t[2]);
+        // 안전 정수 범위를 넘으면 정밀도가 깨지므로 거부한다
+        if (!Number.isSafeInteger(vertexCount)) throw new Error('ply: vertex count out of range');
       }
     } else if (t[0] === 'property' && inVertex) {
       if (t[1] === 'list') throw new Error('ply: list property unsupported');
       if (!Object.hasOwn(SIZES, t[1])) throw new Error(`ply: unknown type ${t[1]}`);
+      if (properties.some((p) => p.name === t[2])) throw new Error(`ply: duplicate property ${t[2]}`);
       properties.push({ name: t[2], type: t[1] });
     }
   }
