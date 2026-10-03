@@ -373,3 +373,25 @@ test('다양한 화면 크기 처리', (t) => {
     assert.equal(rgb.length, size.width * size.height * 3, `크기 ${size.width}x${size.height}: RGB 크기`);
   }
 });
+
+test('축 밖 점이 해석 픽셀 위치에 찍힘(±1 px)', () => {
+  // eye (0,0,-50) → target 원점, 점 (0,5,0): d=50, f=(720/2)/tan(25°), v=360−f·5/50, u=640
+  const cloud = {
+    format: 1, count: 1,
+    positions: new Float32Array([0, 5, 0]),
+    normals: new Float32Array([0, 0, -1]),
+    colors: Uint8Array.of(255, 0, 0),
+  };
+  const vp = { eye: [0, 0, -50], target: [0, 0, 0], up: [0, 1, 0], width: 1280, height: 720, fov_y_deg: 50 };
+  const { width, height, rgb } = renderPreview(cloud, vp);
+  const hits = [];
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const i = (y * width + x) * 3;
+    if (rgb[i] === 255 && rgb[i + 1] === 0 && rgb[i + 2] === 0) hits.push([x, y]);
+  }
+  assert.equal(hits.length, 1);
+  const f = 360 / Math.tan((25 * Math.PI) / 180);
+  const vExpect = 360 - (f * 5) / 50;
+  assert.ok(Math.abs(hits[0][1] - vExpect) <= 1, `v ${hits[0][1]} vs ${vExpect}`);
+  assert.ok(Math.abs(hits[0][0] - 640) <= 1, `u ${hits[0][0]}`);
+});
