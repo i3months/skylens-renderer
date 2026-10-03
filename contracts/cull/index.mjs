@@ -11,6 +11,8 @@
 //   지면 아래 카메라(카메라 중심이 모든 상자보다 아래)는 퇴화가 아니다: 정상 입력으로 처리한다.
 // 법선 원뿔(T08.2): 리프 k 의 대표 법선 방향 axis[k](단위) 와 반각의 코사인 cosHalf[k]. 리프 안 모든 점 법선 n 이 n·axis ≥ cosHalf 를 만족한다.
 //   법선이 없는 점(길이 0)이 하나라도 있으면 그 리프는 cosHalf = −1(원뿔 = 전체 구, 절대 뒷면 제거 안 함).
+// 점 원판(F-116): 래스터는 점을 반경 r = fx·pointSizeM/(2z) px 원판으로 그리므로(위·아래도 fx), 절두체 판정(frustum·client)은
+//   좌·우·위·아래 평면을 그 반경만큼 바깥으로 민다. pointSizeM 을 모르면(인자 없음) 좌·우·위·아래로는 아무것도 버리지 않는다.
 // 점 형식(27 B)·법선 의미는 renderer_basis 그대로: 법선은 세계 좌표 단위 벡터이며 카메라 쪽을 향하면 앞면이다.
 
 /**
@@ -60,13 +62,13 @@ export const COMBINE_MIN_SSIM = 0.95;
 /** 함수 서명. 이름과 모듈 위치는 이 표가 기준이다. 모든 마스크 함수의 첫 인자는 hierarchy. */
 export const CULL_API = Object.freeze({
   degenerate: { module: 'server/cull/degenerate/index.mjs', fn: 'isDegenerateView(camera) -> boolean ; emptyMask(hierarchy) -> LeafMask(전부 0) ; assertHierarchyForCull(hierarchy) -> void ("cull:" 오류)' },
-  frustum: { module: 'server/cull/frustum/index.mjs', fn: 'frustumCull(hierarchy, camera) -> LeafMask   리프 상자가 시야 사각뿔과 확실히 안 겹칠 때만 0. 퇴화 시점이면 전부 0' },
+  frustum: { module: 'server/cull/frustum/index.mjs', fn: 'frustumCull(hierarchy, camera, {pointSizeM?}) -> LeafMask   리프 상자의 점이 지름 pointSizeM(m) 원판으로 그려져도 화면에 확실히 안 걸칠 때만 0(좌·우·위·아래 평면을 원판 반경 fx·pointSizeM/(2z) px 만큼 바깥으로 민다). pointSizeM 이 없으면 좌·우·위·아래로는 제거 없음(앞 z > 0 만). 퇴화 시점이면 전부 0' },
   backface: { module: 'server/cull/backface/index.mjs', fn: 'leafNormalCones(hierarchy) -> NormalCones ; backfaceCull(hierarchy, camera, cones) -> LeafMask   리프의 모든 점이 카메라를 등지는 것이 확실할 때만 0' },
   occlusion: { module: 'server/cull/occlusion/index.mjs', fn: 'buildDepthPyramid(hierarchy, camera, {size=64}) -> {size, levels:Float32Array[]}   CPU 거친 깊이 피라미드(칸마다 가장 가까운 깊이의 보수적 하한이 아닌 "가림막" 깊이 = 칸 안 모든 픽셀이 이보다 가깝게 채워진 깊이의 최댓값) ; occlusionCull(hierarchy, camera, pyramid?) -> LeafMask   리프 상자 전체가 가림막 뒤일 때만 0' },
   distance: { module: 'server/cull/distance/index.mjs', fn: 'distanceCull(hierarchy, camera, {maxDistanceM}) -> LeafMask   카메라 중심~상자 최소 거리 > maxDistanceM 이면 0 (경계 = 남김)' },
   predict: { module: 'server/cull/predict/index.mjs', fn: 'predictCamera(camera, {velocityMps, angularRadPerS}, dtS) -> Camera ; predictiveMask(hierarchy, state, {horizonS, steps}) -> LeafMask   현재와 예측 시점들의 frustumCull 합집합(OR)' },
   priority: { module: 'server/cull/priority/index.mjs', fn: 'leafPriority(hierarchy, camera) -> Float64Array(leafCount)   화면 기여 점수(클수록 먼저) ; orderChunks(hierarchy, camera, mask) -> Uint32Array   남은 리프를 점수 내림차순(동률은 번호 작은 쪽)' },
-  client: { module: 'client/cull/index.mjs', fn: 'clientFrustumCull(leafBoxes, camera) -> Uint8Array   leafBoxes = {boxMin:Float32Array(3·n), boxMax:Float32Array(3·n)}(리프 번호 순); 서버 frustumCull 과 같은 마스크' },
+  client: { module: 'client/cull/index.mjs', fn: 'clientFrustumCull(leafBoxes, camera, {pointSizeM?}) -> Uint8Array   leafBoxes = {boxMin:Float32Array(3·n), boxMax:Float32Array(3·n)}(리프 번호 순); 같은 pointSizeM 의 서버 frustumCull 과 같은 마스크(없으면 좌·우·위·아래 제거 없음)' },
   combine: { module: 'server/cull/combine/index.mjs', fn: 'cullAndSelect(hierarchy, camera, {thresholdPx, stages?, maxDistanceM?, prioritize?}) -> CombinedResult   stages 기본 ["frustum","backface","occlusion","distance"]; 남은 리프만 selectLevels 의 단계로, 제거 리프는 NOT_DRAWN' },
   bench: { module: 'bench/cull/index.mjs', fn: 'measureCullCost(hierarchy, cameras, opts) -> {perViewMs:{median,p95,max}, perStageMs:{...}}' },
 });

@@ -57,7 +57,7 @@ for (const [name, scene, s, edge0] of scenes) {
     const cams = views(s);
     const rows = [];
     cams.forEach((cam, v) => {
-      const mask = frustumCull(h, cam);
+      const mask = frustumCull(h, cam, { pointSizeM: 0.3 * s }); // 래스터와 같은 원판 지름(F-116)
       const res = renderPoints(cam, cloud, { pointSizeM: 0.3 * s });
       let drawn = 0, falseRemoved = 0;
       const seen = new Set();
@@ -71,7 +71,7 @@ for (const [name, scene, s, edge0] of scenes) {
   });
 
   test(`절두체 컬링: ${name} 시점 7(한쪽만 봄)에서 제거율 ${MIN_REMOVED_RATIO_V7 * 100}% 이상`, () => {
-    const mask = frustumCull(h, views(s)[7]);
+    const mask = frustumCull(h, views(s)[7], { pointSizeM: 0.3 * s });
     let kept = 0; for (const m of mask) kept += m;
     assert.ok(1 - kept / oc.leafCount >= MIN_REMOVED_RATIO_V7, `제거율 ${1 - kept / oc.leafCount}`);
   });
@@ -105,8 +105,10 @@ test('확실히 시야 밖인 상자는 8시점 모두에서 0, 시선 앞 상�
       box(at(50, 0, -400)),   // 4 위쪽 밖
       box(at(50, 0, 400)),    // 5 아래쪽 밖
     ]);
-    const m = frustumCull(h, cam);
+    const m = frustumCull(h, cam, { pointSizeM: 0.3 });
     assert.deepEqual([...m], [1, 0, 0, 0, 0, 0], `시점 ${v}`);
+    // pointSizeM 이 없으면 좌·우·위·아래로는 제거하지 않는다(카메라 뒤만 제거).
+    assert.deepEqual([...frustumCull(h, cam)], [1, 0, 1, 1, 1, 1], `시점 ${v} pointSizeM 없음`);
   }
 });
 
