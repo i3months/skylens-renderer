@@ -1,10 +1,23 @@
 // 카메라 경로 생성기: 드론 추적(원형 비행)·자유 조작(Catmull-Rom 웨이포인트).
 // 좌표는 GL 규약·ENU m(x=동, y=위, z=-북), 필드명은 fixtures/viewpoints/synthetic.json 과 같다.
 // 경로는 점군이 아니므로 SceneResult 를 쓰지 않는다. 난수는 contracts/scenes 의 mulberry32·subSeed 만 쓴다.
-import { mulberry32, subSeed } from '../../contracts/scenes/index.mjs';
+import { mulberry32, subSeed, normalizeSeed } from '../../contracts/scenes/index.mjs';
 
 const UP = [0, 1, 0];
 const TAU = Math.PI * 2;
+const PITCH_MAX = (30 * Math.PI) / 180; // freePath 시선 pitch 상한(자름)
+
+const fail = (msg) => { throw new Error(`paths: ${msg}`); };
+const isFin = (v) => typeof v === 'number' && Number.isFinite(v);
+function checkFrames(frames) {
+  if (typeof frames !== 'number' || !Number.isInteger(frames) || frames < 0) fail(`frames 는 0 이상의 정수여야 함: ${String(frames)}`);
+}
+function checkFps(fps) {
+  if (!isFin(fps) || !(fps > 0)) fail(`fps 는 양의 유한수여야 함: ${String(fps)}`);
+}
+function checkVec3(v, name) {
+  if (!Array.isArray(v) || v.length !== 3 || !v.every(isFin)) fail(`${name} 는 유한한 수 3개의 배열이어야 함: ${String(v)}`);
+}
 const round = (v) => Math.round(v * 1e6) / 1e6; // 직렬화 안정화(위치값만; t 는 정확히 유지)
 
 /**
@@ -12,7 +25,10 @@ const round = (v) => Math.round(v * 1e6) / 1e6; // 직렬화 안정화(위치값
  * 지터는 시드별 위상의 저주파 사인 합이며 반경·고도·접선 방향 각각 최대 1.5 m(< 2 m).
  */
 export function dronePath({ seed, frames = 300, fps = 30, center = [0, 0, 0], radius = 60, altitude = 40 } = {}) {
-  const rnd = mulberry32(subSeed(seed >>> 0, 1));
+  seed = normalizeSeed(seed);
+  checkFrames(frames); checkFps(fps); checkVec3(center, 'center');
+  if (!isFin(radius) || !isFin(altitude)) fail('radius·altitude 는 유한수여야 함');
+  const rnd = mulberry32(subSeed(seed, 1));
   const ph = Array.from({ length: 6 }, () => rnd() * TAU);
   const fr = Array.from({ length: 3 }, () => 0.5 + rnd() * 1.5); // 한 바퀴당 진동 수
   const startAngle = rnd() * TAU;
@@ -53,12 +69,18 @@ function loopAt(pts, u) { // u ∈ [0, n) 루프 매개변수; 각 점은 숫자
 
 /**
  * 자유 조작 경로: 시드로 정한 웨이포인트를 Catmull-Rom 으로 잇는 닫힌 루프를 등속(10 m/s)으로 이동.
- * 시선은 yaw·pitch 웨이포인트(역시 Catmull-Rom)로 정해 각속도를 억제한다(pitch ±30°).
+ * 시선은 yaw·pitch 웨이포인트(역시 Catmull-Rom)로 정해 각속도를 억제한다.
+ * Catmull-Rom 오버슈트(웨이포인트 ±30° 에서 최대 약 36.6°)가 있으므로 pitch 는 ±30° 로 잘라 상한을 보장한다.
  * bounds: {min:[x,y,z], max:[x,y,z]}. 기본은 flat_boxes 장면 위 공중.
  */
 export function freePath({ seed, frames = 600, fps = 30, bounds } = {}) {
-  const b = bounds ?? { min: [-90, 20, -90], max: [90, 90, 90] };
-  const rnd = mulberry32(subSeed(seed >>> 0, 2));
+  seed = normalizeSeed(seed);
+  checkFrames(frames); checkFps(fps);
+  const b = bounds === undefined ? { min: [-90, 20, -90], max: [90, 90, 90] } : bounds;
+  if (b === null || typeof b !== 'object') fail('bounds 는 {min, max} 객체여야 함');
+  checkVec3(b.min, 'bounds.min'); checkVec3(b.max, 'bounds.max');
+  for (let c = 0; c < 3; c++) if (!(b.min[c] < b.max[c])) fail(`bounds.min < bounds.max 여야 함(축 ${c})`);
+  const rnd = mulberry32(subSeed(seed, 2));
   const N = 8;
   const speed = 10; // m/s (상한 15)
   const way = Array.from({ length: N }, () => [0, 1, 2].map((c) => b.min[c] + rnd() * (b.max[c] - b.min[c])));
@@ -100,7 +122,8 @@ export function freePath({ seed, frames = 600, fps = 30, bounds } = {}) {
   for (let i = 0; i < frames; i++) {
     const t = i / fps;
     const p = loopAt(way, uAt(speed * t)).map((v, c) => Math.min(b.max[c], Math.max(b.min[c], v)));
-    const [yw, pt] = lookCurve(((lookN - 1) * t) / duration);
+    const [yw, ptRaw] = lookCurve(((lookN - 1) * t) / duration);
+    const pt = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, ptRaw));
     const d = [Math.cos(pt) * Math.sin(yw), Math.sin(pt), -Math.cos(pt) * Math.cos(yw)];
     const eye = p.map(round);
     out.push({ t, eye, target: eye.map((v, c) => round(v + 50 * d[c])), up: [...UP] });
