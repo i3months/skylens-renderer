@@ -63,7 +63,7 @@ export function encodePositionStream(qe, qn, qu) {
 
 /**
  * pos 원스트림 → 정확히 n 점의 양자화 위치(모턴 순서).
- * 바이트를 남기거나 모자라거나 차분 하나가 7 바이트를 넘으면 CodecError('stream'), 키 ≥ 2^48 이면 CodecError('range').
+ * 바이트를 남기거나 모자라거나 차분 하나가 7 바이트를 넘거나 LEB128 이 최소 표현이 아니면 CodecError('stream'), 키 ≥ 2^48 이면 CodecError('range').
  * @param {Uint8Array} bytes @param {number} n
  * @returns {{qe: Uint16Array, qn: Uint16Array, qu: Uint16Array}}
  */
@@ -88,8 +88,11 @@ export function decodePositionStream(bytes, n) {
       const b = bytes[r++];
       d += (b & 0x7f) * mul;
       mul *= 0x80;
+      if (b < 0x80) {
+        if (b === 0 && j > 0) throw new CodecError('stream', 'position delta varint not minimal');
+        break;
+      }
       j++;
-      if (b < 0x80) break;
     }
     key += d;
     if (key >= KEY_LIMIT) throw new CodecError('range', `Morton key ${key} >= 2^${MORTON_BITS}`);

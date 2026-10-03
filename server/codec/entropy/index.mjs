@@ -1,4 +1,5 @@
 // T09.5 엔트로피 부호화(서버). contracts/codec 의 ENTROPY_MODE·RANGE_PROB_BITS·RANGE_MOVE_BITS 를 직접 구현한다.
+// 참고한 공개 명세: LZMA SDK 문서(Igor Pavlov, 공개 영역)의 range coder 설명. 코드는 차용하지 않고 직접 구현했다.
 // 클라이언트(T09.6)는 이 모듈을 import 하지 않고 아래 바이트 형식을 따로 구현한다. 형식의 단일 설명은 이 주석이다.
 //
 // ── 컨테이너 ─────────────────────────────────────────────────────────────
@@ -31,6 +32,7 @@
 //     code = 0 이다(끝맺음 4 바이트가 low 자체이므로 code = 창 값 − low = 0).
 //   주의: 체크섬이 없는 층이라 손상을 다 잡지는 못한다. 특히 rawLen 을 조금 늘리면, 늘어난 비트를 정규화 없이 복호할 수 있을 때
 //     원본 뒤에 0x00 이 붙은 결과가 나오는데 이는 그 결과의 정상 부호화와 바이트 단위로 같아 형식상 구별할 수 없다(파일 체크섬이 잡는다).
+//   비정규 거부: mode 1 에서 rawLen = 0 이거나 payload 길이 > rawLen 이면 'stream'(부호기는 그런 출력을 만들지 않는다).
 //   조기 거부(선택, 결과는 같다): 비트마다 range 는 최소 2017/2048 배로 줄어 원바이트 하나가 최소 0.176 비트를 쓴다.
 //     따라서 rawLen > 64 × payload 길이 + 64 인 mode 1 은 어차피 payload 가 모자라므로 할당 전에 'stream' 으로 거부한다.
 //
@@ -176,7 +178,9 @@ export function entropyDecode(bytes, maxRawBytes = STREAM_RAW_BYTES_MAX) {
     return bytes.slice(pos, end);
   }
 
-  // mode 1
+  // mode 1: 빈 출력(rawLen 0)은 항상 mode 0 이고, 범위 부호는 rawLen 이하일 때만 쓰이므로 둘 다 비정규
+  if (rawLen === 0) throw new CodecError('stream', 'entropy: mode 1 에서 rawLen 이 0 이다');
+  if (payloadLen > rawLen) throw new CodecError('stream', 'entropy: mode 1 payload 가 rawLen 보다 크다');
   if (payloadLen < 5) throw new CodecError('stream', 'entropy: 범위 부호 payload 가 5 B 미만');
   if (rawLen > 64 * payloadLen + 64) throw new CodecError('stream', 'entropy: payload 가 rawLen 에 비해 너무 짧다');
   if (bytes[pos] !== 0) throw new CodecError('stream', 'entropy: 범위 부호 첫 바이트가 0 이 아니다');
