@@ -69,7 +69,7 @@ const VP = [
 
 // 시드별 최소 SSIM 측정값(리터럴 기록, 시점 8곳 중 최소, 항상 inside_100). 기준 SSIM_MIN 0.95 는 그대로이고
 // 아래 단언은 기준만 쓴다(측정값은 참고용 진단 출력에만 쓰며 사후 기준 조정에 쓰지 않는다).
-const MEASURED_MIN_SSIM = { 1: 0.9524, 2: 0.9578, 3: 0.9542, 4: 0.9524 };
+const MEASURED_MIN_SSIM = { 1: 0.9842, 2: 0.9825, 3: 0.9839, 4: 0.9835 };
 const SEEDS = [1, 2, 3, 4];
 
 const cache = new Map();
@@ -147,7 +147,7 @@ test('음성: 단계 0 고정 변이는 거친 단계 사용·점 비율 단언�
     const sel = selectLevels(h, camOf(vp), { thresholdPx: THRESHOLD_PX });
     assert.ok(coarseStats(h, sel).coarsePts > 0, `정상 선택은 통과해야 함: ${vp.name}`);
     const bad = forceLevel0(h, sel);
-    assert.equal(coarseStats(h, bad).coarsePts, 0, `변이 ${vp.name}: 단계≥1 점이 남음`);
+    assert.equal(coarseStats(h, bad).coarsePts, 0, `변이 ${vp.name}: 단계≥1 점이 남음`);  // forceLevel0 후 level≥1 점 검증
     assert.ok(bad.pointCount > sel.pointCount, `변이 ${vp.name}: 점 수가 줄지 않음`);
   }
   const meanBad = VP.reduce((acc, vp) => acc + forceLevel0(h, selectLevels(h, camOf(vp), { thresholdPx: THRESHOLD_PX })).pointCount / cloud.count, 0) / VP.length;

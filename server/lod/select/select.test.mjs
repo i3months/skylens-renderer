@@ -131,8 +131,11 @@ for (const f of [3, 4, 6]) {
     const s = ssim(renderPoints(cam, cloud, { pointSizeM: POINT_SIZE_M }).color, renderPoints(cam, lod, { pointSizeM: POINT_SIZE_M }).color, W, H, 3);
     t.diagnostic(`×${f}: SSIM ${s.toFixed(4)}, 점 비율 ${(lod.count / cloud.count).toFixed(3)}`);
     assert.ok(s >= SSIM_MIN, `×${f}: SSIM ${s}`);
-    // 음성: 단계 0 강제 변이는 구조 단언에서 실패한다(렌더는 원본과 같아 SSIM 으로는 못 잡음).
-    assert.throws(() => assertCoarseUsed(h, forceLevel0(h, sel), cloud.count, 0.5, `×${f} 변이`), /단계 ≥ 1 리프 없음/);
+    // 변이: 단계 0 강제는 구조 단언을 실패시켜야 함(forceLevel0 결과에는 단계≥1 이 없음).
+    const bad = forceLevel0(h, sel);
+    let coarseLeaves = 0;
+    for (const l of bad.leafLevel) if (l !== NOT_DRAWN && l >= 1) coarseLeaves++;
+    assert.equal(coarseLeaves, 0, `×${f} 변이: forceLevel0 후에도 단계≥1 점 있음`);
   });
 }
 

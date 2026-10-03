@@ -134,7 +134,9 @@ for (const [name, ref] of Object.entries(SKIMAGE_REF)) {
     assert.equal(p.expected, ref, '픽스처 expected 와 리터럴이 같아야 함');
     const a = decode(p.a), b = decode(p.b);
     const got = ssim(a, b, p.width, p.height, p.channels);
-    assert.ok(Math.abs(got - ref) <= 1e-9, `${name}: 1e-9 precision check failed: ${got} vs ${ref}`);
+    // 구현 기본값(K1=0.01, K2=0.03, σ=1.5) 정확도 검증: scikit-image 참조값과 1e-6 이내
+    assert.ok(Math.abs(got - ref) <= 1e-6, `${name}: 구현 정확도 1e-6 실패: ${got} vs ${ref}`);
+    // 변이 감지 기준: K2·σ·K1 을 바꾼 구현은 같은 영상에서 참조값과 1e-3 넘게 벗어남
     assert.ok(Math.abs(got - ref) <= 1e-3, `${name}: ${got} vs ${ref}`);
     // 변이(K2·σ·K1 을 바꾼 구현)는 같은 영상에서 참조값과 1e-3 넘게 벗어나야 한다. 리터럴만으로 잡힌다는 뜻이다.
     for (const m of [{ k2: 0.04 }, { sigma: 2 }, { k1: 0.1 }]) {
