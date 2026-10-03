@@ -76,3 +76,22 @@ test('색에 무늬가 있음(체크·잡음으로 색 종류가 다양)', () =>
   for (let p = 0; p < r.count; p++) s.add(r.cloud.colors.slice(3 * p, 3 * p + 3).join(','));
   assert.ok(s.size > 200);
 });
+
+test('dem: 점 수·시드·형식 거부(count 는 tile² 만이라 0·1 은 tile 로 허용 불가)', () => {
+  const o = { tile: 2, cell: 10 };
+  for (const count of [NaN, -5, 10.5, '4', Infinity]) assert.throws(() => generate({ seed: 1, ...o, count }), /scene: count/, String(count));
+  for (const seed of [1.5, NaN, 'abc', -1, 2 ** 32]) assert.throws(() => generate({ seed, ...o }), /scene: seed/, String(seed));
+  for (const format of [0, 3, '1', NaN]) assert.throws(() => generate({ seed: 1, ...o, format }), /scene: format/, String(format));
+  assertSceneResult(generate({ seed: 1, ...o, count: 4 }), { scene: 'dem', count: 4 });
+  assert.equal(resultHash(generate(o)), resultHash(generate({ seed: 1, ...o })), '시드 생략 = 1');
+});
+
+test('dem: format 2 의 positions 는 format 1 과 같고 fdc 는 색과 맞음', () => {
+  const o = { seed: 4, tile: 9 };
+  const a = generate({ ...o, format: 1 }).cloud;
+  const b = generate({ ...o, format: 2 }).cloud;
+  assert.deepEqual(Array.from(b.positions), Array.from(a.positions));
+  const C0 = 0.28209479177387814;
+  for (let i = 0; i < 3 * a.count; i++) assert.ok(Math.abs(b.fdc[i] - (a.colors[i] / 255 - 0.5) / C0) < 1e-5);
+  assert.ok(b.scales.every((v) => Math.abs(v - Math.log(0.05)) < 1e-6));
+});

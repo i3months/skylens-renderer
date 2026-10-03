@@ -2,7 +2,7 @@
 // 높이장 h(x,z) 는 시드로 정한 사인 합(0~100 m)이고, 타일 격자로 uint16 양자화해 낼 수 있다.
 // 격자는 원점 중심: x = (i-(tile-1)/2)*cell, z = (j-(tile-1)/2)*cell (x=동, z=−북, y=위).
 
-import { FORMAT_POINT27, makeResult, mulberry32, subSeed } from '../../../contracts/scenes/index.mjs';
+import { FORMAT_POINT27, makeResult, mulberry32, subSeed, checkCount, normalizeSeed, checkFormat } from '../../../contracts/scenes/index.mjs';
 
 const MIN_H = 0;
 const MAX_H = 100;
@@ -46,8 +46,9 @@ function readOpts(opts = {}) {
   const cell = opts.cell ?? 10;
   if (!Number.isInteger(tile) || tile < 2) throw new Error('dem: tile 은 2 이상의 정수');
   if (!(cell > 0)) throw new Error('dem: cell 은 양수');
-  if (opts.count !== undefined && opts.count !== tile * tile) throw new Error(`dem: count 는 tile² (${tile * tile}) 이어야 함`);
-  return { tile, cell, seed: (opts.seed ?? 0) >>> 0 };
+  const count = checkCount(opts.count, tile * tile);
+  if (count !== tile * tile) throw new Error(`dem: count 는 tile² (${tile * tile}) 이어야 함`);
+  return { tile, cell, seed: normalizeSeed(opts.seed), format: checkFormat(opts.format) };
 }
 
 const gridCoord = (i, tile, cell) => (i - (tile - 1) / 2) * cell;
@@ -73,7 +74,7 @@ export function dequantize(t, i, j) {
 }
 
 export function generate(opts = {}) {
-  const { tile, cell, seed } = readOpts(opts);
+  const { tile, cell, seed, format } = readOpts(opts);
   const params = makeParams(seed);
   const n = tile * tile;
   const positions = new Float32Array(3 * n);
@@ -109,5 +110,5 @@ export function generate(opts = {}) {
     quant: { minH: MIN_H, maxH: MAX_H, levels: LEVELS },
   };
   const cloud27 = { format: FORMAT_POINT27, count: n, positions, normals, colors };
-  return makeResult('dem', seed, opts.format ?? 1, cloud27, truth);
+  return makeResult('dem', seed, format, cloud27, truth);
 }
