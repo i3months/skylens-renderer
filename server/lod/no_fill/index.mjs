@@ -13,7 +13,9 @@ const ERR = 'lod:';
  * @param {object} camera         raster 계약의 카메라
  * @param {{pointSizeM?: number, tolerance?: number}} [opts]
  *        pointSizeM: 점 원판 지름(m, 기본은 래스터라이저 기본값), tolerance: 허용 비율 차(기본 0 = 정확히 같아야 함)
- * @returns {{original: number, lod: number, equal: boolean}}
+ * @returns {{original: number, lod: number, equal: boolean, filled: number, noFill: boolean}}
+ *          filled: 원본에서 비어 있는데(index -1) LOD 에서 칠해진 픽셀 수. noFill = (filled === 0), 빈자리 보존의 판정.
+ *          equal(빈 비율 차 <= tolerance)은 기존 필드로 유지하며, 빈자리 한 곳만 메운 경우는 equal 이 통과해도 filled 가 잡는다.
  */
 export function emptyRatioPreserved(cloud, selectedCloud, camera, opts) {
   // 점 수 정의: positions.length/3 == count (어긋나면 명시 오류)
@@ -24,7 +26,11 @@ export function emptyRatioPreserved(cloud, selectedCloud, camera, opts) {
     throw new Error(`${ERR} tolerance 는 0 이상의 유한수: ${String(tolerance)}`);
   }
   const rOpts = opts?.pointSizeM === undefined ? undefined : { pointSizeM: opts.pointSizeM };
-  const original = emptyRatio(renderPoints(camera, cloud, rOpts));
-  const lod = emptyRatio(renderPoints(camera, selectedCloud, rOpts));
-  return { original, lod, equal: Math.abs(original - lod) <= tolerance };
+  const a = renderPoints(camera, cloud, rOpts);
+  const b = renderPoints(camera, selectedCloud, rOpts);
+  const original = emptyRatio(a);
+  const lod = emptyRatio(b);
+  let filled = 0;
+  for (let i = 0; i < a.index.length; i++) if (a.index[i] === -1 && b.index[i] !== -1) filled++;
+  return { original, lod, equal: Math.abs(original - lod) <= tolerance, filled, noFill: filled === 0 };
 }

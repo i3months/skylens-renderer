@@ -80,7 +80,6 @@ test('10만 점 무작위: 모든 칸 오차 ≤ 0.5/255, 전체 최대 ≤ 1/25
   const e = meanColorError(cloud, voxel, out);
   t.diagnostic(`최대 평균색 오차 = ${worst}/255 (칸 ${cells}, 점 ${n})`);
   assert.ok(e <= 0.5 / 255);
-  assert.ok(e <= 1 / 255);
   assert.ok(Math.abs(e * 255 - worst) < 1e-9);
   // 내림 변이를 잡는다: 반올림 결과가 내림 결과와 다른 칸·채널이 충분히 많아야 한다
   assert.ok(differsFromFloor > 1000, `내림과 다른 경우 ${differsFromFloor}`);

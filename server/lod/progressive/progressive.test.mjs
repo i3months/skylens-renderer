@@ -68,10 +68,23 @@ test('같은 단계 안에서는 카메라에 가까운 리프 먼저', () => {
   };
   for (let i = 1; i < ch.length; i++) if (ch[i - 1].level === ch[i].level) assert.ok(dist(ch[i - 1].leaf) <= dist(ch[i].leaf) + 1e-9);
   // 목표 단계는 거리표와 일치: 목표(마지막 조각 단계)는 거리가 멀수록 작아지지 않는다
-  const table = buildDistanceTable({ fx: cam.K.fx, thresholdPx: TAU, edge0M: h.edge0M, levelCount: LEVELS });
+  // F-097 ①: 상자 8 꼭짓점의 cos(광축 각) 최솟값으로 d_eff = d·cMin², f = max(fx, fy)
+  const table = buildDistanceTable({ fx: Math.max(cam.K.fx, cam.K.fy), thresholdPx: TAU, edge0M: h.edge0M, levelCount: LEVELS });
+  const cMinOf = (leaf) => {
+    const n = node.get(leaf); let c = 1;
+    for (let m = 0; m < 8; m++) {
+      const P = [0, 1, 2].map((a) => ((m >> a) & 1 ? h.octree.boxMax[3 * n + a] : h.octree.boxMin[3 * n + a]));
+      const z = R[6] * P[0] + R[7] * P[1] + R[8] * P[2] + t[2];
+      const x = R[0] * P[0] + R[1] * P[1] + R[2] * P[2] + t[0], y = R[3] * P[0] + R[4] * P[1] + R[5] * P[2] + t[1];
+      c = Math.min(c, z > 0 ? z / Math.hypot(x, y, z) : 0);
+    }
+    return c;
+  };
   for (const [leaf, list] of byLeaf(ch)) {
     const T = list[list.length - 1].level;
-    assert.equal(T, Math.min(LEVELS - 1, levelForDistance(table, Math.max(dist(leaf), 1e-9))), `리프 ${leaf} 목표 단계`);
+    const c = cMinOf(leaf), dEff = dist(leaf) * c * c;
+    const expect = dEff > 0 ? Math.min(LEVELS - 1, levelForDistance(table, dEff)) : 0;
+    assert.equal(T, expect, `리프 ${leaf} 목표 단계`);
   }
 });
 
@@ -162,4 +175,22 @@ test('음성: 누적 적용(교체 아님)은 중복을 만들고, 잘못된 입
   assert.throws(() => applyChunks(h, [bad], 1), /lod:/);
   assert.throws(() => progressiveChunks(h, cam, { thresholdPx: 0 }), /lod:/);
   assert.throws(() => progressiveChunks(null, cam, { thresholdPx: 1 }), /lod:/);
+});
+
+test('카메라 검사: NaN t·NaN R·영행렬 R·width 0·f 0 은 lod: 오류, 정상 카메라는 결과 동일', () => {
+  const cam = camOf(vps[0]);
+  const bads = {
+    'NaN t': { ...cam, t: [NaN, cam.t[1], cam.t[2]] },
+    'NaN R': { ...cam, R: [NaN, ...cam.R.slice(1)] },
+    '영행렬 R': { ...cam, R: new Array(9).fill(0) },
+    'width 0': { ...cam, width: 0 },
+    'f 0': { ...cam, K: { ...cam.K, fx: 0 } },
+  };
+  for (const [name, bad] of Object.entries(bads)) {
+    assert.throws(() => progressiveChunks(h, bad, { thresholdPx: TAU }), /^Error: lod:/, name);
+  }
+  const a = chunksOf(cam), b = chunksOf({ ...cam });
+  assert.equal(a.length, b.length);
+  assert.ok(a.length > 0);
+  a.forEach((c, i) => { assert.equal(c.level, b[i].level); assert.equal(c.leaf, b[i].leaf); assert.deepEqual(c.indices, b[i].indices); });
 });

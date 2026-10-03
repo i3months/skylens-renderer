@@ -40,6 +40,19 @@ for (const seed of [1, 2, 99, 123456]) {
       assert.ok(y >= 0 && y <= 30);
     }
     for (let a = 0; a < 3; a++) assert.ok(r.truth.bounds.min[a] <= r.truth.bounds.max[a]);
+    // Verify bounds match actual min/max of positions
+    const boundsMin = [Infinity, Infinity, Infinity];
+    const boundsMax = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < N; i++) {
+      for (let a = 0; a < 3; a++) {
+        boundsMin[a] = Math.min(boundsMin[a], p[3 * i + a]);
+        boundsMax[a] = Math.max(boundsMax[a], p[3 * i + a]);
+      }
+    }
+    for (let a = 0; a < 3; a++) {
+      assert.equal(r.truth.bounds.min[a], boundsMin[a]);
+      assert.equal(r.truth.bounds.max[a], boundsMax[a]);
+    }
   });
 
   test(`법선은 단위·위쪽이며 시험 안 중앙 유한차분 법선과 각도 오차 1e-3 rad 이하, 최대 경사 15° 이하 (seed ${seed})`, () => {

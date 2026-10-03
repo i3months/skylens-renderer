@@ -1,62 +1,17 @@
 // T07.9 점진 순서(거친 단계 먼저). 계약: contracts/lod/index.mjs 의 LOD_API.progressive.
-// select 모듈에 의존하지 않는다: 리프의 목표 단계는 이 모듈 안에서 distance_table 로 직접 계산한다.
+// selectLevels 결과에 의존하지 않는다: 리프의 목표 단계는 이 모듈 안에서 계산하되, 화면 오차 규칙
+// (f = max(fx,fy), d_eff = d·cMin², 거리표)은 server/lod/select/screen_error.mjs 의 공용 함수를 그대로 쓴다.
 //
 // 델레이 패턴(RULES §1.1): 같은 구간(리프)의 낮은 단계는 높은 단계로 "교체"한다(누적 아님),
 //   이미 추월당한 중간 단계는 건너뛴다. 그래서 한 리프의 조각은 최대 2개다.
 //     목표 T == 최대 단계  -> [최대 단계 조각]
 //     목표 T <  최대 단계  -> [최대 단계 조각, T 단계 조각]   (사이 단계는 보내지 않음)
 // 조각 순서: 거친 단계(큰 level) 먼저, 같은 단계 안에서는 카메라에 가까운 리프 먼저(동률이면 리프 번호).
-import { buildDistanceTable, levelForDistance } from '../distance_table/index.mjs';
+import { assertCamera } from '../../../contracts/raster/index.mjs';
+import { screenErrorRule } from '../select/screen_error.mjs';
+import { boxMayBeVisible } from '../select/view_check.mjs';
 
 const ERR = 'lod:';
-const NEAR_EPS = 1e-6; // 카메라 앞 판정 하한(m)
-const MIN_DIST_M = 1e-9; // 거리 0(카메라가 상자 안) 일 때 distance_table 에 넘길 최소 거리
-
-/** 카메라 중심(세계 좌표): X_c = R·X_w + t 이므로 C = −Rᵀ·t. */
-function cameraCenter({ R, t }) {
-  return [
-    -(R[0] * t[0] + R[3] * t[1] + R[6] * t[2]),
-    -(R[1] * t[0] + R[4] * t[1] + R[7] * t[2]),
-    -(R[2] * t[0] + R[5] * t[1] + R[8] * t[2]),
-  ];
-}
-
-/** 상자(min,max)가 시야 절두체와 겹칠 수 있는가(보수적: 확실히 밖일 때만 false). */
-function boxInView(camera, bmin, bmax) {
-  const { R, t, K, width, height } = camera;
-  // 8 모서리를 카메라 좌표로
-  const cx = new Float64Array(8), cy = new Float64Array(8), cz = new Float64Array(8);
-  for (let c = 0; c < 8; c++) {
-    const x = c & 1 ? bmax[0] : bmin[0], y = c & 2 ? bmax[1] : bmin[1], z = c & 4 ? bmax[2] : bmin[2];
-    cx[c] = R[0] * x + R[1] * y + R[2] * z + t[0];
-    cy[c] = R[3] * x + R[4] * y + R[5] * z + t[1];
-    cz[c] = R[6] * x + R[7] * y + R[8] * z + t[2];
-  }
-  // 반공간 5개: 안쪽이면 값 ≥ 0. 한 반공간에서 8 모서리가 모두 밖이면 상자는 시야 밖.
-  const planes = [
-    (i) => cz[i] - NEAR_EPS,
-    (i) => K.fx * cx[i] + K.cx * cz[i],
-    (i) => (width - K.cx) * cz[i] - K.fx * cx[i],
-    (i) => K.fy * cy[i] + K.cy * cz[i],
-    (i) => (height - K.cy) * cz[i] - K.fy * cy[i],
-  ];
-  for (const f of planes) {
-    let anyIn = false;
-    for (let i = 0; i < 8 && !anyIn; i++) if (f(i) >= 0) anyIn = true;
-    if (!anyIn) return false;
-  }
-  return true;
-}
-
-/** 점 C 에서 상자까지의 최단 거리. */
-function distToBox(c, bmin, bmax) {
-  let s = 0;
-  for (let a = 0; a < 3; a++) {
-    const d = c[a] < bmin[a] ? bmin[a] - c[a] : c[a] > bmax[a] ? c[a] - bmax[a] : 0;
-    s += d * d;
-  }
-  return Math.sqrt(s);
-}
 
 /** 리프 번호 -> 노드 번호(octree.leafIndex 의 역) */
 function leafNodes(octree) {
@@ -67,16 +22,20 @@ function leafNodes(octree) {
 
 /**
  * 시야 안 리프마다 목표 단계를 정하고 점진 전송 조각 열을 만든다.
- * 리프 목표 단계 = levelForDistance(거리표, 카메라~리프 상자 최단 거리) (최대 단계로 제한).
+ * 리프 목표 단계 = 공용 화면 오차 규칙(screen_error.mjs)으로 d_eff = d·cMin² 에서 고른 단계(최대 단계로 제한).
+ * 같은 단계 안 순서의 '가까움' 은 카메라~리프 상자 최단 거리 d.
  * @returns {{level:number, leaf:number, indices:Uint32Array}[]}  indices 는 그 단계 대표점의 입력 점 번호(해당 리프 구간)
  */
 export function progressiveChunks(hierarchy, camera, opts) {
   if (!hierarchy || !hierarchy.octree || !Array.isArray(hierarchy.levels) || hierarchy.levels.length < 1) throw new Error(`${ERR} 계층이 아님`);
-  if (!camera || !camera.K || !Array.isArray(camera.R) || !Array.isArray(camera.t)) throw new Error(`${ERR} 카메라가 아님`);
+  try {
+    assertCamera(camera); // select/budget 와 같은 계약 검사. 오류는 'lod:' 로 옮긴다.
+  } catch (e) {
+    throw new Error(`${ERR} 카메라가 올바르지 않음 (${e.message})`);
+  }
   const { octree, levels, edge0M } = hierarchy;
   const maxLevel = levels.length - 1;
-  const table = buildDistanceTable({ fx: camera.K.fx, thresholdPx: opts?.thresholdPx, edge0M, levelCount: levels.length });
-  const center = cameraCenter(camera);
+  const rule = screenErrorRule(camera, { thresholdPx: opts?.thresholdPx, edge0M, levelCount: levels.length });
   const node = leafNodes(octree);
 
   const out = [];
@@ -84,9 +43,9 @@ export function progressiveChunks(hierarchy, camera, opts) {
     if (octree.leafStart[k + 1] === octree.leafStart[k]) continue; // 빈 리프
     const bmin = octree.boxMin.subarray(3 * node[k], 3 * node[k] + 3);
     const bmax = octree.boxMax.subarray(3 * node[k], 3 * node[k] + 3);
-    if (!boxInView(camera, bmin, bmax)) continue; // 시야 밖 리프는 조각 0
-    const dist = distToBox(center, bmin, bmax);
-    const target = Math.min(maxLevel, levelForDistance(table, Math.max(dist, MIN_DIST_M)));
+    if (!boxMayBeVisible(camera, bmin, bmax)) continue; // 시야 밖 리프는 조각 0
+    const { distM: dist, level } = rule.leaf(bmin, bmax);
+    const target = Math.min(maxLevel, level);
     // 최초 거친 조각 -> 목표 단계 조각(중간 단계는 건너뜀)
     const want = target === maxLevel ? [maxLevel] : [maxLevel, target];
     for (const l of want) {
@@ -122,16 +81,20 @@ export function applyChunks(hierarchy, chunks, k) {
   let n = 0;
   for (const l of leaves) n += cur.get(l).indices.length;
   const positions = new Float32Array(3 * n), normals = new Float32Array(3 * n), colors = new Uint8Array(3 * n);
+  const src = cloud.positions;
   let o = 0;
   for (const l of leaves) {
-    const c = cur.get(l), lv = levels[c.level], s0 = lv.leafStart[l];
-    for (let j = 0; j < c.indices.length; j++, o++) {
+    const c = cur.get(l), lv = levels[c.level], s0 = lv.leafStart[l], m = c.indices.length, lidx = lv.indices;
+    if (m === 0) continue;
+    for (let j = 0, d = 3 * o; j < m; j++, d += 3) {
       const i = c.indices[j];
-      if (i !== lv.indices[s0 + j]) throw new Error(`${ERR} 조각 점 번호가 단계 ${c.level} 의 대표점과 다름`);
-      positions.set(cloud.positions.subarray(3 * i, 3 * i + 3), 3 * o);
-      normals.set(lv.normals.subarray(3 * (s0 + j), 3 * (s0 + j) + 3), 3 * o);
-      colors.set(lv.colors.subarray(3 * (s0 + j), 3 * (s0 + j) + 3), 3 * o);
+      if (i !== lidx[s0 + j]) throw new Error(`${ERR} 조각 점 번호가 단계 ${c.level} 의 대표점과 다름`);
+      const b = 3 * i;
+      positions[d] = src[b]; positions[d + 1] = src[b + 1]; positions[d + 2] = src[b + 2];
     }
+    normals.set(lv.normals.subarray(3 * s0, 3 * (s0 + m)), 3 * o);
+    colors.set(lv.colors.subarray(3 * s0, 3 * (s0 + m)), 3 * o);
+    o += m;
   }
   return { format: 1, count: n, positions, normals, colors };
 }

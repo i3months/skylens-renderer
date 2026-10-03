@@ -117,6 +117,7 @@ test('960x540x3 소요 시간 보고', () => {
 });
 
 // ---- 공개 참조값(scikit-image) 대조: T06.8 완료 기준 "표준 시험 영상 쌍과 1e-3 이내" ----
+// scikit-image data, BSD-3-Clause
 // skimage_pairs.json 의 영상 쌍과 expected 는 scikit-image 0.26.0 으로 만들었다.
 //   skimage.data.camera()(1/4)·astronaut()(1/8) 를 downscale_local_mean 으로 줄여 반올림하고,
 //   b = a + N(0,25) (numpy default_rng 시드 1, 2), 0..255 로 자른 뒤 반올림.
@@ -133,6 +134,7 @@ for (const [name, ref] of Object.entries(SKIMAGE_REF)) {
     assert.equal(p.expected, ref, '픽스처 expected 와 리터럴이 같아야 함');
     const a = decode(p.a), b = decode(p.b);
     const got = ssim(a, b, p.width, p.height, p.channels);
+    assert.ok(Math.abs(got - ref) <= 1e-9, `${name}: 1e-9 precision check failed: ${got} vs ${ref}`);
     assert.ok(Math.abs(got - ref) <= 1e-3, `${name}: ${got} vs ${ref}`);
     // 변이(K2·σ·K1 을 바꾼 구현)는 같은 영상에서 참조값과 1e-3 넘게 벗어나야 한다. 리터럴만으로 잡힌다는 뜻이다.
     for (const m of [{ k2: 0.04 }, { sigma: 2 }, { k1: 0.1 }]) {
