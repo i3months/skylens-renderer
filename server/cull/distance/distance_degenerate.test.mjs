@@ -1,4 +1,5 @@
 // 거리 컬링의 퇴화 시점 처리: isDegenerateView 와 같은 기준으로 빈 마스크를 돌려준다(F-120).
+// 값 퇴화는 빈 마스크, 구조 오류(해상도·K 누락)는 cull: 오류다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { distanceCull } from './index.mjs';
@@ -32,8 +33,6 @@ const bad = {
   'R = 2I': cam({ R: [2, 0, 0, 0, 2, 0, 0, 0, 2] }),
   '반사 R': cam({ R: [-1, 0, 0, 0, 1, 0, 0, 0, 1] }),
   '거의 직교인 R (편차 1e-6 직후)': cam({ R: [1 + 1.5e-6, 0, 0, 0, 1, 0, 0, 0, 1] }),
-  'width/height 없음': { K: { fx: 500, fy: 500, cx: 320, cy: 240 }, R: I, t: [0, 0, 0] },
-  'K 없음': { width: 640, height: 480, R: I, t: [0, 0, 0] },
   'NaN t': cam({ t: [NaN, 0, 0] }),
 };
 for (const [name, c] of Object.entries(bad)) {
@@ -42,6 +41,19 @@ for (const [name, c] of Object.entries(bad)) {
       const mask = distanceCull(h, c, { maxDistanceM: m });
       assert.equal(mask.length, 5);
       assert.equal(count(mask), 0);
+    });
+  }
+}
+
+// width/height·K 누락은 값 퇴화가 아니라 구조 오류: cull: 오류를 던진다.
+const structural = {
+  'width/height 없음': { K: { fx: 500, fy: 500, cx: 320, cy: 240 }, R: I, t: [0, 0, 0] },
+  'K 없음': { width: 640, height: 480, R: I, t: [0, 0, 0] },
+};
+for (const [name, c] of Object.entries(structural)) {
+  for (const m of [1000, Infinity]) {
+    test(`구조 오류(${name}), maxDistanceM=${m} → cull: 오류`, () => {
+      assert.throws(() => distanceCull(h, c, { maxDistanceM: m }), /^Error: cull:/);
     });
   }
 }
