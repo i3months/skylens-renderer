@@ -390,3 +390,42 @@ test('거리 컬링: 잘못된 계층은 cull: 오류', () => {
     assert.throws(() => distanceCull(h, cam, { maxDistanceM: 20 }), (e) => !(e instanceof TypeError) && /^cull:/.test(e.message));
   }
 });
+
+// ---- F-127 ①~④ ----
+test('F-127①: maxDistanceM 생략은 전부 남김, null·문자열은 cull: 오류', () => {
+  const h = makeSimpleHierarchy(3);
+  const cam = makeCamera([0, 0, 0]);
+  assert.deepEqual([...distanceCull(h, cam, {})], [1, 1, 1]);
+  assert.throws(() => distanceCull(h, cam, { maxDistanceM: null }), /^Error: cull:/);
+  assert.throws(() => distanceCull(h, cam, { maxDistanceM: '5' }), /^Error: cull:/);
+});
+
+test('F-127②: opts=null 은 cull: 오류(TypeError 아님)', () => {
+  const h = makeSimpleHierarchy(3);
+  assert.throws(() => distanceCull(h, makeCamera([0, 0, 0]), null), (e) => e.constructor === Error && e.message.startsWith('cull:'));
+});
+
+test('F-127③: leafIndex 범위·일대일 위반은 cull: 오류', () => {
+  const cam = makeCamera([0, 0, 0]);
+  let h = makeSimpleHierarchy(3);
+  h.octree.leafIndex[1] = 3 + 5;
+  assert.throws(() => distanceCull(h, cam, { maxDistanceM: 10 }), /^Error: cull:/);
+  h = makeSimpleHierarchy(3);
+  h.octree.leafIndex[2] = 0; // 중복
+  assert.throws(() => distanceCull(h, cam, { maxDistanceM: 10 }), /^Error: cull:/);
+  h = makeSimpleHierarchy(3);
+  h.octree.leafIndex[2] = -2;
+  assert.throws(() => distanceCull(h, cam, { maxDistanceM: 10 }), /^Error: cull:/);
+  h = makeSimpleHierarchy(3);
+  h.octree.leafIndex[2] = -1; // 리프 누락
+  assert.throws(() => distanceCull(h, cam, { maxDistanceM: 10 }), /^Error: cull:/);
+});
+
+test('F-127④: 회전이 아닌 R(0, 2I, 반사)은 빈 마스크', () => {
+  const h = makeSimpleHierarchy(3);
+  for (const R of [[0, 0, 0, 0, 0, 0, 0, 0, 0], [2, 0, 0, 0, 2, 0, 0, 0, 2], [1, 0, 0, 0, 1, 0, 0, 0, -1]]) {
+    const cam = { ...makeCamera([0, 0, 0]), R: new Float32Array(R) };
+    assert.deepEqual([...distanceCull(h, cam, { maxDistanceM: Infinity })], [0, 0, 0]);
+    assert.deepEqual([...distanceCull(h, cam, { maxDistanceM: 100 })], [0, 0, 0]);
+  }
+});
