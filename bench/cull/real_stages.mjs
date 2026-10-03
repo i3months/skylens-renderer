@@ -9,7 +9,7 @@ import { frustumCull } from '../../server/cull/frustum/index.mjs';
 import { leafNormalCones, backfaceCull } from '../../server/cull/backface/index.mjs';
 import { buildDepthPyramid, occlusionCull } from '../../server/cull/occlusion/index.mjs';
 import { orderChunks } from '../../server/cull/priority/index.mjs';
-import { cullAndSelectDefault, loadDefaultImpls } from '../../server/cull/combine/index.mjs';
+import { cullAndSelectDefault, loadDefaultImpls, cachedNormalCones } from '../../server/cull/combine/index.mjs';
 import { measureCullCost, measureCullCostAsync } from './index.mjs';
 
 export const POINT_SIZE_M = 0.3;
@@ -95,7 +95,7 @@ export function traceStageImpls(impls, log) {
 /**
  * 한 계층을 재서 한 줄 결과를 돌려준다. 첫 반복(cold: JIT·첫 호출 비용 포함)과 나머지(warm)를 따로 잰다.
  * 측정 순서: 법선 원뿔·priority 마스크는 makeRealStages 에서 먼저 만들고, 단계별 cold → warm 을 잰 뒤, loadDefaultImpls(지연 import)를
- * 기다리고 나서 결합 경로 cold → warm 을 잰다. 따라서 cold 에 원뿔 생성과 지연 import 는 들어가지 않는다.
+ * 기다리고 나서 cachedNormalCones 을 데운 후 결합 경로 cold → warm 을 잰다. 따라서 cold 에 원뿔 생성과 지연 import 는 들어가지 않는다.
  * staged/combined 는 warm. cold.staged/cold.combined 는 첫 반복(시점 수만큼 표본).
  * stageMedianMs: 단계별 median, stagesSumMs: 네 단계 합의 시점당 median·p95·max, combinedMs: cullAndSelectDefault(prioritize) 시점당.
  * removal: cullAndSelect 가 낸 단계별 새 제거 리프 수의 합(모든 호출), calls: 결합 경로 단계 구현이 받은 pointSizeM 기록.
@@ -106,6 +106,10 @@ export async function measureScene(hierarchy, cameras, { repeats = 3, now, point
   const staged = measureCullCost(hierarchy, cameras, { stages, repeats, now });
 
   const defaults = await loadDefaultImpls();
+  // Warm up cachedNormalCones for all cameras before measuring combined cold to exclude cone creation from timing
+  for (const cam of cameras) {
+    cachedNormalCones(hierarchy, leafNormalCones);
+  }
   const calls = [];
   const removal = { backface: 0, occlusion: 0, frustum: 0, distance: 0 };
   const combinedStages = {

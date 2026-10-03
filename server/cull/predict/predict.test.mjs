@@ -249,9 +249,12 @@ test('고속·시선에 수직 이동: 해석적 평행이동 시점(눈·목표
 
 test('잘게/성기게 나눈 직선 이동: 마스크는 해석적 시점 합집합을 덮고, 기하 상한(|v|·구간 반폭) 안에 머문다(과잉 부풀림 없음)', () => {
   const horizonS = 4;
-  // 느린 이동(5 mm/s: 4 s 동안 2 cm)은 고정 가산 여유(예: +0.2 m)를, 빠른 이동은 배율 부풀림을 드러낸다.
-  for (const [eye, tgt, v] of [[[-60, 40, 0], [0, 0, 0], [6, 0, 8]], [[-60, 40, 0], [0, 0, 0], [0.003, 0, 0.004]], [[20, 70, -50], [-10, 0, 10], [0.003, -0.001, 0.004]],
-    [[-60, 30, -60], [-60, 45, -10], [0.003, 0, 0.004]], [[-30, 30, 30], [20, 40, 30], [0.003, 0, 0.004]]]) { // 뒤의 둘은 0.2 m 부풀림이 리프 경계에 걸리는 시점(탐색으로 고름)
+  // 느린 이동(5 mm/s: 4 s 동안 2 cm)은 고정 가산 여유(예: +0.2 m, +0.02 m)를, 빠른 이동은 배율 부풀림을 드러낸다.
+  // 각 사례의 네 번째 값 = 그 사례가 잡아야 하는 가산 변이(m 에 더하는 고정 여유, m). 값이 있으면 시험 안에서 '이 값에서만 변이와 원본이 다르다'를 단언한다.
+  // (이전 사례 2·3 [[-60,40,0]->[0,0,0] 과 [20,70,-50]->[-10,0,10]] 은 +0.2·+0.02 어느 변이도 놓쳤다: 리프 경계가 0.001~0.02 m 안에 없어 마스크가 같았다.
+  //  그래서 탐색으로 +0.02 m 에서도 마스크가 달라지는 시점으로 바꿨다. +0.02 를 잡으면 +0.2 도 잡는다. 사례 4·5 는 +0.2 만 잡는다.)
+  for (const [eye, tgt, v, addMut] of [[[-60, 40, 0], [0, 0, 0], [6, 0, 8]], [[36.4, 46.8, 31.2], [14.7, 5.4, -29.1], [0.003, 0, 0.004], 0.02], [[-28.3, 70.1, 44.1], [15.8, 14.1, -24.1], [0.003, 0, 0.004], 0.02],
+    [[-60, 30, -60], [-60, 45, -10], [0.003, 0, 0.004], 0.2], [[-30, 30, 30], [20, 40, 30], [0.003, 0, 0.004], 0.2]]) { // 사례 4·5: 0.2 m 부풀림이 리프 경계에 걸리는 시점(탐색으로 고름)
   const camAt = (tau) => lookAt([eye[0] + v[0] * tau, eye[1] + v[1] * tau, eye[2] + v[2] * tau], [tgt[0] + v[0] * tau, tgt[1] + v[1] * tau, tgt[2] + v[2] * tau]);
   // steps=80: 구간 반폭 0.025 s -> 부풀림 0.25 m. steps=4: 반폭 0.5 s -> 5 m(작은 계수 오차도 리프 경계에 걸리도록 크게).
   for (const steps of [80, 4]) {
@@ -272,6 +275,27 @@ test('잘게/성기게 나눈 직선 이동: 마스크는 해석적 시점 합�
     }
     for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(bound.has(k), `steps=${steps}: 기하 상한 밖 리프 ${k}`);
     assert.ok(sum(m) >= exact.size);
+    if (addMut !== undefined) {
+      // 전제(판별력): 이동 성분 |v|·hh 에 배율 1.0001 과 1e-9 를 더한 원본 식의 마스크는 predictiveMask 와 같고,
+      // 같은 식에 고정 여유 addMut 를 더한 변이 식의 마스크는 기하 상한 밖 리프를 만든다. 즉 이 값에서만 변이와 원본이 갈린다.
+      const maskWith = (add) => {
+        const out = new Set();
+        for (let i = 0; i <= steps; i++) {
+          const cam = camAt((horizonS * i) / steps);
+          for (let k = 0; k < oc.leafCount; k++) {
+            const [a, b] = boxOf(k);
+            const mm = 1.0001 * (Math.hypot(...v) * hh) + add;
+            if (boxMayBeVisibleSplat(cam, a.map((x) => x - mm), b.map((x) => x + mm), 0)) out.add(k);
+          }
+        }
+        return out;
+      };
+      const orig = maskWith(1e-9), mut = maskWith(addMut);
+      assert.equal(orig.size, sum(m), `전제: 원본 식 재현이 predictiveMask 와 같음 (steps=${steps})`);
+      for (let k = 0; k < oc.leafCount; k++) assert.equal(orig.has(k) ? 1 : 0, m[k], `전제: 원본 식 리프 ${k}`);
+      const outside = [...mut].filter((k) => !bound.has(k));
+      assert.ok(mut.size > orig.size && outside.length >= 1, `전제: +${addMut} m 변이는 원본과 마스크가 다르고 상한 밖 리프를 만든다 (steps=${steps}, 변이 ${mut.size} / 원본 ${orig.size}, 상한 밖 ${outside.length})`);
+    }
   }
   }
 });

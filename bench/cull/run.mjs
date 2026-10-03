@@ -40,6 +40,9 @@ export async function runBench(cases = CASES, { repeats = 3, log = console.log, 
     if (!(result.removal.backface > 0)) {
       throw new Error(`bench: 제거 장면에서 뒷면 후보가 0 (backface=${result.removal.backface}); coverFilter 가 바로 돌아오는 장면은 표로 쓸 수 없다`);
     }
+    if (!(result.removal.occlusion > 0)) {
+      throw new Error(`bench: 제거 장면에서 가림 제거 수가 0 (occlusion=${result.removal.occlusion}); 가림 단계가 작동하지 않는 장면은 표로 쓸 수 없다`);
+    }
   }
   return { rows, records, table: [[...TABLE_HEADER, ...EXTRA_HEADER], ...rows].map((r) => r.join('\t')).join('\n') };
 }

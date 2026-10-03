@@ -125,11 +125,15 @@ test('해상도 한 변 경계: 1e6 은 정상(픽셀 수 허용 시), 1e6+1 은
   assert.equal(isDegenerateView(sized(1e6, 68)), true);
 });
 
-test('60000x60000 은 퇴화이고 빠르게 판정한다', () => {
+test('60000x60000 은 퇴화이고 해상도 검사에서 바로 판정한다(R·t 를 읽지 않음)', () => {
   const c = good(); c.width = 60000; c.height = 60000;
-  const t0 = performance.now();
+  // 벽시계 대신 작업량: 해상도 검사에서 끝나면 R 의 원소(직교 검사 9+27 회·det)와 t 의 원소를 한 번도 읽지 않는다.
+  let reads = 0;
+  const counted = (arr) => new Proxy(arr, { get(o, k, r) { if (typeof k === 'string' && /^\d+$/.test(k)) reads++; return Reflect.get(o, k, r); } });
+  c.R = counted(c.R);
+  c.t = counted(c.t);
   assert.equal(isDegenerateView(c), true);
-  assert.ok(performance.now() - t0 < 100);
+  assert.equal(reads, 0);
 });
 
 test('R 거의 직교 경계: 오차 1e-6 이하는 정상, 그 위는 퇴화', () => {
