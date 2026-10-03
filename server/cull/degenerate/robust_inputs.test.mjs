@@ -37,7 +37,8 @@ test('leafBoxesOf(null/undefined/비객체) 는 TypeError 가 아니라 cull: �
   for (const v of [null, undefined, 0, 'x']) assert.throws(() => leafBoxesOf(v), CULL);
 });
 
-test('리프 0 개 계층: 서버 predict 와 클라이언트 leafBoxesOf 모두 cull: 오류', () => {
+test('리프 0 개 계층(F-145): octree 형식이 있으면 서버·클라이언트 모두 cull: 오류', () => {
+  // 리프 0 개 계층은 구조 오류로 취급되며, 모든 단계가 같은 'cull:' 오류를 던진다.
   const octree = { leafCount: 0, nodeCount: 1, leafIndex: new Int32Array([-1]), boxMin: new Float32Array(3), boxMax: new Float32Array(3) };
   assert.throws(() => leafBoxesOf(octree), CULL);
   assert.throws(() => predictiveMask({ octree, levels: [] }, { camera: good() }, { horizonS: 1, steps: 1 }), CULL);
