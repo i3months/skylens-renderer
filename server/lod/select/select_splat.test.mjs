@@ -89,6 +89,67 @@ test('네 가장자리(위·아래·오른쪽 포함) 반경 안 점도 pointSiz
   }
 });
 
+// F-129②: 원판 여유 크기 자체를 고정한다. 위 시험들은 화면 경계에서 1 px 안팎만 봐서 여유를 줄인 변이(지름 ×0.9 등)도 통과한다.
+// fx ≠ fy, cx·cy 가 화면 중앙이 아닌 카메라로 네 가장자리마다 반경 바로 안(가장자리에서 r − 0.75 px 바깥)·바로 밖(r + 0.5 px)에
+// 점을 두고, 기대값은 참조 래스터가 실제로 픽셀을 그렸는지에서 얻는다. 래스터는 칸 중심이 원 안(거리 ≤ r)일 때 그리므로
+// 그려지는 가장 바깥 중심은 u = −r + 0.5 이고 그 값은 부동소수 동률이라, 0.25 px 안쪽(−r + 0.75)을 쓴다.
+// 다른 좌표는 칸 중심(270.5·480.5)에 둬서 가장자리 칸까지의 거리가 한 축 거리와 같게 한다.
+// 깊이는 r ≥ 8.5 px 이 되게 골라 여유를 10 % 만 줄여도(0.1·r > 0.75) 반경 안 점이 버려지게 한다.
+const MARGIN_CAMS = [
+  { width: W, height: H, K: { fx: 900, fy: 600, cx: 410.25, cy: 300.75 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] },
+  { width: W, height: H, K: { fx: 600, fy: 900, cx: 530.5, cy: 240.25 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] },
+];
+const MARGIN_DEPTHS = [1, 1.75];
+
+const unprojectWith = (cam, u, v, d) => [((u - cam.K.cx) * d) / cam.K.fx, ((v - cam.K.cy) * d) / cam.K.fy, d];
+const rasterPixelsWith = (cam, h) => {
+  const res = renderPoints(cam, h.cloud, { pointSizeM: SIZE_M });
+  let px = 0;
+  for (let i = 0; i < res.index.length; i++) if (res.index[i] >= 0) px++;
+  return px;
+};
+// 가장자리에서 바깥으로 off px 떨어진 원판 중심(왼쪽·오른쪽·위·아래)
+const edgePoints = (off) => [
+  ['왼쪽', -off, 270.5],
+  ['오른쪽', W + off, 270.5],
+  ['위', 480.5, -off],
+  ['아래', 480.5, H + off],
+];
+const drawnBy3 = (h, cam) => [
+  selectLevels(h, cam, { thresholdPx: TAU, pointSizeM: SIZE_M }).leafLevel[0],
+  selectWithBudget(h, cam, { thresholdPx: TAU, budgetPoints: 10, pointSizeM: SIZE_M }).leafLevel[0],
+  progressiveChunks(h, cam, { thresholdPx: TAU, pointSizeM: SIZE_M }).length > 0 ? 0 : NOT_DRAWN,
+];
+
+test('F-129② 네 가장자리 반경 바로 안(r − 0.75 px 바깥): 래스터가 그리므로 세 진입점 모두 남긴다(fx ≠ fy, cx·cy 비중앙)', () => {
+  for (const cam of MARGIN_CAMS) {
+    for (const d of MARGIN_DEPTHS) {
+      const r = (cam.K.fx * SIZE_M) / (2 * d); // 래스터 원판 반경(위·아래도 fx)
+      for (const [edge, u, v] of edgePoints(r - 0.75)) {
+        const tag = `${edge} fx=${cam.K.fx} fy=${cam.K.fy} d=${d} r=${r.toFixed(3)}`;
+        const h = onePointHierarchy(unprojectWith(cam, u, v, d));
+        assert.ok(rasterPixelsWith(cam, h) >= 1, `참조 래스터가 1 픽셀 이상 그림 (${tag})`);
+        assert.equal(selectLevels(h, cam, { thresholdPx: TAU }).leafLevel[0], NOT_DRAWN, `중심 규칙은 버림 (${tag})`);
+        assert.deepEqual(drawnBy3(h, cam), [0, 0, 0], `select·budget·progressive 모두 남김 (${tag})`);
+      }
+    }
+  }
+});
+
+test('F-129② 네 가장자리 반경 바로 밖(r + 0.5 px 바깥): 래스터 0 픽셀이고 여유가 정확하므로 세 진입점 모두 NOT_DRAWN', () => {
+  for (const cam of MARGIN_CAMS) {
+    for (const d of MARGIN_DEPTHS) {
+      const r = (cam.K.fx * SIZE_M) / (2 * d);
+      for (const [edge, u, v] of edgePoints(r + 0.5)) {
+        const tag = `${edge} fx=${cam.K.fx} fy=${cam.K.fy} d=${d} r=${r.toFixed(3)}`;
+        const h = onePointHierarchy(unprojectWith(cam, u, v, d));
+        assert.equal(rasterPixelsWith(cam, h), 0, `참조 래스터가 그리지 않음 (${tag})`);
+        assert.deepEqual(drawnBy3(h, cam), [NOT_DRAWN, NOT_DRAWN, NOT_DRAWN], `select·budget·progressive 모두 버림 (${tag})`);
+      }
+    }
+  }
+});
+
 test('잘못된 pointSizeM(null·음수·NaN·Infinity·문자열)은 세 진입점 모두 lod: 오류', () => {
   const h = onePointHierarchy(unproject(-1, H / 2, 1));
   for (const bad of [null, -0.01, NaN, Infinity, '0.05']) {
