@@ -4,7 +4,7 @@
 //
 // 모든 컬링 단계는 '보수적'이다: 보여야 할 리프를 버리지 않는다(거짓 제거 0). 확실히 필요 없을 때만 버린다.
 // 단계 결과는 길이 leafCount 인 Uint8Array 마스크(1 = 남김, 0 = 제거)다. 단계끼리는 AND 로 합친다(combine).
-// 입력 오류(계층·카메라 구조: 객체 아님·width/height/K/R/t 누락·수가 아닌 값·R·t 가 일반 배열이 아님·길이 틀림)는 모든 단계가 똑같이 'cull:' 로 시작하는 명시 오류를 던진다(F-132, 결정 0025). 단, 값이 퇴화인 시점(아래)은 던지지 않고 빈 결과를 돌려준다.
+// 입력 오류(계층·카메라 구조: 객체 아님·width/height/K/R/t 누락·수가 아닌 값·R·t 가 일반 배열이 아님·길이 틀림·희소 배열 구멍 = 구조 오류(cull: 오류))는 모든 단계가 똑같이 'cull:' 로 시작하는 명시 오류를 던진다(F-132, 결정 0025). 단, 값이 퇴화인 시점(아래)은 던지지 않고 빈 결과를 돌려준다.
 //
 // 퇴화 시점(T08.10): 카메라가 NaN·Infinity 를 가지거나, 해상도·초점거리가 0 이하이거나, 해상도가 정수가 아니거나,
 //   해상도 한 변이 1e6 px 를 넘거나, 총 픽셀 수(width×height)가 2**26 을 넘거나, 시야각이 1e-6 rad 미만이거나, R 이 회전이 아니면
@@ -69,7 +69,7 @@ export const CULL_API = Object.freeze({
   backface: { module: 'server/cull/backface/index.mjs', fn: 'leafNormalCones(hierarchy) -> NormalCones ; backfaceCull(hierarchy, camera, cones, {pointSizeM?, requireCover?, marginDeg?}) -> LeafMask   리프의 모든 점이 카메라를 등지는 것이 확실할 때만 0. pointSizeM 이 없으면 덮임 판정 지름을 모르므로 2단계 후보를 전부 남김(제거 0)' },
   occlusion: { module: 'server/cull/occlusion/index.mjs', fn: 'buildDepthPyramid(hierarchy, camera, {size=64, pointSizeM?=0.05, maxOccluderPoints?=262144, occluderLevel?, occluderMask?}) -> {size, levels:Float32Array[], pointSizeM, occluderPoints}   CPU 거친 깊이 피라미드(칸마다 가장 가까운 깊이의 보수적 하한이 아닌 "가림막" 깊이 = 칸 안 모든 픽셀이 이보다 가깝게 채워진 깊이의 최댓값) ; occlusionCull(hierarchy, camera, pyramid?) -> LeafMask   리프 상자 전체가 가림막 뒤일 때만 0' },
   distance: { module: 'server/cull/distance/index.mjs', fn: 'distanceCull(hierarchy, camera, {maxDistanceM}) -> LeafMask   카메라 중심~상자 최소 거리 > maxDistanceM 이면 0 (경계 = 남김) [maxDistanceM 기준 미정(의사결정 대기)]' },
-  predict: { module: 'server/cull/predict/index.mjs', fn: 'predictCamera(camera, {velocityMps, angularRadPerS}, dtS) -> Camera ; predictiveMask(hierarchy, state, {horizonS, steps, pointSizeM?}) -> LeafMask   현재와 예측 시점들의 frustumCull 합집합(OR). 한계: 모든 예측 표본의 부풀림이 비유한이면 표본 사이는 덮지 않음(비단조 가능)' },
+  predict: { module: 'server/cull/predict/index.mjs', fn: 'predictCamera(camera, {velocityMps, angularRadPerS}, dtS) -> Camera ; predictiveMask(hierarchy, state, {horizonS, steps, pointSizeM?}) -> LeafMask   현재와 예측 시점들의 frustumCull 합집합(OR). 한계: 예측 표본(tau>0)이 모두 퇴화면 표본 사이는 덮지 않음(horizon 에 대해 비단조 가능)' },
   priority: { module: 'server/cull/priority/index.mjs', fn: 'leafPriority(hierarchy, camera) -> Float64Array(leafCount)   화면 기여 점수(클수록 먼저) ; orderChunks(hierarchy, camera, mask) -> Uint32Array   남은 리프를 점수 내림차순(동률은 번호 작은 쪽)' },
   client: { module: 'client/cull/index.mjs', fn: 'clientFrustumCull(leafBoxes, camera, {pointSizeM?}) -> Uint8Array   leafBoxes = {boxMin:Float32Array(3·n), boxMax:Float32Array(3·n)}(리프 번호 순); 같은 pointSizeM 의 서버 frustumCull 과 같은 마스크(없으면 좌·우·위·아래 제거 없음)' },
   combine: { module: 'server/cull/combine/index.mjs', fn: 'cullAndSelect(hierarchy, camera, {thresholdPx, stages?, maxDistanceM?, pointSizeM?, prioritize?}) -> CombinedResult   pointSizeM(원판 지름 m)은 모든 단계에 전달, 없으면 절두체는 좌우상하 제거 없음·가림은 제거 없음; stages 기본 ["frustum","backface","occlusion","distance"]; 남은 리프만 selectLevels 의 단계로, 제거 리프는 NOT_DRAWN. edge-leaf preservation (F-126): 점 원판이 화면 가장자리를 걸친 리프(중심은 화면 밖)가 보존되려면 pointSizeM 을 전달해야 한다. pointSizeM 없으면 edge leaves 는 제거되어 NOT_DRAWN 이다' },
