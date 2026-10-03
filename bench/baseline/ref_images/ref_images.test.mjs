@@ -976,6 +976,18 @@ test('basisNote: 10개 속성(표준 9개 + 1개 추가)을 가진 PLY 는 27 B 
   assert.equal(basisNote(tenProps), 'renderer_basis §7-4 27 B 와 다름: 31 B 점(x y z float·uchar rgb), 법선 nx ny nz float 있음·무시, 중심점만 사용');
 });
 
+test('basisNote: stride 는 속성 형에 따라 달라지는 독립 조건이다 (double 좌표는 39 B, 속성 순서가 맞아도)', () => {
+  const dec = (layout) => decodePly(encodePly([{ p: [1, 2, 3], rgb: [4, 5, 6] }], layout), 'f.ply');
+  // 정상 순서지만 double 좌표: x y z(double) nx ny nz(float) red green blue(uchar) = 8*3 + 4*3 + 1*3 = 39 B
+  const doubleCoords = dec([['double', 'x'], ['double', 'y'], ['double', 'z'], ['float', 'nx'], ['float', 'ny'], ['float', 'nz'], ['uchar', 'red'], ['uchar', 'green'], ['uchar', 'blue']]);
+  assert.equal(doubleCoords.stride, 39);
+  assert.equal(doubleCoords.propertyOrderCorrect, true);
+  assert.equal(doubleCoords.coordType, 'double');
+  assert.equal(doubleCoords.normalType, 'float');
+  assert.equal(doubleCoords.colorType, 'uchar');
+  assert.equal(basisNote(doubleCoords), 'renderer_basis §7-4 27 B 와 다름: 39 B 점(x y z double·uchar rgb), 법선 nx ny nz float 있음·무시, 중심점만 사용');
+});
+
 // ---- 축별 clip 경계 ----
 test('applyFrameTransform: 한 축만 밖인 유한 점은 축마다 제거되고, 경계 위 점은 남는다 (회전 뒤 좌표로 판정)', () => {
   const fr = { R: ROTATIONS.none, s: 2, P: [10, 20, 30], clipMin: [-1, -2, -4], clipMax: [1, 2, 4] };

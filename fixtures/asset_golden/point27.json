@@ -1,0 +1,59 @@
+{
+  "file": "point27.skla",
+  "note": "손계산 기대값. checksum 만 생성 시 CRC-32 로 얻은 값이고 테스트가 node:zlib crc32 로 따로 다시 계산해 대조한다.",
+  "fileBytes": 480,
+  "header": {
+    "versionMajor": 1,
+    "versionMinor": 0,
+    "headerSize": 128,
+    "format": 1,
+    "codec": 0,
+    "segLevelRaw": 30,
+    "segmentId": 7,
+    "level": 2,
+    "levelStep": 3500,
+    "pointCount": 32,
+    "tileX": 1,
+    "tileY": -2,
+    "tileSizeM": 64,
+    "lod": 0,
+    "quantExp": 10,
+    "chunkIndex": 0,
+    "bodyBytes": 352,
+    "bboxMin": [64, -128, 1],
+    "bboxMax": [67.5, -125.75, 2.9375],
+    "anchor": { "lat": 37.5, "lon": 127, "alt": 30 },
+    "checksum": 3589071242,
+    "checksumHex": "d5ece18a"
+  },
+  "planes": [
+    { "name": "pos_e", "offset": 0 },
+    { "name": "pos_n", "offset": 64 },
+    { "name": "pos_u", "offset": 128 },
+    { "name": "color_r", "offset": 192 },
+    { "name": "color_g", "offset": 224 },
+    { "name": "color_b", "offset": 256 },
+    { "name": "normal_oct_x", "offset": 288 },
+    { "name": "normal_oct_y", "offset": 320 }
+  ],
+  "inputRule": "i=0..31: e=64+(i%8)*0.5, n=-128+floor(i/8)*0.75, u=1+i*0.0625, rgb=(8i, 255-8i, 37i mod 256), normal=[(0,0,1),(0.6,0,0.8),(0,-0.6,-0.8),(0.36,0.48,0.8)][i%4]",
+  "firstPoint": {
+    "index": 0,
+    "source": { "position": [64, -128, 1], "normal": [0, 0, 1], "rgb": [0, 255, 0] },
+    "stored": { "pos_e": 0, "pos_n": 0, "pos_u": 0, "color_r": 0, "color_g": 255, "color_b": 0, "normal_oct_x": 0, "normal_oct_y": 0 },
+    "handCalc": "q=(x-min)*1024 → 0; 팔면체 (0,0,1)/1 → (0,0) → snorm8 (0,0)"
+  },
+  "lastPoint": {
+    "index": 31,
+    "source": { "position": [67.5, -125.75, 2.9375], "normal": [0.36, 0.48, 0.8], "rgb": [248, 7, 123] },
+    "stored": { "pos_e": 3584, "pos_n": 2304, "pos_u": 1984, "color_r": 248, "color_g": 7, "color_b": 123, "normal_oct_x": 28, "normal_oct_y": 37 },
+    "handCalc": "3.5*1024=3584, 2.25*1024=2304, 1.9375*1024=1984; 37*31=1147, 1147-1024=123; L1=1.64 → (0.219512, 0.292683)*127 = (27.88, 37.17) → (28, 37)"
+  },
+  "foldedNormalPoint": {
+    "index": 2,
+    "source": { "position": [65, -128, 1.125], "normal": [0, -0.6, -0.8], "rgb": [16, 239, 74] },
+    "stored": { "pos_e": 1024, "pos_n": 0, "pos_u": 128, "color_r": 16, "color_g": 239, "color_b": 74, "normal_oct_x": 73, "normal_oct_y": -127 },
+    "decodedNormal": [0, -0.59470069, -0.80394721],
+    "handCalc": "1*1024=1024, 0, 0.125*1024=128; 37*2=74; L1=1.4 → (u, v)=(0, -0.428571), z<0 접힘: sgn(0)=+1 → ((1-0.428571)*1, (1-0)*(-1)) = (0.571429, -1) → *127 = (72.57, -127) → (73, -127). 복원: (73/127, -1), z=1-73/127-1=-73/127<0 → 접힘 (0, -54/127) → (0, -54, -73)/√8245 = (0, -0.5947007, -0.8039472)"
+  }
+}

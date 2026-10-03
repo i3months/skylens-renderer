@@ -493,7 +493,7 @@ export function loadViewpoints(json, anchor, name = 'viewpoints.json') {
 export function basisNote({ layout, stride, normals, coordType, normalType, colorType, propertyOrderCorrect }) {
   const n = normals ? `법선 nx ny nz${normalType ? ` ${normalType}` : ''} 있음·무시` : '법선 없음';
   if (layout === 'splat-f_dc') return `renderer_basis §7-4 27 B 와 다름: ${stride} B 스플랫, ${n}, 중심점만 사용`;
-  // propertyOrderCorrect 이 true 이고 정확히 9개 속성(x y z nx ny nz red green blue)일 때만 stride === 27 이다(planPly 의 rgb-u8 검사로 보증).
+  // stride 는 속성 형에 따라 달라지는 독립 조건이다(순서가 맞아도 double 좌표면 39 B, 27 B 라도 double 좌표·법선 없음일 수 있다).
   const same = stride === 27 && coordType === 'float' && colorType === 'uchar' && normals && normalType === 'float' && propertyOrderCorrect;
   const rel = same ? '와 같은 형식' : stride === 27 ? '와 크기만 같고 형식은 다름' : '와 다름';
   const xyz = coordType ? `x y z ${coordType}` : 'x y z';

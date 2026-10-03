@@ -1,0 +1,62 @@
+{
+  "file": "gauss56.skla",
+  "note": "손계산 기대값. checksum 만 생성 시 CRC-32 로 얻은 값이고 테스트가 node:zlib crc32 로 따로 다시 계산해 대조한다.",
+  "fileBytes": 512,
+  "header": {
+    "versionMajor": 1,
+    "versionMinor": 0,
+    "headerSize": 128,
+    "format": 2,
+    "codec": 0,
+    "segLevelRaw": 31,
+    "segmentId": 7,
+    "level": 3,
+    "levelStep": 7000,
+    "pointCount": 21,
+    "tileX": 0,
+    "tileY": 0,
+    "tileSizeM": 64,
+    "lod": 1,
+    "quantExp": 10,
+    "chunkIndex": 2,
+    "bodyBytes": 384,
+    "bboxMin": [10, 20, -2],
+    "bboxMax": [16, 24, 3],
+    "anchor": { "lat": 37.5, "lon": 127, "alt": 30 },
+    "checksum": 449099646,
+    "checksumHex": "1ac4b77e"
+  },
+  "planes": [
+    { "name": "pos_e", "offset": 0 },
+    { "name": "pos_n", "offset": 44 },
+    { "name": "pos_u", "offset": 88 },
+    { "name": "color_r", "offset": 132 },
+    { "name": "color_g", "offset": 156 },
+    { "name": "color_b", "offset": 180 },
+    { "name": "opacity", "offset": 204 },
+    { "name": "scale_0", "offset": 228 },
+    { "name": "scale_1", "offset": 252 },
+    { "name": "scale_2", "offset": 276 },
+    { "name": "rotation", "offset": 300 }
+  ],
+  "inputRule": "i=0..20: e=10+(i%7), n=20+floor(i/7)*2, u=-2+0.25i, f_dc_k=(c_k/255-0.5)/C0 with c=(12i, 128, 255-12i), opacity(logit)=(i-10)*0.5, scale(ln)=(-6+0.25i, -3.5, -2-0.125i), rot(w,x,y,z)=(cos(7.5i°), 0, 0, sin(7.5i°))",
+  "firstPoint": {
+    "index": 0,
+    "source": { "position": [10, 20, -2], "rgbTarget": [0, 128, 255], "opacityLogit": -5, "scaleLog": [-6, -3.5, -2], "rotation": [1, 0, 0, 0] },
+    "stored": { "pos_e": 0, "pos_n": 0, "pos_u": 0, "color_r": 0, "color_g": 128, "color_b": 255, "opacity": 2, "scale_0": 64, "scale_1": 104, "scale_2": 128, "rotation": 536346111 },
+    "handCalc": "sigmoid(-5)=0.0066929*255=1.707 → 2; (−6+10)*16=64, 6.5*16=104, 8*16=128; rot m=0, (x,y,z)=0 → 511 each → 511*2^20+511*2^10+511=536346111"
+  },
+  "lastPoint": {
+    "index": 20,
+    "source": { "position": [16, 24, 3], "rgbTarget": [240, 128, 15], "opacityLogit": 5, "scaleLog": [-1, -3.5, -4.5], "rotation": [-0.8660254, 0, 0, 0.5] },
+    "stored": { "pos_e": 6144, "pos_n": 4096, "pos_u": 5120, "color_r": 240, "color_g": 128, "color_b": 15, "opacity": 253, "scale_0": 144, "scale_1": 104, "scale_2": 88, "rotation": 536345750 },
+    "handCalc": "6*1024=6144, 4*1024=4096, 5*1024=5120; sigmoid(5)=0.9933071*255=253.29 → 253; 9*16=144, 5.5*16=88; rot (cos150°,0,0,sin150°) → m=0, w<0 이라 부호 반전 → z=−0.5 → round(−0.5*√2*511)+511 = −361+511 = 150 → 511*2^20+511*2^10+150=536345750"
+  },
+  "rotationM3Point": {
+    "index": 8,
+    "source": { "position": [11, 22, 0], "rgbTarget": [96, 128, 159], "opacityLogit": -1, "scaleLog": [-4, -3.5, -3], "rotation": [0.5, 0, 0, 0.8660254] },
+    "stored": { "pos_e": 1024, "pos_n": 2048, "pos_u": 2048, "color_r": 96, "color_g": 128, "color_b": 159, "opacity": 69, "scale_0": 96, "scale_1": 104, "scale_2": 112, "rotation": 4136107519 },
+    "decodedRotation": [0.49954119, 0, 0, 0.86629015],
+    "handCalc": "1*1024=1024, 2*1024=2048, 2*1024=2048; sigmoid(-1)=0.2689414*255=68.58 → 69; 6*16=96, 6.5*16=104, 7*16=112; rot (cos60°,0,0,sin60°) → |z|=0.866 최대라 m=3, z>0 그대로; 나머지 (w,x,y)=(0.5,0,0) → round(0.5*√2*511)=round(361.33)=361 → 872, 511, 511 → 3*2^30+872*2^20+511*2^10+511=4136107519. 복원: w=361/(511√2)=0.4995412, z=√(1−w²)=0.8662902"
+  }
+}
