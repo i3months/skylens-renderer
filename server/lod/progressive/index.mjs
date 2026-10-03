@@ -7,9 +7,10 @@
 //     목표 T == 최대 단계  -> [최대 단계 조각]
 //     목표 T <  최대 단계  -> [최대 단계 조각, T 단계 조각]   (사이 단계는 보내지 않음)
 // 조각 순서: 거친 단계(큰 level) 먼저, 같은 단계 안에서는 카메라에 가까운 리프 먼저(동률이면 리프 번호).
+// 시야 판정: opts.pointSizeM(래스터 원판 지름 m)을 주면 원판 반경만큼 민 판정(boxMayBeVisibleSplat), 없으면 원판 중심 규칙(F-126).
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { screenErrorRule } from '../select/screen_error.mjs';
-import { boxMayBeVisible } from '../select/view_check.mjs';
+import { lodVisibilityTest } from '../select/view_check.mjs';
 import { assertHierarchyInput } from '../budget/index.mjs';
 
 const ERR = 'lod:';
@@ -28,6 +29,7 @@ function leafNodes(octree) {
  * 시야 안 리프마다 목표 단계를 정하고 점진 전송 조각 열을 만든다.
  * 리프 목표 단계 = 공용 화면 오차 규칙(screen_error.mjs)으로 d_eff = max(d·cMin², z_P·c_P) (screen_error.mjs 참조) 에서 고른 단계(최대 단계로 제한).
  * 같은 단계 안 순서의 '가까움' 은 카메라~리프 상자 최단 거리 d.
+ * @param {{thresholdPx:number, pointSizeM?:number}} opts  pointSizeM = 래스터 원판 지름(m, 선택; F-126)
  * @returns {{level:number, leaf:number, indices:Uint32Array}[]}  indices 는 그 단계 대표점의 입력 점 번호(해당 리프 구간)
  */
 export function progressiveChunks(hierarchy, camera, opts) {
@@ -37,6 +39,7 @@ export function progressiveChunks(hierarchy, camera, opts) {
   } catch (e) {
     throw new Error(`${ERR} 카메라가 올바르지 않음 (${e.message})`);
   }
+  const mayBeVisible = lodVisibilityTest(opts?.pointSizeM);
   const { octree, levels, edge0M } = hierarchy;
   const maxLevel = levels.length - 1;
   const rule = screenErrorRule(camera, { thresholdPx: opts?.thresholdPx, edge0M, levelCount: levels.length });
@@ -47,7 +50,7 @@ export function progressiveChunks(hierarchy, camera, opts) {
     if (octree.leafStart[k + 1] === octree.leafStart[k]) continue; // 빈 리프
     const bmin = octree.boxMin.subarray(3 * node[k], 3 * node[k] + 3);
     const bmax = octree.boxMax.subarray(3 * node[k], 3 * node[k] + 3);
-    if (!boxMayBeVisible(camera, bmin, bmax)) continue; // 시야 밖 리프는 조각 0
+    if (!mayBeVisible(camera, bmin, bmax)) continue; // 시야 밖 리프는 조각 0
     const { distM: dist, level } = rule.leaf(bmin, bmax);
     const target = Math.min(maxLevel, level);
     // 최초 거친 조각 -> 목표 단계 조각(중간 단계는 건너뜀)

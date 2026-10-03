@@ -14,8 +14,8 @@
 //   위      fy·y + cy·z + m ≥ 0      아래    fy·y + (cy − H)·z − m ≤ 0
 // 이 되어 여전히 X_c 의 1차식(아핀)이다. 아핀 함수의 상자 위 최댓값은 꼭짓점에서 나오므로 8 꼭짓점 판정이 그대로 정확한
 // 보수 판정이 된다(리프 최소 깊이에서 r_max 를 쓰는 근사가 필요 없다). 각 평면을 깊이 z 에서 그 깊이의 원판 반경만큼 바깥으로 민 것과 같다.
-// boxMayBeVisible(3 인자)은 m = 0(원판 중심만 봄)인 기존 규칙이며 LOD(select·budget·progressive)가 쓴다.
-// 컬링은 boxMayBeVisibleSplat 을 쓴다. 결정 0023 참조.
+// boxMayBeVisible(3 인자)은 m = 0(원판 중심만 봄)인 기존 규칙이며 LOD(select·budget·progressive)가 pointSizeM 없이 불릴 때 쓴다.
+// 컬링은 boxMayBeVisibleSplat 을 쓴다. LOD 도 opts.pointSizeM 을 받으면 같은 함수를 쓴다(F-126, lodVisibilityTest). 결정 0023 참조.
 
 function boxTest(camera, mn, mx, m, lateral) {
   const { R, t, K, width: W, height: H } = camera;
@@ -52,4 +52,19 @@ export function boxMayBeVisible(camera, mn, mx) {
 export function boxMayBeVisibleSplat(camera, mn, mx, pointSizeM) {
   if (pointSizeM === undefined || pointSizeM === null) return boxTest(camera, mn, mx, 0, false);
   return boxTest(camera, mn, mx, 0.5 * camera.K.fx * pointSizeM, true);
+}
+
+/**
+ * LOD 선택(select·budget·progressive)의 시야 판정 고르기(F-126). 세 진입점이 같은 규칙을 쓰도록 여기 한 곳에 둔다.
+ * pointSizeM 이 undefined 이면 기존 원판 중심 규칙(boxMayBeVisible)이라 결과·구운 시험 값이 그대로다.
+ * 주면(0 이상의 유한 수) 컬링 절두체와 같은 boxMayBeVisibleSplat(원판 반경만큼 민 평면)을 쓴다. 0 은 중심 규칙과 같다.
+ * 그 밖의 값(null·음수·NaN·Infinity·수가 아님)은 'lod:' 오류.
+ * @returns {(camera:object, mn:ArrayLike<number>, mx:ArrayLike<number>) => boolean}
+ */
+export function lodVisibilityTest(pointSizeM) {
+  if (pointSizeM === undefined) return boxMayBeVisible;
+  if (!(typeof pointSizeM === 'number' && Number.isFinite(pointSizeM) && pointSizeM >= 0)) {
+    throw new Error(`lod: pointSizeM 은 0 이상의 유한 수: ${String(pointSizeM)}`);
+  }
+  return (camera, mn, mx) => boxMayBeVisibleSplat(camera, mn, mx, pointSizeM);
 }
