@@ -43,7 +43,7 @@ function readHierarchy(h, makeBuf) {
     return { leafCount, leafStart, leafIndex, boxMin, boxMax, nodeCount };
   });
   // makeBuf 가 있으면 길이 leafCount 의 0 으로 채워진 버퍼를 만들어 검사표로 빌려 쓰고(추가 할당 없음) 검사 뒤 0 으로 비운다. 없으면 검사표를 새로 만든다.
-  // 할당 실패는 계층 읽기 오류가 아니므로 가드 밖에서 만든다.
+  // 할당 실패는 계층 읽기 오류가 아니므로 가드 밖에서 만든다. 할당 실패(RangeError)는 범위 밖 오류다.
   const buf = makeBuf ? makeBuf(oc.leafCount) : undefined;
   checkLeafIndexOneToOne(oc, buf);
   if (buf) buf.fill(0);
