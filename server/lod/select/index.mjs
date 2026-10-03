@@ -67,6 +67,10 @@ export function selectLevels(hierarchy, camera, opts) {
     if (k < 0) continue;
     for (let a = 0; a < 3; a++) { mn[a] = octree.boxMin[3 * node + a]; mx[a] = octree.boxMax[3 * node + a]; }
     if (!boxMayBeVisible(camera, mn, mx)) continue;
+    // 점이 하나도 없는 리프는 그릴 것이 없으므로 NOT_DRAWN 으로 둔다(budget 와 같은 규칙, F-104 ④).
+    // 단계 0 으로 두면 선택 결과가 "그려진 리프" 로 세어져 같은 입력에서 select 와 budget 의 leafLevel 이 갈린다.
+    // 점 수는 어느 쪽이든 0 이라 NOT_DRAWN 이 정보 손실 없이 두 선택기의 표현을 하나로 맞춘다.
+    if (levels[0].leafStart[k + 1] === levels[0].leafStart[k]) continue;
     const l = rule.leaf(mn, mx).level;
     leafLevel[k] = l;
     pointCount += levels[l].leafStart[k + 1] - levels[l].leafStart[k];

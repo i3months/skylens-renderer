@@ -14,6 +14,30 @@ import { representativeNormals } from '../normals/index.mjs';
 import { representativeColors } from '../colors/index.mjs';
 
 /**
+ * part(점 번호 배열)를 (격자 칸 번호, 점 번호) 오름차순으로 제자리 정렬한다. 비교 함수 정렬(250만 점 build 14.8 s)을 대체한다.
+ * 점 번호 순으로 먼저 정렬하면 구간 안 위치 t 가 점 번호 순서와 같으므로, 합성 키 cell·m + t 하나만 Float64Array 로 정렬하면
+ * (칸, 번호) 순서가 된다. 키가 2^53 미만이면 정확하다(그렇지 않으면 비교 함수 정렬). 결과는 비교 함수 정렬과 같다(키가 모두 달라 안정성 무관).
+ */
+function sortByCellThenIndex(part, cellOf, keys) {
+  const m = part.length;
+  part.sort();
+  let maxCell = 0;
+  for (let t = 0; t < m; t++) if (cellOf[part[t]] > maxCell) maxCell = cellOf[part[t]];
+  if ((maxCell + 1) * m >= 2 ** 53) {
+    part.sort((a, b) => cellOf[a] - cellOf[b] || a - b);
+    return;
+  }
+  const key = keys.subarray(0, m);
+  for (let t = 0; t < m; t++) key[t] = cellOf[part[t]] * m + t;
+  key.sort();
+  const tmp = Uint32Array.from(part);
+  for (let q = 0; q < m; q++) {
+    const c = Math.floor(key[q] / m);
+    part[q] = tmp[key[q] - c * m];
+  }
+}
+
+/**
  * 격자 칸을 리프 경계로 쪼갠 VoxelResult 모양 객체. 조각 번호는 (리프, 격자 칸 번호) 오름차순.
  * @param {Float32Array} pos
  * @param {import('../../../contracts/lod/index.mjs').VoxelResult} vox
@@ -24,12 +48,13 @@ function splitCellsByLeaf(pos, vox, octree) {
   const cellOfPoint = new Uint32Array(n);
   const repList = [], leafOfPiece = [];
   const seg = new Uint32Array(n);
+  const keys = new Float64Array(n);
   for (let k = 0; k < octree.leafCount; k++) {
     const s0 = octree.leafStart[k], s1 = octree.leafStart[k + 1];
     const m = s1 - s0;
     const part = seg.subarray(0, m);
     part.set(octree.order.subarray(s0, s1));
-    part.sort((a, b) => cellOf[a] - cellOf[b] || a - b);
+    sortByCellThenIndex(part, cellOf, keys);
     let best = -1, bestD = Infinity;
     for (let q = 0; q < m; q++) {
       const i = part[q];
