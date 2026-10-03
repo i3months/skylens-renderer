@@ -1,8 +1,11 @@
-// 클라이언트 측 GPS → ENU(WGS-84 타원체 → ECEF → anchor 기준 ENU 정확식). 순수 JS, Math 만 사용.
-import { WGS84, GeoError } from '../../contracts/geo/index.mjs';
+// 클라이언트 측 GPS → ENU. skylens develop src/shared/geo.ts 와 같은 등장방형(equirectangular) 소영역 근사(F-071).
+//   e = Δλ · R · cos(φ0),  n = Δφ · R,  u = alt − alt0
+//   R = EARTH_RADIUS_M(6378137 m), Δφ·Δλ 는 라디안, φ0 는 앵커 위도(라디안).
+// 타원체 정확식이 아니다. 앵커에서 멀어질수록(수십 km 이상) 실제 거리와 어긋나지만 skylens 와 같은 값을 내는 것이 목적이다.
+// 순수 JS, Math 만 사용.
+import { EARTH_RADIUS_M, GeoError } from '../../contracts/geo/index.mjs';
 
-const RAD = Math.PI / 180;
-const E2 = WGS84.f * (2 - WGS84.f); // 제1 이심률 제곱
+const DEG = Math.PI / 180;
 
 // 입력 검증: 유한 + 위도 −90..90 + 경도 −180..180
 function check(g, name) {
@@ -16,24 +19,17 @@ function check(g, name) {
   if (lon < -180 || lon > 180) throw new GeoError('range', `${name}.lon out of range: ${lon}`);
 }
 
-function toEcef(g) {
-  const la = g.lat * RAD, lo = g.lon * RAD;
-  const sl = Math.sin(la), cl = Math.cos(la);
-  const n = WGS84.a / Math.sqrt(1 - E2 * sl * sl);
-  return [(n + g.alt) * cl * Math.cos(lo), (n + g.alt) * cl * Math.sin(lo), (n * (1 - E2) + g.alt) * sl];
-}
-
-/** GPS → ENU [동, 북, 위] m (anchor 기준). 서버 gpsToEnu 와 같은 값. */
+/** GPS → ENU [동, 북, 위] m (anchor 기준, 등장방형 근사). 비유한·범위 밖 입력과 비유한 결과는 GeoError('range'). */
 export function gpsToEnuClient(gps, anchor) {
   check(gps, 'gps');
   check(anchor, 'anchor');
-  const p = toEcef(gps), o = toEcef(anchor);
-  const dx = p[0] - o[0], dy = p[1] - o[1], dz = p[2] - o[2];
-  const la = anchor.lat * RAD, lo = anchor.lon * RAD;
-  const sl = Math.sin(la), cl = Math.cos(la), so = Math.sin(lo), co = Math.cos(lo);
-  return [
-    -so * dx + co * dy,
-    -sl * co * dx - sl * so * dy + cl * dz,
-    cl * co * dx + cl * so * dy + sl * dz,
-  ];
+  const dPhi = (gps.lat - anchor.lat) * DEG; // Δφ (rad)
+  const dLambda = (gps.lon - anchor.lon) * DEG; // Δλ (rad)
+  const e = dLambda * EARTH_RADIUS_M * Math.cos(anchor.lat * DEG);
+  const n = dPhi * EARTH_RADIUS_M;
+  const u = gps.alt - anchor.alt;
+  if (!Number.isFinite(e) || !Number.isFinite(n) || !Number.isFinite(u)) {
+    throw new GeoError('range', `non-finite ENU result: ${e}, ${n}, ${u}`);
+  }
+  return [e, n, u];
 }

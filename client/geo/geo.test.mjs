@@ -19,72 +19,91 @@ function rng(seed) {
   };
 }
 
-// 테스트용 독립 구현: 행렬 곱 형태의 ECEF 회전(상수는 리터럴)
-const A = 6378137, F = 1 / 298.257223563;
-function ecef(lat, lon, h) {
-  const e2 = 2 * F - F * F, la = (lat * Math.PI) / 180, lo = (lon * Math.PI) / 180;
-  const n = A / Math.sqrt(1 - e2 * Math.sin(la) ** 2);
-  return [(n + h) * Math.cos(la) * Math.cos(lo), (n + h) * Math.cos(la) * Math.sin(lo), (n * (1 - e2) + h) * Math.sin(la)];
+// 기준 함수: skylens develop src/shared/geo.ts 의 gpsToEnu 를 그대로 옮긴 것.
+// 상수는 contracts 가 아니라 이 파일의 리터럴로 둔다(구현 쪽 상수가 바뀌면 이 테스트가 잡도록).
+// 출처: https://github.com/NET-Challenge-S13/skylens/blob/develop/src/shared/geo.ts
+const SKYLENS_R = 6378137; // Earth radius (m)
+const SKYLENS_DEG = Math.PI / 180;
+function skylensGpsToEnu(gps, anchor) {
+  const dLat = (gps.lat - anchor.lat) * SKYLENS_DEG;
+  const dLon = (gps.lon - anchor.lon) * SKYLENS_DEG;
+  return {
+    e: dLon * SKYLENS_R * Math.cos(anchor.lat * SKYLENS_DEG),
+    n: dLat * SKYLENS_R,
+    u: gps.alt - anchor.alt,
+  };
 }
-function refEnu(g, a) {
-  const p = ecef(g.lat, g.lon, g.alt), o = ecef(a.lat, a.lon, a.alt);
-  const d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
-  const la = (a.lat * Math.PI) / 180, lo = (a.lon * Math.PI) / 180;
-  const R = [
-    [-Math.sin(lo), Math.cos(lo), 0],
-    [-Math.sin(la) * Math.cos(lo), -Math.sin(la) * Math.sin(lo), Math.cos(la)],
-    [Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)],
-  ];
-  return R.map((r) => r[0] * d[0] + r[1] * d[1] + r[2] * d[2]);
-}
-function randPoints(n, seed) {
+const refEnu = (g, a) => { const r = skylensGpsToEnu(g, a); return [r.e, r.n, r.u]; };
+
+// 앵커: 서울시청 부근
+const ANCHOR = Object.freeze({ lat: 37.5665, lon: 126.978, alt: 30 });
+const RADII_KM = [0.1, 1, 10, 50];
+const N_POINTS = 10000;
+
+// 앵커에서 반경 radiusM 안(원판 균등)의 무작위 점 n 개. 미터 → 도 환산은 1° ≈ 111320 m 의 대략값이면 충분하다
+// (점이 '대략 그 반경 안' 에 있기만 하면 되고, 비교는 같은 점에 대해 두 함수 값끼리 한다).
+function pointsAround(anchor, radiusM, n, seed) {
   const r = rng(seed), out = [];
+  const mPerDegLat = 111320, mPerDegLon = 111320 * Math.cos((anchor.lat * Math.PI) / 180);
   for (let i = 0; i < n; i++) {
-    const anchor = { lat: -85 + r() * 170, lon: -180 + r() * 360, alt: -100 + r() * 3000 };
-    // 앵커 주변 약 ±0.5° 안의 점
-    const gps = {
-      lat: Math.max(-90, Math.min(90, anchor.lat + (r() - 0.5))),
-      lon: Math.max(-180, Math.min(180, anchor.lon + (r() - 0.5))),
-      alt: -100 + r() * 3000,
-    };
-    out.push([gps, anchor]);
+    const d = radiusM * Math.sqrt(r()), th = 2 * Math.PI * r();
+    out.push({
+      lat: anchor.lat + (d * Math.cos(th)) / mPerDegLat,
+      lon: anchor.lon + (d * Math.sin(th)) / mPerDegLon,
+      alt: anchor.alt - 100 + r() * 600,
+    });
   }
   return out;
 }
 const maxDiff = (u, v) => Math.max(...u.map((x, i) => Math.abs(x - v[i])));
 
 test('앵커 자신 → (0,0,0)', () => {
-  const a = { lat: 37.5, lon: 127, alt: 50 };
-  const e = gpsToEnuClient({ ...a }, a);
-  for (const x of e) assert.ok(Math.abs(x) < 1e-9);
+  const e = gpsToEnuClient({ ...ANCHOR }, ANCHOR);
+  assert.deepEqual(e.map(Math.abs), [0, 0, 0]);
 });
 
-test('손계산 기준값(앵커 37.5N 127E 50m, 닫힌 식 값 고정)', () => {
-  const a = { lat: 37.5, lon: 127, alt: 50 };
+test('손계산 기준값(앵커 37.5665N 126.978E 30m, 등장방형 근사)', () => {
+  // 유도 근거(R = 6378137, DEG = π/180):
+  //   R·DEG = 6378137 × 0.017453292519943295 = 111319.49079327357 m/도 (위도 1° 당 북쪽 거리)
+  //   cos(φ0) = cos(37.5665°) = 0.7926462508178724
+  // ① 위도 +0.01°: n = 0.01 × 111319.49079327357 = 1113.1949079327357, e = 0, u = 0
+  // ② 경도 +0.01°: e = 0.01 × 111319.49079327357 × 0.7926462508178724 = 882.3697702024297, n = 0, u = 0
+  // ③ 위도 −0.05°: n = −0.05 × 111319.49079327357 = −5565.974539663679
+  // ④ 경도 −0.02°, 고도 130 m: e = −0.02 × 111319.49079327357 × 0.7926462508178724 = −1764.7395404048593,
+  //    u = 130 − 30 = 100
+  // ⑤ 고도만 −20 m: u = −20 − 30 = −50
+  const a = ANCHOR;
   const cases = [
-    [{ lat: 37.5, lon: 127, alt: 150 }, [0, 0, 100]],
-    [{ lat: 37.51, lon: 127, alt: 50 }, [0, 1109.8800302932882, -0.09685533189281159]],
-    [{ lat: 37.4, lon: 127, alt: 300 }, [0, -11099.127492225489, 240.314208981481]],
-    [{ lat: 37.5, lon: 127.01, alt: 50 }, [884.2613602624164, 0.04697590410359487, -0.06122019013996015]],
+    [{ lat: 37.5765, lon: 126.978, alt: 30 }, [0, 1113.1949079327357, 0]],
+    [{ lat: 37.5665, lon: 126.988, alt: 30 }, [882.3697702024297, 0, 0]],
+    [{ lat: 37.5165, lon: 126.978, alt: 30 }, [0, -5565.974539663679, 0]],
+    [{ lat: 37.5665, lon: 126.958, alt: 130 }, [-1764.7395404048593, 0, 100]],
+    [{ lat: 37.5665, lon: 126.978, alt: -20 }, [0, 0, -50]],
   ];
+  // 위경도 덧셈(37.5665+0.01 등)의 부동소수 반올림이 Δ 에 ~1e-15° 남으므로 허용 오차 1e-6 m
   for (const [g, want] of cases) {
     const got = gpsToEnuClient(g, a);
     assert.ok(maxDiff(got, want) < 1e-6, `${JSON.stringify(g)} -> ${got} vs ${want}`);
   }
 });
 
-test('무작위 1만 점: 독립 ECEF 회전행렬 구현과 1 mm 이내', () => {
-  let worst = 0;
-  for (const [g, a] of randPoints(10000, 20240607)) worst = Math.max(worst, maxDiff(gpsToEnuClient(g, a), refEnu(g, a)));
-  console.log(`max diff vs reference: ${worst} m`);
-  assert.ok(worst <= 1e-3);
-});
+for (const km of RADII_KM) {
+  test(`skylens geo.ts 기준 함수와 반경 ${km} km 무작위 ${N_POINTS} 점 차 ≤ 1 mm`, () => {
+    let worst = 0;
+    for (const g of pointsAround(ANCHOR, km * 1000, N_POINTS, 20261003 + km * 1000)) {
+      worst = Math.max(worst, maxDiff(gpsToEnuClient(g, ANCHOR), refEnu(g, ANCHOR)));
+    }
+    console.log(`radius ${km} km: max diff vs skylens geo.ts = ${worst} m`);
+    assert.ok(worst <= 1e-3, `max diff ${worst} m`);
+  });
+}
 
 test('비유한·범위 밖은 GeoError(range)', () => {
   const a = { lat: 0, lon: 0, alt: 0 };
   const bad = [
     { lat: NaN, lon: 0, alt: 0 }, { lat: 0, lon: Infinity, alt: 0 }, { lat: 0, lon: 0, alt: NaN },
     { lat: 90.1, lon: 0, alt: 0 }, { lat: -91, lon: 0, alt: 0 }, { lat: 0, lon: 180.5, alt: 0 }, { lat: 0, lon: -181, alt: 0 },
+    { lat: '0', lon: 0, alt: 0 }, null,
   ];
   for (const b of bad) {
     for (const f of [() => gpsToEnuClient(b, a), () => gpsToEnuClient(a, b)]) {
@@ -93,18 +112,31 @@ test('비유한·범위 밖은 GeoError(range)', () => {
   }
 });
 
+test('결과가 비유한이면 GeoError(range)', () => {
+  // 1.7e308 − (−1.7e308) 은 Number.MAX_VALUE 를 넘어 Infinity
+  assert.throws(
+    () => gpsToEnuClient({ lat: 0, lon: 0, alt: 1.7e308 }, { lat: 0, lon: 0, alt: -1.7e308 }),
+    (e) => e instanceof GeoError && e.code === 'range',
+  );
+});
+
 test('index.mjs 에 node: 모듈·Buffer 없음(소스 검사)', () => {
   const src = readFileSync(here('./index.mjs'), 'utf8');
   assert.ok(!/node:/.test(src));
   assert.ok(!/\bBuffer\b/.test(src));
 });
 
+// 서버 gpsToEnu 도 같은 등장방형 식으로 맞춘다(F-071). 서버·클라이언트가 다시 갈라지면 이 테스트가 잡는다.
 const serverPath = here('../../server/geo/enu/index.mjs');
-test('서버 gpsToEnu 와 무작위 1만 점 차 ≤ 1 mm', async (t) => {
-  if (!existsSync(serverPath)) return t.skip('server/geo/enu/index.mjs 없음(T04.5 미병합)');
+test('서버·클라이언트 동치 회귀 감시', async (t) => {
+  if (!existsSync(serverPath)) return t.skip('server/geo/enu/index.mjs 없음');
   const { gpsToEnu } = await import(pathToFileURL(serverPath).href);
   let worst = 0;
-  for (const [g, a] of randPoints(10000, 777)) worst = Math.max(worst, maxDiff(gpsToEnuClient(g, a), gpsToEnu(g, a)));
+  for (const km of RADII_KM) {
+    for (const g of pointsAround(ANCHOR, km * 1000, N_POINTS / RADII_KM.length, 777 + km * 1000)) {
+      worst = Math.max(worst, maxDiff(gpsToEnuClient(g, ANCHOR), gpsToEnu(g, ANCHOR)));
+    }
+  }
   console.log(`max diff vs server: ${worst} m`);
-  assert.ok(worst <= 1e-3);
+  assert.ok(worst <= 1e-3, `max diff ${worst} m`);
 });
