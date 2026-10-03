@@ -187,30 +187,38 @@ test("입력 오류는 'cull:' 로 던진다", () => {
 });
 
 // ---- F-129·F-147: 예측 마스크의 상한(위쪽 경계)·하한·음성 시험 ----
-// 변위 기하(F-147): 시각 τ+δ(|δ| <= hh) 의 카메라에서 거리 far 이내로 보이는 점 p 를 τ 카메라 기준으로 옮기면
-//   p' − p = (Qᵀ − I)(p − C − v·δ) − v·δ,  |p − C − v·δ| <= far  ->  |p' − p| <= |v|·hh + 2·far·sin(ω·hh/2).
+// 변위 기하(F-147·F-151): τ 표본 카메라(중심 C, 행렬 R)와 시각 τ+δ(|δ| <= hh) 카메라(중심 C+v·δ, 행렬 R·Qᵀ, Q = Rot(ω·δ)).
+//   τ+δ 카메라에서 보이는 점 p 와 τ 카메라 좌표가 같은 점 p' 는 R(p' − C) = R·Qᵀ(p − C − v·δ) 를 풀어
+//   p' − p = (Qᵀ − I)(p − C) − Qᵀ·v·δ.  먼 기준점은 표본 중심 C 이고, far = C 에서 상자 최원 꼭짓점까지 거리라 |p − C| <= far
+//   ->  |p' − p| <= |v|·hh + 2·far·sin(ω·hh/2).
 // 즉 교차항이 없는 식이 이미 올바른 상한이다. 교차항(회전 반경 far+|v|·hh)은 구현이 더 보수적으로 잡아도 되는 여유일 뿐,
 // '반드시 남아야 하는 하한' 이 아니다(이전 F-144 의 '엄밀 하한' 전제는 틀렸다: 교차항을 뺀 구현도 올바르다).
 // 상한(allowedUnion): 촘촘한 시각(0..horizonS 를 n 등분, n 은 steps 의 배수라 구현의 표본 시각을 모두 포함)마다 상자를
-//   upperDisp = |v|·hh + ω·hh·(far+|v|·hh) (+ 수치 여유 eps=1e-3 m) 만큼 부풀려 보이는 리프의 합집합. 호 길이 ω·hh·r >= 현 2·r·sin(ω·hh/2) 이고
-//   교차항은 r 을 키우기만 하므로 upperDisp 는 위 기하 상한 이상이며, 보수적인 구현(교차항 포함·호 길이)이 들어갈 자리를 준다.
-//   구현의 표본 시각이 촘촘한 표본에 들어 있으므로 반폭은 hh 그대로 쓴다(표본 간격의 반폭을 더하지 않는다). 구현의 배율·가산 상수는 쓰지 않는다.
+//   M = upperDisp·(1 + rel) + eps (rel = 1e-3, eps = 1e-3 m), upperDisp = |v|·hh + ω·hh·(far+|v|·hh) 만큼 부풀려 보이는 리프의 합집합.
+//   호 길이 ω·hh·r >= 현 2·r·sin(ω·hh/2) 이고 교차항은 r 을 키우기만 하므로 upperDisp 는 위 기하 상한 이상이며, 보수적인 구현(교차항 포함·호 길이)이 들어갈 자리를 준다.
+//   구현의 표본 시각이 촘촘한 표본에 들어 있으므로 반폭은 hh 그대로 쓴다(표본 간격의 반폭을 더하지 않는다).
+//   여유는 상대값이어야 한다(F-151): 구현은 1.0001·U + 1e-9 로 부풀리므로 절대 여유 1e-3 만으로는 U > 10 m 에서 구현 몫보다 작다.
+//   rel = 1e-3 > 1e-4 라 모든 U 에서 1.0001·U + 1e-9 <= M 이며, 이것을 (사례, steps, 시각, 리프)마다 단언한다(IMPL_REL·IMPL_ABS 는 이 확인에만 쓴다).
 // 하한(denseUnion): 촘촘한 시각에서 부풀림 없이(여유 0) 실제로 보이는 리프의 합집합. 마스크는 이것을 모두 덮어야 한다.
+// 판별력(부풀림 반폭 h/2·전체 ×1.2·회전항 ×1.5 변이를 잡는지)은 장면 시드와 무관하게 predict_analytic.test.mjs 가 해석적 상자 배치로 맡는다.
 const upperDisp = (speed, omega, hh, far) => speed * hh + omega * hh * (far + speed * hh);
 const farOf = (a, b, C) => Math.hypot(...[0, 1, 2].map((d) => Math.max(Math.abs(a[d] - C[d]), Math.abs(b[d] - C[d]))));
-function allowedUnion(camAt, horizonS, n, speed, omega, hh, pointSizeM = 0, eps = 1e-3) {
+const IMPL_REL = 1.0001, IMPL_ABS = 1e-9; // index.mjs 의 부풀림 배율·가산 상수(상한 여유가 이것을 덮는지 확인용)
+function allowedUnion(camAt, horizonS, n, speed, omega, hh, pointSizeM = 0, eps = 1e-3, rel = 1e-3) {
   const s = new Set();
   for (let i = 0; i <= n; i++) {
     const cam = camAt((horizonS * i) / n), C = cameraCenter(cam);
     for (let k = 0; k < oc.leafCount; k++) {
       const [a, b] = boxOf(k);
-      const M = upperDisp(speed, omega, hh, farOf(a, b, C)) + eps;
+      const U = upperDisp(speed, omega, hh, farOf(a, b, C));
+      const M = U * (1 + rel) + eps;
+      assert.ok(IMPL_REL * U + IMPL_ABS <= M, `전제: 상한 여유 ${M} 가 구현 부풀림 ${IMPL_REL * U + IMPL_ABS} 이상 (U=${U}, 시각 ${i}/${n}, 리프 ${k})`);
       if (boxMayBeVisibleSplat(cam, a.map((x) => x - M), b.map((x) => x + M), pointSizeM)) s.add(k);
     }
   }
   return s;
 }
-// 하한용: 표본 시각들의 부풀림 없는(여유 0) 보이는 리프 합집합. 상한 여유 1e-3 을 하한에 쓰면 하한이 부풀어 판별력을 흐린다.
+// 하한용: 표본 시각들의 부풀림 없는(여유 0) 보이는 리프 합집합. 상한 여유를 하한에 쓰면 하한이 부풀어 판별력을 흐린다.
 function sampleUnion(camAt, horizonS, n, margin = 0) {
   const s = new Set();
   for (let i = 0; i <= n; i++) {
@@ -218,19 +226,6 @@ function sampleUnion(camAt, horizonS, n, margin = 0) {
     for (let k = 0; k < oc.leafCount; k++) {
       const [a, b] = boxOf(k);
       if (boxMayBeVisibleSplat(cam, a.map((x) => x - margin), b.map((x) => x + margin), 0)) s.add(k);
-    }
-  }
-  return s;
-}
-// 판별력 전제용: 구현과 같은 표본 시각(steps 등분)에서 상자를 disp(far) 만큼 부풀려 보이는 리프 집합(시험이 직접 계산, 구현 비의존).
-function inflatedAtSamples(camAt, horizonS, steps, disp) {
-  const s = new Set();
-  for (let i = 0; i <= steps; i++) {
-    const cam = camAt((horizonS * i) / steps), C = cameraCenter(cam);
-    for (let k = 0; k < oc.leafCount; k++) {
-      const [a, b] = boxOf(k);
-      const M = disp(farOf(a, b, C));
-      if (boxMayBeVisibleSplat(cam, a.map((x) => x - M), b.map((x) => x + M), 0)) s.add(k);
     }
   }
   return s;
@@ -257,9 +252,9 @@ test('상한: 움직이는 카메라의 예측 마스크 ⊆ (표본 시점들�
 test('결합 운동 하한·상한: 마스크 ⊇ 촘촘한 시각의 실제 보이는 리프 합집합, ⊆ 표본 시점 부풀림 상한 합집합', () => {
   const horizonS = 4;
   // 하한: 촘촘한 시각(8·steps 등분)에서 부풀림 없이 실제로 보이는 리프는 모두 마스크에 있어야 한다(표본 사이 시각까지 빠진 조각 0).
-  // 상한: allowedUnion(같은 촘촘한 시각, 반폭 hh, upperDisp + 1e-3). 교차항은 상한에만 쓰고 하한에는 쓰지 않는다(F-147).
+  // 상한: allowedUnion(같은 촘촘한 시각, 반폭 hh, upperDisp·(1+1e-3) + 1e-3). 교차항은 상한에만 쓰고 하한에는 쓰지 않는다(F-147).
   // 사례 0~3: 빠른 이동+회전(대부분 허용 = 전체). 사례 4~6: 회전 위주(이동 0 또는 0.7 m/s 이하)라 허용 집합이 전체보다 확실히 작다.
-  // 사례 7: 고속 직선 비행(400 m/s, 아래를 봄). steps=1 에서 표본 사이(τ≈2 s)에만 보이는 리프가 있어 반폭을 줄이면 빠진다.
+  // 사례 7: 고속 직선 비행(400 m/s, 아래를 봄). upperDisp 가 100 m 를 넘어 상대 여유가 필요한 사례다(F-151).
   const cases = [
     [lookAt([-70, 30, 0], [0, 0, 0]), [0, 0, 30], [0, 0.6, 0]],
     [lookAt([30, 35, -40], [0, 0, 0]), [-20, 4, 24], [0.3, -0.5, 0.2]],
@@ -270,26 +265,12 @@ test('결합 운동 하한·상한: 마스크 ⊇ 촘촘한 시각의 실제 보
     [lookAt([-56.07, 47.86, -47.35], [-45.18, 2.58, 6.12]), [0, 0, 0], [0.02, -0.13, -0.02]],
     [lookAt([-800, 70, 0], [-800, 0, 0.5]), [400, 0, 0], [0, 0, 0]],
   ];
-  // 기준값(시험 쪽 계산만, 구현 비의존): 사례별 steps=1,2,4 의 [하한 크기, 허용 크기, ×1.2 상한 밖, 회전항 ×1.5 상한 밖, 반폭 h/2 하한 누락].
-  // ×1.2 = 1.2·upperDisp, 회전항 ×1.5 = |v|·hh + 1.5·ω·hh·(far+|v|·hh) 로 구현 표본 시각에서 부풀린 집합 중 허용 밖 리프 수.
-  // 반폭 h/2 = 1.001·upperDisp(hh/2) + 1e-3 로 부풀린 집합이 놓치는 하한 리프 수. 부풀림이 이것들 이상(×1.2·×1.5) 또는 이하(h/2)인 구현은
-  // 같은 리프를 허용 밖으로 내보내거나 하한에서 빠뜨린다(부풀림에 대해 단조) -> 그런 구현 변이는 이 시험이 잡는다.
-  const BASE = [
-    [[80, 83, 0, 0, 0], [80, 83, 0, 0, 0], [80, 83, 0, 0, 0]],
-    [[77, 83, 0, 0, 0], [77, 83, 0, 0, 0], [77, 83, 0, 0, 0]],
-    [[31, 83, 0, 0, 0], [31, 83, 0, 0, 0], [31, 79, 1, 1, 0]],
-    [[32, 83, 0, 0, 0], [33, 83, 0, 0, 0], [33, 83, 0, 0, 0]],
-    [[43, 67, 3, 13, 0], [43, 53, 2, 6, 0], [43, 46, 3, 4, 0]],
-    [[46, 66, 6, 12, 0], [46, 57, 3, 7, 0], [46, 52, 1, 2, 0]],
-    [[54, 79, 3, 4, 0], [54, 64, 2, 7, 0], [54, 60, 2, 3, 0]],
-    [[30, 83, 0, 0, 6], [43, 83, 0, 0, 0], [43, 83, 0, 0, 0]],
-  ];
-  const got = [];
+  // 판별력(h/2·×1.2·회전항 ×1.5 변이)은 이 장면의 시드에 기대지 않고 predict_analytic.test.mjs 의 해석적 배치가 맡는다(F-151).
+  // 여기서는 하한·상한 포함 관계와, 상한이 헐겁지 않다는 전제(허용 <= 0.9·leafCount 인 조합 수)만 본다.
   let tight = 0;
   for (const [cam, v, w] of cases) {
     const speed = Math.hypot(...v), omega = Math.hypot(...w);
     const camAt = (tau) => predictCamera(cam, { velocityMps: v, angularRadPerS: w }, tau);
-    const row = [];
     for (const steps of [1, 2, 4]) {
       const hh = horizonS / steps / 2, dense = steps * 8;
       const m = predictiveMask(h, { camera: cam, velocityMps: v, angularRadPerS: w }, { horizonS, steps, pointSizeM: 0 });
@@ -298,19 +279,11 @@ test('결합 운동 하한·상한: 마스크 ⊇ 촘촘한 시각의 실제 보
       const allowed = allowedUnion(camAt, horizonS, dense, speed, omega, hh);
       for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(allowed.has(k), `steps=${steps}: 허용 밖 리프 ${k}`);
       if (allowed.size <= 0.9 * oc.leafCount) tight++;
-      const outside = (s) => [...s].filter((k) => !allowed.has(k)).length;
-      const x12 = inflatedAtSamples(camAt, horizonS, steps, (far) => 1.2 * upperDisp(speed, omega, hh, far));
-      const r15 = inflatedAtSamples(camAt, horizonS, steps, (far) => speed * hh + 1.5 * omega * hh * (far + speed * hh));
-      const half = inflatedAtSamples(camAt, horizonS, steps, (far) => 1.001 * upperDisp(speed, omega, hh / 2, far) + 1e-3);
-      row.push([lower.size, allowed.size, outside(x12), outside(r15), [...lower].filter((k) => !half.has(k)).length]);
     }
-    got.push(row);
   }
-  assert.deepEqual(got, BASE);
-  // 전제(판별력): 허용이 전체 리프의 90% 이하인 (사례, steps) 가 8 개 이상(사례 4·5 의 모든 steps, 사례 6 의 steps=2·4).
+  // 전제(상한이 전체가 아님): 허용이 전체 리프의 90% 이하인 (사례, steps) 가 8 개 이상(사례 4·5 의 모든 steps, 사례 6 의 steps=2·4).
+  // 시드 1·2·3·42·99 장면 모두 8 개다(회전 위주 사례라 지형 세부에 둔감).
   assert.ok(tight >= 8, `전제: 허용 <= 0.9·leafCount 인 조합 ${tight}`);
-  const total = (j) => got.flat().reduce((a, r) => a + r[j], 0);
-  assert.ok(total(2) >= 20 && total(3) >= 50 && total(4) >= 6, `전제: 변이 판별 리프 수 ×1.2 ${total(2)}, 회전 ×1.5 ${total(3)}, h/2 ${total(4)}`);
 });
 
 test('음성: 장면 밖(시선이 장면 반대쪽)을 향해 천천히 움직이면 마스크는 전부 0', () => {
