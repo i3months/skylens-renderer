@@ -7,11 +7,11 @@ export const FORMAT_POINT27 = 1;
 export const FORMAT_GAUSS56 = 2;
 export const RECORD_BYTES = Object.freeze({ [FORMAT_POINT27]: 27, [FORMAT_GAUSS56]: 56 });
 
-/** 27 B 점 레코드: x y z nx ny nz (f32) r g b (u8). 속성 이름·순서·형이 정확히 이렇다. */
+/** 27 B 점 레코드: x y z nx ny nz (f32) r g b (u8). 위치·법선 순서와 형은 정확히 이렇고, 색 속성 이름 red/green/blue 는 PLY 관례를 따른다(실제 skylens 자산은 모두 56 B 라 27 B 실물 근거는 없음). */
 export const POINT27_PROPERTIES = Object.freeze([
   { name: 'x', type: 'float' }, { name: 'y', type: 'float' }, { name: 'z', type: 'float' },
   { name: 'nx', type: 'float' }, { name: 'ny', type: 'float' }, { name: 'nz', type: 'float' },
-  { name: 'red', type: 'uchar' }, { name: 'green', type: 'uchar' }, { name: 'blue', type: 'uchar' }, // 색 속성 이름 red/green/blue 는 PLY 관례를 가정한 것이다(실제 skylens 자산은 모두 56 B 라 27 B 실물 근거는 없음)
+  { name: 'red', type: 'uchar' }, { name: 'green', type: 'uchar' }, { name: 'blue', type: 'uchar' },
 ]);
 /** 56 B 가우시안 레코드: x y z f_dc_0..2 opacity scale_0..2 rot_0..3 (모두 f32). */
 export const GAUSS56_PROPERTIES = Object.freeze([
