@@ -3,6 +3,7 @@
 
 import { cameraCenter, boxDistanceM } from '../../lod/select/screen_error.mjs';
 import { degenerateCamera } from '../degenerate/index.mjs';
+import { guardHierarchyRead } from '../degenerate/hierarchy_guard.mjs';
 
 const ERR = 'cull:';
 
@@ -53,8 +54,11 @@ export function distanceCull(hierarchy, camera, opts = {}) {
   // undefined = 생략(전부 남김). 그 외 비숫자(null·문자열 등)는 오류.
   if (maxDistanceM === undefined) maxDistanceM = Infinity;
   else if (typeof maxDistanceM !== 'number') throw new Error(`${ERR} maxDistanceM 은 숫자여야 함`);
-  assertHierarchy(hierarchy);
-  const { octree, levels } = hierarchy;
+  // 접근자·Proxy 예외는 'cull:' 오류로 바꾼다(F-148)
+  const { octree, levels } = guardHierarchyRead(() => {
+    assertHierarchy(hierarchy);
+    return { octree: hierarchy.octree, levels: hierarchy.levels };
+  });
   const { leafCount, nodeCount, boxMin, boxMax, leafIndex } = octree;
 
   const mask = new Uint8Array(leafCount);
