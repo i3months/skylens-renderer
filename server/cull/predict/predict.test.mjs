@@ -375,6 +375,58 @@ test('잘게/성기게 나눈 직선 이동(해석 배치): 마스크는 촘촘�
   }
 });
 
+// 대각 속도(F-158 ①): 위 해석 배치는 속도가 늘 [vx,0,0] 이라 속력 노름 |v| 를 |vx|·L1 로 바꿔도 구분하지 못한다.
+// v = (3, 0, 4), 속력 √(3² + 4²) = 5 m/s. 카메라는 +x 를 보고(R 의 행: (0,0,−1), (0,1,0), (1,0,0)), 화면 가로축이 세계 z 다.
+// 즉 옆걸음 4 m/s(z), 전진 3 m/s(x) 라 |vx| = 3 은 옆걸음보다 작고, L1 = 7 은 속력보다 크다.
+// 중심 C(τ) = (3τ, 0, 4τ), t = −R·C = (4τ, 0, −3τ). 상자 [x1,x2]×[−q,q]×[u1,u2] 의 좌·우 판정(KN, TN = 0.08)은
+//   u1 − 4τ <= TN·(x2 − 3τ)  즉 g(τ) = u1 − TN·x2 − 3.76·τ <= 0,
+//   u2 − 4τ >= −TN·(x2 − 3τ) 즉 l(τ) = u2 + TN·x2 − 4.24·τ >= 0 이고, 모든 축 M 부풀림은 두 틈을 정확히 KAPPA_N·M 만큼 줄인다.
+// horizonS = 2, steps = 4: 표본 0, 0.5, …, 2 s, 구간 반폭 0.25 s. 기하 상한: 반폭 동안 카메라는 5 · 0.25 = 1.25 m 이상 못 움직인다.
+test('대각 속도 (3,0,4)(속력 5): 마스크는 표본 사이 리프를 덮고, 기하 상한(5 m/s × 0.25 s = 1.25 m) 밖으로 넓지 않다', () => {
+  const horizonS = 2, steps = 4, q = 1;
+  const SPEED = 5; // √(3² + 4²), 손 계산
+  const HH = 0.25; // horizonS / steps / 2
+  const U = 1.25; // SPEED · HH: 반폭 동안 카메라 이동 상한(m)
+  const camAt = (tau) => ({ width: 640, height: 480, K: KN, R: [0, 0, -1, 0, 1, 0, 1, 0, 0], t: [4 * tau, 0, -3 * tau] });
+  // 상자 A(하한·|vx| 판별): u = 1.06(폭 0), x ∈ [1.75, 2.25]. g(0) = 1.06 − 0.18 = 0.88, −l(0.5) = 2.12 − 1.06 − 0.18 = 0.88.
+  //   보이는 시각 구간은 [0.88/3.76, 1.24/4.24] ≈ [0.234, 0.292] s 로 표본 0·0.5 사이에만 있다(τ = 0.25 에서 보임).
+  //   표본 틈 0.88 이 KAPPA_N·1.25 = 1.35 이하라 속력 5 의 부풀림은 덮고, KAPPA_N·0.75 = 0.81 (|vx| = 3 의 부풀림)은 못 덮는다.
+  // 상자 B(상한·L1 판별): u ∈ [17.18, 17.68], x ∈ [99.5, 100.5]. g 는 τ 에 대해 줄어드므로 최소 틈은 τ = 2 의
+  //   g(2) = 17.18 − 8.04 − 7.52 = 1.62 = KAPPA_N·1.5 이다. 기하 상한 KAPPA_N·1.251 = 1.351 보다 크므로 들어오면 안 되고,
+  //   L1 = 7 의 부풀림 KAPPA_N·1.75 = 1.89 는 닿는다.
+  const boxes = [
+    [[1.75, -q, 1.06], [2.25, q, 1.06]],
+    [[99.5, -q, 17.18], [100.5, q, 17.68]],
+    [[99.5, -q, -1], [100.5, q, 1]], // 시작 시각에 보이는 기준 리프
+  ];
+  const hier = { octree: { leafCount: 3, leafIndex: Int32Array.from([0, 1, 2]), boxMin: Float64Array.from(boxes.flatMap(([a]) => a)), boxMax: Float64Array.from(boxes.flatMap(([, b]) => b)) } };
+  const unionAt = (n, M) => {
+    const s = new Set();
+    for (let i = 0; i <= n; i++) {
+      const cam = camAt((horizonS * i) / n);
+      boxes.forEach(([a, b], k) => { if (boxMayBeVisibleSplat(cam, a.map((x) => x - M), b.map((x) => x + M), 0)) s.add(k); });
+    }
+    return s;
+  };
+  // 전제(해석, 구현 무관): 위 손 계산이 실제 판정 함수와 맞는다.
+  const exact = unionAt(steps * 8, 0);
+  assert.ok(exact.has(0) && !unionAt(steps, 0).has(0), '전제: 상자 A 는 표본 사이에만 보임');
+  assert.ok(unionAt(steps, U).has(0), '전제: 속력 5 의 반폭 부풀림 1.25 m 는 상자 A 를 덮음');
+  assert.ok(!unionAt(steps, 0.76).has(0), '전제: |vx| = 3 의 반폭 부풀림(약 0.75 m)은 상자 A 를 못 덮음');
+  assert.ok(!exact.has(1) && !unionAt(steps * 4, U + 1e-3).has(1), '전제: 상자 B 는 기하 상한 밖');
+  assert.ok(unionAt(steps, 1.74).has(1), '전제: L1 = 7 의 반폭 부풀림(약 1.75 m)은 상자 B 를 넣음');
+  assert.ok(exact.has(2));
+
+  const m = predictiveMask(hier, { camera: camAt(0), velocityMps: [3, 0, 4] }, { horizonS, steps, pointSizeM: 0 });
+  // 하한(거짓 제거 0): 촘촘한 시각에서 보이는 리프는 모두 남는다.
+  for (const k of exact) assert.equal(m[k], 1, `촘촘한 시각의 리프 ${k} 가 빠짐`);
+  // 상한: 표본을 4배 촘촘히 잡고 상자를 U = 1.25 m(+1e-3 수치 여유)만 부풀려 보이는 합집합 안에 머문다.
+  const bound = unionAt(steps * 4, U + 1e-3);
+  for (let k = 0; k < boxes.length; k++) if (m[k]) assert.ok(bound.has(k), `기하 상한 밖 리프 ${k}`);
+  assert.deepEqual(Array.from(m), [1, 0, 1]);
+  assert.equal(SPEED * HH, U);
+});
+
 // ---- F-134: 유한하지만 극단적인 입력 ----
 test('극단 유한 입력: 부풀림이 비유한이어도 현재 시점(s=0)은 순수 절두체 판정과 같고, 예측 시점은 보수적으로 남긴다', () => {
   const cam = lookAt([0, 60, 0], [10, 0, 10]);
