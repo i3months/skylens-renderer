@@ -69,7 +69,7 @@ for (const [name, fn] of Object.entries(NODE_COUNT_BAD)) {
   });
 }
 
-test('budget: d 가 Infinity 인 실제 리프도 던지지 않고 그 리프는 NOT_DRAWN', () => {
+test('budget: d 가 비유한(오버플로)인 실제 리프도 던지지 않고 그 리프는 NOT_DRAWN', () => {
   const { octree, levels } = base;
   const full = selectLevels(base, camera, OPTS);
   // 실제 리프(leafIndex ≥ 0)이고 점이 있으며 원래 그려지는 노드를 고른다(루트 아님).
@@ -80,14 +80,23 @@ test('budget: d 가 Infinity 인 실제 리프도 던지지 않고 그 리프는
   }
   assert.ok(node > 0, '시험할 실제 리프 노드를 찾음');
   const k = octree.leafIndex[node];
-  // 그 리프의 상자만 비유한(Infinity) 좌표로 바꿔 시야 밖으로 만든다.
-  const h = mutate(() => {});
-  h.octree.boxMin = Float32Array.from(octree.boxMin);
-  h.octree.boxMax = Float32Array.from(octree.boxMax);
-  for (let a = 0; a < 3; a++) { h.octree.boxMin[3 * node + a] = Infinity; h.octree.boxMax[3 * node + a] = Infinity; }
+  // 상자는 유한하게 두고(비유한 상자는 입력 검사가 거부한다) 카메라 이동을 double 최댓값 근처로 키워
+  // 리프까지의 거리 제곱합이 오버플로(Infinity)되게 한다.
+  const far = { ...camera, t: [1.7e308, 1.7e308, 1.7e308] };
   let s, b;
-  assert.doesNotThrow(() => { s = selectLevels(h, camera, OPTS); });
-  assert.doesNotThrow(() => { b = selectWithBudget(h, camera, { ...OPTS, budgetPoints: 1e9 }); });
+  assert.doesNotThrow(() => { s = selectLevels(base, far, OPTS); });
+  assert.doesNotThrow(() => { b = selectWithBudget(base, far, { ...OPTS, budgetPoints: 1e9 }); });
   assert.equal(s.leafLevel[k], NOT_DRAWN, 'selectLevels: 그 리프는 NOT_DRAWN');
   assert.equal(b.leafLevel[k], NOT_DRAWN, 'budget: 그 리프는 NOT_DRAWN');
+});
+
+test('비유한 상자는 입력 검사가 두 경로 모두에서 \'lod:\' 로 거부한다', () => {
+  const { octree } = base;
+  let node = -1;
+  for (let n = 1; n < octree.nodeCount; n++) if (octree.leafIndex[n] >= 0) { node = n; break; }
+  const h = mutate(() => {});
+  h.octree.boxMax = Float32Array.from(octree.boxMax);
+  h.octree.boxMax[3 * node] = Infinity;
+  assert.throws(() => selectLevels(h, camera, OPTS), /^Error: lod:/);
+  assert.throws(() => selectWithBudget(h, camera, { ...OPTS, budgetPoints: 1e9 }), /^Error: lod:/);
 });
