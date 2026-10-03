@@ -115,12 +115,13 @@ test('코덱 벤치 CLI: 정상 실행(terrain 2k 점)', (t, done) => {
     assert.ok(stdout.includes('코덱 벤치마크'), '출력에 제목 포함');
     assert.ok(stdout.includes('codec1-lossless') || stdout.includes('무손실'), '출력에 codec1 결과 포함');
 
-    // 수치 검증: codec1 본문 B/점 패턴 찾기
-    const match = stdout.match(/codec1-lossless.*?(\d+\.\d+)\s+B\/점/);
-    if (match) {
-      const bpp = parseFloat(match[1]);
-      assert.ok(bpp < 11, `codec1 본문 B/점 < 11 (실제: ${bpp})`);
-    }
+    // 수치 검증: codec1 본문 B/점 패턴 찾기(탭 구분 형식)
+    // 실제 출력: codec1-lossless\t헤더바이트\t본문바이트\t합계바이트\t본문B/점\t...
+    const match = stdout.match(/codec1-lossless\t[^\t]*\t[^\t]*\t[^\t]*\t(\d+\.\d+)/);
+    assert.ok(match, '본문 B/점 수치를 출력에서 찾아야 함');
+
+    const bpp = parseFloat(match[1]);
+    assert.ok(bpp < 11, `codec1 본문 B/점 < 11 (실제: ${bpp})`);
 
     done();
   });

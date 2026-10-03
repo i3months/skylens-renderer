@@ -192,8 +192,16 @@ export function printTable(result) {
     codec1Lossy.ratioVsCodec0Body,
   ].join('\t'));
 
+  const losslessBodyRatio = (parseFloat(codec1Lossless.bodyBytesPerPoint) / 27 * 100).toFixed(1);
+  const lossyBodyRatio = (parseFloat(codec1Lossy.bodyBytesPerPoint) / 27 * 100).toFixed(1);
+  const losslessTotalRatio = (parseFloat(codec1Lossless.totalBytesPerPoint) / 27 * 100).toFixed(1);
+  const lossyTotalRatio = (parseFloat(codec1Lossy.totalBytesPerPoint) / 27 * 100).toFixed(1);
+
   console.log(
-    `\n원본 27 B/점 대비: codec1-lossless 본문 ${(parseFloat(codec1Lossless.bodyBytesPerPoint) / 27 * 100).toFixed(1)}%, codec1-lossy 본문 ${(parseFloat(codec1Lossy.bodyBytesPerPoint) / 27 * 100).toFixed(1)}%`,
+    `\n원본 27 B/점 대비(본문 기준): codec1-lossless ${losslessBodyRatio}%, codec1-lossy ${lossyBodyRatio}%`,
+  );
+  console.log(
+    `원본 27 B/점 대비(합계 기준): codec1-lossless ${losslessTotalRatio}%, codec1-lossy ${lossyTotalRatio}%`,
   );
 }
 
@@ -205,6 +213,8 @@ export function printTable(result) {
 export function writeJSON(result, filePath) {
   const data = {
     timestamp: new Date().toISOString(),
+    nodeVersion: process.version,
+    command: `node ${process.argv.slice(1).join(' ')}`,
     pointCount: result.pointCount,
     codec0: result.codec0,
     codec1Lossless: result.codec1Lossless,
