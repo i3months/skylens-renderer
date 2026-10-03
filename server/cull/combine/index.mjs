@@ -10,7 +10,7 @@
 //   1) 퇴화 시점(NaN·Infinity, 해상도·초점거리 ≤ 0, R 이 회전이 아님)이면 던지지 않고 빈 결과:
 //      mask 전부 0, chunks 비움, leafLevel 전부 NOT_DRAWN, pointCount 0, stats.degenerate = true.
 //      opts.pointSizeM(래스터 원판 지름 m)은 stageOpts 로 모든 단계에 전달된다. 없으면 거리 단계처럼 가림 단계는 아무것도 버리지 않는다.
-//      (LOD 선택 selectLevels 는 아직 원판 반경을 모르고 중심 규칙을 쓴다.)
+//      (LOD 선택 selectLevels 도 pointSizeM 이 있으면 같은 원판 규칙을 쓴다.)
 //   2) opts.stages 순서대로 단계 마스크를 구해 AND(andMasks). 통계의 removed<단계> 는 '그 단계가 새로 제거한 수'
 //      (앞 단계까지 남아 있던 리프 중 이 단계가 0 으로 만든 수). 실행하지 않은 단계는 0.
 //   3) selectLevels(원래 LOD 선택; 호출만 하고 고치지 않는다) 결과를 복사해 마스크 0 리프를 NOT_DRAWN 으로 바꾸고
@@ -160,8 +160,7 @@ export function cullAndSelect(hierarchy, camera, opts) {
   }
 
   // 원래 LOD 선택 → 마스크 0 리프만 NOT_DRAWN, 점 수 다시 세기
-  // TODO(agent D): selectLevels 에 pointSizeM 옵션이 생기면 여기서 { pointSizeM: opts.pointSizeM } 를 넘긴다(lod 파일은 이 모듈이 고치지 않는다).
-  const lod = selectLevels(hierarchy, camera, { thresholdPx: opts.thresholdPx });
+  const lod = selectLevels(hierarchy, camera, { thresholdPx: opts.thresholdPx, pointSizeM: opts.pointSizeM });
   const leafLevel = new Uint8Array(lod.leafLevel);
   const { levels } = hierarchy;
   let pointCount = 0;
