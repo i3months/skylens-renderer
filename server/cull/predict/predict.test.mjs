@@ -188,17 +188,33 @@ test("입력 오류는 'cull:' 로 던진다", () => {
 
 // ---- F-129: 예측 마스크의 상한(위쪽 경계)·음성 시험 ----
 // 허용 집합: 시각 τ(0..horizonS 를 n 등분)의 카메라에서, 상자를 그 시점 중심에서의 이동·회전 변위 상한만큼 부풀려 보이는 리프의 합집합.
-// 변위 상한(구현 식과 독립인 기하): 구간 반폭 hh 동안 이동 |v|·hh, 회전은 최원점 거리 far 의 현(2·far·sin(ω·hh/2)) 이다. 구현의 배율·가산 상수는 쓰지 않는다.
-// 수치 여유는 부동소수 오차용 1e-3 m 만 더한다.
-function allowedUnion(camAt, horizonS, n, speed, omega, hh, pointSizeM = 0) {
+// 변위 상한(구현 식과 독립인 기하): 구간 반폭 hh 동안 중심이 |v|·hh 까지 움직이므로 회전 반경은 far+|v|·hh 까지 커진다(F-144: 교차항).
+// -> 변위 <= |v|·hh + 2·(far+|v|·hh)·sin(ω·hh/2) (회전은 현, far 는 그 표본 중심에서 상자 최원 꼭짓점까지 거리). 구현의 배율·가산 상수는 쓰지 않는다.
+// 촘촘한 표본(n 등분)으로 합집합을 잡으므로 표본 간격의 반폭 horizonS/(2n) 을 hh 에 더해 쓴다(표본 사이 시각까지 덮는 반폭).
+// 수치 여유 eps 는 부동소수 오차용 1e-3 m(상한 전용). 하한에는 여유 0 인 sampleUnion 을 쓴다.
+const dispBound = (speed, omega, hh, far) => speed * hh + 2 * (far + speed * hh) * Math.sin((omega * hh) / 2);
+const farOf = (a, b, C) => Math.hypot(...[0, 1, 2].map((d) => Math.max(Math.abs(a[d] - C[d]), Math.abs(b[d] - C[d]))));
+function allowedUnion(camAt, horizonS, n, speed, omega, hh, pointSizeM = 0, eps = 1e-3) {
   const s = new Set();
+  const H = hh + horizonS / (2 * n);
   for (let i = 0; i <= n; i++) {
     const cam = camAt((horizonS * i) / n), C = cameraCenter(cam);
     for (let k = 0; k < oc.leafCount; k++) {
       const [a, b] = boxOf(k);
-      const far = Math.hypot(...[0, 1, 2].map((d) => Math.max(Math.abs(a[d] - C[d]), Math.abs(b[d] - C[d]))));
-      const M = speed * hh + 2 * far * Math.sin((omega * hh) / 2) + 1e-3;
+      const M = dispBound(speed, omega, H, farOf(a, b, C)) + eps;
       if (boxMayBeVisibleSplat(cam, a.map((x) => x - M), b.map((x) => x + M), pointSizeM)) s.add(k);
+    }
+  }
+  return s;
+}
+// 하한용: 표본 시각들의 부풀림 없는(여유 0) 보이는 리프 합집합. 상한 여유 1e-3 을 하한에 쓰면 하한이 부풀어 판별력을 흐린다.
+function sampleUnion(camAt, horizonS, n, margin = 0) {
+  const s = new Set();
+  for (let i = 0; i <= n; i++) {
+    const cam = camAt((horizonS * i) / n);
+    for (let k = 0; k < oc.leafCount; k++) {
+      const [a, b] = boxOf(k);
+      if (boxMayBeVisibleSplat(cam, a.map((x) => x - margin), b.map((x) => x + margin), 0)) s.add(k);
     }
   }
   return s;
@@ -225,34 +241,41 @@ test('상한: 움직이는 카메라의 예측 마스크 ⊆ (표본 시점들�
 test('결합 운동 하한·상한: 마스크 ⊇ 엄밀 하한 합집합, ⊆ 독립 상한 합집합(회전 현에 이동 중심 이동분 포함)', () => {
   const horizonS = 4;
   // 하한: 한 구간(반폭 hh)에서 카메라 중심이 |v|·hh 까지 움직이므로 회전 반경은 far+|v|·hh 까지 커진다 -> 변위 <= |v|·hh + 2·(far+|v|·hh)·sin(ω·hh/2).
-  // 이 엄밀 변위만큼 부풀려 보이는 리프는 반드시 남아야 한다(이동·회전 교차항을 지우면 빠진다). 상한은 교차항이 없는 |v|·hh + 2·far·sin(ω·hh/2)(allowedUnion).
-  // 사례 3·4 는 교차항 삭제 변이가 하한 리프를 놓치는 시점(무작위 탐색으로 고름).
+  // 이 엄밀 변위만큼 부풀려 보이는 리프는 반드시 남아야 한다(이동·회전 교차항을 지우면 빠진다).
+  // 상한(allowedUnion)도 같은 교차항을 포함한 식에 촘촘한 표본 간격의 반폭을 더한 반폭과 수치 여유 1e-3 을 쓴다(F-144: 교차항이 빠진 이전 상한은 엄밀 하한보다 작았다).
+  // 모든 리프·표본에서 상한 M >= 하한 M 을 단언한다. 사례 3·4 는 교차항 삭제 변이가 하한 리프를 놓치는 시점(무작위 탐색으로 고름).
   const cases = [
     [lookAt([-70, 30, 0], [0, 0, 0]), [0, 0, 30], [0, 0.6, 0]],
     [lookAt([30, 35, -40], [0, 0, 0]), [-20, 4, 24], [0.3, -0.5, 0.2]],
     [lookAt([0.7193303667008877, 29.438624640461057, 37.752573834732175], [4.574792506173253, 1.4847642369568348, 18.20880121551454]), [21.42895988188684, 2.2685793437995017, -3.642494436353445], [-0.1481265474576503, -0.21067794505506754, -0.11717842030338943]],
     [lookAt([-11.219377592206001, 37.34387482283637, 0.1200649794191122], [-10.225890344008803, 4.829464415088296, 6.464818296954036]), [-28.32231550477445, 1.9914156128652394, 20.60210544615984], [-0.4378025403711945, -0.07488677930086851, -0.22208991623483598]],
   ];
-  for (const [ci, [cam, v, w]] of cases.entries()) {
+  let tight = 0;
+  for (const [cam, v, w] of cases) {
     const speed = Math.hypot(...v), omega = Math.hypot(...w);
     const camAt = (tau) => predictCamera(cam, { velocityMps: v, angularRadPerS: w }, tau);
     for (const steps of [1, 2, 4]) {
-      const hh = horizonS / steps / 2;
+      const hh = horizonS / steps / 2, dense = steps * 8, H = hh + horizonS / (2 * dense);
       const m = predictiveMask(h, { camera: cam, velocityMps: v, angularRadPerS: w }, { horizonS, steps, pointSizeM: 0 });
       for (let i = 0; i <= steps; i++) {
         const c = camAt((horizonS * i) / steps), C = cameraCenter(c);
         for (let k = 0; k < oc.leafCount; k++) {
           const [a, b] = boxOf(k);
-          const far = Math.hypot(...[0, 1, 2].map((d) => Math.max(Math.abs(a[d] - C[d]), Math.abs(b[d] - C[d]))));
-          const M = speed * hh + 2 * (far + speed * hh) * Math.sin((omega * hh) / 2);
+          const far = farOf(a, b, C);
+          const M = dispBound(speed, omega, hh, far); // 하한: 여유 0
+          const Mup = dispBound(speed, omega, H, far) + 1e-3; // allowedUnion 과 같은 상한
+          assert.ok(Mup >= M, `steps=${steps}: 리프 ${k} 상한 M ${Mup} < 하한 M ${M}`);
           if (boxMayBeVisibleSplat(c, a.map((x) => x - M), b.map((x) => x + M), 0)) assert.equal(m[k], 1, `steps=${steps}: 엄밀 하한 리프 ${k} 가 마스크에서 빠짐`);
         }
       }
-      if (ci >= 2) continue; // 사례 3·4 는 교차항(구현이 더하는 2차 항)이 커서 교차항 없는 독립 상한을 넘는 것이 정상: 하한만 단언한다.
-      const allowed = allowedUnion(camAt, horizonS, steps * 8, speed, omega, hh);
+      const allowed = allowedUnion(camAt, horizonS, dense, speed, omega, hh);
       for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(allowed.has(k), `steps=${steps}: 허용 밖 리프 ${k}`);
+      if (allowed.size < oc.leafCount) tight++;
     }
   }
+  // 전제(판별력): 상한이 전체 리프가 아닌 (사례, steps) 가 하나 이상 있어야 상한 단언이 공허하지 않다.
+  // 현재 사례 3·steps=4 (허용 80/83, 마스크 79). 전체 부풀림 ×1.5 변이는 여기서 허용 밖 리프 3 개를 만든다.
+  assert.ok(tight >= 1, `전제: 상한이 전체가 아닌 경우 ${tight}`);
 });
 
 test('음성: 장면 밖(시선이 장면 반대쪽)을 향해 천천히 움직이면 마스크는 전부 0', () => {
@@ -294,7 +317,7 @@ test('잘게/성기게 나눈 직선 이동: 마스크는 해석적 시점 합�
   for (const steps of [80, 4]) {
     const hh = horizonS / steps / 2;
     const m = predictiveMask(h, { camera: camAt(0), velocityMps: v }, { horizonS, steps, pointSizeM: 0 });
-    const exact = allowedUnion(camAt, horizonS, steps, 0, 0, 0);
+    const exact = sampleUnion(camAt, horizonS, steps); // 하한: 여유 0(상한의 1e-3 여유를 쓰지 않는다)
     for (const k of exact) assert.equal(m[k], 1, `steps=${steps}: 정확한 합집합의 리프 ${k} 가 빠짐`);
     // 구현 식과 독립인 기하 상한: 이동만 있으므로 한 표본이 덮는 구간 반폭 동안 카메라는 |v|·hh 이상 움직일 수 없다.
     // 표본을 4배 촘촘히 잡고 상자를 정확히 그 거리(+1e-3 m 수치 여유)만 부풀려 보이는 리프의 합집합이 상한이다(계수·덧셈 여유 없음).
