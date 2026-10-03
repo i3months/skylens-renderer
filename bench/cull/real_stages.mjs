@@ -93,7 +93,9 @@ export function traceStageImpls(impls, log) {
 }
 
 /**
- * 한 계층을 재서 한 줄 결과를 돌려준다. 첫 반복(cold: 지연 import·원뿔 생성·JIT 포함)과 나머지(warm)를 따로 잰다.
+ * 한 계층을 재서 한 줄 결과를 돌려준다. 첫 반복(cold: JIT·첫 호출 비용 포함)과 나머지(warm)를 따로 잰다.
+ * 측정 순서: 법선 원뿔·priority 마스크는 makeRealStages 에서 먼저 만들고, 단계별 cold → warm 을 잰 뒤, loadDefaultImpls(지연 import)를
+ * 기다리고 나서 결합 경로 cold → warm 을 잰다. 따라서 cold 에 원뿔 생성과 지연 import 는 들어가지 않는다.
  * staged/combined 는 warm. cold.staged/cold.combined 는 첫 반복(시점 수만큼 표본).
  * stageMedianMs: 단계별 median, stagesSumMs: 네 단계 합의 시점당 median·p95·max, combinedMs: cullAndSelectDefault(prioritize) 시점당.
  * removal: cullAndSelect 가 낸 단계별 새 제거 리프 수의 합(모든 호출), calls: 결합 경로 단계 구현이 받은 pointSizeM 기록.
