@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { enuArrayToScene, sceneArrayToEnu } from './index.mjs';
-import { enuToScene, GeoError } from '../../../contracts/geo/index.mjs';
+import { enuToScene, sceneToEnu, GeoError } from '../../../contracts/geo/index.mjs';
 
 const f = (a) => Array.from(a);
 
@@ -88,4 +88,26 @@ test('scene_axes: 우수 좌표계 유지(행렬식 +1)', () => {
   // e×n = u 관계가 씬에서도 유지
   const cross = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
   assert.deepEqual(cross.map((x) => x + 0), c);
+});
+
+test('scene_axes: 배열이 아닌 입력(객체 {e,n,u} 등)은 GeoError(range)(F-072)', () => {
+  const isRange = (e) => e instanceof GeoError && e.code === 'range';
+  for (const fn of [enuArrayToScene, sceneArrayToEnu]) {
+    for (const bad of [{ e: 1, n: 2, u: 3 }, { x: 1, y: 2, z: 3 }, { 0: 1, 1: 2, 2: 3, length: 3 }, null, undefined, 3, 'abc']) {
+      assert.throws(() => fn(bad), isRange);
+    }
+  }
+});
+
+test('scene_axes: −0 은 +0 으로 정규화, 계약 enuToScene·sceneToEnu 와 deepStrictEqual', () => {
+  const show = (p) => p.map((v) => (Object.is(v, -0) ? '-0' : v)).join(',');
+  const pts = [[1, 0, 2], [1, -0, 2], [-0, -0, -0], [0, 0, 0], [-0, 5, -0], [3.5, -0, 120]];
+  for (const p of pts) {
+    const arr = f(enuArrayToScene(new Float64Array(p)));
+    assert.deepStrictEqual(arr, enuToScene(p), `enu ${show(p)}`);
+    assert.ok(arr.every((v) => !Object.is(v, -0)), `씬에 −0 없음 ${show(p)}`);
+    const back = f(sceneArrayToEnu(new Float32Array(p)));
+    assert.deepStrictEqual(back, sceneToEnu(p), `scene ${show(p)}`);
+    assert.ok(back.every((v) => !Object.is(v, -0)), `ENU 에 −0 없음 ${show(p)}`);
+  }
 });
