@@ -17,6 +17,7 @@ export function normalizeNormals(normals) {
     // f64 로 계산(f32 제곱 오버플로 방지)
     const len = Math.sqrt(x * x + y * y + z * z);
     if (!Number.isFinite(len) || len < MIN_LEN) { bad.push(i); continue; }
+    // 정규화된 단위 벡터는 방향만 필요하므로 길이 정보는 버린다.
     out[3 * i] = x / len;
     out[3 * i + 1] = y / len;
     out[3 * i + 2] = z / len;
