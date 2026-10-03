@@ -11,7 +11,8 @@ function assertHierarchy(h) {
   if (!oc || !(oc.leafIndex instanceof Int32Array) || !(oc.boxMin instanceof Float32Array) || !(oc.boxMax instanceof Float32Array)) {
     throw new Error(`${ERR} 계층(octree)이 올바르지 않음`);
   }
-  if (!Number.isInteger(oc.leafCount) || oc.leafCount < 0 || !Number.isInteger(oc.nodeCount) || oc.nodeCount < 0
+  // 리프 0 개 계층(leafCount < 1)은 구조 오류(F-145)
+  if (!Number.isInteger(oc.leafCount) || oc.leafCount < 1 || !Number.isInteger(oc.nodeCount) || oc.nodeCount < 0
     || oc.leafIndex.length < oc.nodeCount || oc.boxMin.length < 3 * oc.nodeCount || oc.boxMax.length < 3 * oc.nodeCount) {
     throw new Error(`${ERR} octree 배열 길이가 nodeCount·leafCount 와 맞지 않음`);
   }
