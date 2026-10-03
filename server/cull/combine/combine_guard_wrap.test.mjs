@@ -1,4 +1,5 @@
-// F-152 4: 계층 필드는 검사 시점에 한 번만 읽는다. 검사 뒤 leafCount 를 다시 읽지 않으므로 따로 감싸지 않는다.
+// F-152 4: 계층 필드는 검사 시점에 한 번만 읽는다. cullAndSelect 는 검사 뒤 leafCount 를 다시 읽지 않으므로 따로 감싸지 않는다.
+// (selectLevels 는 자체 검증·선택 과정에서 leafCount 를 읽는다. 그 읽기는 select 모듈의 몫이라 여기서 횟수를 고정하지 않는다.)
 // 검사 시점의 읽기 예외는 'cull:' 오류가 되고, 정상 입력의 결과는 그대로다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,7 +14,8 @@ function scene() {
   return buildHierarchy({ format: 1, count: n, positions: Float32Array.from(pos), normals: Float32Array.from(nor), colors: new Uint8Array(3 * n).fill(200) },
     { edge0M: 0.5, levelCount: 2, maxLeafPoints: 16 });
 }
-const ones = (h) => new Uint8Array(h.octree.leafCount).fill(1);
+// leafCount 접근자를 건드리지 않도록 레벨 0 의 leafStart 길이(리프 수 + 1)에서 길이를 얻는다.
+const ones = (h) => new Uint8Array(h.levels[0].leafStart.length - 1).fill(1);
 const OPTS = { thresholdPx: 0.5, stages: ['distance'], stageImpls: { distance: ones } };
 const RX = /^Error: cull:/;
 
@@ -34,31 +36,30 @@ test('검사 시점에 첫 읽기부터 던지는 Proxy octree 도 cull: 오류'
   assert.throws(() => cullAndSelect(bad, CAM, OPTS), (e) => RX.test(String(e)));
 });
 
-test('leafCount 는 검사 블록에서 읽은 값을 그대로 쓴다(마스크 길이가 첫 읽기 값)', () => {
+test('leafCount 는 검사 블록에서 읽은 값을 그대로 쓴다(검사 뒤 cullAndSelect 의 재독 금지)', () => {
   const h = scene();
   const real = h.octree.leafCount;
-  // 접근자를 거쳐도 결과 길이는 검사 때 읽은 값과 같다.
-  // 검사 블록 안에서는 항상 real 을 반환하고, 검사 완료 뒤 재독이 생기면 다른 값을 반환한다.
-  let reads = 0;
-  // 처음 N 번 읽기는 guardHierarchyRead 안(F-148: assertHierarchyInput 등)에서 일어난다.
-  // 추가 읽기가 있으면 그것은 검사 뒤 재독이므로 다른 값을 반환해 뮤턴트를 잡는다.
-  let readsInGuard = 0;
-  const guardReadCount = 47; // 측정한 값: assertHierarchyInput 등에서의 읽기 수
+  // 검사 완료 시점 = 카메라 접근자 첫 읽기(검사 블록 다음에 assertCameraShape 가 읽는다).
+  // 그 뒤 cullAndSelect(combine/index.mjs) 가 직접 읽으면 다른 값을 내고 읽은 횟수를 센다.
+  // selectLevels(select/index.mjs) 안의 읽기는 호출 스택으로 구분해 real 을 돌려주고 판정에서 뺀다.
+  // 읽기 횟수 상수는 쓰지 않으므로 select 쪽의 동작 같은 리팩터에도 깨지지 않는다.
+  let armed = false;
+  let lateCombineReads = 0;
   const probe = withLeafCount(h, () => {
-    reads++;
-    if (reads <= guardReadCount) {
-      return real;
+    if (!armed) return real;
+    const caller = String(new Error().stack).split('\n')[2] ?? '';
+    if (caller.includes('combine')) {
+      lateCombineReads++;
+      return real + 1;
     }
-    // 검사 뒤 재독: 다른 값을 반환해서 뮤턴트를 잡는다
-    return real + 1;
+    return real;
   });
-  const r = cullAndSelect(probe, CAM, OPTS);
-  // 뮤턴트가 검사 뒤 재독을 하면 다른 값을 썼을 것이다.
-  // 하지만 실제 코드는 검사 중에 읽은 real 값만 쓰므로 마스크 길이는 real 이어야 한다.
+  const cam = new Proxy(CAM, { get(t, k, r) { armed = true; return Reflect.get(t, k, r); } });
+  const r = cullAndSelect(probe, cam, OPTS);
+  assert.ok(armed, '카메라 읽기가 일어나 검사 완료 시점이 표시되어야 함');
   assert.equal(r.cull.mask.length, real);
   assert.equal(r.cull.stats.leafCount, real);
-  // 검사 블록 안의 읽기만 일어나야 한다
-  assert.equal(reads, guardReadCount, `정확히 ${guardReadCount}회 읽어야 함(검사 뒤 재독 없음)`);
+  assert.equal(lateCombineReads, 0, '검사 뒤 cullAndSelect 가 leafCount 를 다시 읽음');
 });
 
 test('정상 입력 결과는 그대로', () => {
