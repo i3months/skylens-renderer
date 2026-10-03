@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseHeader, AssetFormatError } from '../../contracts/asset/index.mjs';
+import { parseHeader, AssetFormatError, OFFSETS } from '../../contracts/asset/index.mjs';
 import { readHeaderClient, readPlanesClient } from './index.mjs';
 
 const dir = new URL('../../fixtures/asset_golden/', import.meta.url);
@@ -12,19 +12,17 @@ const load = (n) => ({
 // 기준값(숫자): 파일 길이, 점 수, 본문 바이트, 평면 수, 첫/마지막 점 pos_e·pos_u.
 const GOLD = {
   point27: { len: 480, n: 32, body: 352, planes: 8, first: { pos_e: 0, pos_u: 0 }, last: { pos_e: 3584, pos_u: 1984 } },
-  gauss56: { len: 0, n: 0, body: 0, planes: 11, first: { pos_e: 0, pos_u: 0 }, last: { pos_e: 6144, pos_u: 5120 } },
+  gauss56: { len: 512, n: 21, body: 384, planes: 11, first: { pos_e: 0, pos_u: 0 }, last: { pos_e: 6144, pos_u: 5120 } },
 };
 
 for (const name of ['point27', 'gauss56']) {
   test(`client_header_parity ${name}`, () => {
     const { bytes, side } = load(name);
     const g = GOLD[name];
-    if (g.len) assert.equal(bytes.length, g.len);
+    assert.equal(bytes.length, g.len);
     const want = parseHeader(bytes);
-    if (g.n) {
-      assert.equal(want.pointCount, g.n);
-      assert.equal(want.bodyBytes, g.body);
-    }
+    assert.equal(want.pointCount, g.n);
+    assert.equal(want.bodyBytes, g.body);
     assert.equal(want.pointCount, side.header.pointCount);
 
     // ArrayBuffer 입력
@@ -83,3 +81,42 @@ test('client index.mjs has no node: imports or Buffer', () => {
   assert.ok(!src.includes('node:'));
   assert.ok(!/\bBuffer\b/.test(src));
 });
+
+// 음성: 각 변형은 AssetFormatError 와 code 를 단언한다.
+const mutate = (name, fn) => {
+  const b = load(name).bytes.slice();
+  fn(b, new DataView(b.buffer));
+  return b;
+};
+const rejects = (b, code) =>
+  assert.throws(() => readHeaderClient(b), (e) => e instanceof AssetFormatError && e.code === code);
+
+for (const name of ['point27', 'gauss56']) {
+  test(`client rejects malformed headers ${name}`, () => {
+    rejects(mutate(name, (b, dv) => dv.setUint16(OFFSETS.versionMajor, 2, true)), 'version');
+    rejects(mutate(name, (b, dv) => dv.setUint16(OFFSETS.headerSize, 130, true)), 'header_size');
+    rejects(mutate(name, (b) => { b[OFFSETS.format] = 3; }), 'format');
+    rejects(mutate(name, (b) => { b[OFFSETS.codec] = 1; }), 'codec');
+    rejects(mutate(name, (b) => { b[OFFSETS.quantExp] = 7; }), 'field');
+    rejects(mutate(name, (b) => { b[OFFSETS.quantExp] = 11; }), 'field');
+    rejects(mutate(name, (b, dv) => dv.setUint32(OFFSETS.pointCount, 0, true)), 'field');
+    rejects(mutate(name, (b, dv) => dv.setUint16(OFFSETS.tileSizeM, 63, true)), 'field');
+    // 길이 불일치: 잘린 본문, 뒤 바이트, body_bytes 변조
+    const { bytes } = load(name);
+    rejects(bytes.subarray(0, bytes.length - 1), 'body');
+    const longer = new Uint8Array(bytes.length + 1);
+    longer.set(bytes);
+    rejects(longer, 'body');
+    rejects(mutate(name, (b, dv) => dv.setUint32(OFFSETS.bodyBytes, dv.getUint32(OFFSETS.bodyBytes, true) + 4, true)), 'body');
+  });
+
+  test(`client readPlanesClient rejects codec and length ${name}`, () => {
+    const { bytes } = load(name);
+    const h = readHeaderClient(bytes);
+    const longer = new Uint8Array(bytes.length + 4);
+    longer.set(bytes);
+    assert.throws(() => readPlanesClient(longer, h), (e) => e instanceof AssetFormatError && e.code === 'body');
+    assert.throws(() => readPlanesClient(bytes.subarray(0, bytes.length - 1), h), (e) => e.code === 'body');
+    assert.throws(() => readPlanesClient(bytes, { ...h, codec: 1 }), (e) => e instanceof AssetFormatError && e.code === 'codec');
+  });
+}

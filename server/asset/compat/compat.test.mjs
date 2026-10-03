@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { checkCompat } from './index.mjs';
 import { OFFSETS } from '../../../contracts/asset/index.mjs';
+import { readHeaderClient, readPlanesClient } from '../../../client/asset/index.mjs';
 
 const dir = new URL('../../../fixtures/asset_golden/', import.meta.url);
 const golden = (n) => new Uint8Array(readFileSync(new URL(n, dir)));
@@ -86,18 +87,11 @@ test('compat: required planes keep their values with a body extension plane (1.5
   dv.setUint32(OFFSETS.bodyBytes, 416, true);
   assert.equal(checkCompat(big).action, 'accept_ignore_extension');
 
-  // 필수 평면 오프셋(헤더 128 뒤): pos_e 0, pos_n 64, pos_u 128, color_r 192, color_g 224, color_b 256, oct_x 288, oct_y 320
-  const u16 = (o) => dv.getUint16(128 + o, true);
-  const u8 = (o) => dv.getUint8(128 + o);
-  const i8 = (o) => dv.getInt8(128 + o);
-  // 첫 점
-  assert.deepEqual([u16(0), u16(64), u16(128)], [0, 0, 0]);
-  assert.deepEqual([u8(192), u8(224), u8(256)], [0, 255, 0]);
-  assert.deepEqual([i8(288), i8(320)], [0, 0]);
-  // 마지막 점(31)
-  assert.deepEqual([u16(2 * 31), u16(64 + 2 * 31), u16(128 + 2 * 31)], [3584, 2304, 1984]);
-  assert.deepEqual([u8(192 + 31), u8(224 + 31), u8(256 + 31)], [248, 7, 123]);
-  assert.deepEqual([i8(288 + 31), i8(320 + 31)], [28, 37]);
+  // 평면 값은 클라이언트 읽기 결과로 비교한다(확장 평면 포함 파일도 읽혀야 한다).
+  const pl = readPlanesClient(big, readHeaderClient(big));
+  const at = (i) => [pl.pos_e[i], pl.pos_n[i], pl.pos_u[i], pl.color_r[i], pl.color_g[i], pl.color_b[i], pl.normal_oct_x[i], pl.normal_oct_y[i]];
+  assert.deepEqual(at(0), [0, 0, 0, 0, 255, 0, 0, 0]);
+  assert.deepEqual(at(31), [3584, 2304, 1984, 248, 7, 123, 28, 37]);
   // 확장 평면은 필수 평면 영역을 건드리지 않는다
-  assert.equal(u8(352), 0xee);
+  assert.equal(big[128 + 352], 0xee);
 });
