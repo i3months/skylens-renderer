@@ -5,6 +5,7 @@
 // 빈 리프(levels[0] 구간이 빈 리프)는 그릴 점이 없으므로 0. 퇴화 시점이면 던지지 않고 전부 0.
 import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 
+import { checkLeafIndexOneToOne } from '../degenerate/leaf_check.mjs';
 import { isDegenerateView, degenerateCamera } from '../degenerate/index.mjs';
 
 const ERR = 'cull:';
@@ -21,29 +22,19 @@ function assertHierarchyChecked(h) {
     || oc.leafIndex.length < oc.nodeCount || oc.boxMin.length < 3 * oc.nodeCount || oc.boxMax.length < 3 * oc.nodeCount) {
     throw new Error(`${ERR} octree 배열 길이가 nodeCount·leafCount 와 맞지 않음`);
   }
-  // leafIndex: 값은 -1(내부 노드) 또는 [0, leafCount), 중복 금지, 리프 수 = leafCount (distance 와 같은 규칙)
-  const seen = new Uint8Array(oc.leafCount);
-  let leaves = 0;
-  for (let n = 0; n < oc.nodeCount; n++) {
-    const k = oc.leafIndex[n];
-    if (k === -1) continue;
-    if (k < 0 || k >= oc.leafCount || seen[k]) {
-      throw new Error(`${ERR} leafIndex[${n}]=${k} 가 범위를 벗어났거나 중복됨`);
-    }
-    seen[k] = 1;
-    leaves++;
-  }
-  if (leaves !== oc.leafCount) {
-    throw new Error(`${ERR} leafIndex 의 리프 수(${leaves})가 leafCount(${oc.leafCount}) 와 다름`);
-  }
+  // leafIndex 일대일·리프 상자 유한성 검사는 공용 검사를 쓴다(F-150). 결과 마스크를 검사표로 재사용해 할당을 늘리지 않는다.
+  const mask = new Uint8Array(oc.leafCount);
+  checkLeafIndexOneToOne(oc, mask);
+  mask.fill(0);
   const l0 = h.levels?.[0]?.leafStart;
   if (!(l0 instanceof Uint32Array) || l0.length !== oc.leafCount + 1) throw new Error(`${ERR} levels[0].leafStart 길이가 leafCount+1 이 아님`);
+  return mask;
 }
 
-/** 계층 구조 검사. 필드 읽기 중 예외(접근자·Proxy)도 'cull:' 오류로 바꿔 던진다(F-145). 리프 0 개(leafCount < 1)는 거부. */
+/** 계층 구조 검사(0 으로 채워진 결과 마스크를 돌려준다). 필드 읽기 중 예외(접근자·Proxy)도 'cull:' 오류로 바꿔 던진다(F-145). 리프 0 개(leafCount < 1)는 거부. */
 function assertHierarchyLocal(h) {
   try {
-    assertHierarchyChecked(h);
+    return assertHierarchyChecked(h);
   } catch (e) {
     if (typeof e?.message === 'string' && e.message.startsWith(ERR)) throw e;
     throw new Error(`${ERR} 계층 필드를 읽는 중 예외: ${String(e?.message ?? e)}`);
@@ -67,10 +58,9 @@ function pointSizeOf(opts) {
  * @returns {Uint8Array} 길이 leafCount, 1 = 남김
  */
 export function frustumCull(hierarchy, camera, opts) {
-  assertHierarchyLocal(hierarchy);
+  const mask = assertHierarchyLocal(hierarchy);
   const pointSizeM = pointSizeOf(opts);
   const oc = hierarchy.octree;
-  const mask = new Uint8Array(oc.leafCount);
   if (degenerateCamera(camera)) return mask;
   const ls = hierarchy.levels[0].leafStart;
   const mn = [0, 0, 0], mx = [0, 0, 0];
