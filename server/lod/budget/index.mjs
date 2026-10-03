@@ -2,19 +2,20 @@
 //
 // selectWithBudget(hierarchy, camera, {budgetPoints, thresholdPx}) -> Selection,  pointCount ≤ budgetPoints 를 항상 지킨다.
 //
-// server/lod/select(selectLevels) 와 독립이다: 리프별 거리·목표 단계를 이 모듈 안에서 직접 계산하고,
-// 거리 → 단계 규칙은 server/lod/distance_table 의 buildDistanceTable/levelForDistance 를 그대로 쓴다.
+// server/lod/select(selectLevels) 결과에 의존하지 않는다: 리프별 목표 단계를 이 모듈 안에서 계산하되,
+// 화면 오차 규칙(f = max(fx,fy), d_eff = d·cMin², 거리표)은 server/lod/select/screen_error.mjs 의 공용 함수를 그대로 쓴다.
 //
 // 절차
 //  1) 시야 판정: 리프 상자 8 꼭짓점을 카메라 좌표로 옮겨, 한 절두체 평면(근평면 z>0, 화면 좌·우·위·아래)의
 //     바깥에 8 점이 모두 있으면 시야 밖 → NOT_DRAWN. 상자는 볼록이므로 이 판정은 보수적이다(보이는 리프를 버리지 않음).
 //     점이 하나도 없는 리프도 그릴 것이 없으므로 NOT_DRAWN.
-//  2) 거리 d: 카메라 중심에서 리프 상자까지의 최단 거리(상자 안이면 0). 가장 가까운 점이 가장 큰 화면 오차를 내므로
-//     보수적(더 고운 단계)이다. d 가 0 에 가까우면 levelForDistance 가 양수만 받으므로 MIN_DIST_M 으로 아래를 막는다.
-//  3) 목표 단계 = levelForDistance(표, d). 표는 fx = camera.K.fx, τ = thresholdPx, edge0M·levelCount 는 계층 값.
+//  2) 거리 d: 카메라 중심에서 리프 상자까지의 최단 거리(상자 안이면 0). 실효 거리 d_eff = d·cMin²
+//     (cMin = 상자 꼭짓점의 광축 각 cos 최솟값, 가장자리 투영 확대 1/cos²α 보정, screen_error.mjs 머리 주석).
+//  3) 목표 단계 = 공용 규칙(f = max(fx,fy), τ = thresholdPx, edge0M·levelCount 는 계층 값)으로 d_eff 에서 고른 단계.
+//     d_eff = 0(카메라가 상자 안·상자가 카메라 평면에 걸침)이면 원본 단계 0.
 //     합이 예산 이하면 그대로 돌려준다.
 //  4) 예산 초과면 탐욕적 거칠게 하기: 리프 k 를 단계 l → l' (> l) 로 올리면
-//       절감 ΔN = count_k(l) − count_k(l'),  화면 오차 증가 ΔE = fx·(edgeM(l') − edgeM(l))/d_k  (px)
+//       절감 ΔN = count_k(l) − count_k(l'),  화면 오차 증가 ΔE = f·(edgeM(l') − edgeM(l))/d_eff,k  (px)
 //     효율 = ΔN/ΔE 가 가장 큰 (리프, l') 부터 적용한다(최대 힙). 한 리프의 후보는 l' = l+1..최대 단계 중 효율 최대인 것
 //     (단계별 점 수가 단조가 아닐 수 있어 한 단계만 보면 막힐 수 있으므로 앞을 모두 본다). ΔN ≤ 0 인 후보는 쓰지 않는다.
 //     적용 후 그 리프의 새 후보를 다시 넣는다. 합이 예산 이하가 되는 순간 멈춘다.
@@ -34,11 +35,10 @@
 
 import { NOT_DRAWN, edgeOfLevel } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
-import { buildDistanceTable, levelForDistance } from '../distance_table/index.mjs';
+import { screenErrorRule } from '../select/screen_error.mjs';
 
 const ERR = 'lod:';
-// 거리 하한(m). 카메라가 리프 상자 안·위에 있으면 d = 0 이 되는데 levelForDistance 는 양수만 받는다.
-// 1 mm 는 어떤 τ·fx 에서도 단계 0 을 고르게 할 만큼 작다(가장 고운 단계로 처리하는 것이 보수적).
+// 거리 하한(m). 탐욕 단계의 ΔE 분모(d_eff)가 0 이 되지 않게 막는다(d_eff = 0 인 리프는 ΔE 가 매우 커서 맨 나중에 거칠어진다).
 const MIN_DIST_M = 1e-3;
 
 function assertHierarchy(h) {
@@ -89,16 +89,6 @@ function boxVisible(camera, mn, mx) {
   return !(near === 8 || left === 8 || right === 8 || top === 8 || bottom === 8);
 }
 
-/** 점 p 에서 상자까지 최단 거리(안이면 0). */
-function distToBox(p, mn, mx) {
-  let s = 0;
-  for (let a = 0; a < 3; a++) {
-    const v = p[a] < mn[a] ? mn[a] - p[a] : p[a] > mx[a] ? p[a] - mx[a] : 0;
-    s += v * v;
-  }
-  return Math.sqrt(s);
-}
-
 // 최대 힙: 효율 내림차순, 동률이면 리프 번호 오름차순.
 const better = (a, b) => a.eff > b.eff || (a.eff === b.eff && a.leaf < b.leaf);
 function heapPush(h, e) {
@@ -132,25 +122,20 @@ function heapPop(h) {
 
 /**
  * 리프별 시야·거리·목표 단계를 계산한다(예산과 무관). 시험과 비교 기준이 같은 값을 쓰도록 내보낸다.
- * @returns {{visible: Uint8Array, distM: Float64Array, target: Uint8Array, countAt: (leaf:number, level:number)=>number, levelCount: number}}
+ * distM = 카메라 중심~상자 최소 거리(먼 리프부터 빼는 순서), effDistM = d·cMin²(화면 오차·목표 단계에 쓰는 실효 거리).
+ * @returns {{visible: Uint8Array, distM: Float64Array, effDistM: Float64Array, target: Uint8Array, countAt: (leaf:number, level:number)=>number, levelCount: number, focalPx: number}}
  */
 export function leafTargets(hierarchy, camera, thresholdPx) {
   assertHierarchy(hierarchy);
   assertCamera(camera);
   const { octree, levels, edge0M } = hierarchy;
   const levelCount = levels.length;
-  const table = buildDistanceTable({ fx: camera.K.fx, thresholdPx, edge0M, levelCount });
-  // 카메라 중심 C = −Rᵀ·t
-  const { R, t } = camera;
-  const C = [
-    -(R[0] * t[0] + R[3] * t[1] + R[6] * t[2]),
-    -(R[1] * t[0] + R[4] * t[1] + R[7] * t[2]),
-    -(R[2] * t[0] + R[5] * t[1] + R[8] * t[2]),
-  ];
+  const rule = screenErrorRule(camera, { thresholdPx, edge0M, levelCount });
   const nodes = leafNodes(octree);
   const L = octree.leafCount;
   const visible = new Uint8Array(L);
   const distM = new Float64Array(L);
+  const effDistM = new Float64Array(L);
   const target = new Uint8Array(L).fill(NOT_DRAWN);
   const countAt = (k, l) => levels[l].leafStart[k + 1] - levels[l].leafStart[k];
   for (let k = 0; k < L; k++) {
@@ -158,24 +143,26 @@ export function leafTargets(hierarchy, camera, thresholdPx) {
     if (n < 0) continue;
     const mn = octree.boxMin.subarray(3 * n, 3 * n + 3);
     const mx = octree.boxMax.subarray(3 * n, 3 * n + 3);
-    distM[k] = distToBox(C, mn, mx);
+    const e = rule.leaf(mn, mx);
+    distM[k] = e.distM;
+    effDistM[k] = e.effDistM;
     if (countAt(k, 0) === 0 || !boxVisible(camera, mn, mx)) continue;
     visible[k] = 1;
-    target[k] = levelForDistance(table, Math.max(distM[k], MIN_DIST_M));
+    target[k] = e.level;
   }
-  return { visible, distM, target, countAt, levelCount };
+  return { visible, distM, effDistM, target, countAt, levelCount, focalPx: rule.focalPx };
 }
 
 /** 리프 k 를 단계 l 에서 더 거칠게 할 가장 효율 좋은 후보. 없으면 null. */
 function bestStep(k, l, d, ctx) {
-  const { countAt, levelCount, edge0M, fx } = ctx;
+  const { countAt, levelCount, edge0M, f } = ctx;
   const n0 = countAt(k, l);
   const e0 = edgeOfLevel(edge0M, l);
   let best = null;
   for (let m = l + 1; m < levelCount; m++) {
     const saved = n0 - countAt(k, m);
     if (saved <= 0) continue;
-    const dErr = (fx * (edgeOfLevel(edge0M, m) - e0)) / d; // 화면 오차 증가(px), 항상 양수
+    const dErr = (f * (edgeOfLevel(edge0M, m) - e0)) / d; // 화면 오차 증가(px), 항상 양수
     const eff = saved / dErr;
     if (best === null || eff > best.eff) best = { eff, leaf: k, to: m, saved };
   }
@@ -193,7 +180,7 @@ export function selectWithBudget(hierarchy, camera, opts) {
   if (!opts || typeof opts !== 'object') throw new Error(`${ERR} 옵션이 객체가 아님`);
   const { budgetPoints, thresholdPx } = opts;
   assertBudget(budgetPoints);
-  const { visible, distM, target, countAt, levelCount } = leafTargets(hierarchy, camera, thresholdPx);
+  const { visible, distM, effDistM, target, countAt, levelCount, focalPx } = leafTargets(hierarchy, camera, thresholdPx);
   const L = target.length;
   const leafLevel = Uint8Array.from(target);
   let total = 0;
@@ -201,8 +188,8 @@ export function selectWithBudget(hierarchy, camera, opts) {
   if (total <= budgetPoints) return { leafLevel, pointCount: total };
 
   // 4) 탐욕적 거칠게 하기
-  const ctx = { countAt, levelCount, edge0M: hierarchy.edge0M, fx: camera.K.fx };
-  const dOf = (k) => Math.max(distM[k], MIN_DIST_M);
+  const ctx = { countAt, levelCount, edge0M: hierarchy.edge0M, f: focalPx };
+  const dOf = (k) => Math.max(effDistM[k], MIN_DIST_M);
   const heap = [];
   for (let k = 0; k < L; k++) {
     if (!visible[k]) continue;
