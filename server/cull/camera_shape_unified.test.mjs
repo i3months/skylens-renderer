@@ -31,9 +31,11 @@ const BAD_SHAPE = {
   'K 없음': without('K'),
   'R Float32Array': good({ R: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]) }),
   'R 길이 8': good({ R: [1, 0, 0, 0, 1, 0, 0, 0] }),
+  'R 구멍': good({ R: [1, , 0, 0, 1, 0, 0, 0, 1] }),
   "width '640'": good({ width: '640' }),
   't 길이 2': good({ t: [0, 0] }),
   't Float32Array 6개': good({ t: new Float32Array(6) }),
+  't 구멍': good({ t: [0, , 0] }),
 };
 const BAD_VALUE = {
   'NaN K': good({ K: { ...base.K, fx: NaN } }),
@@ -88,8 +90,17 @@ for (const [stage, f] of Object.entries(STAGES)) {
         assert.ok(r.levels.length > 0 && r.levels.every((l) => l.every((v) => v === Infinity)), '빈 피라미드는 모든 깊이가 Infinity'); // 가릴 것이 없다
         return;
       }
-      if (stage === 'leafPriority' || stage === 'orderChunks') {
-        // leafPriority 반환값: Float64Array, orderChunks 반환값: Uint32Array. 둘 다 마스크가 아님.
+      if (stage === 'leafPriority') {
+        // leafPriority 반환값: Float64Array, 퇴화 시점에서는 모두 0
+        assert.ok(r instanceof Float64Array, `leafPriority 반환값은 Float64Array 여야 함`);
+        assert.equal(r.length, n, `leafPriority 길이는 ${n} 여야 함`);
+        assert.ok(Array.from(r).every((v) => v === 0), `leafPriority 는 모두 0 이어야 함`);
+        return;
+      }
+      if (stage === 'orderChunks') {
+        // orderChunks 반환값: Uint32Array, 퇴화 시점에서는 빔
+        assert.ok(r instanceof Uint32Array, `orderChunks 반환값은 Uint32Array 여야 함`);
+        assert.equal(r.length, 0, `orderChunks 는 빈 배열이어야 함`);
         return;
       }
       assert.equal(arr.length, n);
