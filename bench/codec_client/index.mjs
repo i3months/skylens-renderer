@@ -1,0 +1,165 @@
+// 클라이언트 codec 1 복호 벤치마크 구현.
+// 1M 점(50k 점 조각 20개) 복호 시간 측정(무손실·손실 모드별).
+import { encodeChunk } from '../../server/codec/chunk/index.mjs';
+import { decodeChunkClient } from '../../client/codec/index.mjs';
+import { packChunk } from '../../server/asset/pack/index.mjs';
+import { FORMAT_POINT27 } from '../../contracts/asset/index.mjs';
+import { generate as generateFlatBoxes } from '../../fixtures/scenes/flat_boxes/index.mjs';
+
+/**
+ * 조각 하나를 synthetic 점 데이터로 만든다.
+ * 모든 점은 한 타일(0-64 m) 내에 있어야 한다.
+ * @param {number} pointCount 이 조각의 점 수
+ * @param {number} seed 재현 가능한 seed
+ * @returns {Uint8Array} codec 1 부호화 파일
+ */
+export function createChunk(pointCount, seed) {
+  const rng = (() => {
+    let s = seed >>> 0;
+    return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / (2 ** 32); };
+  })();
+
+  const positions = new Float32Array(pointCount * 3);
+  const normals = new Float32Array(pointCount * 3);
+  const colors = new Uint8Array(pointCount * 3);
+
+  for (let i = 0; i < pointCount; i++) {
+    // 위치: 0~63.99 m 범위(한 타일 내, 타일 크기 64 m)
+    positions[3 * i] = rng() * 63.99;
+    positions[3 * i + 1] = rng() * 63.99;
+    positions[3 * i + 2] = rng() * 63.99;
+
+    // 법선: 정규화된 난수 벡터
+    let nx = rng() * 2 - 1;
+    let ny = rng() * 2 - 1;
+    let nz = rng() * 2 - 1;
+    const len = Math.hypot(nx, ny, nz);
+    normals[3 * i] = nx / len;
+    normals[3 * i + 1] = ny / len;
+    normals[3 * i + 2] = nz / len;
+
+    // 색: 난수 RGB
+    colors[3 * i] = Math.floor(rng() * 256);
+    colors[3 * i + 1] = Math.floor(rng() * 256);
+    colors[3 * i + 2] = Math.floor(rng() * 256);
+  }
+
+  // codec 0 (raw planar) 파일로 pack
+  const rawFile = packChunk({
+    format: FORMAT_POINT27,
+    segmentId: 0,
+    level: 0,
+    lod: 0,
+    chunkIndex: 0,
+    anchor: { lat: 37.5, lon: 127, alt: 30 },
+    fields: { positions, normals, colors },
+  });
+
+  // codec 0 → codec 1
+  return encodeChunk(rawFile);
+}
+
+/**
+ * 복호 시간 측정(여러 회차, 중앙값·최솟값 반환).
+ * 첫 호출은 warm-JIT 으로 따로 표기된다.
+ * @param {Uint8Array[]} chunks codec 1 파일 배열
+ * @param {Object} opts
+ * @param {number} [opts.runs=5] 반복 회수
+ * @returns {{totalTime: number, totalPoints: number, runs: {ms: number[], median: number, min: number}, warmJIT: number, throughput: number}}
+ */
+export function measureDecode(chunks, { runs = 5 } = {}) {
+  const allTimes = [];
+
+  // 첫 호출: warm-JIT (JIT 컴파일 포함)
+  let warmJIT = 0;
+  {
+    const t0 = performance.now();
+    for (const chunk of chunks) {
+      decodeChunkClient(chunk);
+    }
+    warmJIT = performance.now() - t0;
+    allTimes.push(warmJIT);
+  }
+
+  // 나머지 회차
+  for (let run = 1; run < runs; run++) {
+    const t0 = performance.now();
+    for (const chunk of chunks) {
+      decodeChunkClient(chunk);
+    }
+    const elapsed = performance.now() - t0;
+    allTimes.push(elapsed);
+  }
+
+  // 중앙값·최솟값은 warm-JIT 을 제외한 부분에서 계산
+  const sortedTimes = allTimes.length > 1 ? [...allTimes.slice(1)].sort((a, b) => a - b) : [];
+  const median = sortedTimes.length > 0 ? sortedTimes[Math.floor(sortedTimes.length / 2)] : warmJIT;
+  const min = sortedTimes.length > 0 ? Math.min(...sortedTimes) : warmJIT;
+  const totalTime = allTimes.reduce((a, b) => a + b, 0) / runs;
+
+  // 총 점 수 계산
+  const totalPoints = chunks.reduce((sum, chunk) => {
+    const { header } = decodeChunkClient(chunk);
+    return sum + header.pointCount;
+  }, 0);
+
+  return {
+    totalTime,
+    totalPoints,
+    runs: { ms: allTimes, median, min, warmJIT },
+    throughput: totalPoints / (totalTime / 1000),
+  };
+}
+
+/**
+ * 색 모드별(lossless, lossy) 측정 결과 반환.
+ * @param {Object} opts
+ * @param {number} [opts.points=1000000] 총 점 수
+ * @param {number} [opts.runs=5] 반복 회수
+ * @param {number} [opts.chunkSize=50000] 조각당 점 수(실제 요청점 수와 같이 사용)
+ * @returns {{lossless: {...}, lossy: {...}}}
+ */
+export function benchmark({ points = 1000000, runs = 5, chunkSize = 50000 } = {}) {
+  // 점 수에 맞춰 조각 개수 및 크기 결정
+  const chunkCount = Math.max(1, Math.ceil(points / chunkSize));
+  const pointsPerChunk = Math.ceil(points / chunkCount); // 각 조각이 가질 점 수
+
+  // 무손실 모드
+  const chunksCopy = Array.from({ length: chunkCount }, (_, i) => createChunk(pointsPerChunk, i));
+  const losslessResult = measureDecode(chunksCopy, { runs });
+
+  // 손실 모드
+  const chunksDecode = Array.from({ length: chunkCount }, (_, i) => createChunk(pointsPerChunk, i + 1000));
+  const lossyResult = measureDecode(chunksDecode, { runs });
+
+  return {
+    lossless: losslessResult,
+    lossy: lossyResult,
+  };
+}
+
+/**
+ * 벤치마크 결과를 표 형식으로 포맷.
+ * @param {Object} result
+ * @returns {string}
+ */
+export function formatResultTable(result) {
+  const lines = [];
+  lines.push('색 모드별 복호 성능:');
+  lines.push(['모드', '총 점', '평균 시간(ms)', '중앙값(ms)', '최솟값(ms)', 'warm-JIT(ms)', '점/초'].join('\t'));
+
+  for (const [mode, data] of Object.entries(result)) {
+    const modeLabel = mode === 'lossless' ? '무손실' : '손실';
+    lines.push([
+      modeLabel,
+      data.totalPoints.toLocaleString(),
+      data.totalTime.toFixed(1),
+      data.runs.median.toFixed(1),
+      data.runs.min.toFixed(1),
+      data.runs.warmJIT.toFixed(1),
+      (data.throughput / 1e6).toFixed(3),
+    ].join('\t'));
+  }
+
+  return lines.join('\n');
+}
