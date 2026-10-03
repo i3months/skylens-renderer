@@ -130,6 +130,8 @@ export function clientFrustumCull(leafBoxes, camera, opts) {
   const m = lateral ? 0.5 * fx * pointSizeM : 0;
   for (let k = 0; k < n; k++) {
     const b = 3 * k;
+    // NaN 좌표 리프는 통과(계약: 거짓 제거 0). NaN 꼭짓점은 모든 평면 비교를 거짓으로 만든다. 합이 NaN 이면 여섯 좌표 중 NaN 이 있다(±Infinity 는 위에서 거부됨).
+    if (Number.isNaN(boxMin[b] + boxMin[b + 1] + boxMin[b + 2] + boxMax[b] + boxMax[b + 1] + boxMax[b + 2])) { out[k] = 1; continue; }
     let front = false, left = !lateral, right = !lateral, top = !lateral, bottom = !lateral;
     for (let c = 0; c < 8; c++) {
       const X = c & 1 ? boxMax[b] : boxMin[b];

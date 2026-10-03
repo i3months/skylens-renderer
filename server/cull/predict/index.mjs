@@ -131,6 +131,8 @@ export function predictiveMask(hierarchy, state, opts) {
     const moves = speed > 0 || omega > 0;
     for (let k = 0; k < n; k++) {
       if (out[k] || (empty && empty[k])) continue;
+      // NaN 좌표 리프는 판정할 수 없으므로 통과(계약: 거짓 제거 0). NaN 꼭짓점은 모든 평면 비교를 거짓으로 만들어 제거되던 곳.
+      if (Number.isNaN(mn[3 * k] + mn[3 * k + 1] + mn[3 * k + 2] + mx[3 * k] + mx[3 * k + 1] + mx[3 * k + 2])) { out[k] = 1; continue; }
       let m = 0;
       if (moves) {
         // 상자 꼭짓점까지 최대 거리로 회전에 의한 변위 상한을 잡는다.
