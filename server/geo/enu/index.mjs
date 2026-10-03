@@ -14,6 +14,11 @@ const A = WGS84.a;
 const F = WGS84.f;
 const E2 = F * (2 - F); // 제1 이심률 제곱
 const DEG = Math.PI / 180;
+// enuToGps 입력 성분(e·n·u)의 절댓값 상한: 지구 적도 둘레(2πR ≈ 4.0e7 m)의 4배 = 약 1.6e8 m.
+// 선택 이유: 경도는 어차피 (−180, 180] 로 감싸므로 여러 바퀴는 의미가 있어 허용하되(시험은 3바퀴+, |lon|>540),
+// 1e300 같은 값은 경도 모듈로가 부동소수점 정밀도를 모두 잃은 임의의 수를 '정상 결과'로 돌려주므로 조용히 받지 않고 거부한다.
+// 4바퀴 안에서는 e/(R cosφ0)/DEG 의 상대 오차가 1e-16 수준이라 감싼 경도의 오차는 1e-9° 이하다(적도 앵커 기준).
+export const MAX_ENU_ABS_M = 4 * 2 * Math.PI * EARTH_RADIUS_M;
 
 // 입력 검사: 유한·위도 −90..90·경도 −180..180
 function checkGps(g, name) {
@@ -37,6 +42,13 @@ function checkEnu(enu) {
   if (enu.length !== 3) throw new GeoError('range', 'enu 는 길이 3 배열이어야 한다');
   for (let i = 0; i < 3; i++) {
     if (!Number.isFinite(enu[i])) throw new GeoError('range', `enu[${i}] 유한하지 않음: ${enu[i]}`);
+  }
+}
+
+// enuToGps 전용: 성분 절댓값이 MAX_ENU_ABS_M 을 넘으면 거부(경도 감싸기가 의미 없는 수를 만들지 않도록)
+function checkEnuMagnitude(enu) {
+  for (let i = 0; i < 3; i++) {
+    if (Math.abs(enu[i]) > MAX_ENU_ABS_M) throw new GeoError('range', `enu[${i}] 절댓값이 상한(${MAX_ENU_ABS_M} m) 초과: ${enu[i]}`);
   }
 }
 
@@ -148,6 +160,7 @@ export function gpsToEnu(gps, anchor) {
 
 /**
  * ENU [e, n, u] → GPS(gpsToEnu 의 역). GeoError('range') 조건: 입력 비유한·anchor 범위 밖, 결과가 비유한,
+ * 성분 |e|·|n|·|u| > MAX_ENU_ABS_M(지구 둘레 4배 ≈ 1.6e8 m),
  * 결과 |lat| > 90(1e-9° 이내 초과는 ±90 으로 붙임), 극 앵커(|cos φ0| < 1e-12)에서 e ≠ 0(경도가 정의되지 않음; e = 0 이면 lon 은 anchor 그대로 통과).
  * 결과 경도가 (−180, 180] 밖(−180 자체 포함)이면 (−180, 180] 로 감싼다(−180 은 180)(날짜변경선 왕복용; 범위 안의 값은 그대로이므로 기본 경로 값은
  * skylens geo.ts 와 같다). 위도는 감싸지 않고 거부한다. enu 가 Array 가 아닌 array-like 이면 TypeError.
@@ -157,6 +170,7 @@ export function gpsToEnu(gps, anchor) {
  */
 export function enuToGps(enu, anchor) {
   checkEnu(enu);
+  checkEnuMagnitude(enu);
   checkGps(anchor, 'anchor');
   const [e, n, u] = enu;
   const cosPhi0 = Math.cos(anchor.lat * DEG);

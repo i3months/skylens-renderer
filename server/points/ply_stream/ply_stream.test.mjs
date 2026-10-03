@@ -3,7 +3,7 @@ import v8 from 'node:v8';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { readPlyStream } from './index.mjs';
-import { countCopiesAsync } from '../test_util/copies.mjs';
+import { countCopiesAsync, countBytesAsync } from '../test_util/copies.mjs';
 import { PointsError, PROPERTIES, FORMAT_POINT27, FORMAT_GAUSS56, stride } from '../../../contracts/points/index.mjs';
 
 const header = (format, n) => Buffer.from(
@@ -200,12 +200,18 @@ test('머리 누적 복사량은 입력 길이에 선형이고 큰 청크의 본
   const copiedBody = await countCopiesAsync(async () => { for await (const c of readPlyStream([bytes], { chunkPoints: 65536 })) n += c.count; });
   assert.equal(n, 300000);
   assert.ok(copiedBody <= h.length + 8192, `copied ${copiedBody} (header ${h.length})`);
+  // `new Uint8Array(len)` + set 로 본문을 옮기는 변형은 copied 에 안 잡히므로 Uint8Array(길이) 할당량 상한으로 막는다.
+  // 정당한 할당: 출력 colors 3 B × 300000 점 = 900000 B + 레코드 경계 이월 stride(27) 정도. 본문 복사는 ≈8.1 MB.
+  const allocBody = await countBytesAsync(async () => { for await (const c of readPlyStream([bytes], { chunkPoints: 65536 })) void c; });
+  assert.ok(allocBody.allocated <= 3 * 300000 + 65536, `Uint8Array(len) 할당 ${allocBody.allocated} B`);
   // 머리 청크 + 본문이 여러 청크(레코드 경계와 안 맞는 크기): 본문 청크는 복사하지 않는다(머리 뒤 본문 복사 변형 검출)
   const bodyOnly = bytes.subarray(h.length);
   const multi = [bytes.subarray(0, h.length), ...slices(bodyOnly, 100003)];
   let nMulti = 0;
   const copiedMulti = await countCopiesAsync(async () => { for await (const c of readPlyStream(multi, { chunkPoints: 65536 })) nMulti += c.count; });
   assert.equal(nMulti, 300000);
+  const allocMulti = await countBytesAsync(async () => { for await (const c of readPlyStream(multi, { chunkPoints: 65536 })) void c; });
+  assert.ok(allocMulti.allocated <= 3 * 300000 + 65536, `Uint8Array(len) 할당(다중 청크) ${allocMulti.allocated} B`);
   assert.ok(copiedMulti <= h.length + 8192 + 27 * 4, `copied ${copiedMulti} (header ${h.length})`);
   // 정상 머리 + 본문도 1바이트 청크로 값이 같다(경계에 걸친 end_header 포함)
   const s20 = synth(FORMAT_POINT27, 20);
