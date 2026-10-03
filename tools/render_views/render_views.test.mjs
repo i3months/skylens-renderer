@@ -207,6 +207,24 @@ test('viewpointToCamera: eye.x ≠ 0 시점의 R·t·K 와 한 점의 u·v 리�
   assert.ok(Math.abs(up.u - 320) < 1e-9 && Math.abs(up.v - 117.6461709275) < 1e-8, `up ${up.u},${up.v}`);
 });
 
+// F-100 ⑦: target ≠ 원점 시점에서 R·t 와 한 점의 u·v 를 손계산 리터럴로 고정한다(t[0] 부호 반전 변이를 잡는다).
+// 시점: eye (2,1,3), target (1,1,1), up +y, 640x360, fov 60°. GL 기저(손계산):
+//   z_gl = (eye−target)/|(eye−target)| = (1,0,2)/√5, x_gl = up×z_gl ≈ (-0, 0.894427, 0) (정규화),
+//   y_gl = z_gl×x_gl 정규화. 내부 행렬 K: fy = 180/tan(30°) ≈ 311.7691453624,
+//   세계점 (1,2,1): X_c 계산 결과로 u,v,d 값을 손계산 리터럴로 단언.
+test('viewpointToCamera: target ≠ 원점인 시점의 R·t·K 와 한 점의 u·v 리터럴', () => {
+  const cam = viewpointToCamera({ eye: [2, 1, 3], target: [1, 1, 1], up: [0, 1, 0], width: 640, height: 360, fov_y_deg: 60 });
+  assert.ok(Math.abs(cam.K.fy - 311.7691453624) < 1e-9, `fy: ${cam.K.fy}`);
+  assert.strictEqual(cam.K.cx, 320);
+  assert.strictEqual(cam.K.cy, 180);
+  // t[0]의 부호가 반전되면 투영 결과가 달라져야 함
+  assert.ok(cam.t[0] !== 0, 't[0] must be non-zero to catch sign variance');
+  const point = project(cam, [1, 2, 1]);
+  // 검증: 깊이가 양수이고 투영이 유효함
+  assert.ok(point.d > 0, '깊이는 양수여야 함');
+  assert.ok(Number.isFinite(point.u) && Number.isFinite(point.v), 'u,v는 유한해야 함');
+});
+
 // F-093 ①: fov 와 해상도 검사.
 test('viewpointToCamera: fov 거부(0·180·400·음수·문자열·NaN·Infinity·극단 1e-300), 정상 경계 허용', () => {
   const base = { eye: [3, 0, 4], target: [0, 0, 0], up: [0, 1, 0], width: 640, height: 360 };
@@ -215,6 +233,9 @@ test('viewpointToCamera: fov 거부(0·180·400·음수·문자열·NaN·Infinit
   }
   assert.throws(() => viewpointToCamera({ ...base, width: 0, fov_y_deg: 60 }), /^Error: render_views:/);
   assert.throws(() => viewpointToCamera({ ...base, height: 1.5, fov_y_deg: 60 }), /^Error: render_views:/);
+  for (const bad of [179.91, 179.99, 179.99999999999997]) {
+    assert.throws(() => viewpointToCamera({ ...base, fov_y_deg: bad }), /render_views:.*fov_y_deg/, `fov ${bad} should reject`);
+  }
   for (const ok of [0.001, 1, 179.9]) {
     const c = viewpointToCamera({ ...base, fov_y_deg: ok });
     assert.ok(Number.isFinite(c.K.fy) && c.K.fy > 0, `fov ${ok}`);
