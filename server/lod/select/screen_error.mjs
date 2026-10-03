@@ -11,6 +11,8 @@
 //   꼭짓점 하나라도 z ≤ 0 이면(상자가 카메라 평면에 닿거나 뒤로 걸침) cMin ≤ 0 → d_eff = 0 → 원본 단계 0(보수적).
 // 상자 안에 놓인 길이 e 인 선분은 화면 길이 ≤ ∫ f/(r·cos²α) ≤ f·e/d_eff 이다. 그래서 거리표에 d 대신 d_eff 를 넣으면
 //   f·edgeM(l)/d_eff ≤ τ 인 단계 l 의 칸 변(상자 안 부분)은 화면에서 τ px 이하다.
+// 시야 밖 꼭짓점도 cMin 에 넣는다(F-104 ② 검토 후 유지): cMin ← max(cMin, 화면 모서리 광선 cos) 로 조이면 화면 안 부분의
+//   투영은 여전히 τ 이하지만, 화면 밖까지 이어진 칸 변의 (잘리지 않은) 투영 길이는 경계를 수십만 배까지 넘는다.
 // 대가: 가장자리·큰 리프에서 더 고운 단계(점이 더 많음)를 고른다. 화면 중앙 작은 리프는 거의 그대로(cMin ≈ 1).
 import { buildDistanceTable, levelForDistance } from '../distance_table/index.mjs';
 
@@ -30,12 +32,10 @@ export function cameraCenter({ R, t }) {
 
 /** 점 C 와 축 정렬 상자의 최소 거리(안이면 0). */
 export function boxDistanceM(C, mn, mx) {
-  let s = 0;
-  for (let a = 0; a < 3; a++) {
-    const g = C[a] < mn[a] ? mn[a] - C[a] : C[a] > mx[a] ? C[a] - mx[a] : 0;
-    s += g * g;
-  }
-  return Math.sqrt(s);
+  const g = [0, 0, 0];
+  for (let a = 0; a < 3; a++) g[a] = C[a] < mn[a] ? mn[a] - C[a] : C[a] > mx[a] ? C[a] - mx[a] : 0;
+  // 제곱합은 1e155 근처부터 Infinity 로 넘쳐 거리표가 던진다. hypot 은 넘치지 않는다(F-104 ①).
+  return Math.hypot(g[0], g[1], g[2]);
 }
 
 /** 상자 8 꼭짓점에서 cos α = z/r 의 최솟값. 꼭짓점이 z ≤ 0 이면 0 이하를 돌려준다. */
@@ -49,7 +49,7 @@ export function minCosToAxis({ R, t }, mn, mx) {
     const y = R[3] * X + R[4] * Y + R[5] * Z + t[1];
     const z = R[6] * X + R[7] * Y + R[8] * Z + t[2];
     if (!(z > 0)) return 0;
-    const v = z / Math.sqrt(x * x + y * y + z * z);
+    const v = z / Math.hypot(x, y, z); // 제곱이 넘치는 좌표(1e200 등)에서도 정확(F-104 ①)
     if (v < c) c = v;
   }
   return c;
