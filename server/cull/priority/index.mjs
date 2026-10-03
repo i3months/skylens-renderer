@@ -13,6 +13,7 @@
 // 입력 오류(계층·마스크·카메라 구조)는 'cull:' 오류.
 
 import { degenerateCamera } from '../degenerate/index.mjs';
+import { guardHierarchyRead } from '../degenerate/hierarchy_guard.mjs';
 
 const ERR = 'cull:';
 const NEAR_M = 0.01;
@@ -20,12 +21,19 @@ const SCALE = 0.5; // 거친 깊이 버퍼 해상도 비율(기본)
 export const MAX_COARSE_CELLS = 4_000_000; // 거친 버퍼 칸 수 상한: 큰 해상도에서는 비율을 줄여 시간·메모리를 묶는다(F-120)
 
 // leafCount < 1 은 계약(contracts/cull, F-145)상 구조 오류다.
+// 필드 읽기는 guardHierarchyRead 로 감싸 getter·Proxy 예외를 'cull:' 오류로 바꾼다(F-148).
+// levels[0] 존재·타입배열 검사(F-149): 일반 배열이나 levels 없음은 TypeError 가 아니라 'cull:' 오류.
+const isTyped = (a) => ArrayBuffer.isView(a) && !(a instanceof DataView);
 function assertHierarchy(h) {
-  const oc = h?.octree;
-  if (!oc || !Number.isInteger(oc.leafCount) || oc.leafCount < 1 || !(oc.leafStart instanceof Uint32Array)
-    || !oc.leafIndex || !oc.boxMin || !oc.boxMax || oc.leafStart.length !== oc.leafCount + 1) {
-    throw new Error(`${ERR} 계층(octree)이 올바르지 않음`);
-  }
+  guardHierarchyRead(() => {
+    const oc = h?.octree;
+    if (!oc || !Number.isInteger(oc.leafCount) || oc.leafCount < 1 || !(oc.leafStart instanceof Uint32Array)
+      || !isTyped(oc.leafIndex) || !isTyped(oc.boxMin) || !isTyped(oc.boxMax) || oc.leafStart.length !== oc.leafCount + 1) {
+      throw new Error(`${ERR} 계층(octree)이 올바르지 않음`);
+    }
+    const lv = Array.isArray(h.levels) ? h.levels[0] : undefined;
+    if (!lv || !isTyped(lv.positions)) throw new Error(`${ERR} 계층 levels[0].positions 가 올바르지 않음`);
+  });
 }
 
 /** 리프 상자 8 꼭짓점의 카메라 좌표 → 근평면 절단 → 투영 경계상자 ∩ 화면 면적. 안 보이면 0. */
@@ -113,7 +121,7 @@ export function leafPriority(hierarchy, camera) {
   if (degenerateCamera(camera)) return out;
   const node = new Int32Array(oc.leafCount).fill(-1);
   for (let i = 0; i < oc.nodeCount; i++) if (oc.leafIndex[i] >= 0) node[oc.leafIndex[i]] = i;
-  const wins = coarseWins(hierarchy, camera);
+  const wins = guardHierarchyRead(() => coarseWins(hierarchy, camera)); // levels[0] 접근자 예외도 cull: 오류로(F-148)
   const P = new Float64Array(24);
   for (let k = 0; k < oc.leafCount; k++) {
     const nd = node[k];

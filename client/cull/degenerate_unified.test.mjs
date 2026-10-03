@@ -26,7 +26,7 @@ assert.equal(IMPL_MAX_COARSE_CELLS, MAX_COARSE_CELLS, '구현 상수가 시험 �
 
 // 벽시계 대신 작업량(타입 배열 할당 원소 수)을 센다: 전역 생성자를 Proxy 로 감싸 숫자 길이로 만든 배열의 최대·합계 길이를 기록한다. 결정적이다.
 // Float32Array.from/of 는 실제로 세어진다 (생성자 호출이므로 Proxy 를 탄다).
-// 세어지지 않는 것은 map·slice·subarray·배열 인자로 기존 버퍼 사용 (생성자를 타지 않음).
+// 세어지지 않는 것은 map·slice·subarray 와 '첫 인자가 숫자가 아닌' 생성(배열·ArrayBuffer 인자도 construct 트랩은 타지만 첫 인자가 숫자가 아니라 세지 않음).
 function trackAlloc(fn) {
   const names = ['Float32Array', 'Float64Array', 'Int32Array', 'Uint32Array', 'Uint8Array'];
   const orig = {};
@@ -170,9 +170,10 @@ test('F-120 해상도: 60000x60000 은 퇴화이며 빠르게 빈 결과를 내�
   assert.ok(score.every((v) => v === 0));
   assert.equal(order.length, 0);
   assert.ok(isZero(mask));
-  // 벽시계 대신 작업량: 퇴화 경로는 결과 버퍼(leafPriority n 칸 + frustumCull n 칸)만 만들고 거친 깊이 버퍼는 만들지 않는다.
+  // 벽시계 대신 작업량: 퇴화 경로는 결과 버퍼(leafPriority n 칸 + frustumCull n 칸 + leafIndex 검사표 n 칸)만 만들고 거친 깊이 버퍼는 만들지 않는다.
   assert.ok(a.max <= n, `퇴화 경로가 ${a.max} 칸 버퍼를 할당함`);
-  assert.ok(a.total <= 2 * n, `퇴화 경로 할당 합계 ${a.total} > 2n`);
+  // F-149 ④: frustumCull 이 leafIndex 일대일 검사용 n 바이트 표(Uint8Array)를 하나 더 만들어 합계 문턱을 2n → 3n 으로 올린다(올리기만 함).
+  assert.ok(a.total <= 3 * n, `퇴화 경로 할당 합계 ${a.total} > 3n`);
 });
 
 test('F-120 정상 큰 해상도(8192x8192)는 우선순위·절두체 모두 던지지 않고 같은 마스크를 낸다', () => {
