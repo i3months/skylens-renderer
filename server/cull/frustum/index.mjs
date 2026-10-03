@@ -21,6 +21,21 @@ function assertHierarchyChecked(h) {
     || oc.leafIndex.length < oc.nodeCount || oc.boxMin.length < 3 * oc.nodeCount || oc.boxMax.length < 3 * oc.nodeCount) {
     throw new Error(`${ERR} octree 배열 길이가 nodeCount·leafCount 와 맞지 않음`);
   }
+  // leafIndex: 값은 -1(내부 노드) 또는 [0, leafCount), 중복 금지, 리프 수 = leafCount (distance 와 같은 규칙)
+  const seen = new Uint8Array(oc.leafCount);
+  let leaves = 0;
+  for (let n = 0; n < oc.nodeCount; n++) {
+    const k = oc.leafIndex[n];
+    if (k === -1) continue;
+    if (k < 0 || k >= oc.leafCount || seen[k]) {
+      throw new Error(`${ERR} leafIndex[${n}]=${k} 가 범위를 벗어났거나 중복됨`);
+    }
+    seen[k] = 1;
+    leaves++;
+  }
+  if (leaves !== oc.leafCount) {
+    throw new Error(`${ERR} leafIndex 의 리프 수(${leaves})가 leafCount(${oc.leafCount}) 와 다름`);
+  }
   const l0 = h.levels?.[0]?.leafStart;
   if (!(l0 instanceof Uint32Array) || l0.length !== oc.leafCount + 1) throw new Error(`${ERR} levels[0].leafStart 길이가 leafCount+1 이 아님`);
 }
