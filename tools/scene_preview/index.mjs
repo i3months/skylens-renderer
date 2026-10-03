@@ -12,6 +12,7 @@ import { cameraExtrinsics } from '../../bench/baseline/ref_images/index.mjs';
 //   d = −X_c.z, u = cx + f·X_c.x/d, v = cy − f·X_c.y/d, 픽셀 (floor(u), floor(v)) — 픽셀 (i,j) 는 [i,i+1)×[j,j+1).
 
 const ERR = 'scene_preview:';
+const MAX_PIXELS = 1.6e7;
 
 function isVec3(v) {
   return Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === 'number' && Number.isFinite(x));
@@ -30,7 +31,8 @@ export function assertPreviewViewpoint(viewpoint) {
   for (const [name, v] of [['width', width], ['height', height]]) {
     if (!Number.isInteger(v) || v <= 0) throw new Error(`${ERR} ${name} 는 양의 정수여야 함: ${String(v)}`);
   }
-  if (width * height * 3 > 0x7fffffff) throw new Error(`${ERR} 이미지가 너무 큼: ${width}×${height}`);
+  // 픽셀 수로 제한한다(z-버퍼가 픽셀당 8 B, rgb 가 3 B 라 바이트 수 상한으로는 수 GB 가 잡힌다).
+  if (width * height > MAX_PIXELS) throw new Error(`${ERR} 이미지가 너무 큼: ${width}×${height} (최대 ${MAX_PIXELS} 픽셀)`);
   if (typeof fov_y_deg !== 'number' || !Number.isFinite(fov_y_deg) || !(fov_y_deg > 0 && fov_y_deg < 180)) {
     throw new Error(`${ERR} fov_y_deg 는 0 초과 180 미만의 유한 수여야 함: ${String(fov_y_deg)}`);
   }
