@@ -188,7 +188,8 @@ test("입력 오류는 'cull:' 로 던진다", () => {
 
 // ---- F-129: 예측 마스크의 상한(위쪽 경계)·음성 시험 ----
 // 허용 집합: 시각 τ(0..horizonS 를 n 등분)의 카메라에서, 상자를 그 시점 중심에서의 이동·회전 변위 상한만큼 부풀려 보이는 리프의 합집합.
-// 변위 상한 = speed·hh + omega·hh·(상자 최원점 거리 + speed·hh)(hh = 구간 반폭).
+// 변위 상한(구현 식과 독립인 기하): 구간 반폭 hh 동안 이동 |v|·hh, 회전은 최원점 거리 far 의 현(2·far·sin(ω·hh/2)) 이다. 구현의 배율·가산 상수는 쓰지 않는다.
+// 수치 여유는 부동소수 오차용 1e-3 m 만 더한다.
 function allowedUnion(camAt, horizonS, n, speed, omega, hh, pointSizeM = 0) {
   const s = new Set();
   for (let i = 0; i <= n; i++) {
@@ -196,7 +197,7 @@ function allowedUnion(camAt, horizonS, n, speed, omega, hh, pointSizeM = 0) {
     for (let k = 0; k < oc.leafCount; k++) {
       const [a, b] = boxOf(k);
       const far = Math.hypot(...[0, 1, 2].map((d) => Math.max(Math.abs(a[d] - C[d]), Math.abs(b[d] - C[d]))));
-      const M = 1.001 * (speed * hh + omega * hh * (far + speed * hh)) + 1e-6;
+      const M = speed * hh + 2 * far * Math.sin((omega * hh) / 2) + 1e-3;
       if (boxMayBeVisibleSplat(cam, a.map((x) => x - M), b.map((x) => x + M), pointSizeM)) s.add(k);
     }
   }
@@ -218,6 +219,39 @@ test('상한: 움직이는 카메라의 예측 마스크 ⊆ (표본 시점들�
     for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(allowed.has(k), `허용 밖 리프 ${k}`);
     assert.ok(allowed.size < oc.leafCount, `전제: 허용 집합이 전체가 아님 ${allowed.size}/${oc.leafCount}`);
     assert.ok(sum(m) >= visibleSet(cam).size);
+  }
+});
+
+test('결합 운동 하한·상한: 마스크 ⊇ 엄밀 하한 합집합, ⊆ 독립 상한 합집합(회전 현에 이동 중심 이동분 포함)', () => {
+  const horizonS = 4;
+  // 하한: 한 구간(반폭 hh)에서 카메라 중심이 |v|·hh 까지 움직이므로 회전 반경은 far+|v|·hh 까지 커진다 -> 변위 <= |v|·hh + 2·(far+|v|·hh)·sin(ω·hh/2).
+  // 이 엄밀 변위만큼 부풀려 보이는 리프는 반드시 남아야 한다(이동·회전 교차항을 지우면 빠진다). 상한은 교차항이 없는 |v|·hh + 2·far·sin(ω·hh/2)(allowedUnion).
+  // 사례 3·4 는 교차항 삭제 변이가 하한 리프를 놓치는 시점(무작위 탐색으로 고름).
+  const cases = [
+    [lookAt([-70, 30, 0], [0, 0, 0]), [0, 0, 30], [0, 0.6, 0]],
+    [lookAt([30, 35, -40], [0, 0, 0]), [-20, 4, 24], [0.3, -0.5, 0.2]],
+    [lookAt([0.7193303667008877, 29.438624640461057, 37.752573834732175], [4.574792506173253, 1.4847642369568348, 18.20880121551454]), [21.42895988188684, 2.2685793437995017, -3.642494436353445], [-0.1481265474576503, -0.21067794505506754, -0.11717842030338943]],
+    [lookAt([-11.219377592206001, 37.34387482283637, 0.1200649794191122], [-10.225890344008803, 4.829464415088296, 6.464818296954036]), [-28.32231550477445, 1.9914156128652394, 20.60210544615984], [-0.4378025403711945, -0.07488677930086851, -0.22208991623483598]],
+  ];
+  for (const [ci, [cam, v, w]] of cases.entries()) {
+    const speed = Math.hypot(...v), omega = Math.hypot(...w);
+    const camAt = (tau) => predictCamera(cam, { velocityMps: v, angularRadPerS: w }, tau);
+    for (const steps of [1, 2, 4]) {
+      const hh = horizonS / steps / 2;
+      const m = predictiveMask(h, { camera: cam, velocityMps: v, angularRadPerS: w }, { horizonS, steps, pointSizeM: 0 });
+      for (let i = 0; i <= steps; i++) {
+        const c = camAt((horizonS * i) / steps), C = cameraCenter(c);
+        for (let k = 0; k < oc.leafCount; k++) {
+          const [a, b] = boxOf(k);
+          const far = Math.hypot(...[0, 1, 2].map((d) => Math.max(Math.abs(a[d] - C[d]), Math.abs(b[d] - C[d]))));
+          const M = speed * hh + 2 * (far + speed * hh) * Math.sin((omega * hh) / 2);
+          if (boxMayBeVisibleSplat(c, a.map((x) => x - M), b.map((x) => x + M), 0)) assert.equal(m[k], 1, `steps=${steps}: 엄밀 하한 리프 ${k} 가 마스크에서 빠짐`);
+        }
+      }
+      if (ci >= 2) continue; // 사례 3·4 는 교차항(구현이 더하는 2차 항)이 커서 교차항 없는 독립 상한을 넘는 것이 정상: 하한만 단언한다.
+      const allowed = allowedUnion(camAt, horizonS, steps * 8, speed, omega, hh);
+      for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(allowed.has(k), `steps=${steps}: 허용 밖 리프 ${k}`);
+    }
   }
 });
 
@@ -276,25 +310,24 @@ test('잘게/성기게 나눈 직선 이동: 마스크는 해석적 시점 합�
     for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(bound.has(k), `steps=${steps}: 기하 상한 밖 리프 ${k}`);
     assert.ok(sum(m) >= exact.size);
     if (addMut !== undefined) {
-      // 전제(판별력): 이동 성분 |v|·hh 에 배율 1.0001 과 1e-9 를 더한 원본 식의 마스크는 predictiveMask 와 같고,
-      // 같은 식에 고정 여유 addMut 를 더한 변이 식의 마스크는 기하 상한 밖 리프를 만든다. 즉 이 값에서만 변이와 원본이 갈린다.
+      // 전제(판별력, 구현 상수 비의존): 기하 하한 식(M=|v|·hh, 배율·가산 없음)의 마스크는 predictiveMask 가 덮고,
+      // 같은 식에 고정 여유 addMut 를 더한 변이 식의 마스크는 기하 상한 밖 리프를 만든다. 즉 상한이 addMut 를 잡을 만큼 조이다.
       const maskWith = (add) => {
         const out = new Set();
         for (let i = 0; i <= steps; i++) {
           const cam = camAt((horizonS * i) / steps);
           for (let k = 0; k < oc.leafCount; k++) {
             const [a, b] = boxOf(k);
-            const mm = 1.0001 * (Math.hypot(...v) * hh) + add;
+            const mm = Math.hypot(...v) * hh + add;
             if (boxMayBeVisibleSplat(cam, a.map((x) => x - mm), b.map((x) => x + mm), 0)) out.add(k);
           }
         }
         return out;
       };
-      const orig = maskWith(1e-9), mut = maskWith(addMut);
-      assert.equal(orig.size, sum(m), `전제: 원본 식 재현이 predictiveMask 와 같음 (steps=${steps})`);
-      for (let k = 0; k < oc.leafCount; k++) assert.equal(orig.has(k) ? 1 : 0, m[k], `전제: 원본 식 리프 ${k}`);
+      const base = maskWith(0), mut = maskWith(addMut);
+      for (const k of base) assert.equal(m[k], 1, `전제: 기하 하한 식 리프 ${k} (steps=${steps})`);
       const outside = [...mut].filter((k) => !bound.has(k));
-      assert.ok(mut.size > orig.size && outside.length >= 1, `전제: +${addMut} m 변이는 원본과 마스크가 다르고 상한 밖 리프를 만든다 (steps=${steps}, 변이 ${mut.size} / 원본 ${orig.size}, 상한 밖 ${outside.length})`);
+      assert.ok(outside.length >= 1, `전제: +${addMut} m 변이는 상한 밖 리프를 만든다 (steps=${steps}, 변이 ${mut.size} / 하한 ${base.size}, 상한 밖 ${outside.length})`);
     }
   }
   }
