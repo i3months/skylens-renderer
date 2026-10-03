@@ -4,7 +4,7 @@ import {
   BODY_FIXED_BYTES, BODY_VERSION, COLOR_MODE, ENTROPY_MODE, RANGE_PROB_BITS, RANGE_MOVE_BITS,
   POINT_COUNT_MAX, STREAM_RAW_BYTES_MAX, CODEC1_FORMATS, CODEC_SKLC1, MORTON_BITS, CodecError,
 } from '../../contracts/codec/index.mjs';
-import { AssetFormatError, OFFSETS, CODEC_RAW_PLANAR } from '../../contracts/asset/index.mjs';
+import { AssetFormatError, OFFSETS, CODEC_RAW_PLANAR, TILE_SIZE_M, LOD_MAX, QUANT_EXP_MIN, QUANT_EXP_MAX, POSITION_Q_MAX } from '../../contracts/asset/index.mjs';
 import { readHeaderClient, readPlanesClient } from '../asset/index.mjs';
 
 // ---- CRC-32(IEEE, 반사 0xEDB88320) ----
@@ -31,13 +31,16 @@ function crc32ZeroField(u8, len) {
 
 // ---- LEB128 ----
 /** bytes[pos..] 에서 LEB128 한 값을 읽는다. maxBytes 를 넘는 이어짐은 'range'. 반환 값은 Number(최대 2^49 미만). */
-function readLeb(bytes, st, maxBytes, what) {
+function readLeb(bytes, st, maxBytes, what, canonical = false) {
   let v = 0, mul = 1;
   for (let k = 0; k < maxBytes; k++) {
     if (st.pos >= bytes.length) throw new CodecError('stream', `${what}: 스트림이 모자라다`);
     const b = bytes[st.pos++];
     v += (b & 127) * mul;
-    if ((b & 128) === 0) return v;
+    if ((b & 128) === 0) {
+      if (canonical && k > 0 && b === 0) throw new CodecError('stream', `${what}: 최소 표현이 아닌 LEB128`);
+      return v;
+    }
     mul *= 128;
   }
   throw new CodecError('range', `${what}: LEB128 이 너무 길다`);
@@ -47,10 +50,13 @@ function readLeb(bytes, st, maxBytes, what) {
 const PROB_INIT = 1 << (RANGE_PROB_BITS - 1);
 const TOP = 2 ** 24;
 
-/** payload(bytes[off..])를 정확히 rawLen 바이트로 복호한다. 모자라거나 남으면 'range'. */
+/** payload(bytes[off..])를 정확히 rawLen 바이트로 복호한다. 모자라거나 남거나 끝 상태 code ≠ 0 이면 'range'. */
 function rangeDecode(bytes, off, rawLen) {
   const end = bytes.length;
-  if (end - off < 5) throw new CodecError('range', '범위 부호 payload 가 5 바이트 미만');
+  const payloadLen = end - off;
+  if (payloadLen < 5) throw new CodecError('range', '범위 부호 payload 가 5 바이트 미만');
+  // 비트마다 range 가 최소 2017/2048 배로 줄어 원바이트 하나가 최소 0.176 비트를 쓴다 → 할당 전에 거부
+  if (rawLen > 64 * payloadLen + 64) throw new CodecError('range', '범위 부호 payload 가 rawLen 에 비해 너무 짧다');
   if (bytes[off] !== 0) throw new CodecError('range', '범위 부호 첫 바이트가 0 이 아니다');
   let pos = off + 1;
   let code = ((bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3]) >>> 0;
@@ -85,26 +91,40 @@ function rangeDecode(bytes, off, rawLen) {
     out[i] = node & 255;
   }
   if (pos !== end) throw new CodecError('range', '범위 부호 payload 가 남는다');
+  if (code !== 0) throw new CodecError('range', '범위 부호 끝 상태(code ≠ 0)가 맞지 않는다');
   return out;
 }
 
 /**
- * entropy 컨테이너 복호. [u8 mode][LEB128 rawLen][payload].
+ * entropy 컨테이너 복호. [u8 mode][LEB128 rawLen][payload]. 엄격 규칙은 서버 entropy 머리 주석과 같다:
+ * rawLen 최소 표현, 7 바이트 초과 이어짐은 limit, 범위 부호 첫 바이트 0, rawLen > 64×payload+64 조기 거부, 끝 code = 0.
  * @param {Uint8Array} bytes 스트림 바이트
+ * @param {number} minRaw 이 스트림이 가질 수 있는 원바이트 하한(최소 바이트 수 미달은 할당 전에 거부)
  * @param {number} maxRaw 이 스트림이 가질 수 있는 원바이트 상한(부풀린 rawLen 거부)
  */
-function entropyDecodeClient(bytes, maxRaw) {
+function entropyDecodeClient(bytes, minRaw, maxRaw) {
   if (bytes.length < 2) throw new CodecError('stream', 'entropy 컨테이너가 너무 짧다');
   const mode = bytes[0];
   if (mode !== ENTROPY_MODE.STORED && mode !== ENTROPY_MODE.RANGE) throw new CodecError('mode', `알 수 없는 entropy 모드 ${mode}`);
-  const st = { pos: 1 };
-  const rawLen = readLeb(bytes, st, 5, 'rawLen');
-  if (rawLen > maxRaw || rawLen > STREAM_RAW_BYTES_MAX) throw new CodecError('limit', `rawLen ${rawLen} 이 상한 ${maxRaw} 을 넘는다`);
-  if (mode === ENTROPY_MODE.STORED) {
-    if (bytes.length - st.pos !== rawLen) throw new CodecError('stream', '저장 모드 payload 길이가 rawLen 과 다르다');
-    return bytes.subarray(st.pos);
+  let rawLen = 0, mul = 1, pos = 1;
+  for (let k = 0; ; k++) {
+    if (k >= 7) throw new CodecError('limit', 'rawLen LEB128 이 7 바이트를 넘는다');
+    if (pos >= bytes.length) throw new CodecError('stream', 'rawLen 이 잘렸다');
+    const b = bytes[pos++];
+    rawLen += (b & 127) * mul;
+    mul *= 128;
+    if ((b & 128) === 0) {
+      if (b === 0 && k > 0) throw new CodecError('stream', 'rawLen 이 최소 표현이 아니다');
+      break;
+    }
   }
-  return rangeDecode(bytes, st.pos, rawLen);
+  if (rawLen > maxRaw || rawLen > STREAM_RAW_BYTES_MAX) throw new CodecError('limit', `rawLen ${rawLen} 이 상한 ${maxRaw} 을 넘는다`);
+  if (rawLen < minRaw) throw new CodecError('stream', `rawLen ${rawLen} 이 최소 ${minRaw} 바이트에 못 미친다`);
+  if (mode === ENTROPY_MODE.STORED) {
+    if (bytes.length - pos !== rawLen) throw new CodecError('stream', '저장 모드 payload 길이가 rawLen 과 다르다');
+    return bytes.subarray(pos);
+  }
+  return rangeDecode(bytes, pos, rawLen);
 }
 
 // ---- pos 스트림: 키 차분 LEB128 → 모턴 역인터리브 ----
@@ -120,6 +140,7 @@ for (let v = 0; v < 4096; v++) {
 const KEY_LIMIT = 2 ** MORTON_BITS;
 
 function decodePos(raw, n) {
+  if (raw.length < n) throw new CodecError('stream', 'pos 스트림이 점마다 최소 1 바이트에 못 미친다');
   const qe = new Uint16Array(n), qn = new Uint16Array(n), qu = new Uint16Array(n);
   const st = { pos: 0 };
   let key = 0;
@@ -139,12 +160,13 @@ function decodePos(raw, n) {
 
 // ---- normal 스트림: 지그재그 차분 평면 둘 ----
 function decodeNormal(raw, n) {
+  if (raw.length < 2 * n) throw new CodecError('stream', 'normal 스트림이 평면 둘의 최소 2n 바이트에 못 미친다');
   const st = { pos: 0 };
   const out = [new Int8Array(n), new Int8Array(n)];
   for (const plane of out) {
     let acc = 0;
     for (let i = 0; i < n; i++) {
-      const z = readLeb(raw, st, 3, 'normal');
+      const z = readLeb(raw, st, 3, 'normal', true);
       acc += z & 1 ? -((z + 1) / 2) : z / 2;
       if (acc < -127 || acc > 127) throw new CodecError('range', '법선 oct 값이 -127..127 밖');
       plane[i] = acc;
@@ -162,11 +184,11 @@ function decodeColor(raw, n, bodyMode) {
     throw new CodecError('mode', `알 수 없는 색 모드 ${mode}`);
   }
   if (mode !== bodyMode) throw new CodecError('mode', `본문 색 모드 ${bodyMode} 와 스트림 첫 바이트 ${mode} 가 다르다`);
-  const r = new Uint8Array(n), g = new Uint8Array(n), b = new Uint8Array(n);
   if (mode === COLOR_MODE.PALETTE) {
     if (raw.length < 2) throw new CodecError('stream', '팔레트 헤더 부족');
     const k = raw[1] + 1;
     if (raw.length !== 2 + 3 * k + n) throw new CodecError('stream', '팔레트 스트림 길이 불일치');
+    const r = new Uint8Array(n), g = new Uint8Array(n), b = new Uint8Array(n);
     const base = 2 + 3 * k;
     for (let i = 0; i < n; i++) {
       const id = raw[base + i];
@@ -176,6 +198,7 @@ function decodeColor(raw, n, bodyMode) {
     return { r, g, b };
   }
   if (raw.length !== 1 + 3 * n) throw new CodecError('stream', '색 스트림 길이 불일치');
+  const r = new Uint8Array(n), g = new Uint8Array(n), b = new Uint8Array(n);
   let o = 1;
   for (const ch of [r, g, b]) {
     let prev = 0;
@@ -185,6 +208,32 @@ function decodeColor(raw, n, bodyMode) {
     }
   }
   return { r, g, b };
+}
+
+/**
+ * codec 1 헤더 의미 검사(ASSET_FORMAT §3.2 의 4~9, 11). readHeaderClient 가 codec 1 을 거부해 codec 0 사본으로 읽으므로
+ * 그 함수가 보지 않는 규칙(lod·bbox 순서·span·타일 포함·anchor·reserved)을 여기서 직접 본다. 서버 decodeChunk 와 같은 집합이다.
+ */
+function checkHeaderSemantics(h) {
+  if (h.pointCount < 1) throw new AssetFormatError('field', 'pointCount must be >= 1');
+  if (h.tileSizeM !== TILE_SIZE_M) throw new AssetFormatError('field', `tileSizeM ${h.tileSizeM}`);
+  if (h.lod > LOD_MAX) throw new AssetFormatError('field', `lod ${h.lod}`);
+  if (h.quantExp < QUANT_EXP_MIN || h.quantExp > QUANT_EXP_MAX) throw new AssetFormatError('field', `quantExp ${h.quantExp}`);
+  for (const k of ['lat', 'lon', 'alt']) {
+    if (!Number.isFinite(h.anchor[k])) throw new AssetFormatError('field', `anchor.${k} not finite`);
+  }
+  for (let a = 0; a < 3; a++) {
+    const lo = h.bboxMin[a], hi = h.bboxMax[a];
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) throw new AssetFormatError('bbox', `axis ${a} not finite`);
+    if (lo > hi) throw new AssetFormatError('bbox', `axis ${a} min > max`);
+    if ((hi - lo) * 2 ** h.quantExp > POSITION_Q_MAX) throw new AssetFormatError('range', `axis ${a} span exceeds u16`);
+  }
+  const tiles = [h.tileX, h.tileY];
+  for (let a = 0; a < 2; a++) {
+    const t0 = TILE_SIZE_M * tiles[a];
+    if (h.bboxMin[a] < t0 || h.bboxMax[a] >= t0 + TILE_SIZE_M) throw new AssetFormatError('tile', `bbox axis ${a} outside tile`);
+  }
+  if (h.versionMinor === 0 && h.reserved.some((x) => x !== 0)) throw new AssetFormatError('reserved', 'reserved bytes must be 0 for version 1.0');
 }
 
 /** @param {ArrayBuffer|Uint8Array} bytes */
@@ -215,6 +264,7 @@ export function decodeChunkClient(fileBytes) {
   copy[OFFSETS.codec] = CODEC_RAW_PLANAR;
   const header = readHeaderClient(copy);
   header.codec = CODEC_SKLC1;
+  checkHeaderSemantics(header);
 
   if (!CODEC1_FORMATS.includes(header.format)) throw new CodecError('format', `codec 1 은 format ${header.format} 을 받지 않는다`);
   if (header.pointCount > POINT_COUNT_MAX) throw new CodecError('limit', `점 수 ${header.pointCount} 가 상한 초과`);
@@ -234,9 +284,9 @@ export function decodeChunkClient(fileBytes) {
   if (crc32ZeroField(u8, base + header.bodyBytes) !== header.checksum) throw new CodecError('checksum', '체크섬 불일치');
 
   const p0 = base + BODY_FIXED_BYTES, p1 = p0 + posLen, p2 = p1 + nrmLen;
-  const posRaw = entropyDecodeClient(u8.subarray(p0, p1), 7 * n);
-  const nrmRaw = entropyDecodeClient(u8.subarray(p1, p2), 6 * n);
-  const colRaw = entropyDecodeClient(u8.subarray(p2, p2 + colLen), 3 * n + 770);
+  const posRaw = entropyDecodeClient(u8.subarray(p0, p1), n, 7 * n);
+  const nrmRaw = entropyDecodeClient(u8.subarray(p1, p2), 2 * n, 6 * n);
+  const colRaw = entropyDecodeClient(u8.subarray(p2, p2 + colLen), Math.min(n + 5, 3 * n + 1), 3 * n + 770);
   const { qe, qn, qu } = decodePos(posRaw, n);
   const { octX, octY } = decodeNormal(nrmRaw, n);
   const { r, g, b } = decodeColor(colRaw, n, colorMode);

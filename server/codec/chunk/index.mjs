@@ -2,6 +2,7 @@
 import { crc32 } from 'node:zlib';
 import {
   FORMAT_POINT27, CODEC_RAW_PLANAR, OFFSETS, AssetFormatError, bodyLayout, parseHeader, serializeHeader,
+  TILE_SIZE_M, LOD_MAX, QUANT_EXP_MIN, QUANT_EXP_MAX, POSITION_Q_MAX,
 } from '../../../contracts/asset/index.mjs';
 import {
   CODEC_SKLC1, COLOR_MODE, BODY_FIXED_BYTES, BODY_VERSION, POINT_COUNT_MAX, CodecError,
@@ -69,6 +70,31 @@ export function encodeChunk(rawFileBytes, opts = {}) {
 }
 
 /**
+ * codec 1 헤더 의미 검사(ASSET_FORMAT §3.2 의 4~9, 11). server/asset/header 의 readHeaderStrict 는 codec 1 의 body_bytes 규칙을
+ * 거부하므로(소유 밖) 같은 검사를 여기서 직접 한다. client/codec 의 checkHeaderSemantics 와 같은 집합이어야 한다.
+ */
+function checkHeaderSemantics(h) {
+  if (h.tileSizeM !== TILE_SIZE_M) throw new AssetFormatError('field', `tileSizeM ${h.tileSizeM} != ${TILE_SIZE_M}`);
+  if (h.lod > LOD_MAX) throw new AssetFormatError('field', `lod ${h.lod} > ${LOD_MAX}`);
+  if (h.quantExp < QUANT_EXP_MIN || h.quantExp > QUANT_EXP_MAX) throw new AssetFormatError('field', `quantExp ${h.quantExp}`);
+  for (const k of ['lat', 'lon', 'alt']) {
+    if (!Number.isFinite(h.anchor[k])) throw new AssetFormatError('field', `anchor.${k} not finite`);
+  }
+  for (let a = 0; a < 3; a++) {
+    const lo = h.bboxMin[a], hi = h.bboxMax[a];
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) throw new AssetFormatError('bbox', `axis ${a} not finite`);
+    if (lo > hi) throw new AssetFormatError('bbox', `axis ${a} min > max`);
+    if ((hi - lo) * 2 ** h.quantExp > POSITION_Q_MAX) throw new AssetFormatError('range', `axis ${a} span exceeds u16`);
+  }
+  const tiles = [h.tileX, h.tileY];
+  for (let a = 0; a < 2; a++) {
+    const t0 = TILE_SIZE_M * tiles[a];
+    if (h.bboxMin[a] < t0 || h.bboxMax[a] >= t0 + TILE_SIZE_M) throw new AssetFormatError('tile', `bbox axis ${a} outside tile`);
+  }
+  if (h.versionMinor === 0 && h.reserved.some((x) => x !== 0)) throw new AssetFormatError('reserved', 'reserved bytes must be 0 for version 1.0');
+}
+
+/**
  * codec 1 파일 → 같은 점 집합의 codec 0 파일(점 순서는 모턴 순). 체크섬을 검사한다.
  * @param {Uint8Array} fileBytes
  * @returns {Uint8Array}
@@ -79,6 +105,7 @@ export function decodeChunk(fileBytes) {
   if (h.format !== FORMAT_POINT27) throw new CodecError('format', 'codec 1 accepts format 1 only');
   const n = h.pointCount;
   if (n < 1 || n > POINT_COUNT_MAX) throw new CodecError('limit', `point count ${n}`);
+  checkHeaderSemantics(h);
   if (fileBytes.length !== h.headerSize + h.bodyBytes) throw new CodecError('length', 'file length != header_size + body_bytes');
   const chk = fileBytes.slice();
   new DataView(chk.buffer).setUint32(OFFSETS.checksum, 0, true);

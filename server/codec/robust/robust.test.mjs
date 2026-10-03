@@ -363,7 +363,7 @@ test('변이 10만 회: 서버·클라이언트가 CodecError/AssetFormatError �
 
   if (process.env.ROBUST_DUMP) writeFileSync(process.env.ROBUST_DUMP, JSON.stringify(whyFirst, null, 1)); // 진단용: 실패 종류별 첫 재현 입력
   finding.큰할당 = fails.큰할당; finding.수용거부불일치 = fails.수용거부불일치; finding.counts = { whyCount };
-  delete fails.큰할당; delete fails.수용거부불일치; // 아래 todo 시험이 따로 단언한다(소유 경로 밖 복호기 결함이라 이 작업에서 고치지 않음)
+  delete fails.큰할당; delete fails.수용거부불일치; // 아래 두 시험이 따로 단언한다
   const failMsg = Object.entries(fails).filter(([, v]) => v.length).map(([k, v]) => `${k} ${v.count}건: ${JSON.stringify(v)}`).join('\n');
   assert.equal(failMsg, '', `퍼징 실패 재현 입력(base64):\n${failMsg}`);
   assert.ok(fixedCrc >= MIN_FIXED_CRC, `체크섬 재계산 변이 ${fixedCrc} < ${MIN_FIXED_CRC}`);
@@ -374,12 +374,11 @@ test('변이 10만 회: 서버·클라이언트가 CodecError/AssetFormatError �
   }
 });
 
-// 알려진 결함(보고 대상). todo 로 두어 결과는 보이되 병합을 막지 않는다. 결함이 고쳐지면 todo 를 지운다.
-test('변이 퍼징 중 서버·클라이언트 수용/거부 일치(헤더 검증 차이)', { todo: '클라이언트만 quantExp·tileSizeM 범위를 거부, 서버 range 끝 상태 검사가 클라이언트에 없음' }, () => {
+test('변이 퍼징 중 서버·클라이언트 수용/거부 일치(불일치 0건)', () => {
   const f = finding.수용거부불일치;
   assert.equal(f.length, 0, `불일치 ${f.count}건: ${JSON.stringify(f)}`);
 });
-test('변이 퍼징 중 호출당 할당 4 MiB 이하(클라이언트 점 수 부풀림)', { todo: '클라이언트가 스트림 검사 전에 6n 바이트 위치 평면을 먼저 할당' }, () => {
+test('변이 퍼징 중 호출당 할당 4 MiB 이하(큰 할당 0건)', () => {
   const f = finding.큰할당;
   assert.equal(f.length, 0, `큰 할당 ${f.count}건: ${JSON.stringify(f)}`);
 });
@@ -403,6 +402,31 @@ test('점 수 부풀림: 체크섬을 맞춘 거대 점 수가 큰 할당·긴 �
   } finally { uninstall(); }
 });
 
-test('점 수 부풀림: 클라이언트 할당도 4 MiB 이하', { todo: '클라이언트가 n=4194304 에서 약 25 MB(6n) 를 먼저 할당' }, () => {
+test('점 수 부풀림: 클라이언트 할당도 4 MiB 이하', () => {
+  assert.ok(clientAlloc.length === 5, '클라이언트 할당 측정이 비었다');
   for (const [big, alloc] of clientAlloc) assert.ok(alloc <= MAX_ALLOC_BYTES, `클라이언트 n=${big}: 할당 ${alloc} B`);
+});
+
+test('헤더 의미 규칙 위반(체크섬 맞춤): 서버·클라이언트가 모두 거부한다', () => {
+  const dvOf = (f) => new DataView(f.buffer, f.byteOffset, f.byteLength);
+  const cases = {
+    'quantExp 7': (f) => { f[OFFSETS.quantExp] = 7; },
+    'quantExp 11': (f) => { f[OFFSETS.quantExp] = 11; },
+    'tileSizeM 65': (f) => dvOf(f).setUint16(OFFSETS.tileSizeM, 65, true),
+    'lod 8': (f) => { f[OFFSETS.lod] = 8; },
+    'bbox 최솟값 NaN': (f) => dvOf(f).setFloat64(OFFSETS.bboxMin, NaN, true),
+    'bbox min > max': (f) => dvOf(f).setFloat64(OFFSETS.bboxMin + 8, 1e6, true),
+    '타일 밖(tileX 변경)': (f) => dvOf(f).setInt32(OFFSETS.tileX, 5, true),
+    'anchor 무한': (f) => dvOf(f).setFloat64(OFFSETS.anchorLat, Infinity, true),
+    'reserved 비0(minor 0)': (f) => { f[OFFSETS.reserved] = 1; },
+  };
+  for (const [name, mut] of Object.entries(cases)) {
+    for (const base of bases) {
+      const f = base.slice();
+      mut(f);
+      setCrc(f);
+      assert.throws(() => decodeChunk(f), allowed, `서버가 받았다: ${name}`);
+      assert.throws(() => decodeChunkClient(f), allowed, `클라이언트가 받았다: ${name}`);
+    }
+  }
 });
