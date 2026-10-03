@@ -1,6 +1,7 @@
 // 단계별 검사 비용 측정(F-154, F-163): flat_boxes 계층에서 frustum·distance·predict·occlusion·orderChunks·client 시점당 시간을 잰다.
 // 사용: node bench/cull/leaf_check_bench.mjs [--scale small|large] [--runs N] [--json 경로]
-// scale: 'small'(기본, ~6.6k points·~6.6k nodes) 또는 'large'(~260k points·~260k nodes·~190k leaves)
+// scale: 'small'(기본, 점 ~6.6k) 또는 'large'(점 26만). 단계별 시간은 flat_boxes 계층으로 잰다.
+// 검사 캐시 자체는 별도로 합성 계층(노드 26만·리프 약 19만, F-154 실패 상황 규모)에서 첫 호출·미스·적중을 잰다(leaf_check 절).
 // 각 단계는 시점 3개를 한 번씩 돌린 합(ms)을 N 번 되풀이해 그중 최소값을 보고한다(최소값 = 잡음이 가장 적은 표본).
 // 첫 호출(캐시 비어 있음), 캐시 미스, 캐시 적중 3가지 경우를 분리하여 측정한다.
 // 다른 커밋과 비교하려면 이 파일을 그 커밋의 git worktree 의 bench/cull/ 에 복사해 같은 명령으로 돈다.
@@ -13,6 +14,7 @@ import { distanceCull } from '../../server/cull/distance/index.mjs';
 import { predictiveMask } from '../../server/cull/predict/index.mjs';
 import { buildDepthPyramid, occlusionCull } from '../../server/cull/occlusion/index.mjs';
 import { orderChunks } from '../../server/cull/priority/index.mjs';
+import { checkLeafIndexOneToOne } from '../../server/cull/degenerate/leaf_check.mjs';
 import { leafBoxesOf, clientFrustumCull } from '../../client/cull/index.mjs';
 
 const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : dflt; };
@@ -34,17 +36,21 @@ const masks = cameras.map((c) => frustumCull(hierarchy, c, { pointSizeM: POINT_S
 const pyramids = cameras.map((c) => buildDepthPyramid(hierarchy, c, { pointSizeM: POINT_SIZE_M }));
 const leafBoxes = leafBoxesOf(hierarchy.octree);
 
-const stages = {
+const stages = (hierarchy) => ({
   frustum: (c) => frustumCull(hierarchy, c, { pointSizeM: POINT_SIZE_M }),
   distance: (c) => distanceCull(hierarchy, c, { maxDistanceM: 150 }),
   predict: (c) => predictiveMask(hierarchy, { camera: c, velocityMps: [1, 0, 0], angularRadPerS: [0, 0.1, 0] }, { horizonS: 1, steps: 2, pointSizeM: POINT_SIZE_M }),
   occlusion: (c, i) => occlusionCull(hierarchy, c, pyramids[i]),
   orderChunks: (c, i) => orderChunks(hierarchy, c, masks[i]),
   client: (c) => clientFrustumCull(leafBoxesOf(hierarchy.octree), c, { pointSizeM: POINT_SIZE_M }),
-};
+});
+// 캐시 미스용 계층: leafIndex 를 slice() 로 복사해 새 캐시 키를 만든다(나머지 배열은 공유).
+const missHierarchy = () => ({ ...hierarchy, octree: { ...hierarchy.octree, leafIndex: hierarchy.octree.leafIndex.slice() } });
+const hitStages = stages(hierarchy);
 
 const result = {};
-for (const [name, fn] of Object.entries(stages)) {
+for (const name of Object.keys(hitStages)) {
+  const fn = hitStages[name];
   // 첫 호출 시간 측정(캐시 비어 있음)
   const firstCallTime = (() => {
     const t0 = performance.now();
@@ -52,17 +58,12 @@ for (const [name, fn] of Object.entries(stages)) {
     return performance.now() - t0;
   })();
 
-  // 캐시 미스 시간 측정: leafIndex를 slice()로 복사하여 새 키 생성
+  // 캐시 미스 시간 측정: leafIndex 를 slice() 로 복사해 새 키를 만들고 전체 검사를 다시 돌게 한다
   let minMiss = Infinity;
   for (let r = 0; r < RUNS; r++) {
-    // 캐시 미스를 강제하기 위해 매번 새로운 leafBoxes 생성
-    const newLeafBoxes = leafBoxesOf(hierarchy.octree);
-    const missedFn = name === 'client'
-      ? (c) => clientFrustumCull(newLeafBoxes, c, { pointSizeM: POINT_SIZE_M })
-      : fn;
-
+    const missFn = stages(missHierarchy())[name];
     const t0 = performance.now();
-    cameras.forEach((c, i) => missedFn(c, i));
+    cameras.forEach((c, i) => missFn(c, i));
     minMiss = Math.min(minMiss, performance.now() - t0);
   }
 
@@ -82,13 +83,34 @@ for (const [name, fn] of Object.entries(stages)) {
   };
 }
 
+// leaf_check 절: 합성 계층(노드 26만·리프 19만)에서 검사 함수만 직접 잰다.
+const LC_NODES = 260000;
+const LC_LEAVES = 190000;
+const lcIndex = new Int32Array(LC_NODES).fill(-1);
+for (let k = 0; k < LC_LEAVES; k++) lcIndex[LC_NODES - 1 - k] = k;
+const lcBoxMin = new Float32Array(3 * LC_NODES);
+const lcBoxMax = new Float32Array(3 * LC_NODES).fill(1);
+const lcOc = { leafIndex: lcIndex, boxMin: lcBoxMin, boxMax: lcBoxMax, leafCount: LC_LEAVES, nodeCount: LC_NODES };
+const timeIt = (fn) => { const t0 = performance.now(); fn(); return performance.now() - t0; };
+const lcFirst = timeIt(() => checkLeafIndexOneToOne(lcOc));
+let lcMiss = Infinity;
+for (let r = 0; r < RUNS; r++) {
+  const oc = { ...lcOc, leafIndex: lcIndex.slice() };
+  lcMiss = Math.min(lcMiss, timeIt(() => checkLeafIndexOneToOne(oc)));
+}
+let lcHit = Infinity;
+for (let r = 0; r < RUNS; r++) lcHit = Math.min(lcHit, timeIt(() => checkLeafIndexOneToOne(lcOc)));
+result.leaf_check = { firstCall: lcFirst, miss: lcMiss, hit: lcHit };
+
 const info = {
   scale: SCALE,
   node: process.version,
   points: cloud.count,
   leafCount: hierarchy.octree.leafCount,
   nodeCount: hierarchy.octree.nodeCount,
-  runs: RUNS
+  runs: RUNS,
+  leafCheckNodes: LC_NODES,
+  leafCheckLeaves: LC_LEAVES
 };
 
 console.log(JSON.stringify(info));
