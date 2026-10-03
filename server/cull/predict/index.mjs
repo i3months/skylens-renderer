@@ -63,6 +63,11 @@ export function predictCamera(camera, motion, dtS) {
 function readLeaves(h) {
   const o = h?.octree;
   if (!o || !Number.isInteger(o.leafCount) || o.leafCount < 1 || !o.leafIndex || !o.boxMin || !o.boxMax) throw new Error(`${ERR} 계층의 팔진 트리가 올바르지 않음`);
+  // frustum/distance/occlusion 과 같이 leafIndex 는 Int32Array 만 허용(F-153). 상자는 Float32Array/Float64Array 만(일반 배열 거부).
+  const f = (a) => a instanceof Float32Array || a instanceof Float64Array;
+  if (!(o.leafIndex instanceof Int32Array) || !f(o.boxMin) || !f(o.boxMax)) {
+    throw new Error(`${ERR} octree 배열 형식 오류: leafIndex=Int32Array, boxMin/boxMax=Float32Array|Float64Array 여야 함`);
+  }
   const n = o.leafCount;
   const { leafIndex, boxMin, boxMax } = o;
   const nodeCount = Number.isInteger(o.nodeCount) ? o.nodeCount : leafIndex.length;
