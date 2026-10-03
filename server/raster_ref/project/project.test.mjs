@@ -29,7 +29,18 @@ test('renderer_basis §2-3 예제: X_c = (−5.03, −7.84, 45.28), R = I, t = 0
   near(v, 139.47, 0.01, 'v(문서 값)');
   // 문서 표의 u = 396.27 은 반올림 전 X_c 로 낸 값이다. X_c.x 를 0.01 m 로 반올림하면
   // u 가 최대 754.32·0.005/45.28 ≈ 0.083 px 움직이므로 그 범위 안에서만 맞춘다.
-  near(u, 396.27, 0.083, 'u(문서 값, 반올림 오차 범위)');
+  // 반올림 한계(성분 합): x 항 fx·0.005/d = 0.083 px, z 항 fx·|x|·0.005/d² = 754.32·5.03·0.005/45.28² ≈ 0.009 px
+  // 이므로 반올림된 입력으로는 0.092 px 까지만 보장한다.
+  near(u, 396.27, 0.092, 'u(문서 값, 반올림 오차 범위: x 항 + z 항)');
+});
+
+test('renderer_basis §2-3 예제: 반올림 전 X_c = (−5.02611, −7.84, 45.28) 은 문서 값과 0.01 px 이내', () => {
+  const { u, v } = project(BASIS, [-5.02611, -7.84, 45.28]);
+  near(u, 396.27, 0.01, 'u(문서 396.27)');
+  near(v, 139.47, 0.01, 'v(문서 139.47)');
+  // 변이: u 에 0.05 px 오프셋이 생기면 위 허용(0.01)을 넘어야 한다(시험이 그 오프셋을 잡는다는 증명).
+  assert.ok(Math.abs(u + 0.05 - 396.27) > 0.01, '0.05 px 오프셋 변이가 통과함');
+  assert.ok(Math.abs(v + 0.05 - 139.47) > 0.01, 'v 0.05 px 오프셋 변이가 통과함');
 });
 
 test('비자명 R(z 축 90°)과 t ≠ 0 손계산', () => {
@@ -51,9 +62,12 @@ test('카메라 뒤·카메라 평면 위 점은 d 만 주고 u, v 는 NaN', () 
   const zero = project(CAM, [0, 0, -3]);
   assert.equal(zero.d, 0);
   assert.ok(Number.isNaN(zero.u) && Number.isNaN(zero.v));
-  // 바로 앞(d = 1e-9 > 0)은 유한한 u, v
-  const front = project({ ...CAM, R: I3, t: [0, 0, 0] }, [0, 0, 1e-9]);
-  assert.ok(Number.isFinite(front.u) && Number.isFinite(front.v));
+  // d 가 극히 작으면(예: 1e-310) u, v 가 ±Infinity 가 되는데 이를 NaN 으로 통일
+  const tiny = project({ ...CAM, R: I3, t: [0, 0, 0] }, [1, 1, 1e-310]);
+  assert.ok(Number.isNaN(tiny.u) && Number.isNaN(tiny.v), '극히 작은 d → u, v NaN');
+  // 일반적인 아주 작은 양수(d = 1e-9 > 0)는 유한한 u, v
+  const small = project({ ...CAM, R: I3, t: [0, 0, 0] }, [0, 0, 1e-9]);
+  assert.ok(Number.isFinite(small.u) && Number.isFinite(small.v));
 });
 
 // 변이 구현: 시험이 흔한 실수를 잡는지 확인한다. 각 변이는 손계산 정답과 어긋나야 한다.

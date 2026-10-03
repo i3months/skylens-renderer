@@ -55,8 +55,9 @@ test('자유: 프레임 수·t 간격·속도 ≤ 15 m/s·각속도 ≤ 90°/s',
 });
 
 test('자유: 등속 10 m/s(누적 199.7 m ±5%, 프레임 속도 9~11 m/s)·yaw 범위 > 10°', () => {
-  // 599 구간 / 30 fps = 19.9667 s × 10 m/s = 199.67 m. 시드 3 은 기본 bounds 자르기에 걸려 일부 프레임이 느려지므로 제외.
-  for (const seed of [1, 2, 42, 777]) {
+  // 599 구간 / 30 fps = 19.9667 s × 10 m/s = 199.67 m. 시드를 고르지 않고 1~200 전부에서 성립해야 한다
+  // (구현이 곡선을 bounds 안으로 아핀 축소하고 프레임 간 직선 거리를 10/30 m 로 맞춘다).
+  for (let seed = 1; seed <= 200; seed++) {
     const p = freePath({ seed });
     let len = 0, yMin = Infinity, yMax = -Infinity, prevYaw = null, yaw = 0;
     for (let i = 0; i < p.frames.length; i++) {
@@ -77,17 +78,18 @@ test('자유: 등속 10 m/s(누적 199.7 m ±5%, 프레임 속도 9~11 m/s)·yaw
   }
 });
 
-test('자유: bounds 안에 머문다(오버슈트 시드 276: 자르지 않으면 최대 9.18 m 벗어남)', () => {
+test('자유: bounds 안에 머문다(오버슈트 시드 276: 축소하지 않으면 최대 9.18 m 벗어남)', () => {
   const bounds = { min: [-50, 10, -50], max: [50, 60, 50] };
   const p = freePath({ seed: 276, bounds });
-  let touched = 0;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (const f of p.frames) {
     f.eye.forEach((v, c) => {
       assert.ok(v >= bounds.min[c] && v <= bounds.max[c], `축 ${c} 값 ${v}`);
-      if (v === bounds.min[c] || v === bounds.max[c]) touched++;
+      lo[c] = Math.min(lo[c], v); hi[c] = Math.max(hi[c], v);
     });
   }
-  assert.ok(touched > 0, '자르기가 실제로 작동하는 시드여야 함');
+  // 오버슈트 축은 bounds 폭 대부분을 쓰도록 축소돼 있어야 한다(0.5 보다 작은 값으로 줄어든 경로가 아님).
+  assert.ok([0, 1, 2].some((c) => hi[c] - lo[c] > 0.5 * (bounds.max[c] - bounds.min[c])), '경로가 bounds 를 쓰지 않음');
 });
 
 test('결정성: 같은 시드 JSON 동일, 다른 시드 다름', () => {

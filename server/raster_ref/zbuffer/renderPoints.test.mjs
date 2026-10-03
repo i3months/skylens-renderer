@@ -127,3 +127,21 @@ test('변이: <= 규칙 → 같은 깊이에서 번호 큰 점이 이겨 시험 
   const good = renderPoints(cam(), pts, { pointSizeM: 0.2 });
   assert.equal(good.index[px(4, 4)], 0);
 });
+
+// F-093 ④: 56 B(형식 2) 점의 opacity·scale·rot 는 그림에 영향을 주지 않고 pointSizeM 고정 원판만 쓴다는 선택(contracts/raster)을 고정한다.
+test('형식 2: opacity·scales·rotations 를 바꿔도 결과가 같고 pointSizeM 만 크기를 정한다', () => {
+  const mk = (op, sc, rot) => ({ format: 2, count: 1, positions: Float32Array.of(0, 0, 5), fdc: Float32Array.of(0, 0, 0), opacity: Float32Array.of(op), scales: Float32Array.of(...sc), rotations: Float32Array.of(...rot) });
+  const base = renderPoints(cam(), mk(1, [0.01, 0.01, 0.01], [1, 0, 0, 0]), { pointSizeM: 0.2 });
+  const other = renderPoints(cam(), mk(0, [5, 0.5, 9], [0, 1, 0, 0]), { pointSizeM: 0.2 });
+  assert.deepEqual(other.index, base.index);
+  assert.deepEqual(other.color, base.color);
+  assert.deepEqual(other.depth, base.depth);
+  assert.equal(filled(base).length, 12); // 위 단일 점 시험과 같은 pointSizeM 0.2 원판
+  assert.ok(filled(renderPoints(cam(), mk(1, [0.01, 0.01, 0.01], [1, 0, 0, 0]), { pointSizeM: 0.4 })).length > 12);
+});
+
+// F-093 ③: 점 수 정의는 positions.length/3 이고 count 불일치는 zbuffer·no_fill 모두 'raster:' 오류다.
+test('count 가 positions.length/3 과 다르면 raster: 오류', () => {
+  const c = { ...cloud([[0, 0, 5], [0, 0, 6], [0, 0, 7]], [[1, 1, 1], [2, 2, 2], [3, 3, 3]]), count: 1 };
+  assert.throws(() => renderPoints(cam(), c, { pointSizeM: 0.2 }), /^Error: raster:/);
+});

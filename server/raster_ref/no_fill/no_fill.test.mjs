@@ -59,11 +59,6 @@ const SIZE = 0.5;
 const EXPECTED_EMPTY = 75097; // 320·240 − 도달 가능 픽셀 1703
 const holes = generate({ seed: 1, count: 5000 });
 
-test('holes: 점이 화면에 보인다(합집합이 비어 있지 않고 전체보다 작음)', () => {
-  const s = reachablePixelSet(camH, holes.cloud, SIZE);
-  assert.ok(s.size > 0 && s.size < 320 * 240, `size=${s.size}`);
-});
-
 test('holes: 빈 픽셀 수 정답(리터럴)', () => {
   const s = reachablePixelSet(camH, holes.cloud, SIZE);
   assert.equal(320 * 240 - s.size, EXPECTED_EMPTY);
@@ -73,4 +68,50 @@ test('holes: renderPoints 결과가 assertNoFill 통과, 빈 픽셀 수 일치',
   const r = renderPoints(camH, holes.cloud, { pointSizeM: SIZE });
   assertNoFill(r, camH, holes.cloud, SIZE);
   assert.equal(countEmpty(r), EXPECTED_EMPTY);
+});
+
+// F-094 ①: 렌더러·reachablePixelSet 과 코드를 공유하지 않는 스칼라 정답. project·splat 모듈을 부르지 않고
+// 정의(칸 [i,i+1)×[j,j+1), 중심 (i+0.5, j+0.5), 중심 거리 ≤ r 이거나 점이 속한 칸)를 그대로 푼다.
+function independentSet(cam, positions, sizeM) {
+  const { fx, fy, cx, cy } = cam.K;
+  const R = cam.R, t = cam.t;
+  const set = new Set();
+  for (let k = 0; k < positions.length / 3; k += 1) {
+    const x = positions[3 * k], y = positions[3 * k + 1], z = positions[3 * k + 2];
+    const xc = R[0] * x + R[1] * y + R[2] * z + t[0];
+    const yc = R[3] * x + R[4] * y + R[5] * z + t[1];
+    const d = R[6] * x + R[7] * y + R[8] * z + t[2];
+    if (!(d > 0) || !(Math.fround(d) > 0)) continue;
+    const u = (fx * xc) / d + cx;
+    const v = (fy * yc) / d + cy;
+    if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+    const r = (fx * sizeM) / (2 * d);
+    for (let j = 0; j < cam.height; j += 1) {
+      if (Math.abs(j + 0.5 - v) > r + 1) continue; // 빠른 거름(정확한 판정은 아래)
+      for (let i = 0; i < cam.width; i += 1) {
+        if (Math.abs(i + 0.5 - u) > r + 1) continue;
+        const dx = i + 0.5 - u, dy = j + 0.5 - v;
+        if (dx * dx + dy * dy <= r * r || (i === Math.floor(u) && j === Math.floor(v))) set.add(j * cam.width + i);
+      }
+    }
+  }
+  return set;
+}
+const sorted = (s) => [...s].sort((a, b) => a - b);
+
+test('독립 스칼라 정답 = reachablePixelSet = 렌더러 칠한 픽셀 (holes 장면과 손 장면)', { skip: renderPoints ? false : 'zbuffer 모듈 없음' }, () => {
+  assert.deepEqual(sorted(independentSet(cam3, cloud2.positions, 0.2)), [0, 4]);
+  const want = sorted(independentSet(camH, holes.cloud.positions, SIZE));
+  assert.deepEqual(sorted(reachablePixelSet(camH, holes.cloud, SIZE)), want);
+  const r = renderPoints(camH, holes.cloud, { pointSizeM: SIZE });
+  const got = [];
+  for (let i = 0; i < r.index.length; i += 1) if (r.index[i] !== -1) got.push(i);
+  assert.deepEqual(got, want);
+  // 반경이 1 픽셀을 넘는 장면이라 dx 정의(i+0.5−u)가 결과를 좌우한다: 변이 dx = i−u 는 이 집합을 바꾼다.
+  assert.ok(want.length > 1000);
+});
+
+test('count 가 positions.length/3 과 다르면 no_fill 쪽도 raster: 오류', () => {
+  const bad = { count: 1, positions: new Float32Array([-1, -1, 1, 0, 0, 1, 1, 1, 1]) };
+  assert.throws(() => reachablePixelSet(cam3, bad, 0.2), /^Error: raster:/);
 });

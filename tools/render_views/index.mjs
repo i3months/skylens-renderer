@@ -3,10 +3,15 @@
 // 출력: 렌더링 결과 배열 (RGB+깊이+점 번호 버퍼)
 
 import { assertCamera } from '../../contracts/raster/index.mjs';
-import { cameraExtrinsics } from '../../bench/baseline/ref_images/index.mjs';
+import { cameraExtrinsics, assertView } from '../../bench/baseline/ref_images/index.mjs';
 import { renderPoints } from '../../server/raster_ref/zbuffer/index.mjs';
 
 const ERR = 'render_views:';
+
+// fov_y_deg 하한(도). 근거: fy = (height/2)/tan(fov/2) 이므로 fov 가 극단적으로 작으면 fy 가 1e302 대로
+// 폭주해 투영이 의미를 잃는다(예: 1e-300 → fy 4.6e302). 0.001° 는 720 px 높이에서 fy ≈ 2e7 px 로
+// 실제 망원 렌즈(수 도)보다 3 자릿수 이상 좁은 값이라 정상 입력은 막지 않으면서 폭주만 거른다.
+export const MIN_FOV_Y_DEG = 0.001;
 
 /**
  * GL 규약 시점(eye/target/up/width/height/fov_y_deg)을 OpenCV 카메라로 변환한다.
@@ -20,12 +25,20 @@ const ERR = 'render_views:';
  * @param {number[]} vp.up 상향 벡터(3-벡터)
  * @param {number} vp.width 이미지 너비(양의 정수)
  * @param {number} vp.height 이미지 높이(양의 정수)
- * @param {number} vp.fov_y_deg 수직 FOV(도, 0 초과 180 미만)
+ * @param {number} vp.fov_y_deg 수직 FOV(도, MIN_FOV_Y_DEG 이상 180 미만의 유한 숫자)
  * @returns {import('../../contracts/raster/index.mjs').Camera} OpenCV 카메라
  */
 export function viewpointToCamera(vp) {
   if (!vp || typeof vp !== 'object') throw new Error(`${ERR} 시점이 객체가 아님`);
   const { eye, target, up, width, height, fov_y_deg } = vp;
+
+  // 해상도(양의 정수)와 fov(문자열·NaN·0 이하·180 이상 거부)를 먼저 검사한다. 실패 메시지에 접두를 붙인다.
+  try {
+    assertView({ width, height, fov_y_deg });
+  } catch (e) {
+    throw new Error(`${ERR} ${e.message}`);
+  }
+  if (fov_y_deg < MIN_FOV_Y_DEG) throw new Error(`${ERR} fov_y_deg 는 ${MIN_FOV_Y_DEG} 이상이어야 함(fy 폭주 방지): ${fov_y_deg}`);
 
   // GL 규약에서 외부 행렬(R, t) 구하기
   const { R: R_gl, t: t_gl } = cameraExtrinsics({ eye, target, up });

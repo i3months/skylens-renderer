@@ -1,5 +1,5 @@
 // T06.7 "메우지 않는다" 검사. 빈 픽셀 수를 세고, 칠해진 픽셀 집합을 정답(점이 닿는 픽셀의 합집합)과 대조한다.
-import { assertCamera, assertRenderResult, EMPTY_INDEX, EMPTY_DEPTH } from '../../../contracts/raster/index.mjs';
+import { assertCamera, assertRenderResult, pointCount, EMPTY_INDEX, EMPTY_DEPTH } from '../../../contracts/raster/index.mjs';
 import { project } from '../project/index.mjs';
 import { splatRadiusPx, splatPixels } from '../splat/index.mjs';
 
@@ -23,11 +23,13 @@ export function countEmpty(result) {
 export function reachablePixelSet(camera, cloud, pointSizeM) {
   assertCamera(camera);
   const pos = cloud.positions;
-  const n = cloud.count ?? pos.length / 3;
+  const n = pointCount(cloud); // zbuffer 와 같은 점 수 정의
   const set = new Set();
   for (let k = 0; k < n; k += 1) {
     const { u, v, d } = project(camera, [pos[3 * k], pos[3 * k + 1], pos[3 * k + 2]]);
-    if (!(d > 0)) continue;
+    if (!(d > 0) || !Number.isFinite(u) || !Number.isFinite(v)) continue; // 카메라 뒤·비유한 투영(렌더러와 같은 규칙)
+    // 렌더러는 저장 정밀도(Float32)로 반올림한 깊이가 0 이면 그 점을 그리지 않는다. 정답 집합도 같은 규칙으로 건너뛴다.
+    if (!(Math.fround(d) > 0)) continue;
     const r = splatRadiusPx(camera, d, pointSizeM);
     // 화면 밖 점은 걸치는 픽셀이 없으면 건너뛴다(중심 칸이 화면 밖이면 splatPixels 가 범위를 자른다).
     for (const p of splatPixels(u, v, r, camera.width, camera.height)) set.add(p);

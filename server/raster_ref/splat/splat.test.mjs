@@ -24,11 +24,15 @@ test('반경: 깊이 2배 → 반경 절반 (d=20 → 1.885800)', () => {
 
 // 변이 검출: 틀린 식이 같은 리터럴 시험을 통과하지 못함을 확인한다.
 test('변이: d 에 비례하는 식, 2 로 나누지 않는 식은 3.7716 을 내지 못함', () => {
+  // 실제 구현: r = fx·s/(2·d) = 754.32·0.1/(2·10) = 3.7716
+  assert.ok(Math.abs(splatRadiusPx(cam(), 10, 0.1) - 3.7716) <= 1e-6, '실제 구현은 3.7716');
   const fx = 754.32, s = 0.1, d = 10;
-  const mutProp = (fx * s * d) / 2; // 754.32·0.1·10/2 = 377.16
-  const mutNoHalf = (fx * s) / d; // 7.5432
-  assert.ok(Math.abs(mutProp - 3.7716) > 1e-6);
-  assert.ok(Math.abs(mutNoHalf - 3.7716) > 1e-6);
+  // d 에 비례하는 돌연변이: fx·s·d/2 = 754.32·0.1·10/2 = 377.16
+  const mutProp = (fx * s * d) / 2;
+  assert.ok(Math.abs(mutProp - 3.7716) > 1e-6, 'd 비례 돌연변이는 실패');
+  // 2 로 나누지 않는 돌연변이: fx·s/d = 754.32·0.1/10 = 7.5432
+  const mutNoHalf = (fx * s) / d;
+  assert.ok(Math.abs(mutNoHalf - 3.7716) > 1e-6, '2 로 나누지 않는 돌연변이는 실패');
   // d 비례 식은 깊이 2배에 반경이 2배가 되어 절반 관계도 깨진다.
   assert.notEqual((fx * s * 20) / 2 * 2, (fx * s * 10) / 2);
 });

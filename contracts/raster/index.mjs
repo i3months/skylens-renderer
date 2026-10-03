@@ -34,14 +34,18 @@
 
 export const EMPTY_DEPTH = 0;
 export const EMPTY_INDEX = -1;
+/** 해상도 상한: width·height ≤ 2^26 (8192×8192). 넘으면 버퍼 할당 전에 'raster:' 오류로 거부한다. */
+export const MAX_PIXELS = 2 ** 26;
 
 /** 함수 서명(구현은 server/raster_ref/*, server/metrics/*). 이름과 모듈 위치는 이 표가 기준이다. */
 export const RASTER_API = Object.freeze({
-  project: { module: 'server/raster_ref/project/index.mjs', fn: 'project(camera, xw) -> {u, v, d}   d<=0 이면 d 만 믿고 u,v 는 NaN' },
+  project: { module: 'server/raster_ref/project/index.mjs', fn: 'project(camera, xw) -> {u, v, d}   d<=0 또는 d 가 극히 작으면 u,v 는 NaN' },
   unproject: { module: 'server/raster_ref/unproject/index.mjs', fn: 'unproject(camera, u, v, d) -> [xw, yw, zw]' },
   intrinsics: { module: 'server/raster_ref/intrinsics/index.mjs', fn: 'scaleIntrinsics(K, fromW, fromH, toW, toH) -> Intrinsics' },
   splat: { module: 'server/raster_ref/splat/index.mjs', fn: 'splatRadiusPx(camera, depth, sizeM) -> number  (= fx·sizeM/(2·d))' },
-  zbuffer: { module: 'server/raster_ref/zbuffer/index.mjs', fn: 'renderPoints(camera, cloud, opts?) -> RenderResult  (opts.pointSizeM 기본 0.05)' },
+  // 56 B 점(형식 2)에서 opacity·scale·rot 는 쓰지 않는다: 모든 점을 opts.pointSizeM 고정 지름의 불투명 원판으로
+  // 그리고 색은 fdc 만 쓴다(참조 래스터는 점 구름 기준선이며 가우시안 스플랫 모양을 재현하지 않는다). 시험으로 고정.
+  zbuffer: { module: 'server/raster_ref/zbuffer/index.mjs', fn: 'renderPoints(camera, cloud, opts?) -> RenderResult  (opts.pointSizeM 기본 0.05; 점 수 = positions.length/3; opacity·scale·rot 무시)' },
   shade: { module: 'server/raster_ref/shade/index.mjs', fn: 'lambert(normalWorld, lightDirWorld, rgb) -> [r,g,b]' },
   no_fill: { module: 'server/raster_ref/no_fill/index.mjs', fn: 'countEmpty(result) -> number' },
   ssim: { module: 'server/metrics/ssim/index.mjs', fn: 'ssim(a, b, width, height, channels) -> number' },
@@ -51,13 +55,34 @@ export const RASTER_API = Object.freeze({
 
 const ERR = 'raster:';
 
+/** 해상도가 양의 정수이고 상한(MAX_PIXELS) 이내인지 검사한다. */
+function assertResolution(width, height) {
+  for (const [n, v] of [['width', width], ['height', height]]) {
+    if (!Number.isInteger(v) || v <= 0) throw new Error(`${ERR} ${n} 는 양의 정수여야 함: ${String(v)}`);
+  }
+  if (width * height > MAX_PIXELS) throw new Error(`${ERR} 해상도 ${width}×${height} 가 상한 ${MAX_PIXELS} 픽셀을 넘음`);
+}
+
+/**
+ * 점 수의 단일 정의: positions.length / 3. cloud.count 가 있으면 그 값과 같아야 한다.
+ * zbuffer 와 no_fill 이 같은 함수를 써서 불일치를 두 곳에서 같은 'raster:' 오류로 거부한다.
+ */
+export function pointCount(cloud) {
+  if (!cloud || !(cloud.positions instanceof Float32Array) || cloud.positions.length % 3 !== 0) {
+    throw new Error(`${ERR} cloud.positions 는 길이가 3 의 배수인 Float32Array 여야 함`);
+  }
+  const n = cloud.positions.length / 3;
+  if (cloud.count !== undefined && cloud.count !== n) {
+    throw new Error(`${ERR} cloud.count ${String(cloud.count)} 가 positions.length/3 = ${n} 과 다름`);
+  }
+  return n;
+}
+
 /** 카메라가 계약대로인지 검사한다. 틀리면 'raster:' 로 시작하는 Error. */
 export function assertCamera(camera) {
   if (!camera || typeof camera !== 'object') throw new Error(`${ERR} 카메라가 객체가 아님`);
   const { width, height, K, R, t } = camera;
-  for (const [n, v] of [['width', width], ['height', height]]) {
-    if (!Number.isInteger(v) || v <= 0) throw new Error(`${ERR} ${n} 는 양의 정수여야 함: ${String(v)}`);
-  }
+  assertResolution(width, height);
   if (!K || typeof K !== 'object') throw new Error(`${ERR} K 가 객체가 아님`);
   for (const n of ['fx', 'fy']) {
     if (typeof K[n] !== 'number' || !Number.isFinite(K[n]) || !(K[n] > 0)) throw new Error(`${ERR} K.${n} 는 양의 유한 수여야 함: ${String(K[n])}`);
@@ -85,7 +110,7 @@ export function assertCamera(camera) {
 
 /** 렌더 결과를 만든다(빈 영상). */
 export function emptyResult(width, height) {
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw new Error(`${ERR} 해상도는 양의 정수`);
+  assertResolution(width, height);
   return { width, height, color: new Uint8Array(3 * width * height), depth: new Float32Array(width * height), index: new Int32Array(width * height).fill(EMPTY_INDEX) };
 }
 
@@ -93,13 +118,14 @@ export function emptyResult(width, height) {
 export function assertRenderResult(r) {
   if (!r || typeof r !== 'object') throw new Error(`${ERR} 결과가 객체가 아님`);
   const { width, height, color, depth, index } = r;
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) throw new Error(`${ERR} 결과 해상도 오류`);
+  assertResolution(width, height);
   const n = width * height;
   if (!(color instanceof Uint8Array) || color.length !== 3 * n) throw new Error(`${ERR} color 길이 ${n * 3} 이어야 함`);
   if (!(depth instanceof Float32Array) || depth.length !== n) throw new Error(`${ERR} depth 길이 ${n} 이어야 함`);
   if (!(index instanceof Int32Array) || index.length !== n) throw new Error(`${ERR} index 길이 ${n} 이어야 함`);
   for (let i = 0; i < n; i += 1) {
     const empty = index[i] === EMPTY_INDEX;
+    if (index[i] < EMPTY_INDEX) throw new Error(`${ERR} 픽셀 ${i}: 점 번호는 −1(빈 칸) 또는 0 이상이어야 함: ${index[i]}`);
     if (empty !== (depth[i] === EMPTY_DEPTH)) throw new Error(`${ERR} 픽셀 ${i}: 빈 깊이와 빈 번호가 어긋남`);
     if (!empty && !(depth[i] > 0 && Number.isFinite(depth[i]))) throw new Error(`${ERR} 픽셀 ${i}: 깊이는 양의 유한 수여야 함`);
     if (empty && (color[3 * i] | color[3 * i + 1] | color[3 * i + 2]) !== 0) throw new Error(`${ERR} 픽셀 ${i}: 빈 픽셀 색은 (0,0,0)`);

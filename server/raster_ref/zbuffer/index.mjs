@@ -1,9 +1,10 @@
 // T06.5 깊이 버퍼 래스터: 점마다 원판(splat)을 그리고 픽셀마다 가장 가까운 점을 남긴다.
 // 같은 깊이면 먼저 온(번호 작은) 점이 이긴다(엄격 < 로만 갱신). 빈 픽셀은 메우지 않는다.
+// 56 B 점의 opacity·scale·rot 는 쓰지 않고 pointSizeM 고정 원판으로 그린다(contracts/raster 문구 참조).
 // 이 단계의 색은 점 색 그대로다(셰이딩은 별도 하위 작업).
-import { assertCamera, assertRenderResult, emptyResult } from '../../../contracts/raster/index.mjs';
+import { assertCamera, assertRenderResult, emptyResult, pointCount } from '../../../contracts/raster/index.mjs';
 import { projectMany } from '../project/index.mjs';
-import { splatRadiusPx, splatPixels } from '../splat/index.mjs';
+import { radiusUnchecked, splatPixels } from '../splat/index.mjs';
 
 const ERR = 'raster:';
 const SH_C0 = 0.28209479177387814;
@@ -36,13 +37,13 @@ function pointColors(cloud) {
  */
 export function renderPointsWith(camera, cloud, opts, wins) {
   assertCamera(camera);
-  if (!cloud || !(cloud.positions instanceof Float32Array) || cloud.positions.length % 3 !== 0) throw new Error(`${ERR} cloud.positions 는 길이가 3 의 배수인 Float32Array 여야 함`);
+  const n = pointCount(cloud); // 점 수 정의는 no_fill 과 공유(count 불일치는 'raster:' 오류)
   const pointSizeM = opts?.pointSizeM ?? 0.05;
   if (typeof pointSizeM !== 'number' || !Number.isFinite(pointSizeM) || !(pointSizeM > 0)) throw new Error(`${ERR} pointSizeM 은 양의 유한 수여야 함: ${String(pointSizeM)}`);
   const validate = opts?.validate ?? true;
   const { width, height } = camera;
+  const fx = camera.K.fx;
   const res = emptyResult(width, height);
-  const n = cloud.positions.length / 3;
   if (n === 0) {
     if (validate) assertRenderResult(res);
     return res;
@@ -56,7 +57,7 @@ export function renderPointsWith(camera, cloud, opts, wins) {
     if (!(d > 0) || !Number.isFinite(u) || !Number.isFinite(v)) continue; // 카메라 뒤
     const dStored = Math.fround(d); // 저장되는 값과 같은 정밀도로 비교한다
     if (!(dStored > 0) || !Number.isFinite(dStored)) continue;
-    const r = splatRadiusPx(camera, d, pointSizeM);
+    const r = radiusUnchecked(fx, d, pointSizeM); // 카메라·pointSizeM 은 위에서 한 번 검사했다
     // 원판이 화면과 겹치지 않으면 건너뛴다(중심 칸이 화면 밖이고 원도 밖).
     if (u + r < 0 || v + r < 0 || u - r > width || v - r > height) continue;
     const pix = splatPixels(u, v, r, width, height);
