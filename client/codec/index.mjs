@@ -2,7 +2,7 @@
 // 형식 단일 출처는 contracts/codec/index.mjs 의 상수와 주석, 체크섬은 format/ASSET_FORMAT.md §7.
 import {
   BODY_FIXED_BYTES, BODY_VERSION, COLOR_MODE, ENTROPY_MODE, RANGE_PROB_BITS, RANGE_MOVE_BITS,
-  POINT_COUNT_MAX, STREAM_RAW_BYTES_MAX, CODEC1_FORMATS, CODEC_SKLC1, MORTON_BITS, CodecError,
+  POINT_COUNT_MAX, streamRawBounds, CODEC1_FORMATS, CODEC_SKLC1, MORTON_BITS, CodecError,
 } from '../../contracts/codec/index.mjs';
 import { AssetFormatError, OFFSETS, CODEC_RAW_PLANAR, TILE_SIZE_M, LOD_MAX, QUANT_EXP_MIN, QUANT_EXP_MAX, POSITION_Q_MAX } from '../../contracts/asset/index.mjs';
 import { readHeaderClient, readPlanesClient } from '../asset/index.mjs';
@@ -18,19 +18,23 @@ const CRC_TABLE = (() => {
   return t;
 })();
 
-/** 체크섬 필드(112..115)를 0 으로 보고 [0, len) 의 CRC-32 를 구한다. */
+/** CRC-32 상태 c 에 u8[from, to) 를 이어 먹인다. */
+function crcFeed(c, u8, from, to) {
+  for (let i = from; i < to; i++) c = CRC_TABLE[(c ^ u8[i]) & 255] ^ (c >>> 8);
+  return c;
+}
+
+/** 체크섬 필드(112..115)를 0 으로 보고 [0, len) 의 CRC-32 를 구한다. 필드 앞·0 네 바이트·필드 뒤를 이어 계산한다(복사 없음). */
 function crc32ZeroField(u8, len) {
   const lo = OFFSETS.checksum, hi = lo + 4;
-  let c = 0xffffffff;
-  for (let i = 0; i < len; i++) {
-    const b = i >= lo && i < hi ? 0 : u8[i];
-    c = CRC_TABLE[(c ^ b) & 255] ^ (c >>> 8);
-  }
+  let c = crcFeed(0xffffffff, u8, 0, Math.min(lo, len));
+  for (let k = lo; k < Math.min(hi, len); k++) c = CRC_TABLE[c & 255] ^ (c >>> 8);
+  c = crcFeed(c, u8, hi, len);
   return (c ^ 0xffffffff) >>> 0;
 }
 
 // ---- LEB128 ----
-/** bytes[pos..] 에서 LEB128 한 값을 읽는다. maxBytes 를 넘는 이어짐은 'range'. 반환 값은 Number(최대 2^49 미만). */
+/** bytes[pos..] 에서 LEB128 한 값을 읽는다. maxBytes 를 넘는 이어짐은 'stream'. 반환 값은 Number(최대 2^49 미만). */
 function readLeb(bytes, st, maxBytes, what, canonical = false) {
   let v = 0, mul = 1;
   for (let k = 0; k < maxBytes; k++) {
@@ -43,21 +47,21 @@ function readLeb(bytes, st, maxBytes, what, canonical = false) {
     }
     mul *= 128;
   }
-  throw new CodecError('range', `${what}: LEB128 이 너무 길다`);
+  throw new CodecError('stream', `${what}: LEB128 이 너무 길다`);
 }
 
 // ---- 범위 복호기(LZMA 방식 적응형 이진) ----
 const PROB_INIT = 1 << (RANGE_PROB_BITS - 1);
 const TOP = 2 ** 24;
 
-/** payload(bytes[off..])를 정확히 rawLen 바이트로 복호한다. 모자라거나 남거나 끝 상태 code ≠ 0 이면 'range'. */
+/** payload(bytes[off..])를 정확히 rawLen 바이트로 복호한다. 모자라거나 남거나 끝 상태 code ≠ 0 이면 'stream'. */
 function rangeDecode(bytes, off, rawLen) {
   const end = bytes.length;
   const payloadLen = end - off;
-  if (payloadLen < 5) throw new CodecError('range', '범위 부호 payload 가 5 바이트 미만');
+  if (payloadLen < 5) throw new CodecError('stream', '범위 부호 payload 가 5 바이트 미만');
   // 비트마다 range 가 최소 2017/2048 배로 줄어 원바이트 하나가 최소 0.176 비트를 쓴다 → 할당 전에 거부
-  if (rawLen > 64 * payloadLen + 64) throw new CodecError('range', '범위 부호 payload 가 rawLen 에 비해 너무 짧다');
-  if (bytes[off] !== 0) throw new CodecError('range', '범위 부호 첫 바이트가 0 이 아니다');
+  if (rawLen > 64 * payloadLen + 64) throw new CodecError('stream', '범위 부호 payload 가 rawLen 에 비해 너무 짧다');
+  if (bytes[off] !== 0) throw new CodecError('stream', '범위 부호 첫 바이트가 0 이 아니다');
   let pos = off + 1;
   let code = ((bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3]) >>> 0;
   pos += 4;
@@ -83,15 +87,15 @@ function rangeDecode(bytes, off, rawLen) {
       }
       node = (node << 1) | bit;
       while (range < TOP) {
-        if (pos >= end) throw new CodecError('range', '범위 부호 payload 가 모자라다');
+        if (pos >= end) throw new CodecError('stream', '범위 부호 payload 가 모자라다');
         range = (range * 256) >>> 0;
         code = ((code * 256) + bytes[pos++]) >>> 0;
       }
     }
     out[i] = node & 255;
   }
-  if (pos !== end) throw new CodecError('range', '범위 부호 payload 가 남는다');
-  if (code !== 0) throw new CodecError('range', '범위 부호 끝 상태(code ≠ 0)가 맞지 않는다');
+  if (pos !== end) throw new CodecError('stream', '범위 부호 payload 가 남는다');
+  if (code !== 0) throw new CodecError('stream', '범위 부호 끝 상태(code ≠ 0)가 맞지 않는다');
   return out;
 }
 
@@ -99,8 +103,9 @@ function rangeDecode(bytes, off, rawLen) {
  * entropy 컨테이너 복호. [u8 mode][LEB128 rawLen][payload]. 엄격 규칙은 서버 entropy 머리 주석과 같다:
  * rawLen 최소 표현, 7 바이트 초과 이어짐은 limit, 범위 부호 첫 바이트 0, rawLen > 64×payload+64 조기 거부, 끝 code = 0.
  * @param {Uint8Array} bytes 스트림 바이트
- * @param {number} minRaw 이 스트림이 가질 수 있는 원바이트 하한(최소 바이트 수 미달은 할당 전에 거부)
- * @param {number} maxRaw 이 스트림이 가질 수 있는 원바이트 상한(부풀린 rawLen 거부)
+ * mode 1 은 rawLen === 0 이거나 payloadLen > rawLen 이면 'stream'(비정규 컨테이너).
+ * @param {number} minRaw 이 스트림이 가질 수 있는 원바이트 하한(streamRawBounds), 미달은 할당 전에 'limit'
+ * @param {number} maxRaw 이 스트림이 가질 수 있는 원바이트 상한(streamRawBounds), 초과는 'limit'
  */
 function entropyDecodeClient(bytes, minRaw, maxRaw) {
   if (bytes.length < 2) throw new CodecError('stream', 'entropy 컨테이너가 너무 짧다');
@@ -118,8 +123,11 @@ function entropyDecodeClient(bytes, minRaw, maxRaw) {
       break;
     }
   }
-  if (rawLen > maxRaw || rawLen > STREAM_RAW_BYTES_MAX) throw new CodecError('limit', `rawLen ${rawLen} 이 상한 ${maxRaw} 을 넘는다`);
-  if (rawLen < minRaw) throw new CodecError('stream', `rawLen ${rawLen} 이 최소 ${minRaw} 바이트에 못 미친다`);
+  if (mode === ENTROPY_MODE.RANGE && (rawLen === 0 || bytes.length - pos > rawLen)) {
+    throw new CodecError('stream', 'mode 1 비정규 컨테이너(rawLen 0 이거나 payload 가 rawLen 보다 길다)');
+  }
+  if (rawLen > maxRaw) throw new CodecError('limit', `rawLen ${rawLen} 이 상한 ${maxRaw} 을 넘는다`);
+  if (rawLen < minRaw) throw new CodecError('limit', `rawLen ${rawLen} 이 최소 ${minRaw} 바이트에 못 미친다`);
   if (mode === ENTROPY_MODE.STORED) {
     if (bytes.length - pos !== rawLen) throw new CodecError('stream', '저장 모드 payload 길이가 rawLen 과 다르다');
     return bytes.subarray(pos);
@@ -145,7 +153,7 @@ function decodePos(raw, n) {
   const st = { pos: 0 };
   let key = 0;
   for (let i = 0; i < n; i++) {
-    key += readLeb(raw, st, 7, 'pos');
+    key += readLeb(raw, st, 7, 'pos', true);
     if (key >= KEY_LIMIT) throw new CodecError('range', '모턴 키가 2^48 이상');
     const lo = key % TOP;
     const hi = (key - lo) / TOP;
@@ -167,6 +175,7 @@ function decodeNormal(raw, n) {
     let acc = 0;
     for (let i = 0; i < n; i++) {
       const z = readLeb(raw, st, 3, 'normal', true);
+      if (z > 65535) throw new CodecError('stream', '법선 지그재그 값이 u16 을 넘는다');
       acc += z & 1 ? -((z + 1) / 2) : z / 2;
       if (acc < -127 || acc > 127) throw new CodecError('range', '법선 oct 값이 -127..127 밖');
       plane[i] = acc;
@@ -246,7 +255,8 @@ function toBytes(bytes) {
 /**
  * codec 0/1 파일 전체 → 헤더와 평면(codec 1 은 모턴 순서). 손상은 CodecError 또는 AssetFormatError.
  * 주의: 계약상 readHeaderClient 는 codec 1 을 거부하므로(client/asset 은 고치지 않는다) codec 바이트를 0 으로 바꾼 사본으로 읽고
- * 돌려주는 헤더의 codec 만 1 로 되돌린다.
+ * 돌려주는 헤더의 codec 만 1 로 되돌린다. 복사는 헤더만 하고(body_bytes 는 0 으로 바꿔 읽은 뒤 되돌림) 길이 검사는 직접 한다.
+ * 결과에는 색 모드(colorMode, 색 스트림 첫 바이트: 0 DELTA, 1 QUANT2, 2 PALETTE)를 싣는다. codec 1 의 colorMode 1 은 최대 2/255 왕복 오차.
  * @param {ArrayBuffer|Uint8Array} fileBytes
  */
 export function decodeChunkClient(fileBytes) {
@@ -260,10 +270,18 @@ export function decodeChunkClient(fileBytes) {
     readHeaderClient(u8);
     throw new AssetFormatError('codec', `unknown codec ${u8[OFFSETS.codec]}`);
   }
-  const copy = u8.slice();
+  const dv0 = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const hs = u8.length >= OFFSETS.headerSize + 2 ? dv0.getUint16(OFFSETS.headerSize, true) : u8.length;
+  const copy = u8.slice(0, Math.min(u8.length, hs));
   copy[OFFSETS.codec] = CODEC_RAW_PLANAR;
+  const realBody = copy.length >= OFFSETS.bodyBytes + 4 ? dv0.getUint32(OFFSETS.bodyBytes, true) : 0;
+  if (copy.length >= OFFSETS.bodyBytes + 4) new DataView(copy.buffer).setUint32(OFFSETS.bodyBytes, 0, true);
   const header = readHeaderClient(copy);
   header.codec = CODEC_SKLC1;
+  header.bodyBytes = realBody;
+  if (header.headerSize + realBody !== u8.length) {
+    throw new AssetFormatError('body', `header_size ${header.headerSize} + body_bytes ${realBody} != input ${u8.length}`);
+  }
   checkHeaderSemantics(header);
 
   if (!CODEC1_FORMATS.includes(header.format)) throw new CodecError('format', `codec 1 은 format ${header.format} 을 받지 않는다`);
@@ -284,14 +302,16 @@ export function decodeChunkClient(fileBytes) {
   if (crc32ZeroField(u8, base + header.bodyBytes) !== header.checksum) throw new CodecError('checksum', '체크섬 불일치');
 
   const p0 = base + BODY_FIXED_BYTES, p1 = p0 + posLen, p2 = p1 + nrmLen;
-  const posRaw = entropyDecodeClient(u8.subarray(p0, p1), n, 7 * n);
-  const nrmRaw = entropyDecodeClient(u8.subarray(p1, p2), 2 * n, 6 * n);
-  const colRaw = entropyDecodeClient(u8.subarray(p2, p2 + colLen), Math.min(n + 5, 3 * n + 1), 3 * n + 770);
+  const bounds = streamRawBounds(n);
+  const posRaw = entropyDecodeClient(u8.subarray(p0, p1), bounds.pos[0], bounds.pos[1]);
+  const nrmRaw = entropyDecodeClient(u8.subarray(p1, p2), bounds.normal[0], bounds.normal[1]);
+  const colRaw = entropyDecodeClient(u8.subarray(p2, p2 + colLen), bounds.color[0], bounds.color[1]);
   const { qe, qn, qu } = decodePos(posRaw, n);
   const { octX, octY } = decodeNormal(nrmRaw, n);
   const { r, g, b } = decodeColor(colRaw, n, colorMode);
   return {
     header,
+    colorMode: colRaw[0],
     planes: {
       pos_e: qe, pos_n: qn, pos_u: qu, color_r: r, color_g: g, color_b: b, normal_oct_x: octX, normal_oct_y: octY,
     },
