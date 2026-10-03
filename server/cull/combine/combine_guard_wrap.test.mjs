@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, sep } from 'node:path';
-import { buildHierarchy } from '../../lod/select/index.mjs';
+import { buildHierarchy, assertHierarchyInput } from '../../lod/select/index.mjs';
 import { cullAndSelect } from './index.mjs';
 
 const CAM = { width: 64, height: 48, K: { fx: 60, fy: 60, cx: 32, cy: 24 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
@@ -51,7 +51,7 @@ function classifyRead() {
   const frames = parseFrames().filter((f) => f.file !== SELF && !f.file.startsWith('node:'));
   if (frames.some((f) => f.file.startsWith(SELECT_DIR) && f.fn.replace(/^.*\./, '') === 'selectLevels')) return { kind: 'select' };
   const inner = frames.find((f) => f.file.startsWith(COMBINE_DIR));
-  return inner ? { kind: 'combine', site: inner.loc } : { kind: 'other' };
+  return inner ? { kind: 'combine', site: inner.loc, direct: frames[0] === inner } : { kind: 'other' };
 }
 
 function withLeafCount(h, get) {
@@ -74,32 +74,46 @@ test('검사 시점에 첫 읽기부터 던지는 Proxy octree 도 cull: 오류'
 test('leafCount 는 검사 블록에서 읽은 값을 그대로 쓴다(검사 뒤 cullAndSelect 의 재독 금지)', () => {
   const h = scene();
   const real = h.octree.leafCount;
-  // 허용되는 combine 의 읽기는 검사 블록 하나뿐이다: guardHierarchyRead 안에서 assertHierarchyInput 을 한 번 부르고(그 안에서 여러 번 읽힘)
-  // 이어서 hierarchy.octree.leafCount 를 읽는다. 호출 지점(site)으로는 이 둘, 곧 최대 2곳이다.
-  // 규칙: 스택에 selectLevels 프레임이 있으면 제외, 스택에 combine 프레임이 있으면 combine 의 읽기로 센다.
-  //  - assertHierarchyInput 을 한 번 더 부르는 변이(C5)나 contracts 헬퍼로 한 번 더 읽는 변이(C6)는
-  //    combine 안에 새 호출 지점을 만들므로 site 가 3곳 이상이 되어 잡힌다.
-  //  - 단계 구현(stageImpls) 호출 이후의 combine 읽기는 검사 블록 밖이므로 무조건 위반이다(값도 real+1 로 내서 재사용 여부를 드러낸다).
-  const sites = new Set();
+  // 허용되는 combine 의 읽기는 검사 블록 하나뿐이다: assertHierarchyInput 한 번(그 안에서 여러 번 읽힘) 뒤에
+  // hierarchy.octree.leafCount 를 직접 읽는 것으로 블록이 끝난다.
+  // 호출 지점이나 줄 수가 아니라 읽기 횟수 자체를 센다(같은 줄의 반복 호출도 잡기 위함).
+  //  - 끝 표지: 스택 가장 안쪽 비-테스트 프레임이 combine 인 첫 읽기(검사 블록의 직접 읽기). 그 뒤의 combine 읽기는 전부 위반이다.
+  //  - 검사 블록 안의 읽기 수는 assertHierarchyInput 한 번이 내는 읽기 수(기준값)에 직접 읽기 1회를 더한 값과 정확히 같아야 한다.
+  //  - 규칙: 스택에 selectLevels 프레임이 있으면 제외, 스택에 combine 프레임이 있으면 combine 의 읽기로 센다.
+  //  - 단계 구현(stageImpls) 호출 이후의 combine 읽기도 위반이다(값은 real+1 로 내서 재사용 여부를 드러낸다).
+  let mode = 'baseline';
+  let baselineReads = 0;
   let combineReads = 0;
+  let afterEnd = 0;
   let afterStages = 0;
+  let ended = false;
   let stagesStarted = false;
-  const probe = withLeafCount(h, () => {
+  const count = () => {
     const c = classifyRead();
+    if (mode === 'baseline') { baselineReads++; return real; }
     if (c.kind !== 'combine') return real;
     combineReads++;
-    sites.add(c.site);
+    if (ended) afterEnd++;
+    else if (c.direct) ended = true;
     if (stagesStarted) { afterStages++; return real + 1; }
-    return real;
-  });
+    return ended && afterEnd > 0 ? real + 1 : real;
+  };
+  // 검사 함수는 결과를 캐시할 수 있으므로 기준값과 실제 실행은 서로 다른 계층 객체(같은 접근자)로 잰다.
+  const probe = withLeafCount(h, count);
+  const baseProbe = withLeafCount(h, count);
+  // 기준값: 테스트가 직접 assertHierarchyInput 을 한 번 부를 때의 leafCount 읽기 수.
+  assertHierarchyInput(baseProbe);
+  assert.ok(baselineReads >= 1, 'assertHierarchyInput 이 leafCount 를 읽어야 기준값이 의미가 있음');
+  mode = 'run';
   const opts = { ...OPTS, stageImpls: { distance: (hh, cam, o) => { stagesStarted = true; return OPTS.stageImpls.distance(hh, cam, o); } } };
   const r = cullAndSelect(probe, CAM, opts);
   assert.ok(stagesStarted, '단계 구현이 불려야 함');
-  assert.ok(combineReads >= 1, '검사 블록의 leafCount 읽기가 combine 에서 일어나야 함');
+  assert.ok(ended, '검사 블록 끝의 직접 leafCount 읽기가 combine 에서 일어나야 함');
   assert.equal(r.cull.mask.length, real);
   assert.equal(r.cull.stats.leafCount, real);
+  assert.equal(afterEnd, 0, `검사 블록 끝 뒤에 combine 이 계층을 ${afterEnd}번 다시 읽음`);
   assert.equal(afterStages, 0, '검사 블록 밖(단계 이후)에서 combine 이 leafCount 를 다시 읽음');
-  assert.ok(sites.size <= 2, `검사 블록 밖에서 combine 이 계층을 다시 읽음(호출 지점 ${sites.size}곳): ${[...sites].join(', ')}`);
+  assert.equal(combineReads, baselineReads + 1, `combine 의 leafCount 읽기 ${combineReads}회, 기대 ${baselineReads + 1}회(assertHierarchyInput 1회 + 직접 읽기 1회)`);
 });
 
 test('정상 입력 결과는 그대로', () => {
