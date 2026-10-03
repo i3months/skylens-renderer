@@ -51,9 +51,11 @@ function makeSimpleHierarchy(leafCount) {
  */
 function makeCamera(center) {
   return {
+    width: 640,
+    height: 480,
     K: { fx: 1000, fy: 1000, cx: 320, cy: 240 },
-    R: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
-    t: new Float32Array([-center[0], -center[1], -center[2]]),
+    R: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    t: [-center[0], -center[1], -center[2]],
   };
 }
 
@@ -287,7 +289,7 @@ test('거리 컬링: 입력 오류 없음 (퇴화 시점은 빈 마스크)', () 
   // C = -R·t = [Inf, Inf, Inf] (제대로 된 동작은 아니지만 테스트 입력으로만 쓰임)
   const cameraBad = {
     K: { fx: 1000, fy: 1000, cx: 320, cy: 240 },
-    R: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+    R: [1, 0, 0, 0, 1, 0, 0, 0, 1],
     t: new Float32Array([-Infinity, -Infinity, -Infinity]),
   };
 
