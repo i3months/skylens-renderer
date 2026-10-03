@@ -69,8 +69,8 @@ test('회전+이동 복합: 임의 축에서도 R 직교 1e-9, t = −R·C_new, 
 
 test('속도 0 이면 현재 시점 판정과 같다(horizon 이 커도)', () => {
   const cam = lookAt([0, 60, 0], [10, 0, 10]);
-  const m = predictiveMask(h, { camera: cam, velocityMps: [0, 0, 0], angularRadPerS: [0, 0, 0] }, { horizonS: 5, steps: 4 });
-  const m2 = predictiveMask(h, { camera: cam }, { horizonS: 5, steps: 4 });
+  const m = predictiveMask(h, { camera: cam, velocityMps: [0, 0, 0], angularRadPerS: [0, 0, 0] }, { horizonS: 5, steps: 4, pointSizeM: 0 });
+  const m2 = predictiveMask(h, { camera: cam }, { horizonS: 5, steps: 4, pointSizeM: 0 });
   const cur = visibleSet(cam);
   assert.equal(sum(m), cur.size);
   assert.ok(cur.size > 0 && cur.size < oc.leafCount, `현재 보이는 리프 ${cur.size}/${oc.leafCount}`);

@@ -66,10 +66,10 @@ export const CULL_API = Object.freeze({
   backface: { module: 'server/cull/backface/index.mjs', fn: 'leafNormalCones(hierarchy) -> NormalCones ; backfaceCull(hierarchy, camera, cones) -> LeafMask   리프의 모든 점이 카메라를 등지는 것이 확실할 때만 0' },
   occlusion: { module: 'server/cull/occlusion/index.mjs', fn: 'buildDepthPyramid(hierarchy, camera, {size=64}) -> {size, levels:Float32Array[]}   CPU 거친 깊이 피라미드(칸마다 가장 가까운 깊이의 보수적 하한이 아닌 "가림막" 깊이 = 칸 안 모든 픽셀이 이보다 가깝게 채워진 깊이의 최댓값) ; occlusionCull(hierarchy, camera, pyramid?) -> LeafMask   리프 상자 전체가 가림막 뒤일 때만 0' },
   distance: { module: 'server/cull/distance/index.mjs', fn: 'distanceCull(hierarchy, camera, {maxDistanceM}) -> LeafMask   카메라 중심~상자 최소 거리 > maxDistanceM 이면 0 (경계 = 남김)' },
-  predict: { module: 'server/cull/predict/index.mjs', fn: 'predictCamera(camera, {velocityMps, angularRadPerS}, dtS) -> Camera ; predictiveMask(hierarchy, state, {horizonS, steps}) -> LeafMask   현재와 예측 시점들의 frustumCull 합집합(OR)' },
+  predict: { module: 'server/cull/predict/index.mjs', fn: 'predictCamera(camera, {velocityMps, angularRadPerS}, dtS) -> Camera ; predictiveMask(hierarchy, state, {horizonS, steps, pointSizeM?}) -> LeafMask   현재와 예측 시점들의 frustumCull 합집합(OR)' },
   priority: { module: 'server/cull/priority/index.mjs', fn: 'leafPriority(hierarchy, camera) -> Float64Array(leafCount)   화면 기여 점수(클수록 먼저) ; orderChunks(hierarchy, camera, mask) -> Uint32Array   남은 리프를 점수 내림차순(동률은 번호 작은 쪽)' },
   client: { module: 'client/cull/index.mjs', fn: 'clientFrustumCull(leafBoxes, camera, {pointSizeM?}) -> Uint8Array   leafBoxes = {boxMin:Float32Array(3·n), boxMax:Float32Array(3·n)}(리프 번호 순); 같은 pointSizeM 의 서버 frustumCull 과 같은 마스크(없으면 좌·우·위·아래 제거 없음)' },
-  combine: { module: 'server/cull/combine/index.mjs', fn: 'cullAndSelect(hierarchy, camera, {thresholdPx, stages?, maxDistanceM?, prioritize?}) -> CombinedResult   stages 기본 ["frustum","backface","occlusion","distance"]; 남은 리프만 selectLevels 의 단계로, 제거 리프는 NOT_DRAWN' },
+  combine: { module: 'server/cull/combine/index.mjs', fn: 'cullAndSelect(hierarchy, camera, {thresholdPx, stages?, maxDistanceM?, pointSizeM?, prioritize?}) -> CombinedResult   pointSizeM(원판 지름 m)은 모든 단계에 전달, 없으면 절두체는 좌우상하 제거 없음·가림은 제거 없음(LOD 선택은 아직 중심 규칙); stages 기본 ["frustum","backface","occlusion","distance"]; 남은 리프만 selectLevels 의 단계로, 제거 리프는 NOT_DRAWN' },
   bench: { module: 'bench/cull/index.mjs', fn: 'measureCullCost(hierarchy, cameras, opts) -> {perViewMs:{median,p95,max}, perStageMs:{...}}' },
 });
 
