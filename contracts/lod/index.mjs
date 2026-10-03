@@ -69,7 +69,7 @@ export const LOD_API = Object.freeze({
   budget: { module: 'server/lod/budget/index.mjs', fn: 'selectWithBudget(hierarchy, camera, {budgetPoints, thresholdPx}) -> Selection   pointCount ≤ budgetPoints' },
   view_score: { module: 'server/lod/view_score/index.mjs', fn: 'angleScore(thetaDeg) -> number ; scaleScore(s) -> number ; viewScore(refCam, candCam, points) -> number ; rankViews(refCam, candCams, points) -> ViewScoreEntry[] 점수 내림차순' },
   progressive: { module: 'server/lod/progressive/index.mjs', fn: 'progressiveChunks(hierarchy, camera, {thresholdPx}) -> {level, leaf, indices:Uint32Array}[]   거친 단계 먼저, 한 리프는 목표 단계 한 번만(교체이지 누적이 아님)' },
-  no_fill: { module: 'server/lod/no_fill/index.mjs', fn: 'emptyRatioPreserved(cloud, selectedCloud, camera, opts?) -> {original, lod, equal}   빈 픽셀 비율(참조 래스터라이저)' },
+  no_fill: { module: 'server/lod/no_fill/index.mjs', fn: 'emptyRatioPreserved(cloud, selectedCloud, camera, opts?) -> {original, lod, equal, filled, noFill}   빈 픽셀 비율, 원본에서 빈데 LOD 에서 칠해진 픽셀 수(filled)와 filled===0 여부(noFill)(참조 래스터라이저)' },
   bench: { module: 'bench/lod/index.mjs', fn: 'measureSegmentBytes(cloud, opts) -> {points, bytesByLevel}' },
 });
 

@@ -11,8 +11,7 @@
 //      축 밖 각 α 에서 투영 크기는 f·e/(r·cos²α) 이므로(F-097 ①), 리프 상자 안에 놓인 칸 변은 화면에서 τ 픽셀을 넘지 않는다.
 // materialize: 선택된 단계의 대표점만 모은다. 위치 = 입력 점 위치 그대로, 법선·색 = 그 단계의 대표값. 새 점을 만들지 않는다.
 //
-// 알려진 한계(기록): 단계 l 의 칸은 전역 격자이고 대표점이 속한 리프에 배정된다. 칸이 리프 경계를 걸치고 두 리프의 단계가
-//   다르면, 경계 근처에서 점이 조금 빠지거나 겹칠 수 있다(그 폭은 칸 한 변 이하, 즉 화면에서 τ 픽셀 이하).
+// 칸은 (리프, 전역 격자 칸) 조각이라(F-097 ②, hierarchy) 리프 경계를 걸치는 칸이 없다.
 import { NOT_DRAWN, assertCloud } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { screenErrorRule } from './screen_error.mjs';

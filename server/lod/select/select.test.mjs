@@ -209,7 +209,7 @@ function gridCloud() {
 }
 const axisCam = (D, fx = 100) => ({ width: 200, height: 200, K: { fx, fy: fx, cx: 100, cy: 100 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, D] });
 
-test('단계는 f·edgeM(l)/d ≤ τ 인 가장 큰 l (d = 상자와 카메라 중심의 최소 거리), 최대 levelCount−1', () => {
+test('단계는 f·edgeM(l)/d_eff ≤ τ 인 가장 큰 l (d_eff = d·cMin², d = 상자와 카메라 중심의 최소 거리), 최대 levelCount−1', () => {
   const g = gridCloud();
   const L = 4, e0 = 0.05, fx = 100, tau = 1;
   const h = buildHierarchy(g, { edge0M: e0, levelCount: L, maxLeafPoints: 4096 });
@@ -217,8 +217,15 @@ test('단계는 f·edgeM(l)/d ≤ τ 인 가장 큰 l (d = 상자와 카메라 �
   const zMin = h.octree.boxMin[2];
   for (const D of [1.5, 3, 6, 9, 11, 21, 50, 1000]) {
     const d = D + zMin; // 카메라 중심 (0,0,−D), 상자는 z ∈ [zMin, zMax] 이고 x,y 는 카메라 축을 품는다
+    // F-097 ①: 축 밖 꼭짓점의 cos 최솟값으로 d_eff = d·cMin² (상자 8 꼭짓점을 카메라 좌표로 옮겨 직접 계산)
+    let cMin = 1;
+    for (const x of [h.octree.boxMin[0], h.octree.boxMax[0]]) for (const y of [h.octree.boxMin[1], h.octree.boxMax[1]]) for (const z of [h.octree.boxMin[2], h.octree.boxMax[2]]) {
+      const zc = z + D;
+      cMin = Math.min(cMin, zc > 0 ? zc / Math.hypot(x, y, zc) : 0);
+    }
+    const dEff = d * cMin * cMin;
     let expect = 0;
-    for (let l = 0; l < L; l++) if ((fx * edgeOfLevel(e0, l)) / d <= tau) expect = l;
+    if (dEff > 0) for (let l = 0; l < L; l++) if ((fx * edgeOfLevel(e0, l)) / dEff <= tau) expect = l;
     const sel = selectLevels(h, axisCam(D, fx), { thresholdPx: tau });
     assert.equal(sel.leafLevel[0], expect, `D=${D}`);
     assert.equal(sel.pointCount, h.levels[expect].count);
