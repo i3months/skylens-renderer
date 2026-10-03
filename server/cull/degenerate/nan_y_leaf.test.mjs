@@ -24,6 +24,14 @@ const runs = {
   client: (cam, p) => clientFrustumCull(leafBoxesOf(oc), cam, { pointSizeM: p }),
 };
 
+// Save normal mask and copies of boxMin/boxMax for later comparison
+const normalMask = {};
+const savedBoxMin = oc.boxMin.slice();
+const savedBoxMax = oc.boxMax.slice();
+for (const [name, run] of Object.entries(runs)) {
+  normalMask[name] = run(cams[0], 0.1);
+}
+
 for (const [name, run] of Object.entries(runs)) {
   for (const which of ['boxMin', 'boxMax']) {
     test(`${name}: ${which} 의 y 가 NaN 인 리프는 마스크에 남는다(모든 리프·카메라)`, () => {
@@ -45,6 +53,6 @@ for (const [name, run] of Object.entries(runs)) {
 }
 
 test('정상 입력 출력은 NaN 시험 뒤에도 그대로', () => {
-  for (const run of Object.values(runs)) assert.deepEqual(run(cams[0], 0.1), run(cams[0], 0.1));
+  for (const [name, run] of Object.entries(runs)) assert.deepEqual(run(cams[0], 0.1), normalMask[name]);
   assert.ok(frustumCull(hier, cams[0], { pointSizeM: 0.1 }).some((v) => v === 1));
 });

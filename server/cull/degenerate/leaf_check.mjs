@@ -1,6 +1,6 @@
 // 컬링 단계 공용 리프 검사(F-150). frustum·distance·predict·occlusion·priority 가 같은 규칙을 쓴다.
 // leafIndex 는 -1(내부 노드) 또는 [0, leafCount) 이고 리프 ↔ 노드가 일대일이어야 한다. 리프 노드의 boxMin/boxMax 에 ±Infinity 가 있으면 구조 오류다(NaN 은 단계별 기존 정책대로 통과).
-// 모든 오류는 'cull:' 로 시작한다. scratch 를 주면(길이 ≥ leafCount, 0 으로 채운 수 배열(Uint8Array 또는 Float64Array)) 새로 할당하지 않고 쓴 뒤 호출자가 비운다.
+// 모든 오류는 'cull:' 로 시작한다(할당 실패·RangeError 제외). scratch 를 주면(길이 ≥ leafCount, 0 으로 채운 수 배열(Uint8Array 또는 Float64Array)) 새로 할당하지 않고 쓴 뒤 호출자가 비운다.
 
 /**
  * @param {{leafIndex:Int32Array, boxMin:Float32Array, boxMax:Float32Array, leafCount:number, nodeCount:number}} oc 길이·형 검사가 끝난 octree
