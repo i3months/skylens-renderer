@@ -160,6 +160,7 @@ test('무작위 1 MB 왕복: 저장 모드, 크기 = 원본 + 헤더 4 B, 시간
   assert.equal(e.length, 1048580); // 1 + LEB(2^20)=3 + 2^20
   assert.equal(hex(e.subarray(0, 4)), '00808040');
   assert.equal(Buffer.compare(d, a), 0);
+  // [회귀 감시] 시간 상한은 기계 성능에 달린 느슨한 값(실측의 수 배)이라 이론 근거가 없다. 큰 퇴행만 잡는다.
   assert.ok(t1 - t0 < 800, `부호화 ${t1 - t0} ms`);
   assert.ok(t2 - t1 < 800, `복호 ${t2 - t1} ms`);
   // 결정적
@@ -186,12 +187,13 @@ test('편향 분포(0 이 90%) 1 MB: 범위 모드, 원본의 0.6 배 이하, �
   const d = entropyDecode(e);
   const t2 = performance.now();
   assert.equal(e[0], ENTROPY_MODE.RANGE);
-  assert.equal(e.length, 178520); // 결정적 출력 크기 고정
+  assert.equal(e.length, 178520); // [회귀 감시] 결정적 출력 크기 스냅샷(이론 근거 없음). 아래 이론 엔트로피 대비 1.08 배 상한이 근거 있는 검사
   assert.ok(e.length <= 0.6 * N);
   // 이론 엔트로피 대비: 이론 하한(N·H/8 = 166256 B)의 1.08 배 이하, 표본 엔트로피 이상
   assert.ok(e.length <= 1.08 * (N * Htheory / 8), `비율 ${e.length / (N * Htheory / 8)}`);
   assert.ok(e.length >= HsBytes);
   assert.equal(Buffer.compare(d, a), 0);
+  // [회귀 감시] 시간 상한은 기계 성능에 달린 느슨한 값(실측의 수 배)이라 이론 근거가 없다. 큰 퇴행만 잡는다.
   assert.ok(t1 - t0 < 800, `부호화 ${t1 - t0} ms`);
   assert.ok(t2 - t1 < 800, `복호 ${t2 - t1} ms`);
 });
@@ -200,7 +202,7 @@ test('전부 0 1 MB: 최대 압축비가 조기 거부 상한(64 배)보다 작�
   const N = 1 << 20;
   const e = entropyEncode(new Uint8Array(N));
   assert.equal(e[0], ENTROPY_MODE.RANGE);
-  assert.equal(e.length, 23123);
+  assert.equal(e.length, 23123); // [회귀 감시] 스냅샷. 근거 있는 검사는 아래 64 배 조기 거부 상한과의 관계
   const payload = e.length - 4;
   assert.ok(N <= 64 * payload + 64);
   assert.equal(entropyDecode(e).every((v) => v === 0), true);
@@ -223,11 +225,28 @@ test('형식 오류: mode·LEB128·상한·인자', () => {
   expectCodecError(() => entropyDecode(Uint8Array.from([0, ...lebBytes(STREAM_RAW_BYTES_MAX + 1)])), 'limit');
   // 범위 부호 첫 바이트 ≠ 0
   expectCodecError(() => entropyDecode(fromHex('0101010000000000')), 'stream');
-  // rawLen 이 payload 로 낼 수 있는 양(64·L + 64)을 넘으면 할당 전에 거부
+  // rawLen 이 payload 로 낼 수 있는 양(64·L + 64)을 넘으면 할당 전에 거부(아래 경계 시험)
   expectCodecError(() => entropyDecode(Uint8Array.from([1, ...lebBytes(STREAM_RAW_BYTES_MAX), 0, 0, 0, 0, 0, 0])), 'stream');
   expectCodecError(() => entropyEncode([1, 2, 3]), 'range');
   expectCodecError(() => entropyDecode([0, 0]), 'range');
   expectCodecError(() => entropyDecode(fromHex('0000'), -1), 'range');
+});
+
+test('할당 전 거부 경계: rawLen = 64·L+64 는 가드를 통과, +65 는 가드가 즉시 거부', () => {
+  // 두 경우 모두 결국 'stream' 이므로 코드만으로는 가드 유무를 가를 수 없다. 가드의 메시지('너무 짧다')로 가른다.
+  // 가드 없는 변이에서는 +65 가 나중 검사(범위 복호 중 payload 모자람)로 거부되어 메시지가 달라져 실패한다.
+  const guard = (e) => e instanceof CodecError && e.code === 'stream' && /너무 짧다/.test(e.message);
+  const later = (e) => e instanceof CodecError && e.code === 'stream' && !/너무 짧다/.test(e.message);
+  for (const L of [5, 6, 37, 1000]) {
+    const payload = new Uint8Array(L); // 첫 바이트 0, 나머지 0 — 가드만 보는 시험이라 내용은 상관없다
+    const mk = (rawLen) => Uint8Array.from([1, ...lebBytes(rawLen), ...payload]);
+    assert.throws(() => entropyDecode(mk(64 * L + 64)), later, `L=${L}: 경계값은 가드를 통과해야 한다`);
+    assert.throws(() => entropyDecode(mk(64 * L + 65)), guard, `L=${L}: 경계+1 은 가드가 거부해야 한다`);
+  }
+  // 상한 가까이의 거대한 rawLen 도 할당·복호 없이 즉시(가드로) 거부
+  const t0 = performance.now();
+  assert.throws(() => entropyDecode(Uint8Array.from([1, ...lebBytes(STREAM_RAW_BYTES_MAX), 0, 0, 0, 0, 0, 0])), guard);
+  assert.ok(performance.now() - t0 < 50, '가드 거부는 거의 즉시여야 한다');
 });
 
 test('손상 퍼징 5000 회: CodecError 아니면 정상 스트림뿐, 큰 할당·긴 실행 없음', () => {
@@ -291,7 +310,8 @@ test('손상 퍼징 5000 회: CodecError 아니면 정상 스트림뿐, 큰 할�
       }
     }
   }
-  assert.deepEqual(stats, { trunc: 1667, flip: 1667, inflate: 1666, flipOk: 311, inflateOk: 53 }); // 씨앗 고정 → 결정적 집계
+  assert.deepEqual(stats, { trunc: 1667, flip: 1667, inflate: 1666, flipOk: 311, inflateOk: 53 }); // [회귀 감시] 씨앗 고정 → 결정적 집계 스냅샷(구현을 바꾸면 의도한 변화인지 확인 후 갱신)
+  // [회귀 감시] 시간 상한: 근거 있는 값이 아니라 느슨한 퇴행 감시
   assert.ok(worst < 100, `한 번 복호 최대 ${worst} ms`);
   assert.ok(performance.now() - t0 < 10000);
 });

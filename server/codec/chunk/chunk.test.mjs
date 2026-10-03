@@ -1,12 +1,13 @@
 // 조각 부호화·복호화(T09.11) 시험: codec 0 ↔ codec 1 왕복, 오차 상한, 결정성, 서버·클라이언트 통합, 오류 경로, 압축률.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { crc32 } from 'node:zlib';
 import { encodeChunk, decodeChunk } from './index.mjs';
 import { packChunk } from '../../asset/pack/index.mjs';
 import { unpackChunk } from '../../asset/unpack/index.mjs';
 import { decodeChunkClient } from '../../../client/codec/index.mjs';
 import { readHeaderClient, readPlanesClient } from '../../../client/asset/index.mjs';
-import { parseHeader, FORMAT_POINT27, FORMAT_GAUSS56, ERROR_BOUNDS, OFFSETS } from '../../../contracts/asset/index.mjs';
+import { parseHeader, FORMAT_POINT27, FORMAT_GAUSS56, ERROR_BOUNDS, OFFSETS, AssetFormatError, TILE_SIZE_M, LOD_MAX, QUANT_EXP_MIN, QUANT_EXP_MAX } from '../../../contracts/asset/index.mjs';
 import { CodecError, CODEC_SKLC1, pointMultiset } from '../../../contracts/codec/index.mjs';
 
 const ANCHOR = { lat: 37.5, lon: 127.0, alt: 30.0 };
@@ -210,7 +211,7 @@ test('lossyColor: 채널 평균 절대 오차 ≤ 2, 위치·법선은 그대로
   const means = sum.map((s) => s / n);
   console.log(`lossyColor 채널 평균 오차 r,g,b = ${means.map((m) => m.toFixed(3)).join(', ')}, 최대 ${maxErr}`);
   for (const m of means) assert.ok(m <= 2, `평균 오차 ${m} > 2`);
-  assert.ok(maxErr <= 2, `최대 오차 ${maxErr}`); // 복원 = (v>>2<<2)+2 이므로 최대 2(255 는 255 로 1 이내)
+  assert.ok(maxErr <= 2, `최대 오차 ${maxErr}`); // 복원 = (v>>2<<2)+2 이므로 최대 2(QUANT2 최대 254 이므로 255 → 254, 오차 1)
 });
 
 function expectCodecError(fn, code) {
@@ -248,15 +249,70 @@ test('오류: decodeChunk 의 codec 0 입력·형식 2·체크섬·길이 불일
   const longer = new Uint8Array(enc.length + 1); longer.set(enc);
   expectCodecError(() => decodeChunk(longer), 'length');
   expectCodecError(() => decodeChunk(enc.subarray(0, enc.length - 1)), 'length');
-  // 본문 스트림 길이 합 불일치(posLen 을 1 늘리고 체크섬은 맞게 다시 계산하지 않아도 길이 검사가 먼저는 아님 → 어떤 경우든 CodecError)
-  const base = parseHeader(enc).headerSize;
-  const bad3 = enc.slice(); bad3[base + 4] ^= 0x01;
-  expectCodecError(() => decodeChunk(bad3));
-  // 형식 2 로 표시된 codec 1 파일
+  // 형식 2 로 표시된 codec 1 파일: 체크섬을 다시 맞춰도 형식 검사에서 'format'
+  const asG = enc.slice(); asG[OFFSETS.format] = FORMAT_GAUSS56; recrc(asG);
+  expectCodecError(() => decodeChunk(asG), 'format');
+  assert.equal(parseHeader(enc).format, FORMAT_POINT27);
+});
+
+// 손상 뒤 체크섬을 다시 맞춘다: 체크섬 검사를 통과해 그 뒤의 검사가 실제로 일해야 거부된다.
+function recrc(file) {
+  new DataView(file.buffer, file.byteOffset).setUint32(OFFSETS.checksum, 0, true);
+  new DataView(file.buffer, file.byteOffset).setUint32(OFFSETS.checksum, crc32(file) >>> 0, true);
+  return file;
+}
+
+function expectAssetError(fn, code) {
+  assert.throws(fn, (e) => e instanceof AssetFormatError && e.code === code, `AssetFormatError ${code} 기대`);
+}
+
+test('오류(체크섬 재계산): 본문 스트림 길이 합 불일치는 length, 색 모드 불일치는 mode', () => {
+  const enc = encodeChunk(packChunk(randomInput(500, 62)));
+  const b = parseHeader(enc).headerSize;
+  assert.doesNotThrow(() => decodeChunk(recrc(enc.slice())));
+  // 위치·법선·색 길이 필드를 각각 1 늘리거나 줄이면 합이 body_bytes 와 어긋난다
+  for (const off of [4, 8, 12]) {
+    for (const d of [1, -1]) {
+      const bad = enc.slice();
+      const dv = new DataView(bad.buffer);
+      dv.setUint32(b + off, dv.getUint32(b + off, true) + d, true);
+      recrc(bad);
+      expectCodecError(() => decodeChunk(bad), 'length');
+    }
+  }
+  // 색 모드 바이트: 스트림 안의 실제 모드(0)와 다르게(1, 0xff)
+  for (const m of [1, 0xff]) {
+    const bad = enc.slice(); bad[b + 1] = m; recrc(bad);
+    expectCodecError(() => decodeChunk(bad), 'mode');
+  }
+  // 손실 색 파일(모드 1)의 모드 바이트를 0 으로
+  const encL = encodeChunk(packChunk(randomInput(500, 62)), { lossyColor: true });
+  assert.equal(encL[b + 1], 1);
+  const badL = encL.slice(); badL[b + 1] = 0; recrc(badL);
+  expectCodecError(() => decodeChunk(badL), 'mode');
+});
+
+test('오류(체크섬 재계산): 헤더 의미 위반은 AssetFormatError(코드별)', () => {
+  const enc = encodeChunk(packChunk(randomInput(500, 63)));
   const h = parseHeader(enc);
-  const asG = enc.slice(); asG[OFFSETS.format] = FORMAT_GAUSS56;
-  expectCodecError(() => decodeChunk(asG));
-  assert.equal(h.format, FORMAT_POINT27);
+  const mut = (fn) => { const f = enc.slice(); fn(new DataView(f.buffer), f); return recrc(f); };
+  const cases = [
+    ['tileSizeM', 'field', (dv) => dv.setUint16(OFFSETS.tileSizeM, TILE_SIZE_M + 1, true)],
+    ['lod > LOD_MAX', 'field', (dv, f) => { f[OFFSETS.lod] = LOD_MAX + 1; }],
+    ['quantExp > 최대', 'field', (dv, f) => { f[OFFSETS.quantExp] = QUANT_EXP_MAX + 1; }],
+    ['quantExp < 최소', 'field', (dv, f) => { f[OFFSETS.quantExp] = QUANT_EXP_MIN - 1; }],
+    ['anchor.lat NaN', 'field', (dv) => dv.setFloat64(OFFSETS.anchorLat, NaN, true)],
+    ['bbox 축 NaN', 'bbox', (dv) => dv.setFloat64(OFFSETS.bboxMax + 8, NaN, true)],
+    ['bbox min > max', 'bbox', (dv) => dv.setFloat64(OFFSETS.bboxMin + 16, h.bboxMax[2] + 1, true)],
+    ['bbox 폭이 u16 초과', 'range', (dv) => dv.setFloat64(OFFSETS.bboxMax + 16, h.bboxMin[2] + 1e6, true)],
+    ['bbox 가 타일 밖(tileX 변경)', 'tile', (dv) => dv.setInt32(OFFSETS.tileX, h.tileX + 5, true)],
+    ['예약 바이트 비0(버전 1.0)', 'reserved', (dv, f) => { f[OFFSETS.reserved] = 1; }],
+  ];
+  assert.equal(h.versionMinor, 0);
+  for (const [name, code, fn] of cases) {
+    const bad = mut(fn);
+    assert.throws(() => decodeChunk(bad), (e) => e instanceof AssetFormatError && e.code === code, `${name}: AssetFormatError ${code} 기대`);
+  }
 });
 
 test('압축률: 합성 지면 5 만 점 codec 1 본문 바이트/점 < 11 (실측값 고정)', () => {
@@ -269,7 +325,8 @@ test('압축률: 합성 지면 5 만 점 codec 1 본문 바이트/점 < 11 (실�
   console.log(`  lossyColor: 본문 ${parseHeader(encL).bodyBytes} B, ${(parseHeader(encL).bodyBytes / 50000).toFixed(4)} B/점`);
   assert.equal(parseHeader(raw).bodyBytes, 550000); // 점당 11 B(위치 6 + 색 3 + 법선 2)
   assert.ok(bpp < 11, `${bpp} B/점`); // 계약 상한
-  // 실측 5.594 B/점(위치 모턴 차분·법선 차분·색 DELTA + 범위 부호). 회귀 감지용으로 실측 근방을 좁게 건다.
+  // [회귀 감시] 실측 5.594 B/점(위치 모턴 차분·법선 차분·색 DELTA + 범위 부호) 근방의 좁은 띠. 이론 하한이 아니라 측정값이므로
+  // 띠를 벗어나면 원인을 확인한 뒤 갱신한다.
   assert.ok(bpp < 6.0 && bpp > 5.0, `${bpp} B/점`);
   const l = parseHeader(encL).bodyBytes / 50000;
   assert.ok(l < bpp, `손실 색 ${l} B/점 은 무손실 ${bpp} 보다 작아야 한다`);
