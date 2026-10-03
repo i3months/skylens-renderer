@@ -16,14 +16,19 @@
 //      정규분포는 mulberry32 로 Box–Muller 변환한다. 잡음은 광선을 따라가므로 다시 투영하면 같은 픽셀, 깊이만 d' 이다.
 // 표본 뽑기와 잡음은 서로 다른 부분 시드를 써서 noise:false 의 점은 같은 시드의 잡음 점과 같은 픽셀·정답 깊이를 갖는다.
 
-import { mulberry32, subSeed, makeResult } from '../../../contracts/scenes/index.mjs';
+import { mulberry32, subSeed, makeResult, checkCount, normalizeSeed, checkFormat } from '../../../contracts/scenes/index.mjs';
 import { FORMAT_POINT27 } from '../../../contracts/points/index.mjs';
 
 export const SCENE = 'depth_noise';
 
 /** renderer_basis.md §1-2 의 960px K(카메라 1). */
 export const DOC_K = Object.freeze({ fx: 754.32, fy: 753.85, cx: 480, cy: 270, width: 960, height: 540 });
-export const DEFAULTS = Object.freeze({ f: DOC_K.fx, b: 0.5, count: 200000 });
+// 기선 b 의 출처(F-087): renderer_basis.md:229-234 의 기선 표(1.04 / 4.14 / 8.26 / 15.37 m)에는 0.5 m 가 없다.
+// 기본값은 그 표의 "1위 이웃" 값 8.26 m(같은 문서 :233)로 한다. 이때 d=45.3 m 에서 σ = 0.33 m 이다(문서 표와 같음).
+// 가정: σ(d) 는 "1 px 시차에 해당하는 깊이 변화 Δd" 이다. 부화소 정합(0.1~0.2 px, renderer_basis.md:583)이 아니다.
+// 따라서 이 잡음은 부화소 정합을 쓴 실제 복원 오차보다 5~10 배 큰 보수적(나쁜 쪽) 모형이다.
+// 더 극단적인 잡음이 필요한 시험은 b 옵션으로 작은 값(예: 문서 표의 1.04 m, 또는 0.5 m)을 직접 준다.
+export const DEFAULTS = Object.freeze({ f: DOC_K.fx, b: 8.26, count: 200000 });
 /** 정답 깊이 범위(m). */
 export const DEPTH_RANGE = Object.freeze([5, 80]);
 export const SIGMA_OF_D = 'd^2/(f*b)';
@@ -126,12 +131,12 @@ const BASE = [[200, 80, 60], [70, 160, 90], [60, 110, 200], [210, 180, 60], [160
  * @returns {import('../../../contracts/scenes/index.mjs').SceneResult}
  */
 export function generate(opts = {}) {
-  const seed = (opts.seed ?? 1) >>> 0;
-  const count = opts.count ?? DEFAULTS.count;
+  const seed = normalizeSeed(opts.seed);
+  const count = checkCount(opts.count, DEFAULTS.count);
+  const format = checkFormat(opts.format);
   const f = opts.f ?? DEFAULTS.f;
   const b = opts.b ?? DEFAULTS.b;
   const noise = opts.noise ?? true;
-  if (!Number.isInteger(count) || count < 0) throw new Error('depth_noise: count 는 0 이상 정수');
   if (!(f > 0) || !(b > 0)) throw new Error('depth_noise: f, b 는 양수');
   const K = makeK(f);
   const planes = buildPlanes(K);
@@ -202,10 +207,11 @@ export function generate(opts = {}) {
     K: { fx: K.fx, fy: K.fy, cx: K.cx, cy: K.cy, width: K.width, height: K.height },
     planes: planes.map((p) => ({ id: p.id, center: p.center, e1: p.e1, e2: p.e2, h1: p.h1, h2: p.h2, normal: p.normal })),
     sigmaOfD: SIGMA_OF_D,
+    sigmaAssumption: 'σ = 1 px 시차에 해당하는 Δd = d²/(f·b) (부화소 정합 0.1~0.2 px 아님; renderer_basis.md:229-234, :583). 기본 b = 8.26 m(문서 기선 표 1위 이웃).',
     noise,
     depthRange: [...DEPTH_RANGE],
     frame: { camera: 'OpenCV x 우, y 아래, z 전방; 원점; 북쪽 수평 응시', cameraToScene: 'X_s = (x_c, -y_c, -z_c)' },
     perPlane,
   };
-  return makeResult(SCENE, seed, opts.format ?? FORMAT_POINT27, cloud27, truth);
+  return makeResult(SCENE, seed, format, cloud27, truth);
 }
