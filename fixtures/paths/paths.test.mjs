@@ -141,7 +141,23 @@ test('드론: 한 바퀴(회전 합 +2π±0.05)·프레임 이동 0.7~1.8 m·지
     assert.ok(Math.abs(rot - 2 * Math.PI) <= 0.05, `seed ${seed} 회전 합 ${rot}`);
     assert.ok(Math.max(...r) - Math.min(...r) > 1.0, `seed ${seed} 반경 지터 없음`);
     assert.ok(altitudeMax - altitudeMin > 1.0, `seed ${seed} 고도 폭 ${altitudeMax - altitudeMin} m`);
-    assert.ok(tangentMaxOffset - tangentMinOffset !== 0, `seed ${seed} 접선 오프셋 변화 있음`);
+    // 드론 궤도 회전 각도의 프레임당 증분 표준편차로 지터 검증
+    const angles = [];
+    for (let i = 0; i < n; i++) {
+      const a = p.frames[i].eye;
+      angles.push(Math.atan2(a[2], a[0]));
+    }
+    const angularDiffs = [];
+    for (let i = 0; i < n - 1; i++) {
+      let d = angles[i + 1] - angles[i];
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      angularDiffs.push(d);
+    }
+    const meanAngle = angularDiffs.reduce((a, b) => a + b, 0) / angularDiffs.length;
+    const angleVar = angularDiffs.reduce((a, d) => a + (d - meanAngle) ** 2, 0) / angularDiffs.length;
+    const angularStdDev = Math.sqrt(angleVar);
+    assert.ok(angularStdDev > 0.0003 && tangentMaxOffset - tangentMinOffset > 0.1, `seed ${seed} 접선 오프셋 폭 ${tangentMaxOffset - tangentMinOffset} m, 각도 표준편차 ${angularStdDev}`);
   }
 });
 
