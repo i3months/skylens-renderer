@@ -41,7 +41,8 @@ function color(x, z, rnd) {
 }
 
 /** @param {import('../../../contracts/scenes/index.mjs').GenerateOptions} opts */
-export function generate(opts = {}) {
+export function generate(options) {
+  const opts = options ?? {};
   const seed = normalizeSeed(opts.seed);
   const n = checkCount(opts.count, DEFAULT_COUNT);
   const format = checkFormat(opts.format);

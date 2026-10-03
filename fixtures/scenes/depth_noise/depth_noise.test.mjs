@@ -212,3 +212,17 @@ test('F-083: format 2 의 positions 는 format 1 과 같고 fdc 는 색에서, s
     assert.ok(Math.abs(b.cloud.scales[i] - Math.log(0.05)) < 1e-6, `scales[${i}]`);
   }
 });
+
+test('F-090: f·b 가 비유한이거나 범위 밖이면 명시 Error 로 거부한다', () => {
+  for (const f of [1e-300, Infinity, -Infinity, NaN, 0, -5, 0.5, 2e5, '754']) assert.throws(() => generate({ count: 10, f }), /depth_noise: f/, `f ${String(f)}`);
+  for (const b of [1e-300, Infinity, -Infinity, NaN, 0, -1, 1e-4, 2e3, '8']) assert.throws(() => generate({ count: 10, b }), /depth_noise: b/, `b ${String(b)}`);
+  // 경계값은 통과(f 1·1e5 px, b 1e-3·1e3 m 는 허용 범위 끝)
+  assert.equal(generate({ count: 10, f: 1000, b: 1e-3 }).count, 10);
+  assert.equal(generate({ count: 10, f: 1000, b: 1e3 }).count, 10);
+});
+
+test('F-091: noise 가 불리언이 아니면 거부하고 opts 가 null 이어도 생성된다', () => {
+  for (const noise of ['no', 0, 1, 'false', {}]) assert.throws(() => generate({ count: 10, noise }), /depth_noise: noise/, String(noise));
+  assert.equal(generate({ count: 10, noise: false }).truth.noise, false);
+  assert.equal(generate(null).count, DEFAULTS.count);
+});

@@ -41,11 +41,13 @@ export function gradientAt(params, x, z) {
   return [gx, gz];
 }
 
-function readOpts(opts = {}) {
+function readOpts(options) {
+  const opts = options ?? {};
   const tile = opts.tile ?? 129;
   const cell = opts.cell ?? 10;
   if (!Number.isInteger(tile) || tile < 2) throw new Error('dem: tile 은 2 이상의 정수');
-  if (!(cell > 0)) throw new Error('dem: cell 은 양수');
+  // 유한 범위 검사: cell=Infinity 면 좌표가 비유한이 된다.
+  if (!Number.isFinite(cell) || cell <= 0 || cell > 1e5) throw new Error(`dem: cell 은 0 초과 1e5 m 이하의 유한값: ${String(cell)}`);
   const count = checkCount(opts.count, tile * tile);
   if (count !== tile * tile) throw new Error(`dem: count 는 tile² (${tile * tile}) 이어야 함`);
   return { tile, cell, seed: normalizeSeed(opts.seed), format: checkFormat(opts.format) };
@@ -73,7 +75,8 @@ export function dequantize(t, i, j) {
   return t.minH + (t.heights[j * t.tile + i] / (LEVELS - 1)) * (t.maxH - t.minH);
 }
 
-export function generate(opts = {}) {
+export function generate(options) {
+  const opts = options ?? {};
   const { tile, cell, seed, format } = readOpts(opts);
   const params = makeParams(seed);
   const n = tile * tile;

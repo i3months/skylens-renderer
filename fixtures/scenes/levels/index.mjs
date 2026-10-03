@@ -48,7 +48,8 @@ function spaced(N, n) {
   return idx;
 }
 
-export function generate(opts = {}) {
+export function generate(options) {
+  const opts = options ?? {};
   const seed = normalizeSeed(opts.seed);
   const format = checkFormat(opts.format);
   const segments = opts.segments ?? 8;
