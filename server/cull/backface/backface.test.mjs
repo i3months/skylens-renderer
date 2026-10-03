@@ -4,8 +4,8 @@
 //   계약의 (a) '참조 래스터에 그려진 점의 리프는 모두 남김' 은 순수 법선 컬링과 정면으로 충돌한다. 참조 래스터는 법선을 쓰지 않으므로
 //   카메라를 등진 점도 (표면의 틈·점 원판 번짐·지면 아래 시점에서) 그려진다. 실측: flat_boxes 에서 시점마다 뒷면 법선이면서 그려진 점이
 //   수백~2천 개, 그 점들이 든 '제거된 리프' 가 시점마다 1~8 개; terrain 은 지표 아래 시점에서 100 개 안팎.
-//   그래서 backfaceCull 은 1단계(법선 원뿔) 후보 가운데 화면 영역이 앞쪽 점으로 확실히 덮인 리프만 버린다(2단계, F-117. index.mjs 머리말).
-//   시험은 셋으로 나눈다(F-117 ①: todo 가 불변식 단언을 숨기지 않도록 분리, todo 없음).
+//   그래서 backfaceCull 은 1단계(법선 원뿔) 후보 가운데 화면 영역이 앞쪽 점으로 확실히 덮인 리프만 버린다(2단계, index.mjs 머리말).
+//   시험은 셋으로 나눈다(todo 가 불변식 단언을 숨기지 않도록 분리, todo 없음).
 //   (a0) 1단계 기하 불변식(requireCover:false): 제거된 리프의 모든 점이 등진다(n·v < 0), 앞면으로 그려진 점의 리프는 제거 0.
 //   (a1) 2단계 불변식(기본): 제거된 리프의 점은 참조 래스터(같은 점 지름)에서 한 픽셀도 이기지 않는다(그려진 점 0) — 거짓 제거 0 의 강한 꼴.
 //   (a') 영상 검증: 점마다 머리등(시점 방향) 램버트로 칠한 영상(뒷면은 주변광만 → 어둡다)과 '제거 리프 점을 뺀' 같은 영상의
@@ -24,7 +24,8 @@ import { ssim } from '../../metrics/ssim/index.mjs';
 import { buildHierarchy } from '../../lod/hierarchy/index.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
 import { MAX_FALSE_REMOVALS, BACKFACE_MAX_SSIM_DROP } from '../../../contracts/cull/index.mjs';
-import { leafNormalCones, backfaceCull } from './index.mjs';
+import { buildDepthPyramid, occlusionCull } from '../occlusion/index.mjs';
+import { leafNormalCones, backfaceCull, COVER_PYRAMID_SIZE } from './index.mjs';
 
 const W = 320, H = 180;
 const POINT_SIZE_M = 0.75;
@@ -120,6 +121,58 @@ test('성질: 무작위 원뿔·상자·카메라에서 제거된 리프는 표�
   assert.ok(removedCount >= 300, `제거 사례가 너무 적어 시험이 약함: ${removedCount}/${trials}`);
 });
 
+// ---------- 1단계 경계 사례: f 가 0 근처일 때 ----------
+// 판정식: 상자를 BOX_PAD 만큼 부풀린 8 꼭짓점 모두에서 f(p) = axis·(C−p) + s·|C−p| < −F_MARGIN 일 때만 후보(s = sinγ + 1e-6).
+// 아래 값은 index.mjs 의 정의값(1e-3 m)을 일부러 그대로 적는다(모듈 상수를 가져오면 상수 변이가 시험 쪽 계산도 바꿔 버린다).
+// 근거: 부풀린 상자 꼭짓점에서 f ≥ 0 이면 상자 경계(반올림 오차 이내)의 점이 카메라를 향할 수 있으므로 반드시 남긴다.
+const SPEC_BOX_PAD = 1e-3, SPEC_F_MARGIN = 1e-3;
+const TILT = [1 / Math.sqrt(3), 1 / Math.sqrt(3), 1 / Math.sqrt(3)]; // 세 축 모두 기울여 부풀림이 f 를 √3·1e-3 만큼 바꾸게 한다
+function fMaxOverBox(h, axis, cosHalf, C, pad) {
+  const node = h.octree.leafIndex.findIndex((v) => v === 0);
+  const sg = Math.sqrt(Math.max(0, 1 - cosHalf * cosHalf)) + 1e-6;
+  let m = -Infinity;
+  for (let v = 0; v < 8; v++) {
+    const p = [0, 1, 2].map((a) => ((v >> a) & 1 ? h.octree.boxMax[3 * node + a] + pad : h.octree.boxMin[3 * node + a] - pad));
+    const d = [C[0] - p[0], C[1] - p[1], C[2] - p[2]];
+    m = Math.max(m, axis[0] * d[0] + axis[1] * d[1] + axis[2] * d[2] + sg * Math.hypot(...d));
+  }
+  return m;
+}
+// 카메라를 상자 아래쪽 대각선(−TILT 방향) 위에서 움직여 부풀린 상자의 f 최댓값이 target 이 되는 자리를 이분법으로 찾는다.
+function cameraForF(h, axis, cosHalf, target) {
+  const node = h.octree.leafIndex.findIndex((v) => v === 0);
+  const base = [0, 1, 2].map((a) => h.octree.boxMin[3 * node + a]);
+  const at = (tt) => [base[0] - TILT[0] * tt, base[1] - TILT[1] * tt, base[2] - TILT[2] * tt];
+  let lo = 0, hi = 20; // tt 가 클수록 f 가 작아진다(뒤로 멀어짐)
+  for (let i = 0; i < 200; i++) { const mid = (lo + hi) / 2; if (fMaxOverBox(h, axis, cosHalf, at(mid), SPEC_BOX_PAD) > target) lo = mid; else hi = mid; }
+  return at(lo);
+}
+
+test('1단계 경계: 부풀린 상자의 f 최댓값이 0 근처 양수이거나 (−F_MARGIN, 0) 이면 남기고, 확실히 음수면 후보', () => {
+  const h = bigLeaf(planeCloud(100, () => [0, 1, 0]));
+  const cosHalf = Math.fround(0.999);
+  const cones = { axis: Float32Array.from(TILT), cosHalf: Float32Array.of(cosHalf) };
+  const pure = { requireCover: false };
+  const axis = [...cones.axis];
+  const cases = [
+    // [target f(부풀린 상자), 기대 마스크, 설명]
+    [2e-4, 1, 'f 가 0 근처 양수 → 남김'],
+    [1.5e-3, 1, 'f 가 F_MARGIN 보다 큰 양수 → 남김'],
+    [-5e-4, 1, 'f 가 음수지만 −F_MARGIN 보다 크다 → 남김'],
+    [-3e-3, 0, 'f 가 확실히 음수 → 후보'],
+  ];
+  for (const [target, want, why] of cases) {
+    const C = cameraForF(h, axis, cosHalf, target);
+    const fPad = fMaxOverBox(h, axis, cosHalf, C, SPEC_BOX_PAD);
+    assert.ok(Math.abs(fPad - target) < 1e-6, `${why}: 이분법이 목표 f 에 닿지 못함 (${fPad})`);
+    if (target > -SPEC_F_MARGIN && target < 1e-3) {
+      // 부풀림이 판정을 바꾸는 사례인지 확인(부풀리지 않으면 확실히 음수) — BOX_PAD 를 지키는 시험이 되도록
+      assert.ok(fMaxOverBox(h, axis, cosHalf, C, 0) < -SPEC_F_MARGIN, `${why}: 부풀리지 않은 상자에서는 후보여야 시험이 의미 있음`);
+    }
+    assert.equal(backfaceCull(h, identityCam(C), cones, pure)[0], want, `${why} (f=${fPad.toExponential(3)})`);
+  }
+});
+
 test('카메라가 리프 상자 안이면 제거하지 않는다(축이 어느 쪽이든)', () => {
   const h = bigLeaf(planeCloud(100, () => [0, 1, 0]));
   const cones = { axis: Float32Array.of(0, 1, 0), cosHalf: Float32Array.of(0.999) };
@@ -137,7 +190,7 @@ test('카메라가 지면 아래(앞면 법선이 위)이고 평평한 리프면
   assert.equal(backfaceCull(h, identityCam([4, 5, 4]), cones, pure)[0], 1, '위에서 본 평면');
   assert.equal(backfaceCull(h, identityCam([4, -5, 4]), { axis: cones.axis, cosHalf: Float32Array.of(-1) }, pure)[0], 1, '전체 구 원뿔은 절대 제거 안 함');
   // 2단계: 앞을 가리는 점이 하나도 없으므로(리프 하나뿐) 등진 평면도 참조 래스터에 그려진다 → 남긴다.
-  assert.equal(backfaceCull(h, identityCam([4, -5, 4]), cones)[0], 1, '덮는 앞면이 없으면 등져도 남김');
+  assert.equal(backfaceCull(h, identityCam([4, -5, 4]), cones, { pointSizeM: 0.3 })[0], 1, '덮는 앞면이 없으면 등져도 남김');
 });
 
 // 2단계 단위 시험: 위쪽 법선 평면 둘(y=0 '바닥' 과 y=−2 '아래층'). 카메라가 둘 사이 아래(y=−5)에서 위를 보면 둘 다 등진다.
@@ -159,6 +212,9 @@ test('2단계: 등진 리프는 앞면 점으로 확실히 덮일 때만 버린�
     const cam = upCam(C);
     const pure = backfaceCull(h, cam, cones, { requireCover: false, pointSizeM: 0.3 });
     const cov = backfaceCull(h, cam, cones, { pointSizeM: 0.3 });
+    // 점 지름을 주지 않으면 덮임을 확인할 수 없으므로 아무것도 버리지 않는다(판이 있어도).
+    assert.ok(backfaceCull(h, cam, cones).every((x) => x === 1), `pointSizeM 없음 → 제거 0 (판 ${withPlate})`);
+    assert.ok(backfaceCull(h, cam, cones, {}).every((x) => x === 1), `opts 에 pointSizeM 없음 → 제거 0 (판 ${withPlate})`);
     let nPure = 0, nCov = 0;
     for (let k = 0; k < pure.length; k++) {
       if (!pure[k]) nPure++;
@@ -172,6 +228,21 @@ test('2단계: 등진 리프는 앞면 점으로 확실히 덮일 때만 버린�
     const lo = leafOfPoint(h);
     for (const p of r.index) if (p >= 0) assert.equal(cov[lo[p]], 1, `그려진 점 ${p} 의 리프가 버려짐`);
   }
+});
+
+test('pointSizeM 을 주지 않으면 덮임을 확인할 수 없으므로 2단계 후보를 전부 남긴다(지름 0.05 m 로 덮이는 장면에서도)', () => {
+  // layered(true) 를 1/10 로 줄인 장면: 판 점 간격 0.01 m 라 지름 0.05 m 원판이면 두 평면을 덮는다.
+  const pos = [], nrm = [];
+  for (let i = 0; i < 10; i++) for (let j = 0; j < 10; j++) { pos.push(i * 0.1, 0, j * 0.1); nrm.push(0, 1, 0); pos.push(i * 0.1, -0.2, j * 0.1); nrm.push(0, 1, 0); }
+  for (let i = -40; i <= 130; i++) for (let j = -40; j <= 130; j++) { pos.push(i * 0.01, -0.35, j * 0.01); nrm.push(0, -1, 0); }
+  const h = buildHierarchy(cloudOf(pos, nrm), { edge0M: 0.05, levelCount: 1, maxLeafPoints: 64 });
+  const cones = leafNormalCones(h);
+  const cam = upCam([0.45, -0.5, 0.45]);
+  const removed = (m) => m.reduce((a, x) => a + (1 - x), 0);
+  assert.ok(removed(backfaceCull(h, cam, cones, { pointSizeM: 0.05 })) > 0, '지름 0.05 를 주면 덮여서 버려야 시험이 의미 있음');
+  assert.equal(removed(backfaceCull(h, cam, cones)), 0, 'opts 없음 → 제거 0');
+  assert.equal(removed(backfaceCull(h, cam, cones, { marginDeg: 0 })), 0, 'pointSizeM 없음 → 제거 0');
+  assert.ok(removed(backfaceCull(h, cam, cones, { requireCover: false })) > 0, '1단계만 쓰면 지름이 필요 없다');
 });
 
 // ---------- 입력 오류·퇴화 시점 ----------
@@ -189,6 +260,8 @@ test('입력 오류는 cull: 로 시작한다', () => {
   bad(() => backfaceCull(h, cam, cones, { pointSizeM: 0 }));
   bad(() => backfaceCull(h, cam, cones, { pointSizeM: NaN }));
   bad(() => backfaceCull(h, cam, cones, { requireCover: 1 }));
+  bad(() => backfaceCull(h, cam, cones, { pointSizeM: null }));
+  bad(() => backfaceCull(h, cam, cones, { pointSizeM: '0.75' }));
 });
 
 test('퇴화 시점: NaN·Infinity·해상도 0·R 비회전이면 던지지 않고 전부 0', () => {
@@ -221,14 +294,18 @@ const terrain = genTerrain({ seed: 1, count: 200000 });
 const terrainParams = terrain.truth.heightAt.params;
 const liftEye = (vp) => ({ ...vp, eye: [vp.eye[0], Math.max(vp.eye[1], heightAt(terrainParams, vp.eye[0], vp.eye[2]) + TERRAIN_EYE_M), vp.eye[2]] });
 const SCENES = [
-  ['terrain', () => terrain.cloud, { lift: true }],
-  ['flat_boxes', () => genBoxes({ seed: 1, count: 200000 }).cloud, {}],
+  ['terrain', () => terrain.cloud, { lift: true, minRemovedDefault: { street_level: 1, low_close_box: 1 } }],
+  ['flat_boxes', () => genBoxes({ seed: 1, count: 200000 }).cloud, { minRemovedDefault: { low_close_box: 1 } }],
   // buildings 는 법선이 전부 위(+y)인 지붕·지면 점뿐이다(벽 없음). 눈높이가 지붕보다 낮은 시점은 '아래에서 올려다본' 영상이라 그려진 점이 전부 뒷면이다.
-  // 1단계(순수 법선)는 이 시점들에서 장면 절반을 지운다(SSIM 하락 0.13). 2단계는 앞면 덮개가 없으므로 아무것도 버리지 않는다.
-  // 그래서 이 시점들도 SSIM 단언 대상이다(예외 목록 없음). minRemovedStreet 는 1단계가 실제로 일을 하는지 보는 하한이다.
+  // 1단계(순수 법선)는 이 시점들에서 장면 절반을 지우므로 2단계(덮임)가 그대로 남기는지가 SSIM 단언으로 확인된다(예외 목록 없음).
+  // minRemovedStreet 는 1단계가 실제로 일을 하는지 보는 하한이다.
   ['buildings', () => genBuildings({ seed: 1, count: 20000 }).cloud, { minRemovedStreet: 10 }],
 ];
 const SSIM_DROP_MAX = BACKFACE_MAX_SSIM_DROP; // 0.002, 사후 조정 없음
+// minRemovedDefault: 기본 마스크(2단계 포함)의 제거 하한. 측정 전에 1 로 정했다. 근거: 이 시점들은 등진 면(상자 뒷면, 언덕 뒷사면)이
+// 앞면 점 뒤에 있는 구도라 덮임 판정이 하나라도 버려야 2단계가 일을 한다는 뜻이고, 1 보다 큰 값은 측정 없이 정할 근거가 없다.
+// buildings 는 벽이 없어(법선 전부 +y) 낮은 시점에서 등진 지붕을 가릴 앞면 점이 없으므로 구조적으로 0 이라 하한을 걸지 않는다.
+// '덮임 판정이 항상 안 덮임' 변이(아무것도 버리지 않음)를 장면 시험에서 잡는 것이 목적이다.
 const LOW_VIEWS = ['street_level', 'low_close_box', 'edge_far'];
 
 function leafOfPoint(h) {
@@ -326,6 +403,16 @@ for (const [name, make, opt] of SCENES) {
         // 지표 아래·옆 시점의 1단계 제거율 하한(측정 전에 정한 느슨한 값: 법선 판정이 실제로 일을 하는지만 본다)
         assert.ok(removedPure >= opt.minRemovedStreet, `1단계 제거가 너무 적음: ${line}`);
       }
+      const minDefault = opt.minRemovedDefault?.[vp.name];
+      if (minDefault !== undefined) assert.ok(removed >= minDefault, `기본 마스크 제거가 하한 ${minDefault} 미만: ${line}`);
+      // 가림막 제한(후보 사각형과 겹치는 앞쪽 리프만 투영)은 전체 가림막으로 만든 피라미드와 결과가 같아야 한다.
+      const full = new Uint8Array(L).fill(1);
+      if (removedPure > 0) {
+        const pyr = buildDepthPyramid(h, view(vp).cam, { size: COVER_PYRAMID_SIZE, pointSizeM: POINT_SIZE_M, occluderLevel: 0, occluderMask: pure });
+        const hid = occlusionCull(h, view(vp).cam, pyr);
+        for (let k = 0; k < L; k++) if (pure[k] === 0 && hid[k] === 0) full[k] = 0;
+      }
+      assert.deepEqual([...mask], [...full], `${name} ${vp.name}: 가림막 제한 결과가 전체 가림막 결과와 다름`);
     });
     // ② 완료 기준(todo 없음): 기본 마스크의 SSIM 하락 ≤ 0.002.
     test(`${name}: 시점 ${vp.id} ${vp.name} SSIM 하락 ≤ ${SSIM_DROP_MAX} (기본 마스크, 점 지름 ${POINT_SIZE_M} m)`, (t) => {
