@@ -405,8 +405,8 @@ test('거부: payload 가 rawLen 보다 큰 mode 1 은 범위 복호로 풀리�
   rejects(odd, CodecError, 'stream');
   // 같은 점을 저장 모드로 쓰면 정상 복호(대조)
   assert.doesNotThrow(() => decodeChunkClient(assemble(1, 0, [entropy(Uint8Array.of(0), 0), nrm, col])));
-  // rawLen 0 인 mode 1 도 'stream'(저장 모드 rawLen 0 이 정규)
-  rejects(assemble(1, 0, [Uint8Array.from([1, 0, 0, 0, 0, 0, 0]), nrm, col]), CodecError, 'stream');
+  // rawLen 0 인 mode 1 은 rawLen 범위 검사(하한 미달, 'limit')가 정규성 검사('stream')보다 먼저 걸린다(서버와 같은 순서)
+  rejects(assemble(1, 0, [Uint8Array.from([1, 0, 0, 0, 0, 0, 0]), nrm, col]), CodecError, 'limit');
 });
 test('거부: normal 값 범위 밖(누적 128)', () => {
   const col = entropy(Uint8Array.from([0, 0, 0, 0, 0, 0, 0]), 0);

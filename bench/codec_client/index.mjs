@@ -6,10 +6,13 @@ import { packChunk } from '../../server/asset/pack/index.mjs';
 import { FORMAT_POINT27 } from '../../contracts/asset/index.mjs';
 import { mortonOrder } from '../../server/codec/order/index.mjs';
 import { generate as generateFlatBoxes } from '../../fixtures/scenes/flat_boxes/index.mjs';
+import { readHeaderClient, readPlanesClient } from '../../client/asset/index.mjs';
+import { pointMultiset, COLOR_MODE } from '../../contracts/codec/index.mjs';
 
 /**
- * 원본 synthetic 점을 생성하고 morton 순으로 정렬된 평면을 반환(테스트용).
- * 무손실 인코딩의 경우만 사용. 복호 결과와 비교하기 위해 morton 순으로 정렬된 평면을 반환한다.
+ * 원본 synthetic 점을 생성하고 평면을 반환(테스트용).
+ * 원본 raw 파일(codec 0)에서 직접 읽은 평면을 반환한다.
+ * pointMultiset 으로 비교하므로 morton 순서는 무관하다.
  * @param {number} pointCount 점 수
  * @param {number} seed seed
  * @returns {{pos_e: Uint16Array, pos_n: Uint16Array, pos_u: Uint16Array, color_r: Uint8Array, color_g: Uint8Array, color_b: Uint8Array, normal_oct_x: Int8Array, normal_oct_y: Int8Array}}
@@ -52,9 +55,10 @@ export function extractOriginalPlanes(pointCount, seed) {
     fields: { positions, normals, colors },
   });
 
-  // 인코드했을 때 morton 순으로 정렬되므로, 원본도 같은 방식으로 정렬해서 비교
-  const decoded = decodeChunkClient(encodeChunk(rawFile, { lossyColor: false }));
-  return decoded.planes;
+  // 원본 raw 파일(codec 0)에서 직접 평면을 읽는다(encode/decode 없음)
+  const header = readHeaderClient(rawFile);
+  const planes = readPlanesClient(rawFile, header);
+  return planes;
 }
 
 /**
@@ -118,17 +122,22 @@ export function createChunk(pointCount, seed, opts = {}) {
  * @param {Uint8Array[]} chunks codec 1 파일 배열
  * @param {Object} opts
  * @param {number} [opts.runs=5] 반복 회수
- * @returns {{totalTime: number, totalPoints: number, runs: {ms: number[], median: number, min: number}, warmJIT: number, throughput: number}}
+ * @param {boolean} [opts.expectedLossy] 손실 모드 여부(검증용, 생략 시 검증 안함)
+ * @returns {{totalTime: number, totalPoints: number, runs: {ms: number[], median: number, min: number}, warmJIT: number, throughput: number, colorModes: number[]}}
  */
-export function measureDecode(chunks, { runs = 5 } = {}) {
+export function measureDecode(chunks, { runs = 5, expectedLossy = null } = {}) {
   const allTimes = [];
+  const colorModes = [];
 
   // 첫 호출: warm-JIT (JIT 컴파일 포함)
   let warmJIT = 0;
   {
     const t0 = performance.now();
     for (const chunk of chunks) {
-      decodeChunkClient(chunk);
+      const result = decodeChunkClient(chunk);
+      if (expectedLossy !== null) {
+        colorModes.push(result.colorMode);
+      }
     }
     warmJIT = performance.now() - t0;
     allTimes.push(warmJIT);
@@ -150,17 +159,37 @@ export function measureDecode(chunks, { runs = 5 } = {}) {
   const min = sortedTimes.length > 0 ? Math.min(...sortedTimes) : warmJIT;
   const totalTime = allTimes.reduce((a, b) => a + b, 0) / runs;
 
-  // 총 점 수 계산
+  // 총 점 수 계산 및 colorMode 검증
   const totalPoints = chunks.reduce((sum, chunk) => {
     const { header } = decodeChunkClient(chunk);
     return sum + header.pointCount;
   }, 0);
+
+  // colorMode 검증: expectedLossy 가 지정된 경우
+  if (expectedLossy !== null) {
+    if (expectedLossy) {
+      // 손실 모드: 모든 청크의 colorMode 가 COLOR_MODE.QUANT2(1) 이어야 함
+      colorModes.forEach((mode, i) => {
+        if (mode !== COLOR_MODE.QUANT2) {
+          throw new Error(`청크 ${i} 의 색 모드가 손실(${COLOR_MODE.QUANT2})이어야 하는데 ${mode} 임`);
+        }
+      });
+    } else {
+      // 무손실 모드: 모든 청크의 colorMode 가 COLOR_MODE.QUANT2(1) 이 아니어야 함
+      colorModes.forEach((mode, i) => {
+        if (mode === COLOR_MODE.QUANT2) {
+          throw new Error(`청크 ${i} 의 색 모드가 무손실이어야 하는데 손실(${COLOR_MODE.QUANT2})임`);
+        }
+      });
+    }
+  }
 
   return {
     totalTime,
     totalPoints,
     runs: { ms: allTimes, median, min, warmJIT },
     throughput: totalPoints / (totalTime / 1000),
+    colorModes,
   };
 }
 
@@ -179,11 +208,11 @@ export function benchmark({ points = 1000000, runs = 5, chunkSize = 50000 } = {}
 
   // 무손실 모드
   const chunksCopy = Array.from({ length: chunkCount }, (_, i) => createChunk(pointsPerChunk, i, { lossy: false }));
-  const losslessResult = measureDecode(chunksCopy, { runs });
+  const losslessResult = measureDecode(chunksCopy, { runs, expectedLossy: false });
 
   // 손실 모드
   const chunksDecode = Array.from({ length: chunkCount }, (_, i) => createChunk(pointsPerChunk, i + 1000, { lossy: true }));
-  const lossyResult = measureDecode(chunksDecode, { runs });
+  const lossyResult = measureDecode(chunksDecode, { runs, expectedLossy: true });
 
   return {
     lossless: losslessResult,

@@ -57,10 +57,16 @@ export const BODY_VERSION = 1;
  *     - 조기 거부: rawLen > 64 × payloadLen + 64 이면 'stream' 거부(payload 모자람 보장).
  *
  * 오류 코드 표(CodecError.code):
- *   'stream': rawLen 최소 표현 위반, LEB128 잘림/상한 초과, mode 0·1 payload 검증 실패, mode 1 code ≠ 0, 범위 복호 실패.
+ *   'stream': rawLen 최소 표현 위반, LEB128 잘림, mode 0·1 payload 검증 실패, mode 1 code ≠ 0, 범위 복호 실패.
  *   'mode': mode가 0·1이 아님.
  *   'limit': rawLen > maxRawBytes(기본 STREAM_RAW_BYTES_MAX) 또는 LEB128 상한 초과.
  *   'range': 입력 형식 오류(Uint8Array 아님, maxRawBytes가 음이 아닌 정수가 아님).
+ *
+ * 검증 순서(서버·클라이언트 모두):
+ *   ① rawLen 범위 확인(limit) — rawLen > maxRawBytes 면 거부
+ *   ② mode 1 정규성(stream) — rawLen === 0 또는 payloadLen > rawLen 이면 거부
+ *   ③ 조기 거부(stream) — rawLen > 64·payloadLen + 64 이면 거부
+ *   ④ 실제 복호
  */
 export const ENTROPY_MODE = Object.freeze({ STORED: 0, RANGE: 1 });
 /**
@@ -131,7 +137,7 @@ export const CODEC_API = Object.freeze({
  * T09.11 server/codec/chunk/
  *   encodeChunk(rawFileBytes: Uint8Array, opts?: {lossyColor?: boolean}) -> Uint8Array   codec 0 형식 1 파일 → codec 1 파일(헤더 codec = 1, 체크섬 재계산)
  *   decodeChunk(fileBytes: Uint8Array) -> Uint8Array   codec 1 파일 → 같은 점 집합의 codec 0 파일(점 순서는 모턴 순, 무손실 색이면 같은 양자화 값)
- *       decodeChunkInfo(fileBytes: Uint8Array) -> {header: AssetHeader, colorMode: number}   헤더와 색 모드(손실 여부) 추출, codec 검증 없음
+ *       decodeChunkInfo(fileBytes: Uint8Array) -> {file: Uint8Array, colorMode: number}   codec 1 파일 전체 검증 후 codec 0 파일과 색 모드(손실 여부) 추출
  */
 
 /** 점 집합 동일성 비교용: 양자화 값 (qe,qn,qu,r,g,b,nx,ny) 튜플의 정렬된 다중집합. 순서 재배치 후 왕복 시험이 쓴다. */

@@ -103,6 +103,7 @@ function rangeDecode(bytes, off, rawLen) {
  * entropy 컨테이너 복호. [u8 mode][LEB128 rawLen][payload]. 엄격 규칙은 서버 entropy 머리 주석과 같다:
  * rawLen 최소 표현, 7 바이트 초과 이어짐은 limit, 범위 부호 첫 바이트 0, rawLen > 64×payload+64 조기 거부, 끝 code = 0.
  * @param {Uint8Array} bytes 스트림 바이트
+ * 검사 순서는 서버와 같다: rawLen 범위 limit → mode 1 정규성 stream → 복호.
  * mode 1 은 rawLen === 0 이거나 payloadLen > rawLen 이면 'stream'(비정규 컨테이너).
  * @param {number} minRaw 이 스트림이 가질 수 있는 원바이트 하한(streamRawBounds), 미달은 할당 전에 'limit'
  * @param {number} maxRaw 이 스트림이 가질 수 있는 원바이트 상한(streamRawBounds), 초과는 'limit'
@@ -123,11 +124,12 @@ function entropyDecodeClient(bytes, minRaw, maxRaw) {
       break;
     }
   }
+  // 서버와 같은 순서: rawLen 범위(limit) 가 mode 1 정규성(stream) 보다 먼저다.
+  if (rawLen > maxRaw) throw new CodecError('limit', `rawLen ${rawLen} 이 상한 ${maxRaw} 을 넘는다`);
+  if (rawLen < minRaw) throw new CodecError('limit', `rawLen ${rawLen} 이 최소 ${minRaw} 바이트에 못 미친다`);
   if (mode === ENTROPY_MODE.RANGE && (rawLen === 0 || bytes.length - pos > rawLen)) {
     throw new CodecError('stream', 'mode 1 비정규 컨테이너(rawLen 0 이거나 payload 가 rawLen 보다 길다)');
   }
-  if (rawLen > maxRaw) throw new CodecError('limit', `rawLen ${rawLen} 이 상한 ${maxRaw} 을 넘는다`);
-  if (rawLen < minRaw) throw new CodecError('limit', `rawLen ${rawLen} 이 최소 ${minRaw} 바이트에 못 미친다`);
   if (mode === ENTROPY_MODE.STORED) {
     if (bytes.length - pos !== rawLen) throw new CodecError('stream', '저장 모드 payload 길이가 rawLen 과 다르다');
     return bytes.subarray(pos);
