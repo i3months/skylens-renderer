@@ -10,7 +10,7 @@
 // (표본은 O(1) 비용의 싼 보호 장치이지 완전한 변조 탐지가 아니다). 제자리 수정이 있을 수 있는 호출자는 새 typed array 로 바꿔 넘겨야 한다.
 // 실패한 검사는 캐시하지 않는다(항상 같은 오류를 다시 던진다).
 
-const SENTINEL_SAMPLES = 32;
+export const SENTINEL_SAMPLES = 32;
 
 /** @type {WeakMap<Int32Array, {boxMin:ArrayLike<number>, boxMax:ArrayLike<number>, leafCount:number, nodeCount:number, sentinel:number[]}>} */
 const verified = new WeakMap();
