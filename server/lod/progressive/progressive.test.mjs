@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { generate } from '../../../fixtures/scenes/flat_boxes/index.mjs';
 import { buildHierarchy } from '../hierarchy/index.mjs';
 import { buildDistanceTable, levelForDistance } from '../distance_table/index.mjs';
+import { effectiveDistance } from '../select/screen_error.mjs';
 import { viewpointToCamera } from '../../../tools/render_views/index.mjs';
 import { renderPoints } from '../../raster_ref/zbuffer/index.mjs';
 import { ssim } from '../../metrics/ssim/index.mjs';
@@ -68,21 +69,12 @@ test('같은 단계 안에서는 카메라에 가까운 리프 먼저', () => {
   };
   for (let i = 1; i < ch.length; i++) if (ch[i - 1].level === ch[i].level) assert.ok(dist(ch[i - 1].leaf) <= dist(ch[i].leaf) + 1e-9);
   // 목표 단계는 거리표와 일치: 목표(마지막 조각 단계)는 거리가 멀수록 작아지지 않는다
-  // F-097 ①: 상자 8 꼭짓점의 cos(광축 각) 최솟값으로 d_eff = d·cMin², f = max(fx, fy)
+  // F-097 ①·F-104 ②: 공용 규칙 effectiveDistance 의 d_eff, f = max(fx, fy)
   const table = buildDistanceTable({ fx: Math.max(cam.K.fx, cam.K.fy), thresholdPx: TAU, edge0M: h.edge0M, levelCount: LEVELS });
-  const cMinOf = (leaf) => {
-    const n = node.get(leaf); let c = 1;
-    for (let m = 0; m < 8; m++) {
-      const P = [0, 1, 2].map((a) => ((m >> a) & 1 ? h.octree.boxMax[3 * n + a] : h.octree.boxMin[3 * n + a]));
-      const z = R[6] * P[0] + R[7] * P[1] + R[8] * P[2] + t[2];
-      const x = R[0] * P[0] + R[1] * P[1] + R[2] * P[2] + t[0], y = R[3] * P[0] + R[4] * P[1] + R[5] * P[2] + t[1];
-      c = Math.min(c, z > 0 ? z / Math.hypot(x, y, z) : 0);
-    }
-    return c;
-  };
   for (const [leaf, list] of byLeaf(ch)) {
     const T = list[list.length - 1].level;
-    const c = cMinOf(leaf), dEff = dist(leaf) * c * c;
+    const n = node.get(leaf);
+    const dEff = effectiveDistance(cam, C, h.octree.boxMin.subarray(3 * n, 3 * n + 3), h.octree.boxMax.subarray(3 * n, 3 * n + 3)).effDistM;
     const expect = dEff > 0 ? Math.min(LEVELS - 1, levelForDistance(table, dEff)) : 0;
     assert.equal(T, expect, `리프 ${leaf} 목표 단계`);
   }
@@ -193,4 +185,58 @@ test('카메라 검사: NaN t·NaN R·영행렬 R·width 0·f 0 은 lod: 오류,
   assert.equal(a.length, b.length);
   assert.ok(a.length > 0);
   a.forEach((c, i) => { assert.equal(c.level, b[i].level); assert.equal(c.leaf, b[i].leaf); assert.deepEqual(c.indices, b[i].indices); });
+});
+
+// F-101 ①: 추월 규칙(RULES §1.1). 같은 리프에 이미 더 고운 조각이 있으면 늦게 온 거친 조각은 건너뛴다.
+// 따라서 조각열을 역순·섞은 순서로 전부 적용해도 정순 적용과 count·positions·normals·colors 가 바이트까지 같다.
+import { generate as generateHoles } from '../../../fixtures/scenes/holes/index.mjs';
+
+test('F-101 ①: 역순·섞인 순서로 조각열을 적용해도 정순 결과와 바이트 동일 (holes 시드 1·10만 점·τ 2)', () => {
+  const s = generateHoles({ seed: 1, count: 100000 });
+  const hier = buildHierarchy(s.cloud, { edge0M: 0.5, levelCount: 4, maxLeafPoints: 2048 });
+  const cam = { width: 220, height: 220, K: { fx: 200, fy: 200, cx: 110, cy: 110 }, R: [1, 0, 0, 0, 0, 1, 0, -1, 0], t: [0, 0, 200] };
+  const ch = progressiveChunks(hier, cam, { thresholdPx: 2 });
+  const fwd = applyChunks(hier, ch, ch.length);
+  // 시험이 의미 있으려면 고운 조각이 실제로 있어야 한다(기준값은 정순 실행에서 측정해 고정, 사후 조정 금지).
+  assert.equal(fwd.count, 34937);
+  const same = (a, b, name) => {
+    assert.equal(a.count, b.count, `${name}: count ${a.count} != ${b.count}`);
+    for (const f of ['positions', 'normals', 'colors']) assert.ok(Buffer.from(a[f].buffer, a[f].byteOffset, a[f].byteLength).equals(Buffer.from(b[f].buffer, b[f].byteOffset, b[f].byteLength)), `${name}: ${f}`);
+  };
+  same(applyChunks(hier, [...ch].reverse(), ch.length), fwd, '역순');
+  // 결정적 섞기(LCG, 시드 고정) 3회
+  for (const seed of [1, 2, 3]) {
+    let x = seed;
+    const rnd = () => (x = (Math.imul(x, 1664525) + 1013904223) >>> 0) / 4294967296;
+    const a = [...ch];
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    same(applyChunks(hier, a, a.length), fwd, `섞기 ${seed}`);
+  }
+});
+
+test('F-101 ①: 같은 단계 조각이 다시 도착하면 덮어쓴다(결과 동일), 더 거친 조각은 무시', () => {
+  const s = generateHoles({ seed: 1, count: 20000 });
+  const hier = buildHierarchy(s.cloud, { edge0M: 0.5, levelCount: 4, maxLeafPoints: 512 });
+  const cam = { width: 220, height: 220, K: { fx: 200, fy: 200, cx: 110, cy: 110 }, R: [1, 0, 0, 0, 0, 1, 0, -1, 0], t: [0, 0, 200] };
+  const ch = progressiveChunks(hier, cam, { thresholdPx: 2 });
+  const base = applyChunks(hier, ch, ch.length);
+  const dup = [...ch, ...ch];
+  const r = applyChunks(hier, dup, dup.length);
+  assert.equal(r.count, base.count);
+  assert.deepEqual(r.positions, base.positions);
+});
+
+// F-104 ③: hierarchy·조각 입력 검사. 깨진 입력은 TypeError 가 아니라 'lod:' 오류.
+test('hierarchy·조각 입력 검사: null 조각 등은 lod: 오류', () => {
+  const cam = camOf(vps[0]);
+  const ch = chunksOf(cam);
+  const isLod = (e) => e instanceof Error && !(e instanceof TypeError) && e.message.startsWith('lod:');
+  const badH = [null, undefined, 3, {}, { ...h, cloud: null }, { ...h, octree: null }, { ...h, octree: { ...h.octree, boxMin: null } }, { ...h, levels: [] }, { ...h, levels: [null] }, { ...h, levels: [{ ...h.levels[0], indices: null }] }];
+  for (const b of badH) {
+    assert.throws(() => progressiveChunks(b, cam, { thresholdPx: TAU }), isLod);
+    assert.throws(() => applyChunks(b, ch, 0), isLod);
+  }
+  const bad = [null, undefined, 5, {}, { level: 0, leaf: 0 }, { ...ch[0], indices: null }, { ...ch[0], indices: [...ch[0].indices] }];
+  for (const c of bad) assert.throws(() => applyChunks(h, [ch[0], c], 2), isLod, String(c && Object.keys(c)));
+  assert.doesNotThrow(() => applyChunks(h, ch, ch.length));
 });

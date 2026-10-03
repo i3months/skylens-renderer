@@ -89,8 +89,8 @@ ENU 변환에서 skylens geo.ts 와 다른 점은 두 가지다. 첫째, 경도 
 
 원본 점군(format 1)을 거리별로 줄이는 계층. 새 점을 만들지 않고 입력 점의 부분집합만 쓴다.
 - `server/lod/hierarchy` `buildHierarchy(cloud, {edge0M, levelCount})`: 단계 l 은 한 변 `edge0M·2^l` 격자 칸당 대표점 1개(리프 경계에서 칸을 나눈 조각마다 1개, 단계 0 은 원본 전부).
-- `server/lod/distance_table`, `select`, `budget`, `progressive`: 화면 공간 오차 `f·edge/d_eff ≤ τ`(f=max(fx,fy), d_eff=d·cMin², 축 밖 보정은 `select/screen_error.mjs`)로 단계 선택, 점 예산 상한, 거친 단계 먼저 보내기(교체이며 누적 아님).
-- `server/lod/view_score`: 이웃 시점 점수(공유 점·광선 각·축척). `server/lod/no_fill`: 빈자리 보존 검사. `bench/lod`: 구간 크기 집계(`node bench/lod/cli.mjs`).
+- `server/lod/distance_table`, `select`, `budget`, `progressive`: 화면 공간 오차 `f·edge/d_eff ≤ τ`(f=max(fx,fy), d_eff 는 상자의 화면 안 부분에서 d·cMin² 이상으로 잡는다, 축 밖 보정은 `select/screen_error.mjs`)로 단계 선택, 점 예산 상한, 거친 단계 먼저 보내기(교체이며 누적 아님).
+- `server/lod/view_score`: 이웃 시점 점수(공유 점·광선 각·축척). `server/lod/no_fill`: 빈자리 보존 검사. `bench/lod`: 구간 크기 집계와 materialize 시간(`node bench/lod/cli.mjs`). 단계별 대표점 위치를 리프 순서로 미리 담아(대표점당 12 B) 184만 점 선택 materialize 최댓값이 첫 호출 포함 51~70 ms(4코어 공유 환경, 7회).
 
 ### 개발 설정
 ```
@@ -187,8 +187,8 @@ The ENU conversion differs from skylens geo.ts in two ways. First, after wrappin
 
 A hierarchy that thins the source cloud (format 1) by distance. It never creates points; it only uses a subset of the input points.
 - `server/lod/hierarchy` `buildHierarchy(cloud, {edge0M, levelCount})`: level l keeps one representative per grid cell of edge `edge0M·2^l`, split at leaf boundaries (one per leaf×cell piece; level 0 is the full cloud).
-- `server/lod/distance_table`, `select`, `budget`, `progressive`: level choice by screen-space error `f·edge/d_eff ≤ τ` (f=max(fx,fy), d_eff=d·cMin², off-axis correction in `select/screen_error.mjs`), a point-budget cap, and coarse-first delivery (replacement, not accumulation).
-- `server/lod/view_score`: neighbour-view scoring (shared points, ray angle, scale). `server/lod/no_fill`: hole-preservation check. `bench/lod`: per-segment size tally (`node bench/lod/cli.mjs`).
+- `server/lod/distance_table`, `select`, `budget`, `progressive`: level choice by screen-space error `f·edge/d_eff ≤ τ` (f=max(fx,fy), d_eff bounded below by d·cMin² over the on-screen part of the box, off-axis correction in `select/screen_error.mjs`), a point-budget cap, and coarse-first delivery (replacement, not accumulation).
+- `server/lod/view_score`: neighbour-view scoring (shared points, ray angle, scale). `server/lod/no_fill`: hole-preservation check. `bench/lod`: per-segment size tally and materialize timing (`node bench/lod/cli.mjs`). Per-level representative positions are precomputed in leaf order (12 B per representative); materializing 1.84 M selected points peaks at 51–70 ms including the first call (shared 4-core machine, 7 runs).
 
 ### Development setup
 ```

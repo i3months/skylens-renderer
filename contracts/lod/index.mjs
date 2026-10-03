@@ -7,7 +7,7 @@
 //   카메라와 거리 d 에서 한 칸이 화면에서 차지하는 크기 = f·edgeM/d 픽셀. 허용 오차 thresholdPx(τ) 이하이면 그 단계로 충분하다.
 //   단계 l 이 쓰이기 시작하는 거리(하한) maxDistanceM(l) = f·edgeM(l)/τ — 이름과 달리 '최대' 가 아니다.
 //   단계 l 의 사용 구간은 [maxDistanceM(l), maxDistanceM(l+1)) 이고 마지막 단계는 그 위로 열려 있다. 거리 d 에는 f·edgeM(l)/d ≤ τ 를 만족하는 가장 큰 l 을 쓴다.
-//   edge0M 은 원본 정밀도 하한: 깊이 해상도 Δd(d_c, b) = d_c²/(f·b) 보다 촘촘하게 둘 필요 없다(T07.3 이 표로 기록).
+//   edge0M 하한(참고용, 강제 안 함): 깊이 해상도 Δd(d_c, b) = d_c²/(f·b) 보다 촘촘하게 둘 필요 없다(T07.3 이 표로 기록). buildHierarchy 는 이 하한을 적용하지 않는다(결정 0020 ③).
 // 점 수 정의: 점 수는 positions.length/3 이고 cloud.count 와 같아야 한다(다르면 명시 오류).
 
 /**
@@ -36,6 +36,7 @@
  * @property {number} count
  * @property {Uint32Array} indices    입력 점 번호(부분집합). 리프 순서로 정렬
  * @property {Uint32Array} leafStart  길이 leafCount+1. indices[leafStart[k]..leafStart[k+1]) 이 리프 k 의 대표점
+ * @property {Float32Array} positions 3·count 대표점 위치 = cloud.positions 를 indices 순서로 모은 사본(리프 구간 복사용, 대표점당 12 B)
  * @property {Float32Array} normals   3·count 단위 길이(길이 0 입력은 (0,0,0) 유지)
  * @property {Uint8Array} colors      3·count 칸 안 점들의 평균색
  *

@@ -10,6 +10,7 @@
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { screenErrorRule } from '../select/screen_error.mjs';
 import { boxMayBeVisible } from '../select/view_check.mjs';
+import { assertHierarchyInput } from '../budget/index.mjs';
 
 const ERR = 'lod:';
 
@@ -27,7 +28,7 @@ function leafNodes(octree) {
  * @returns {{level:number, leaf:number, indices:Uint32Array}[]}  indices 는 그 단계 대표점의 입력 점 번호(해당 리프 구간)
  */
 export function progressiveChunks(hierarchy, camera, opts) {
-  if (!hierarchy || !hierarchy.octree || !Array.isArray(hierarchy.levels) || hierarchy.levels.length < 1) throw new Error(`${ERR} 계층이 아님`);
+  assertHierarchyInput(hierarchy);
   try {
     assertCamera(camera); // select/budget 와 같은 계약 검사. 오류는 'lod:' 로 옮긴다.
   } catch (e) {
@@ -65,16 +66,24 @@ export function progressiveChunks(hierarchy, camera, opts) {
  * @returns {import('../../../contracts/points/index.mjs').Point27Cloud}
  */
 export function applyChunks(hierarchy, chunks, k) {
+  assertHierarchyInput(hierarchy);
   if (!Array.isArray(chunks)) throw new Error(`${ERR} chunks 는 배열`);
   if (!Number.isInteger(k) || k < 0 || k > chunks.length) throw new Error(`${ERR} k 는 0..${chunks.length} 정수: ${String(k)}`);
   const { cloud, octree, levels } = hierarchy;
   const cur = new Map(); // leaf -> chunk (나중 것이 앞 것을 교체)
   for (let i = 0; i < k; i++) {
     const c = chunks[i];
+    if (!c || typeof c !== 'object') throw new Error(`${ERR} 조각 ${i} 가 객체가 아님: ${String(c)}`);
     if (!Number.isInteger(c.level) || c.level < 0 || c.level >= levels.length) throw new Error(`${ERR} 조각 단계가 범위 밖: ${String(c.level)}`);
     if (!Number.isInteger(c.leaf) || c.leaf < 0 || c.leaf >= octree.leafCount) throw new Error(`${ERR} 조각 리프가 범위 밖: ${String(c.leaf)}`);
+    if (!(c.indices instanceof Uint32Array)) throw new Error(`${ERR} 조각 ${i} 의 indices 는 Uint32Array`);
     const lv = levels[c.level];
     if (c.indices.length !== lv.leafStart[c.leaf + 1] - lv.leafStart[c.leaf]) throw new Error(`${ERR} 조각 점 수가 단계 ${c.level} 리프 ${c.leaf} 구간과 다름`);
+    // 추월 규칙(RULES §1.1): 같은 리프에 이미 더 고운(작은 level) 조각이 있으면 늦게 온 더 거친(큰 level) 조각은 건너뛴다.
+    // 같은 단계가 다시 오면 덮어쓰고(같은 내용), 더 고운 조각이 오면 교체한다. 그래서 도착 순서와 무관하게
+    // 한 리프의 결과는 받은 조각 중 가장 고운 단계 하나로 정해진다.
+    const p = cur.get(c.leaf);
+    if (p && c.level > p.level) continue;
     cur.set(c.leaf, c);
   }
   const leaves = [...cur.keys()].sort((a, b) => a - b);

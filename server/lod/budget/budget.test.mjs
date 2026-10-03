@@ -9,8 +9,8 @@
 //  - τ(thresholdPx) 1 px: 칸 하나가 1 픽셀 이하가 되는 거리부터 거칠게 한다(계약의 화면 오차 정의 그대로).
 //  - 렌더 점 크기 pointSizeM 0.6 m: 원본 점 간격(≈0.45 m)보다 조금 커서 원본 렌더에 구멍이 거의 없다.
 //    모든 렌더(원본·선택·비교 기준)가 같은 값을 써서 비교가 공정하다.
-//  - 예산 3종: 큰 150000(모든 시점의 목표 단계 합 ≤ 약 133000 이므로 줄이지 않음), 중간 30000(탐욕적 거칠게 하기만으로 맞춤),
-//    작은 600(단계 5 의 전체 점 수 906 보다 작아 리프를 통째로 빼는 단계까지 감).
+//  - 예산 3종: 큰 150000(모든 시점의 목표 단계 합 ≤ 144834 이므로 줄이지 않음), 중간 30000(탐욕적 거칠게 하기만으로 맞춤),
+//    작은 600(단계 5 의 전체 점 수 2181 보다 작아 리프를 통째로 빼는 단계까지 감).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -139,7 +139,7 @@ test('결정적: 같은 입력은 같은 선택', () => {
   assert.deepEqual(a, b);
 });
 
-// 주의(F-096 ③): 150000·600 에서는 선택 = 균일 축소(합 7.3269 = 7.3269, 2.0824 = 2.0824)라 균일 비교로 판별하는 것은 30000 하나뿐이다.
+// 주의(F-096 ③): 150000·600 에서는 선택 = 균일 축소(합 7.7709 = 7.7709, 2.0814 = 2.0814)라 균일 비교로 판별하는 것은 30000 하나뿐이다.
 // 판별하는 중간 예산 5개의 시점별 비교와 효율식 반전 변이의 음성 시험은 budget_discrim.test.mjs 에 있다.
 test('SSIM: 예산이 클수록 단조 비감소, 같은 예산에서 균일 축소보다 낮지 않음', () => {
   const rows = [];
@@ -160,7 +160,7 @@ test('SSIM: 예산이 클수록 단조 비감소, 같은 예산에서 균일 축
   for (const r of rows) console.log(`budget ${r.budget}: SSIM 합 선택 ${r.sumSel.toFixed(4)}, 균일 ${r.sumUni.toFixed(4)}`);
   for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].sumSel >= rows[i].sumSel, `단조 위반: ${rows[i - 1].budget} → ${rows[i].budget}`);
   for (const r of rows) assert.ok(r.sumSel >= r.sumUni, `예산 ${r.budget}: 균일 축소보다 낮음`);
-  // 시점별: 어느 시점도 균일보다 0.01 넘게 낮지 않다(측정: 30000 에서 모든 시점이 균일 이상, 합 4.6187 대 3.3478).
+  // 시점별: 어느 시점도 균일보다 0.01 넘게 낮지 않다(측정: 30000 에서 시점별 차 −0.0034~+0.3758(최악 −0.0087 은 시점 6), 합 4.6172 대 3.3388).
   for (const r of rows) r.per.forEach(([s, u], i) => assert.ok(s >= u - 0.01, `예산 ${r.budget} 시점 ${i + 1}: 선택 ${s.toFixed(4)} < 균일 ${u.toFixed(4)}`));
 });
 
@@ -173,4 +173,26 @@ test('음성: budget 0 은 빈 선택, 음수·NaN·비정수·Infinity 는 lod:
   }
   assert.throws(() => selectWithBudget(hier, cameras[0], { budgetPoints: 10, thresholdPx: 0 }), /^Error: lod:/);
   assert.throws(() => selectWithBudget(hier, cameras[0]), /^Error: lod:/);
+});
+
+// F-104 ③: hierarchy 입력 검사. 깨진 입력은 TypeError 가 아니라 'lod:' 오류.
+test('hierarchy 입력 검사: null·깨진 계층은 lod: 오류', () => {
+  const cam = cameras[0];
+  const o = { budgetPoints: 1000, thresholdPx: TAU };
+  const bad = [
+    null, undefined, 3, {},
+    { ...hier, cloud: null },
+    { ...hier, octree: null },
+    { ...hier, octree: { ...hier.octree, boxMin: null } },
+    { ...hier, octree: { ...hier.octree, leafIndex: [] } },
+    { ...hier, levels: [] },
+    { ...hier, levels: [null] },
+    { ...hier, levels: [{ ...hier.levels[0], indices: null }] },
+    { ...hier, levels: [{ ...hier.levels[0], leafStart: new Uint32Array(2) }] },
+  ];
+  for (const b of bad) {
+    assert.throws(() => selectWithBudget(b, cam, o), (e) => e instanceof Error && !(e instanceof TypeError) && e.message.startsWith('lod:'), String(b && Object.keys(b)));
+    assert.throws(() => leafTargets(b, cam, TAU), (e) => !(e instanceof TypeError) && e.message.startsWith('lod:'));
+  }
+  assert.doesNotThrow(() => selectWithBudget(hier, cam, o));
 });

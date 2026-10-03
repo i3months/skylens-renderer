@@ -31,7 +31,7 @@ console.log(`   완료: ${(measureTime / 1000).toFixed(1)}초`);
 console.log('\n3. materialize 시간 측정 중...');
 const hier = buildHierarchy(scene.cloud, { edge0M: 0.05, levelCount: LEVEL_COUNT, maxLeafPoints: 4096 });
 const mat = measureMaterialize(hier);
-console.log(`   선택 ${mat.selectedPoints.toLocaleString()} / ${mat.totalPoints.toLocaleString()} 점, 중앙값 ${mat.medianMs.toFixed(1)} ms (회차: ${mat.runsMs.map((x) => x.toFixed(1)).join(', ')})`);
+console.log(`   선택 ${mat.selectedPoints.toLocaleString()} / ${mat.totalPoints.toLocaleString()} 점, 중앙값 ${mat.medianMs.toFixed(1)} ms, 최댓값(첫 호출 포함) ${Math.max(...mat.runsMs).toFixed(1)} ms (회차: ${mat.runsMs.map((x) => x.toFixed(1)).join(', ')})`);
 
 // 표 출력
 console.log('');
