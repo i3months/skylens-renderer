@@ -108,8 +108,28 @@ test('드론: 한 바퀴(회전 합 +2π±0.05)·프레임 이동 0.7~1.8 m·지
     const n = p.frames.length;
     let rot = 0;
     const r = p.frames.map((f) => Math.hypot(f.eye[0], f.eye[2]));
+    let altitudeMin = Infinity, altitudeMax = -Infinity;
+    let tangentMinOffset = Infinity, tangentMaxOffset = -Infinity;
     for (let i = 0; i < n; i++) {
       const a = p.frames[i].eye, b = p.frames[(i + 1) % n].eye; // 마지막→처음 닫힘 구간 포함
+      altitudeMin = Math.min(altitudeMin, a[1]);
+      altitudeMax = Math.max(altitudeMax, a[1]);
+      // 중심(0, h, 0)에서 본 위치: 원통형 좌표계의 접선 방향 변위
+      // 접선 방향은 반경에 수직: right = cross(view, up) / ||view||, 이를 계산 간단히 하려면
+      // 원 위의 점(r, h, θ)이므로 접선은 θ 방향이고, eye의 좌표로 보면 접선 성분을 유지하는 값
+      const tangentMagnitude = Math.sqrt((a[0] ** 2 + a[2] ** 2));
+      if (tangentMagnitude > 0) {
+        // 원 위의 접선 방향(반경에 수직): (-sin(θ), 0, cos(θ))
+        // eye = (r*cos(θ), h, r*sin(θ)) 형태이므로
+        // 접선 방향 = (-sin(θ), 0, cos(θ)) = (-a[2]/r, 0, a[0]/r)
+        const tangent = [-a[2] / tangentMagnitude, 0, a[0] / tangentMagnitude];
+        const eyeNextXZ = [b[0], 0, b[2]];
+        const eyeCurrentXZ = [a[0], 0, a[2]];
+        const displacement = sub(eyeNextXZ, eyeCurrentXZ);
+        const tangentOffset = dot(displacement, tangent);
+        tangentMinOffset = Math.min(tangentMinOffset, tangentOffset);
+        tangentMaxOffset = Math.max(tangentMaxOffset, tangentOffset);
+      }
       let d = Math.atan2(b[2], b[0]) - Math.atan2(a[2], a[0]);
       while (d > Math.PI) d -= 2 * Math.PI;
       while (d < -Math.PI) d += 2 * Math.PI;
@@ -120,6 +140,8 @@ test('드론: 한 바퀴(회전 합 +2π±0.05)·프레임 이동 0.7~1.8 m·지
     }
     assert.ok(Math.abs(rot - 2 * Math.PI) <= 0.05, `seed ${seed} 회전 합 ${rot}`);
     assert.ok(Math.max(...r) - Math.min(...r) > 1.0, `seed ${seed} 반경 지터 없음`);
+    assert.ok(altitudeMax - altitudeMin > 1.0, `seed ${seed} 고도 폭 ${altitudeMax - altitudeMin} m`);
+    assert.ok(tangentMaxOffset - tangentMinOffset !== 0, `seed ${seed} 접선 오프셋 변화 있음`);
   }
 });
 
