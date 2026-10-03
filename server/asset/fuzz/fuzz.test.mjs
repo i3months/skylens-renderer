@@ -13,7 +13,9 @@ const ITERATIONS = 100_000; // 입력 수. 각 입력을 모든 대상에 넣는
 const MAX_CALL_MS = 50; // 호출당 시간 상한
 const MAX_ALLOC_BYTES = 1 << 20; // 호출 하나가 새로 잡는 ArrayBuffer 상한(1 MiB)
 const MAX_OUT_FACTOR = 8; // 결과 배열 총 바이트 ≤ 입력 길이 × 8 + 4096
-const TOTAL_BUDGET_MS = 60_000; // 퍼저 전체 시간 상한
+const TOTAL_BUDGET_MS = 60_000; // 퍼저 전체 CPU 시간 상한(병렬 부하에 흔들리지 않게 CPU 시간으로 잰다)
+const WALL_GUARD_MS = TOTAL_BUDGET_MS * 10; // 응답 없음을 막는 벽시계 상한
+const cpuMs = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; };
 const MAX_REPORT = 3; // 대상별 실패 재현 입력 보고 수
 
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
@@ -196,7 +198,7 @@ function callTarget(name, t, bytes, measureAlloc, stat) {
   return { kind, why };
 }
 
-test('fuzz_no_panic', { timeout: TOTAL_BUDGET_MS + 10_000 }, () => {
+test('fuzz_no_panic', { timeout: WALL_GUARD_MS + 10_000 }, () => {
   assert.ok(targets.parseHeader, 'parseHeader 는 항상 돈다');
   const stats = Object.fromEntries(Object.keys(targets).map((n) => [n, { calls: 0, ok: 0, err: 0, fail: 0, slow: 0, skipped: 0, maxMs: 0, repros: [] }]));
 
@@ -211,10 +213,11 @@ test('fuzz_no_panic', { timeout: TOTAL_BUDGET_MS + 10_000 }, () => {
 
   const rng = makeRng(SEED);
   const start = performance.now();
+  const cpuStart = cpuMs();
   let done = 0;
   for (let i = 0; i < ITERATIONS; i++) {
     // 예산을 넘기면 중단하고 아래 단언에서 실패시킨다(끝없이 도는 것을 막는다)
-    if (i % 256 === 0 && performance.now() - start > TOTAL_BUDGET_MS) break;
+    if (i % 256 === 0 && (cpuMs() - cpuStart > TOTAL_BUDGET_MS || performance.now() - start > WALL_GUARD_MS)) break;
     done++;
     const { bytes, huge } = makeInput(i, rng);
     const measure = huge || i % 64 === 0;
@@ -227,17 +230,18 @@ test('fuzz_no_panic', { timeout: TOTAL_BUDGET_MS + 10_000 }, () => {
       if (r.kind === 'fail' && st.repros.length < MAX_REPORT) st.repros.push(`${r.why} :: ${hex(bytes)}`);
     }
   }
-  const elapsed = performance.now() - start;
+  const elapsed = cpuMs() - cpuStart;
+  const wall = performance.now() - start;
 
-  console.log(`[fuzz] seed=0x${SEED.toString(16)} inputs=${ITERATIONS} elapsed=${(elapsed / 1000).toFixed(1)}s`);
+  console.log(`[fuzz] seed=0x${SEED.toString(16)} inputs=${ITERATIONS} cpu=${(elapsed / 1000).toFixed(1)}s wall=${(wall / 1000).toFixed(1)}s`);
   console.log('[fuzz] target            calls      ok     err    fail  slow  skip  maxMs');
   for (const [n, s] of Object.entries(stats)) {
     console.log(`[fuzz] ${n.padEnd(18)}${String(s.calls).padStart(6)}${String(s.ok).padStart(8)}${String(s.err).padStart(8)}${String(s.fail).padStart(8)}${String(s.slow).padStart(6)}${String(s.skipped).padStart(6)}${s.maxMs.toFixed(2).padStart(8)}`);
   }
   for (const [n, s] of Object.entries(stats)) for (const r of s.repros) console.log(`[fuzz] REPRO ${n}: ${r}`);
 
-  assert.equal(done, ITERATIONS, `예산 ${TOTAL_BUDGET_MS} ms 안에 ${done}/${ITERATIONS} 회만 수행`);
-  assert.ok(elapsed < TOTAL_BUDGET_MS, `퍼저 ${elapsed.toFixed(0)} ms ≥ ${TOTAL_BUDGET_MS} ms`);
+  assert.equal(done, ITERATIONS, `CPU 예산 ${TOTAL_BUDGET_MS} ms(벽시계 ${WALL_GUARD_MS} ms) 안에 ${done}/${ITERATIONS} 회만 수행`);
+  assert.ok(elapsed < TOTAL_BUDGET_MS, `퍼저 CPU ${elapsed.toFixed(0)} ms ≥ ${TOTAL_BUDGET_MS} ms`);
   for (const [n, s] of Object.entries(stats)) {
     assert.equal(s.ok + s.err + s.fail, s.calls, `${n} 집계`);
     assert.equal(s.fail, 0, `${n}: 허용 밖 결과 ${s.fail}건(재현 입력은 위 REPRO 줄)`);
