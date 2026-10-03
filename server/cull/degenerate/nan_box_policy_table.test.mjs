@@ -121,16 +121,26 @@ test('distanceCull × min.x=NaN·max.x=-1e6(NaN 쪽 비교 무시, 유한 경계
   assert.equal(distanceCull(h, cam(), { maxDistanceM: 1e6 - 1 })[k], 0);
 });
 
-// F-166 ①: 비퇴화 카메라가 극단 좌표에 있으면 hypot 이 넘쳐 Infinity 거리가 되고, Infinity > maxDistanceM 이므로 제거(0)다.
-//   이것은 거짓 제거가 아니다: 카메라 중심 C = -Rᵀt = (-1e308)×3 이고 장면 상자는 원점 근방(수 m)이라 축별 간격이 약 1e308,
-//   실제 거리는 약 √3·1e308 ≈ 1.732e308 로 maxDistanceM 1.7e308 을 진짜로 넘는다(다만 제곱합이 double 범위를 넘어 Infinity 로 계산된다).
-//   72 리프 전부가 비어있지 않으므로 모두 0 이어야 한다. 대조: 같은 반경에서 카메라가 원점이면 72 개 모두 1.
-test('distanceCull × 극단 카메라 t=[1e308×3], maxDistanceM=1.7e308: 72 리프 모두 제거(0) — 실제 거리 약 1.732e308 이 기준 초과', () => {
+// F-166 ①: 비퇴화 카메라가 극단 좌표에 있을 때의 거리 제거. 카메라 중심 C = -Rᵀt 이고 장면 상자는 원점 근방(수 m)이라
+//   축별 간격이 약 |t| 이고 실제 거리는 약 √3·|t| 다. 72 리프 전부가 비어있지 않으므로 기준을 넘으면 모두 0 이어야 한다.
+//   두 행 모두 '실제 거리가 기준을 진짜로 넘는' 제거라 거짓 제거가 아니다. 대조: 카메라가 원점이면 같은 반경에서 72 개 모두 1.
+//   · t=1e308×3: 거리 ≈ 1.732e308 은 double 범위(≈1.797e308) 안이라 hypot 이 유한값을 돌려준다(오버플로 없음). 1.7e308 초과 → 0.
+//   · t=1.2e308×3: 실제 거리 ≈ 2.078e308 이 double 범위를 넘어 hypot 이 Infinity 를 돌려준다. 실제 거리도 기준 초과 → 0(Infinity > 기준).
+//     이 행은 거리 비교를 isFinite 가드로 바꾸면(Infinity 를 '남김' 으로 처리) 실패한다.
+const nearSum = () => distanceCull(base, cam(), { maxDistanceM: 1.7e308 }).reduce((s, v) => s + v, 0);
+test('distanceCull × 극단 카메라 t=[1e308×3], maxDistanceM=1.7e308: 72 리프 모두 제거(0) — 유한 거리 약 1.732e308 이 기준 초과', () => {
   const far = { ...cam(), t: [1e308, 1e308, 1e308] };
   assert.equal(base.octree.leafCount, 72);
   const m = distanceCull(base, far, { maxDistanceM: 1.7e308 });
   assert.equal(m.length, 72);
   assert.equal(m.reduce((s, v) => s + v, 0), 0);
-  const near = distanceCull(base, cam(), { maxDistanceM: 1.7e308 });
-  assert.equal(near.reduce((s, v) => s + v, 0), 72);
+  assert.equal(nearSum(), 72);
+});
+
+test('distanceCull × 극단 카메라 t=[1.2e308×3], maxDistanceM=1.7e308: hypot 오버플로 Infinity 거리, 72 리프 모두 제거(0) — 실제 거리 약 2.078e308 도 기준 초과', () => {
+  const far = { ...cam(), t: [1.2e308, 1.2e308, 1.2e308] };
+  const m = distanceCull(base, far, { maxDistanceM: 1.7e308 });
+  assert.equal(m.length, 72);
+  assert.equal(m.reduce((s, v) => s + v, 0), 0);
+  assert.equal(nearSum(), 72);
 });
