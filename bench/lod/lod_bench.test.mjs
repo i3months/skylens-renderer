@@ -44,7 +44,7 @@ test('LOD 벤치: 다른 시드(20k 점)도 바이트 단조 감소', () => {
 
   for (const seed of seeds) {
     const scene = generateTerrain({ seed, count: 20000, format: 1 });
-    const result = measureSegmentBytes(scene.cloud, { levelCount: 4 });
+    const result = measureSegmentBytes(scene.cloud, { edge0M: 0.3, levelCount: 4 });
 
     for (let i = 1; i < result.bytesByLevel.length; i++) {
       assert.ok(
