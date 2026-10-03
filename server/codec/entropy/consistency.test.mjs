@@ -7,7 +7,12 @@ const codeOf = (fn) => { try { fn(); } catch (e) { assert.ok(e instanceof CodecE
 const U = (a) => Uint8Array.from(a);
 
 test('mode 1 에서 rawLen 이 0 이면 stream (빈 출력으로 통과하던 비정규 컨테이너)', () => {
-  assert.equal(codeOf(() => entropyDecode(U([1, 0, 0, 0, 0, 0, 0]))), 'stream');
+  // 비정규 case [1, 0, 0, 0, 0, 0, 0]: mode 1, rawLen 0, payloadLen 5
+  // rawLen === 0 을 먼저 검사해 그 메시지가 나온다 (line 182 in index.mjs)
+  assert.throws(
+    () => entropyDecode(U([1, 0, 0, 0, 0, 0, 0])),
+    (e) => e instanceof CodecError && e.code === 'stream' && e.message.includes('rawLen 이 0')
+  );
   // 정규 빈 입력은 [00 00] 이고 그대로 복호된다
   assert.deepEqual(entropyEncode(new Uint8Array(0)), U([0, 0]));
   assert.equal(entropyDecode(U([0, 0])).length, 0);
