@@ -98,6 +98,10 @@ git config core.hooksPath .githooks
 ```
 훅은 커밋 메시지·추가 내용·브랜치 이름에 생성 도구 흔적이 있으면 커밋과 푸시를 막는다.
 
+### 컬링 (T08)
+- 컬링 단계는 모두 보수적이다(보여야 할 리프를 버리지 않는다). 결과는 길이 leafCount 의 0/1 마스크이고 `contracts/cull` 에 서명이 있다.
+- `server/cull/frustum`(절두체), `backface`(법선 원뿔), `occlusion`(CPU 깊이 피라미드), `distance`(거리 컷), `predict`(이동 방향 예측), `priority`(화면 기여 순 정렬), `degenerate`(퇴화 시점은 던지지 않고 빈 결과), `combine`(`cullAndSelect`: 마스크 AND 뒤 LOD 단계 선택). `client/cull`: 서버와 같은 마스크를 내는 절두체 컬링. `bench/cull`: 시점당 CPU 시간.
+
 ## English
 
 Server-side renderer for SkyLens. Work in progress.
@@ -195,3 +199,7 @@ A hierarchy that thins the source cloud (format 1) by distance. It never creates
 git config core.hooksPath .githooks
 ```
 The hooks block commits and pushes whose message, added content or branch name contains generation-tool traces.
+
+### Culling (T08)
+- Every culling stage is conservative (never drops a leaf that should be visible). Each returns a 0/1 mask of length leafCount; signatures live in `contracts/cull`.
+- `server/cull/frustum`, `backface` (normal cones), `occlusion` (CPU depth pyramid), `distance`, `predict` (motion-based look-ahead), `priority` (screen-contribution order), `degenerate` (degenerate views return an empty result instead of throwing), `combine` (`cullAndSelect`: AND the masks, then pick LOD levels). `client/cull`: frustum culling that yields the same mask as the server. `bench/cull`: CPU time per view.
