@@ -14,7 +14,7 @@ const MAX_CALL_MS = 50; // 호출당 시간 상한
 const MAX_ALLOC_BYTES = 1 << 20; // 호출 하나가 새로 잡는 ArrayBuffer 상한(1 MiB)
 const MAX_OUT_FACTOR = 8; // 결과 배열 총 바이트 ≤ 입력 길이 × 8 + 4096
 const TOTAL_BUDGET_MS = 60_000; // 퍼저 전체 CPU 시간 상한(병렬 부하에 흔들리지 않게 CPU 시간으로 잰다)
-const WALL_GUARD_MS = TOTAL_BUDGET_MS * 10; // 응답 없음을 막는 벽시계 상한
+const WALL_GUARD_MS = TOTAL_BUDGET_MS * 2.5; // 대기·교착(CPU 시간이 안 흐름)을 잡는 벽시계 상한. 예산의 2~3 배
 const cpuMs = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; };
 const MAX_REPORT = 3; // 대상별 실패 재현 입력 보고 수
 
@@ -173,7 +173,8 @@ function callTarget(name, t, bytes, measureAlloc, stat) {
   let ms = performance.now() - t0;
   // 상한(MAX_CALL_MS)은 유지한다. 부하·GC 정지로 한 번 튄 값은 최대 3회 재시도해 그중 최솟값으로 판정한다.
   // 진짜 느린 입력은 매번 느려 최솟값도 상한을 넘으므로 잡히고, 일시 지연은 한 번이라도 빠르면 통과한다.
-  if (ms > MAX_CALL_MS) {
+  const retried = ms > MAX_CALL_MS;
+  if (retried) {
     for (let r = 0; r < 3 && ms > MAX_CALL_MS; r++) {
       const t1 = performance.now();
       try { t.fn(...args); } catch { /* 첫 호출에서 이미 분류함 */ }
@@ -181,6 +182,7 @@ function callTarget(name, t, bytes, measureAlloc, stat) {
     }
   }
   if (ms > stat.maxMs) stat.maxMs = ms;
+  if (retried && ms <= MAX_CALL_MS) stat.retryPass++; // 일시 지연으로 재시도해서 통과한 호출
   if (ms > MAX_CALL_MS) { stat.slow++; if (kind !== 'fail') { kind = 'fail'; why = `느림 ${ms.toFixed(1)} ms`; } }
   if (measureAlloc) {
     const d = arrayBuffers() - a0;
@@ -200,14 +202,14 @@ function callTarget(name, t, bytes, measureAlloc, stat) {
 
 test('fuzz_no_panic', { timeout: WALL_GUARD_MS + 10_000 }, () => {
   assert.ok(targets.parseHeader, 'parseHeader 는 항상 돈다');
-  const stats = Object.fromEntries(Object.keys(targets).map((n) => [n, { calls: 0, ok: 0, err: 0, fail: 0, slow: 0, skipped: 0, maxMs: 0, repros: [] }]));
+  const stats = Object.fromEntries(Object.keys(targets).map((n) => [n, { calls: 0, ok: 0, err: 0, fail: 0, slow: 0, retryPass: 0, skipped: 0, maxMs: 0, repros: [] }]));
 
   // 변이 없는 골든은 모든 대상에서 정상이어야 한다(퍼저가 의미 있는지 확인)
   for (const g of goldens) {
     for (const [n, t] of Object.entries(targets)) {
       const r = callTarget(n, t, g.slice(), false, stats[n]);
       assert.ok(r === null || r.kind !== 'fail', `${n} 골든 실패: ${r?.why}`);
-      stats[n].maxMs = 0; stats[n].skipped = 0; stats[n].slow = 0;
+      stats[n].maxMs = 0; stats[n].skipped = 0; stats[n].slow = 0; stats[n].retryPass = 0;
     }
   }
 
@@ -217,7 +219,7 @@ test('fuzz_no_panic', { timeout: WALL_GUARD_MS + 10_000 }, () => {
   let done = 0;
   for (let i = 0; i < ITERATIONS; i++) {
     // 예산을 넘기면 중단하고 아래 단언에서 실패시킨다(끝없이 도는 것을 막는다)
-    if (i % 256 === 0 && (cpuMs() - cpuStart > TOTAL_BUDGET_MS || performance.now() - start > WALL_GUARD_MS)) break;
+    if (performance.now() - start > WALL_GUARD_MS || (i % 256 === 0 && cpuMs() - cpuStart > TOTAL_BUDGET_MS)) break; // 벽시계는 매 입력 확인
     done++;
     const { bytes, huge } = makeInput(i, rng);
     const measure = huge || i % 64 === 0;
@@ -234,9 +236,9 @@ test('fuzz_no_panic', { timeout: WALL_GUARD_MS + 10_000 }, () => {
   const wall = performance.now() - start;
 
   console.log(`[fuzz] seed=0x${SEED.toString(16)} inputs=${ITERATIONS} cpu=${(elapsed / 1000).toFixed(1)}s wall=${(wall / 1000).toFixed(1)}s`);
-  console.log('[fuzz] target            calls      ok     err    fail  slow  skip  maxMs');
+  console.log('[fuzz] target            calls      ok     err    fail  slow retry  skip  maxMs');
   for (const [n, s] of Object.entries(stats)) {
-    console.log(`[fuzz] ${n.padEnd(18)}${String(s.calls).padStart(6)}${String(s.ok).padStart(8)}${String(s.err).padStart(8)}${String(s.fail).padStart(8)}${String(s.slow).padStart(6)}${String(s.skipped).padStart(6)}${s.maxMs.toFixed(2).padStart(8)}`);
+    console.log(`[fuzz] ${n.padEnd(18)}${String(s.calls).padStart(6)}${String(s.ok).padStart(8)}${String(s.err).padStart(8)}${String(s.fail).padStart(8)}${String(s.slow).padStart(6)}${String(s.retryPass).padStart(6)}${String(s.skipped).padStart(6)}${s.maxMs.toFixed(2).padStart(8)}`);
   }
   for (const [n, s] of Object.entries(stats)) for (const r of s.repros) console.log(`[fuzz] REPRO ${n}: ${r}`);
 
