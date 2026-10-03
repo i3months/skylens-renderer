@@ -223,6 +223,10 @@ test('viewpointToCamera: target ≠ 원점인 시점의 R·t·K 와 한 점의 u
   // 검증: 깊이가 양수이고 투영이 유효함
   assert.ok(point.d > 0, '깊이는 양수여야 함');
   assert.ok(Number.isFinite(point.u) && Number.isFinite(point.v), 'u,v는 유한해야 함');
+  // 손계산 리터럴: t≈[-0.4472136, 1, 3.5777088], 점(1,2,1)의 u·v
+  assert.strictEqual(point.u, 320, 'u는 320');
+  assert.ok(Math.abs(point.v - 40.57259953653303) < 1e-9, `v: ${point.v}`);
+  assert.ok(Math.abs(point.d - 2.23606797749979) < 1e-9, `d: ${point.d}`);
 });
 
 // F-093 ①: fov 와 해상도 검사.
