@@ -19,9 +19,10 @@ const NEAR_M = 0.01;
 const SCALE = 0.5; // 거친 깊이 버퍼 해상도 비율(기본)
 export const MAX_COARSE_CELLS = 4_000_000; // 거친 버퍼 칸 수 상한: 큰 해상도에서는 비율을 줄여 시간·메모리를 묶는다(F-120)
 
+// leafCount < 1 은 계약(contracts/cull, F-145)상 구조 오류다.
 function assertHierarchy(h) {
   const oc = h?.octree;
-  if (!oc || !Number.isInteger(oc.leafCount) || oc.leafCount < 0 || !(oc.leafStart instanceof Uint32Array)
+  if (!oc || !Number.isInteger(oc.leafCount) || oc.leafCount < 1 || !(oc.leafStart instanceof Uint32Array)
     || !oc.leafIndex || !oc.boxMin || !oc.boxMax || oc.leafStart.length !== oc.leafCount + 1) {
     throw new Error(`${ERR} 계층(octree)이 올바르지 않음`);
   }
