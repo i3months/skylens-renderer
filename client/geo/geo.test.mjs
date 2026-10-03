@@ -117,12 +117,14 @@ test('앵커별 손계산 값(경도 +0.01° 의 e = 0.01·R·DEG·cos φ0, 위�
 
 for (const km of RADII_KM) {
   test(`skylens geo.ts 기준 함수와 반경 ${km} km 무작위 ${N_POINTS} 점(앵커 ${ANCHORS.length} 개) 차 = 0 m`, () => {
-    let worst = 0;
+    let worst = 0, count = 0;
     for (const [ai, a] of ANCHORS.entries()) {
-      for (const g of pointsAround(a, km * 1000, Math.floor(N_POINTS / ANCHORS.length), 20261003 + km * 1000 + ai)) {
+      for (const g of pointsAround(a, km * 1000, Math.ceil(N_POINTS / ANCHORS.length), 20261003 + km * 1000 + ai)) {
         worst = Math.max(worst, maxDiff(gpsToEnuClient(g, a), refEnu(g, a)));
+        count++;
       }
     }
+    assert.ok(count >= 10000, `점 수 ${count} < 10000`); // F-081 ④: 총 1만 점 이상
     console.log(`radius ${km} km: max diff vs skylens geo.ts = ${worst} m`);
     assert.equal(worst, 0, `max diff ${worst} m`);
   });
@@ -168,14 +170,42 @@ const serverPath = here('../../server/geo/enu/index.mjs');
 test('서버·클라이언트 동치 회귀 감시', async (t) => {
   if (!existsSync(serverPath)) return t.skip('server/geo/enu/index.mjs 없음');
   const { gpsToEnu } = await import(pathToFileURL(serverPath).href);
-  let worst = 0;
+  let worst = 0, count = 0;
   for (const [ai, a] of ANCHORS.entries()) {
     for (const km of RADII_KM) {
-      for (const g of pointsAround(a, km * 1000, N_POINTS / RADII_KM.length / ANCHORS.length, 777 + km * 1000 + ai)) {
+      for (const g of pointsAround(a, km * 1000, Math.ceil(N_POINTS / RADII_KM.length / ANCHORS.length), 777 + km * 1000 + ai)) {
         worst = Math.max(worst, maxDiff(gpsToEnuClient(g, a), gpsToEnu(g, a)));
+        count++;
       }
     }
   }
+  assert.ok(count >= 10000, `점 수 ${count} < 10000`);
   console.log(`max diff vs server: ${worst} m`);
   assert.ok(worst <= 1e-3, `max diff ${worst} m`);
+});
+
+// F-079: 날짜변경선(±360° 감싸기, 결정 0017). 두 분기(+360·−360)와 경계값 |Δλ| = 180 을 각각 고정한다.
+test('날짜변경선: 서쪽 건너기(앵커 −179.9999 → gps +179.9999)는 e < 0 (−360 분기)', () => {
+  const a = { lat: 10, lon: -179.9999, alt: 0 };
+  const e = gpsToEnuClient({ lat: 10, lon: 179.9999, alt: 0 }, a);
+  const want = -0.0002 * 111319.49079327357 * Math.cos(10 * Math.PI / 180);
+  assert.ok(Math.abs(e[0] - want) < 1e-6, `${e[0]} vs ${want}`);
+});
+
+test('경계 |Δλ| = 180 은 감싸지 않는다(+180 → e>0, −180 → e<0; dLon >= 180 변형 검출)', () => {
+  const half = Math.PI * 6378137 * Math.cos(20 * Math.PI / 180); // π·R·cos φ0
+  const a = { lat: 20, lon: 0, alt: 0 };
+  const plus = gpsToEnuClient({ lat: 20, lon: 180, alt: 0 }, a);
+  const minus = gpsToEnuClient({ lat: 20, lon: -180, alt: 0 }, a);
+  assert.ok(Math.abs(plus[0] - half) < 1e-6, `Δ=+180: ${plus[0]}`);
+  assert.ok(Math.abs(minus[0] + half) < 1e-6, `Δ=−180: ${minus[0]}`);
+  const b = { lat: 20, lon: -10, alt: 0 }; // 170 − (−10) = 180
+  assert.ok(Math.abs(gpsToEnuClient({ lat: 20, lon: 170, alt: 0 }, b)[0] - half) < 1e-6);
+});
+
+test('극 앵커에서는 e = 0 (서버와 같은 규칙)', () => {
+  for (const lat of [90, -90]) {
+    const e = gpsToEnuClient({ lat: 89, lon: 123, alt: 0 }, { lat, lon: -45, alt: 0 });
+    assert.ok(e[0] === 0);
+  }
 });
