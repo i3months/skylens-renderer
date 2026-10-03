@@ -79,3 +79,33 @@ for (const st of STAGES) {
     });
   }
 }
+
+// F-162 ②: distanceCull 은 NaN 축의 간격을 0 으로 두고 '유한한 축만으로' 판정한다(boxDistanceM 의 비교가 NaN 에서 거짓 → 간격 0).
+//   간격 하한만 쓰므로 유한 축만으로 확실히 먼 리프를 제거하는 것은 거짓 제거가 아니다. 위 표는 maxDistanceM 1e4 라 이 경우를 피한다.
+//   카메라 중심은 원점(R=I, t=0)이다. 비어있지 않은 리프 하나(k)의 상자를 직접 덮어쓴다.
+function distanceWith(boxFn) {
+  let k = 0;
+  while (base.levels[0].leafStart[k] >= base.levels[0].leafStart[k + 1]) k++;
+  const node = nodeOf(k);
+  const oc = { ...base.octree, boxMin: new Float32Array(base.octree.boxMin), boxMax: new Float32Array(base.octree.boxMax) };
+  boxFn(oc.boxMin, oc.boxMax, node);
+  return { k, h: { ...base, octree: oc } };
+}
+
+test('distanceCull × NaN 축(min.x) + 유한 축(y)만으로 확실히 먼 리프: 제거(0)', () => {
+  const { k, h } = distanceWith((a, b, n) => {
+    a[3 * n] = NaN; b[3 * n] = 1;
+    a[3 * n + 1] = 1e6; b[3 * n + 1] = 1e6 + 1;
+    a[3 * n + 2] = -1; b[3 * n + 2] = 1;
+  });
+  assert.equal(distanceCull(h, cam(), { maxDistanceM: 100 })[k], 0);
+});
+
+test('distanceCull × NaN 축(min.x) + 유한 축으로는 가까운 리프(반경 큼): 남김(1)', () => {
+  const { k, h } = distanceWith((a, b, n) => {
+    a[3 * n] = NaN; b[3 * n] = 1;
+    a[3 * n + 1] = 10; b[3 * n + 1] = 11;
+    a[3 * n + 2] = -1; b[3 * n + 2] = 1;
+  });
+  assert.equal(distanceCull(h, cam(), { maxDistanceM: 100 })[k], 1);
+});
