@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePlyHeader } from './index.mjs';
+import { parsePlyHeader, PLY_HEADER_MAX_BYTES } from './index.mjs';
 
 const hdr = (n, props = 'property float x\nproperty float y\nproperty float z\n') =>
   Buffer.from(`ply\nformat binary_little_endian 1.0\nelement vertex ${n}\n${props}end_header\n`, 'latin1');
@@ -54,4 +54,12 @@ test('rejects a vertex layout lacking x, y or z', () => {
 test('accepts extra properties besides x/y/z', () => {
   const h = parsePlyHeader(hdr(1, 'property float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty double w\n'));
   assert.equal(h.stride, 12 + 1 + 8);
+});
+
+test('parsePlyHeader: 상한(1 MiB) 안에 end_header 가 없으면 기존과 같은 오류', () => {
+  const h = Buffer.from('ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nend_header\n', 'latin1');
+  const pad = Buffer.alloc(PLY_HEADER_MAX_BYTES, 0x20);
+  // end_header 가 상한 밖에 있으면 실패, 상한 안이면 성공
+  assert.throws(() => parsePlyHeader(Buffer.concat([pad, h])), /end_header not found/);
+  assert.equal(parsePlyHeader(h).headerBytes, h.length);
 });
