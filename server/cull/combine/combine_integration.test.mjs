@@ -27,7 +27,7 @@ test('통합: 실제 단계 모듈로 결합 선택(시점 8곳 SSIM·단계 동
   assert.equal(vps.length, 8);
   for (const vp of vps) {
     const cam = viewpointToCamera({ ...vp, width: W, height: H });
-    const lod = selectLevels(h, cam, { thresholdPx: TAU });
+    const lod = selectLevels(h, cam, { thresholdPx: TAU, pointSizeM: POINT_SIZE_M });
     // 실제 단계 마스크를 기록하는 래퍼: 결합 마스크가 기록된 마스크들의 AND 와 같아야 한다.
     const d = await loadDefaultImpls();
     const rec = {};

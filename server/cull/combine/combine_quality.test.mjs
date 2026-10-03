@@ -161,7 +161,7 @@ async function measureScene(sc, { pointSizeM, stageImpls, diag }) {
   const rows = [];
   for (const vp of sc.vps) {
     const cam = viewpointToCamera({ eye: vp.eye, target: vp.target, up: vp.up, width: W, height: H, fov_y_deg: vp.fov });
-    const lod = selectLevels(h, cam, { thresholdPx: TAU });
+    const lod = selectLevels(h, cam, { thresholdPx: TAU, pointSizeM });
     const r = await cullAndSelectDefault(h, cam, { thresholdPx: TAU, stages: REAL_STAGES, pointSizeM, ...(stageImpls ? { stageImpls } : {}) });
     const a = renderPoints(cam, cloud, { pointSizeM });
     const b = renderPoints(cam, materialize(h, r.selection), { pointSizeM });
