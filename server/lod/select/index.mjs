@@ -7,7 +7,7 @@
 //      여러 평면에 걸쳐 밖인 모서리 상자는 그림으로 남을 수 있으나, 보여야 할 리프를 버리는 일은 없다).
 //   2) 아니면 ./screen_error.mjs 의 공용 규칙으로 단계를 고른다(budget·progressive 와 같은 규칙):
 //      f = max(fx, fy), d = 상자와 카메라 중심의 최소 거리, cMin = 상자 꼭짓점의 cos(광축 각) 최솟값,
-//      d_eff = d·cMin² 에 대해 f·edgeM(l)/d_eff ≤ τ 인 가장 큰 l, 최대 단계는 levelCount−1.
+//      d_eff = max(d·cMin², z_P·c_P)(screen_error.mjs 참조) 에 대해 f·edgeM(l)/d_eff ≤ τ 인 가장 큰 l, 최대 단계는 levelCount−1.
 //      카메라가 상자 안(d = 0)이거나 상자가 카메라 평면에 걸치면(cMin ≤ 0) 원본 단계 0.
 //      축 밖 각 α 에서 투영 크기는 f·e/(r·cos²α) 이므로(F-097 ①), 리프 상자 안에 놓인 칸 변은 화면에서 τ 픽셀을 넘지 않는다.
 // materialize: 선택된 단계의 대표점만 모은다. 위치 = 입력 점 위치 그대로, 법선·색 = 그 단계의 대표값. 새 점을 만들지 않는다.
@@ -24,19 +24,29 @@ export { buildHierarchy } from '../hierarchy/index.mjs';
 
 const ERR = 'lod:';
 
-/** 계층이 계약대로인지 최소한으로 검사한다(구조·길이). */
-function assertHierarchy(h) {
+/**
+ * 계층 입력 검사(구조·길이·타입). select·budget·progressive 가 공용으로 쓴다(F-107 ①). 오류는 모두 'lod:' 로 시작.
+ * nodeCount·leafIndex(=nodeCount)·boxMin/boxMax(=3·nodeCount), 단계별 indices·leafStart·positions·normals·colors.
+ */
+export function assertHierarchyInput(h) {
   if (!h || typeof h !== 'object') throw new Error(`${ERR} 계층이 객체가 아님`);
   const { octree, levels } = h;
   assertCloud(h.cloud);
   if (!octree || typeof octree !== 'object' || !Number.isInteger(octree.leafCount) || octree.leafCount < 1) throw new Error(`${ERR} 계층의 팔진 트리가 올바르지 않음`);
+  const nc = octree.nodeCount;
+  if (!Number.isInteger(nc) || nc < octree.leafCount) throw new Error(`${ERR} octree.nodeCount 는 leafCount 이상의 정수: ${String(nc)}`);
   if (!(octree.boxMin instanceof Float32Array) || !(octree.boxMax instanceof Float32Array) || !(octree.leafIndex instanceof Int32Array)) throw new Error(`${ERR} 팔진 트리 상자·리프 번호 배열이 없음`);
+  if (octree.leafIndex.length !== nc) throw new Error(`${ERR} octree.leafIndex 길이(${octree.leafIndex.length}) 가 nodeCount(${nc}) 와 다름`);
+  if (octree.boxMin.length !== 3 * nc || octree.boxMax.length !== 3 * nc) throw new Error(`${ERR} octree.boxMin/boxMax 길이가 3·nodeCount(${3 * nc}) 가 아님`);
   if (!Array.isArray(levels) || levels.length < 1) throw new Error(`${ERR} 계층의 단계 배열이 비었음`);
   for (const lv of levels) {
-    if (!lv || !(lv.indices instanceof Uint32Array) || !(lv.leafStart instanceof Uint32Array) || lv.leafStart.length !== octree.leafCount + 1
-      || !(lv.positions instanceof Float32Array) || lv.positions.length !== 3 * lv.indices.length) {
+    if (!lv || !(lv.indices instanceof Uint32Array) || !(lv.leafStart instanceof Uint32Array) || lv.leafStart.length !== octree.leafCount + 1) {
       throw new Error(`${ERR} 단계 ${String(lv?.level)} 의 구간 배열이 올바르지 않음`);
     }
+    const n = lv.indices.length;
+    if (!(lv.positions instanceof Float32Array) || lv.positions.length !== 3 * n) throw new Error(`${ERR} 단계 ${String(lv.level)} 의 positions 가 Float32Array(3·n) 가 아님`);
+    if (!(lv.normals instanceof Float32Array) || lv.normals.length !== 3 * n) throw new Error(`${ERR} 단계 ${String(lv.level)} 의 normals 가 Float32Array(3·n) 가 아님`);
+    if (!(lv.colors instanceof Uint8Array) || lv.colors.length !== 3 * n) throw new Error(`${ERR} 단계 ${String(lv.level)} 의 colors 가 Uint8Array(3·n) 가 아님`);
   }
 }
 
@@ -57,7 +67,7 @@ function checkCamera(camera) {
  * @returns {import('../../../contracts/lod/index.mjs').Selection}
  */
 export function selectLevels(hierarchy, camera, opts) {
-  assertHierarchy(hierarchy);
+  assertHierarchyInput(hierarchy);
   checkCamera(camera);
   const thresholdPx = opts?.thresholdPx;
   if (!(typeof thresholdPx === 'number' && Number.isFinite(thresholdPx) && thresholdPx > 0)) throw new Error(`${ERR} thresholdPx 는 양의 유한수: ${String(thresholdPx)}`);
@@ -84,7 +94,7 @@ export function selectLevels(hierarchy, camera, opts) {
  * @returns {import('../../../contracts/lod/index.mjs').Point27Cloud}
  */
 export function materialize(hierarchy, selection) {
-  assertHierarchy(hierarchy);
+  assertHierarchyInput(hierarchy);
   const { octree, levels } = hierarchy;
   if (!selection || !(selection.leafLevel instanceof Uint8Array) || selection.leafLevel.length !== octree.leafCount) {
     throw new Error(`${ERR} selection.leafLevel 은 길이 leafCount(${octree.leafCount}) 인 Uint8Array`);
