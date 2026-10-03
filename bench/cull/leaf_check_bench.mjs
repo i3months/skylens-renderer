@@ -3,7 +3,7 @@
 // scale: 'small'(기본, 점 ~6.6k) 또는 'large'(점 26만). 단계별 시간은 flat_boxes 계층으로 잰다.
 // 검사 캐시 자체는 별도로 합성 계층(노드 26만·리프 약 19만, F-154 실패 상황 규모)에서 첫 호출·미스·적중을 잰다(leaf_check 절).
 // 각 단계는 시점 3개를 한 번씩 돌린 합(ms)을 N 번 되풀이해 그중 최소값을 보고한다(최소값 = 잡음이 가장 적은 표본).
-// 첫 호출(캐시 비어 있음), 캐시 미스, 캐시 적중 3가지 경우를 분리하여 측정한다.
+// 첫 호출(새 계층·캐시 비어 있음, 앞 단계로 인한 JIT 워밍 포함), 캐시 미스, 캐시 적중 3가지 경우를 분리하여 측정한다.
 // 다른 커밋과 비교하려면 이 파일을 그 커밋의 git worktree 의 bench/cull/ 에 복사해 같은 명령으로 돈다.
 import { writeFileSync, readFileSync } from 'node:fs';
 import { generate } from '../../fixtures/scenes/flat_boxes/index.mjs';
@@ -17,26 +17,45 @@ import { orderChunks } from '../../server/cull/priority/index.mjs';
 import { checkLeafIndexOneToOne } from '../../server/cull/degenerate/leaf_check.mjs';
 import { leafBoxesOf, clientFrustumCull } from '../../client/cull/index.mjs';
 
-const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : dflt; };
-const SCALE = arg('--scale', 'small'); // 'small' 또는 'large'
-const RUNS = Number(arg('--runs', 15));
-const POINTS = SCALE === 'large' ? 260000 : 6664; // small: ~6.6k, large: ~260k
+const USAGE = 'usage: node bench/cull/leaf_check_bench.mjs [--scale small|large] [--runs N] [--points N] [--json path]\n  --runs, --points: positive integers; --scale: small (default) or large';
+const die = (msg) => { console.error(`error: ${msg}\n${USAGE}`); process.exit(1); };
+const arg = (name, dflt) => {
+  const i = process.argv.indexOf(name);
+  if (i < 0) return dflt;
+  const v = process.argv[i + 1];
+  if (v === undefined || v.startsWith('--')) die(`${name} needs a value`);
+  return v;
+};
+const posInt = (name, dflt) => {
+  const v = arg(name, undefined);
+  if (v === undefined) return dflt;
+  if (!/^[1-9][0-9]*$/.test(v) || !Number.isSafeInteger(Number(v))) die(`${name} must be a positive integer, got '${v}'`);
+  return Number(v);
+};
+const SCALE = arg('--scale', 'small');
+if (SCALE !== 'small' && SCALE !== 'large') die(`--scale must be small or large, got '${SCALE}'`);
+const RUNS = posInt('--runs', 15);
+const POINTS = posInt('--points', SCALE === 'large' ? 260000 : 6664); // default small: ~6.6k, large: ~260k
+// large uses a smaller maxLeafPoints and deeper levels so it yields a distinctly larger leaf count (~22.7k vs ~1.9k at 260k points).
+const HIER_OPTS = SCALE === 'large'
+  ? { edge0M: 0.5, levelCount: 8, maxLeafPoints: 32 }
+  : { edge0M: 0.5, levelCount: 6, maxLeafPoints: 256 };
 const POINT_SIZE_M = 0.05;
 const VIEWS = ['aerial_overview', 'street_level', 'tower_mid'];
 
 const cloud = generate({ seed: 1, count: POINTS }).cloud;
-const hierarchy = buildHierarchy(cloud, { edge0M: 0.5, levelCount: 6, maxLeafPoints: 256 });
+const hierarchy = buildHierarchy(cloud, HIER_OPTS);
 const vps = JSON.parse(readFileSync(new URL('../../fixtures/viewpoints/synthetic.json', import.meta.url), 'utf8')).viewpoints;
 const cameras = VIEWS.map((name) => {
   const vp = vps.find((v) => v.name === name);
   if (!vp) throw new Error(`bench: 시점 없음: ${name}`);
   return viewpointToCamera({ eye: vp.eye, target: vp.target, up: vp.up, width: 320, height: 180, fov_y_deg: vp.fov_y_deg });
 });
-const masks = cameras.map((c) => frustumCull(hierarchy, c, { pointSizeM: POINT_SIZE_M }));
-const pyramids = cameras.map((c) => buildDepthPyramid(hierarchy, c, { pointSizeM: POINT_SIZE_M }));
+const masksBase = cameras.map((c) => frustumCull(hierarchy, c, { pointSizeM: POINT_SIZE_M }));
+const pyramidsBase = cameras.map((c) => buildDepthPyramid(hierarchy, c, { pointSizeM: POINT_SIZE_M }));
 const leafBoxes = leafBoxesOf(hierarchy.octree);
 
-const stages = (hierarchy) => ({
+const stages = (hierarchy, masks = masksBase, pyramids = pyramidsBase) => ({
   frustum: (c) => frustumCull(hierarchy, c, { pointSizeM: POINT_SIZE_M }),
   distance: (c) => distanceCull(hierarchy, c, { maxDistanceM: 150 }),
   predict: (c) => predictiveMask(hierarchy, { camera: c, velocityMps: [1, 0, 0], angularRadPerS: [0, 0.1, 0] }, { horizonS: 1, steps: 2, pointSizeM: POINT_SIZE_M }),
@@ -51,10 +70,14 @@ const hitStages = stages(hierarchy);
 const result = {};
 for (const name of Object.keys(hitStages)) {
   const fn = hitStages[name];
-  // 첫 호출 시간 측정(캐시 비어 있음)
+  // 첫 호출: 단계마다 새로 빌드한 계층(캐시 비어 있음)에서 잰다. 계층 빌드는 시간에 넣지 않는다.
+  // 단, 앞 단계가 이미 코드를 달궜으므로 JIT 비용은 단계 순서에 따라 일부 빠진다(cold-process 값이 아님).
+  const fresh = buildHierarchy(cloud, HIER_OPTS);
+  // 마스크·피라미드는 기본 계층에서 미리 만든 것을 쓴다(같은 입력이라 내용 동일, fresh 의 캐시를 건드리지 않음).
+  const freshFn = stages(fresh)[name];
   const firstCallTime = (() => {
     const t0 = performance.now();
-    cameras.forEach((c, i) => fn(c, i));
+    cameras.forEach((c, i) => freshFn(c, i));
     return performance.now() - t0;
   })();
 
