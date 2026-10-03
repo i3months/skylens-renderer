@@ -6,7 +6,7 @@
 // 화면 오차 규칙(f = max(fx,fy), d_eff = d·cMin², 거리표)은 server/lod/select/screen_error.mjs 의 공용 함수를 그대로 쓴다.
 //
 // 절차
-//  1) 시야 판정: 리프 상자 8 꼭짓점을 카메라 좌표로 옮겨, 한 절두체 평면(근평면 z>0, 화면 좌·우·위·아래)의
+//  1) 시야 판정(../select/view_check.mjs 공용): 리프 상자 8 꼭짓점을 카메라 좌표로 옮겨, 한 절두체 평면(근평면 z>0, 화면 좌·우·위·아래)의
 //     바깥에 8 점이 모두 있으면 시야 밖 → NOT_DRAWN. 상자는 볼록이므로 이 판정은 보수적이다(보이는 리프를 버리지 않음).
 //     점이 하나도 없는 리프도 그릴 것이 없으므로 NOT_DRAWN.
 //  2) 거리 d: 카메라 중심에서 리프 상자까지의 최단 거리(상자 안이면 0). 실효 거리 d_eff = d·cMin²
@@ -31,11 +31,12 @@
 //    "점을 하나도 그리지 말라" 는 뜻이 분명하고 pointCount ≤ 0 을 만족하는 유일한 답이기 때문이다.
 //  - 음수, NaN, ±Infinity, 정수가 아닌 수, 수가 아닌 값: 'lod:' 로 시작하는 Error. 의미가 없는 예산을 조용히 0 으로
 //    바꾸면 호출 쪽 버그를 숨기므로 던진다.
-//  - thresholdPx 는 distance_table 의 검사(양의 유한수, 'lod:' 오류)를 그대로 따른다. 카메라는 raster 계약 검사('raster:').
+//  - thresholdPx 는 distance_table 의 검사(양의 유한수, 'lod:' 오류)를 그대로 따른다. 카메라는 raster 계약 검사를 하되 오류는 select·progressive 와 같이 'lod:' 로 감싼다.
 
 import { NOT_DRAWN, edgeOfLevel } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { screenErrorRule } from '../select/screen_error.mjs';
+import { boxMayBeVisible } from '../select/view_check.mjs';
 
 const ERR = 'lod:';
 // 거리 하한(m). 탐욕 단계의 ΔE 분모(d_eff)가 0 이 되지 않게 막는다(d_eff = 0 인 리프는 ΔE 가 매우 커서 맨 나중에 거칠어진다).
@@ -65,28 +66,6 @@ function leafNodes(octree) {
     if (k >= 0) out[k] = n;
   }
   return out;
-}
-
-/** 상자(월드)가 시야 절두체와 겹칠 수 있으면 true(보수적). */
-function boxVisible(camera, mn, mx) {
-  const { R, t, K, width, height } = camera;
-  // 평면별로 "모든 꼭짓점이 바깥" 인지 센다. 바깥 조건(카메라 좌표 x,y,z):
-  //   근평면 z ≤ 0, 왼쪽 u<0 ⇔ fx·x + cx·z < 0, 오른쪽 u>W ⇔ fx·x + (cx−W)·z > 0, 위·아래도 같은 식(fy, cy, H).
-  let near = 0, left = 0, right = 0, top = 0, bottom = 0;
-  for (let c = 0; c < 8; c++) {
-    const x = c & 1 ? mx[0] : mn[0];
-    const y = c & 2 ? mx[1] : mn[1];
-    const z = c & 4 ? mx[2] : mn[2];
-    const xc = R[0] * x + R[1] * y + R[2] * z + t[0];
-    const yc = R[3] * x + R[4] * y + R[5] * z + t[1];
-    const zc = R[6] * x + R[7] * y + R[8] * z + t[2];
-    if (zc <= 0) near++;
-    if (K.fx * xc + K.cx * zc < 0) left++;
-    if (K.fx * xc + (K.cx - width) * zc > 0) right++;
-    if (K.fy * yc + K.cy * zc < 0) top++;
-    if (K.fy * yc + (K.cy - height) * zc > 0) bottom++;
-  }
-  return !(near === 8 || left === 8 || right === 8 || top === 8 || bottom === 8);
 }
 
 // 최대 힙: 효율 내림차순, 동률이면 리프 번호 오름차순.
@@ -127,7 +106,11 @@ function heapPop(h) {
  */
 export function leafTargets(hierarchy, camera, thresholdPx) {
   assertHierarchy(hierarchy);
-  assertCamera(camera);
+  try {
+    assertCamera(camera);
+  } catch (e) {
+    throw new Error(`${ERR} 카메라가 올바르지 않음 (${e.message})`);
+  }
   const { octree, levels, edge0M } = hierarchy;
   const levelCount = levels.length;
   const rule = screenErrorRule(camera, { thresholdPx, edge0M, levelCount });
@@ -146,7 +129,7 @@ export function leafTargets(hierarchy, camera, thresholdPx) {
     const e = rule.leaf(mn, mx);
     distM[k] = e.distM;
     effDistM[k] = e.effDistM;
-    if (countAt(k, 0) === 0 || !boxVisible(camera, mn, mx)) continue;
+    if (countAt(k, 0) === 0 || !boxMayBeVisible(camera, mn, mx)) continue;
     visible[k] = 1;
     target[k] = e.level;
   }

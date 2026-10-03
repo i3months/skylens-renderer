@@ -5,7 +5,8 @@
 //   칸당 한 점이므로 면 위 점 밀도는 단계마다 약 1/4 로 준다(4^-l).
 // 거리 근거(renderer_basis §3-7 과 SPEC §3 의 Δd ≈ d²/(f·b) 를 화면 공간 오차로 옮긴 것):
 //   카메라와 거리 d 에서 한 칸이 화면에서 차지하는 크기 = f·edgeM/d 픽셀. 허용 오차 thresholdPx(τ) 이하이면 그 단계로 충분하다.
-//   단계 l 의 최대 사용 거리 maxDistanceM(l) = f·edgeM(l)/τ  → 거리 d 에는 f·edgeM(l)/d ≤ τ 를 만족하는 가장 큰 l 을 쓴다.
+//   단계 l 이 쓰이기 시작하는 거리(하한) maxDistanceM(l) = f·edgeM(l)/τ — 이름과 달리 '최대' 가 아니다.
+//   단계 l 의 사용 구간은 [maxDistanceM(l), maxDistanceM(l+1)) 이고 마지막 단계는 그 위로 열려 있다. 거리 d 에는 f·edgeM(l)/d ≤ τ 를 만족하는 가장 큰 l 을 쓴다.
 //   edge0M 은 원본 정밀도 하한: 깊이 해상도 Δd(d_c, b) = d_c²/(f·b) 보다 촘촘하게 둘 필요 없다(T07.3 이 표로 기록).
 // 점 수 정의: 점 수는 positions.length/3 이고 cloud.count 와 같아야 한다(다르면 명시 오류).
 
@@ -62,7 +63,7 @@ export const VIEW_SCORE_CONSTANTS = Object.freeze({ theta0Deg: 10, sigmaSmallDeg
 export const LOD_API = Object.freeze({
   voxel: { module: 'server/lod/voxel/index.mjs', fn: 'voxelReduce(cloud, edgeM) -> VoxelResult   대표점 = 칸 안에서 칸 중심에 가장 가까운 입력 점(동률이면 번호 작은 점)' },
   octree: { module: 'server/lod/octree/index.mjs', fn: 'buildOctree(cloud, {maxLeafPoints=4096, maxDepth=12}) -> Octree' },
-  distance_table: { module: 'server/lod/distance_table/index.mjs', fn: 'buildDistanceTable({fx, thresholdPx, edge0M, levelCount}) -> {levels:[{level, edgeM, maxDistanceM}]} ; levelForDistance(table, d) -> level ; depthResolutionM(d, fx, baselineM) -> number' },
+  distance_table: { module: 'server/lod/distance_table/index.mjs', fn: 'buildDistanceTable({fx, thresholdPx, edge0M, levelCount}) -> {levels:[{level, edgeM, maxDistanceM(단계 l 이 쓰이기 시작하는 거리, 하한)}]} ; levelForDistance(table, d) -> level ; depthResolutionM(d, fx, baselineM) -> number' },
   normals: { module: 'server/lod/normals/index.mjs', fn: 'representativeNormals(cloud, voxel) -> Float32Array(3·count)   칸 안 법선 합의 정규화, 합이 0 이면 (0,0,0)' },
   colors: { module: 'server/lod/colors/index.mjs', fn: 'representativeColors(cloud, voxel) -> Uint8Array(3·count)   칸 안 평균색(반올림)' },
   select: { module: 'server/lod/select/index.mjs', fn: 'buildHierarchy(cloud, {edge0M, levelCount, maxLeafPoints}) -> Hierarchy ; selectLevels(hierarchy, camera, {thresholdPx}) -> Selection ; materialize(hierarchy, selection) -> Point27Cloud' },

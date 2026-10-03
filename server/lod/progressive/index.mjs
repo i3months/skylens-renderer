@@ -9,36 +9,9 @@
 // 조각 순서: 거친 단계(큰 level) 먼저, 같은 단계 안에서는 카메라에 가까운 리프 먼저(동률이면 리프 번호).
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { screenErrorRule } from '../select/screen_error.mjs';
+import { boxMayBeVisible } from '../select/view_check.mjs';
 
 const ERR = 'lod:';
-const NEAR_EPS = 1e-6; // 카메라 앞 판정 하한(m)
-
-/** 상자(min,max)가 시야 절두체와 겹칠 수 있는가(보수적: 확실히 밖일 때만 false). */
-function boxInView(camera, bmin, bmax) {
-  const { R, t, K, width, height } = camera;
-  // 8 모서리를 카메라 좌표로
-  const cx = new Float64Array(8), cy = new Float64Array(8), cz = new Float64Array(8);
-  for (let c = 0; c < 8; c++) {
-    const x = c & 1 ? bmax[0] : bmin[0], y = c & 2 ? bmax[1] : bmin[1], z = c & 4 ? bmax[2] : bmin[2];
-    cx[c] = R[0] * x + R[1] * y + R[2] * z + t[0];
-    cy[c] = R[3] * x + R[4] * y + R[5] * z + t[1];
-    cz[c] = R[6] * x + R[7] * y + R[8] * z + t[2];
-  }
-  // 반공간 5개: 안쪽이면 값 ≥ 0. 한 반공간에서 8 모서리가 모두 밖이면 상자는 시야 밖.
-  const planes = [
-    (i) => cz[i] - NEAR_EPS,
-    (i) => K.fx * cx[i] + K.cx * cz[i],
-    (i) => (width - K.cx) * cz[i] - K.fx * cx[i],
-    (i) => K.fy * cy[i] + K.cy * cz[i],
-    (i) => (height - K.cy) * cz[i] - K.fy * cy[i],
-  ];
-  for (const f of planes) {
-    let anyIn = false;
-    for (let i = 0; i < 8 && !anyIn; i++) if (f(i) >= 0) anyIn = true;
-    if (!anyIn) return false;
-  }
-  return true;
-}
 
 /** 리프 번호 -> 노드 번호(octree.leafIndex 의 역) */
 function leafNodes(octree) {
@@ -70,7 +43,7 @@ export function progressiveChunks(hierarchy, camera, opts) {
     if (octree.leafStart[k + 1] === octree.leafStart[k]) continue; // 빈 리프
     const bmin = octree.boxMin.subarray(3 * node[k], 3 * node[k] + 3);
     const bmax = octree.boxMax.subarray(3 * node[k], 3 * node[k] + 3);
-    if (!boxInView(camera, bmin, bmax)) continue; // 시야 밖 리프는 조각 0
+    if (!boxMayBeVisible(camera, bmin, bmax)) continue; // 시야 밖 리프는 조각 0
     const { distM: dist, level } = rule.leaf(bmin, bmax);
     const target = Math.min(maxLevel, level);
     // 최초 거친 조각 -> 목표 단계 조각(중간 단계는 건너뜀)
