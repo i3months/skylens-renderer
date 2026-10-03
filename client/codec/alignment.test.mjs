@@ -140,9 +140,9 @@ test("② 위치 비최소 LEB128([0x80,0x00]=0, [0x81,0x00]=1)은 'stream', 최
 });
 
 // ---- ③ mode 1 비정규 컨테이너 ----
-test("③ mode 1 에서 rawLen 0 은 'stream'(n=1 이라 상한 검사보다 먼저 걸려야 한다)", () => {
-  assert.throws(() => decodeChunkClient(withPos(1, Uint8Array.from([1, 0]))), code('stream')); // payload 도 0 B
-  assert.throws(() => decodeChunkClient(withPos(1, Uint8Array.from([1, 0, 0, 0, 0, 0, 0]))), code('stream'));
+test("③ mode 1 에서 rawLen 0 은 n=1 의 하한 미달이라 rawLen 범위 검사('limit')가 정규성 검사보다 먼저 걸린다(서버와 같은 순서)", () => {
+  assert.throws(() => decodeChunkClient(withPos(1, Uint8Array.from([1, 0]))), code('limit')); // payload 도 0 B
+  assert.throws(() => decodeChunkClient(withPos(1, Uint8Array.from([1, 0, 0, 0, 0, 0, 0]))), code('limit'));
 });
 test("③ mode 1 에서 payloadLen > rawLen 은 'stream', rawLen 이 payload 이상이면 이 검사를 통과한다", () => {
   // rawLen 5, payload 6 → 비정규. 같은 범위 부호 payload 로 rawLen 6 이면 이 검사는 통과하고 뒤 검사(첫 바이트)에서 다른 이유로 걸린다

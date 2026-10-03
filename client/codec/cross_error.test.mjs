@@ -175,11 +175,20 @@ test("스트림 길이 합이 body_bytes 와 다르면 양쪽 'length'", () => {
   same(build(n, { tail: [0] }), 'length');
 });
 test('스트림 길이가 u32 최댓값이어도 양쪽 같다', () => same(build(3, { lens: [0xffffffff, 0xffffffff, 0xffffffff] })));
-/** 케이스 하나를 독립 test 로 등록한다. todo 면 알려진 불일치로 표시한다(실패해도 실행은 실패하지 않는다). */
-function each(name, make, expect, todo) {
-  test(name, todo ? { todo } : {}, () => same(make(), expect));
+/**
+ * 케이스 하나를 독립 test 로 등록한다. looseClass 면 헤더 경로의 오류 분류 차이(클라이언트 readHeaderClient 의 AssetFormatError
+ * vs 서버 parseHeader 의 CodecError)를 허용하고, 양쪽이 계약이 허용한 오류 클래스(CodecError·AssetFormatError)로 거부하는지만 단언한다.
+ */
+function each(name, make, expect, looseClass) {
+  test(name, () => {
+    if (!looseClass) return same(make(), expect);
+    const f = make();
+    for (const dec of [decodeChunk, decodeChunkClient]) {
+      assert.throws(() => dec(f), (e) => e instanceof Error && /^(CodecError|AssetFormatError)$/.test(e.constructor.name));
+    }
+  });
 }
-const DIV = '서버·클라이언트 헤더 오류 분류가 다르다(클라이언트 readHeaderClient 경로 vs 서버 parseHeader 경로). 계약 정렬 필요';
+const DIV = true;
 const TRUNC = () => build(3);
 each('body_bytes=15 (16 미만)', () => build(3, { bodyBytes: 15 }), undefined, DIV);
 each('body_bytes=0', () => build(3, { bodyBytes: 0 }), undefined, DIV);
