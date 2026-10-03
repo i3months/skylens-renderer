@@ -103,7 +103,7 @@ test('결정성: 같은 시드 JSON 동일, 다른 시드 다름', () => {
 test('드론: 한 바퀴(회전 합 +2π±0.05)·프레임 이동 0.7~1.8 m·지터 존재(정지·2바퀴·0.5바퀴·역방향·지터 제거 변이 차단)', () => {
   // 반경 60·300프레임: 한 프레임 호 = 2π·60/300 ≈ 1.257 m. 지터(축당 ≤1.5 m, 저주파) 변화가 프레임당 ≈0.5 m 이하이므로 0.7~1.8 m.
   // 시간 속도로는 0.7*30 = 21 ~ 1.8*30 = 54 m/s 이다(드론 시나리오 값이며 자유 경로 15 m/s 상한과 무관).
-  for (const seed of [1, 2, 3, 99]) {
+  for (const seed of [1, 2, 3, 67, 99]) {
     const p = dronePath({ seed });
     const n = p.frames.length;
     let rot = 0;
@@ -128,10 +128,10 @@ test('드론: 한 바퀴(회전 합 +2π±0.05)·프레임 이동 0.7~1.8 m·지
     assert.ok(Math.abs(rot - 2 * Math.PI) <= 0.05, `seed ${seed} 회전 합 ${rot}`);
     assert.ok(Math.max(...r) - Math.min(...r) > 1.0, `seed ${seed} 반경 지터 없음`);
     assert.ok(altitudeMax - altitudeMin > 1.0, `seed ${seed} 고도 폭 ${altitudeMax - altitudeMin} m`);
-    // 접선 지터 jt(진폭 ≤ 1.5 m, 사인 합이라 최대-최소 폭 ≈ 2.5~3 m)는 궤도 진행을 뺀 접선 잔차(평균 제거 각 × 반경 60 m)의 폭으로 드러난다.
+    // 접선 지터 jt(진폭 ≤ 1.5 m, 사인 합이라 최대-최소 폭 ≈ 1.79~3 m)는 궤도 진행을 뺀 접선 잔차(원형 평균 제거 각 × 반경 60 m)의 폭으로 드러난다.
     // jt=0 이면 잔차는 반올림 오차(~1e-6 m)뿐이므로 1.0 m 한계는 양쪽에서 큰 마진을 갖는다(한계 설정 근거: 이론 폭 상한 3 m 의 1/3, jt=0 의 ~1e6 배).
-    const meanRes = angRes.reduce((s, v) => s + v, 0) / n;
-    const tRes = angRes.map((v) => (v - meanRes) * 60);
+    const c = Math.atan2(angRes.reduce((s, v) => s + Math.sin(v), 0), angRes.reduce((s, v) => s + Math.cos(v), 0));
+    const tRes = angRes.map((v) => Math.atan2(Math.sin(v - c), Math.cos(v - c)) * 60);
     const tWidth = Math.max(...tRes) - Math.min(...tRes);
     assert.ok(tWidth > 1.0, `seed ${seed} 접선 잔차 폭 ${tWidth} m > 1.0 m`);
   }
