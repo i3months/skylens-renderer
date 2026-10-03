@@ -28,7 +28,9 @@ export function gpsToEnuClient(gps, anchor) {
   let dLon = gps.lon - anchor.lon;
   if (dLon > 180) dLon -= 360; else if (dLon < -180) dLon += 360;
   const dLambda = dLon * DEG; // Δλ (rad)
-  const e = dLambda * EARTH_RADIUS_M * Math.cos(anchor.lat * DEG);
+  // 극 앵커(|cos φ0| < 1e-12)는 동쪽이 정의되지 않아 e = 0(서버 gpsToEnu 와 같음)
+  const cosPhi0 = Math.cos(anchor.lat * DEG);
+  const e = dLambda * EARTH_RADIUS_M * (Math.abs(cosPhi0) < 1e-12 ? 0 : cosPhi0);
   const n = dPhi * EARTH_RADIUS_M;
   const u = gps.alt - anchor.alt;
   if (!Number.isFinite(e) || !Number.isFinite(n) || !Number.isFinite(u)) {
