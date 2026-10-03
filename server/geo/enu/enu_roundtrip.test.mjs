@@ -114,3 +114,38 @@ test('범위 안 1만 점: 서버·클라이언트 gpsToEnu 가 geo.ts 식과 0 
   assert.equal(n, 10000);
   assert.equal(worst, 0);
 });
+
+test('enuToGps 여러 바퀴(|lon|>540) 경도 감싸기: 손으로 계산한 (−180,180] 값과 일치', () => {
+  const k = 6378137 * Math.PI / 180; // 적도에서 1° 의 m
+  const a = { lat: 0, lon: 10, alt: 0 };
+  // [앵커 + e 의 감싸기 전 경도(도), 기대 경도] — 기대값은 360 의 배수를 직접 빼서 구했다
+  const cases = [
+    [541, -179],    // 541 − 720
+    [-541, 179],    // −541 + 720
+    [900, 180],     // 900 − 720 (정확히 180 은 180)
+    [-900, 180],    // −900 + 1080 (−180 이 아니라 180)
+    [1110, 30],     // 1110 − 1080 (세 바퀴)
+    [-1190, -110],  // −1190 + 1080
+    [1170, 90],     // 1170 − 1080
+    [-1430, 10],    // −1430 + 1440
+  ];
+  for (const [raw, want] of cases) {
+    const got = enuToGps([(raw - a.lon) * k, 0, 0], a).lon;
+    assert.ok(got > -180 && got <= 180, `범위 밖 ${got} (raw ${raw})`);
+    assert.ok(Math.abs(got - want) < 1e-6, `raw ${raw}: ${got} ≠ ${want}`);
+  }
+});
+
+test('enuToGps 입력 상한(F-088 ⑭): 지구 둘레 4배(≈1.6e8 m) 초과는 GeoError range, 이하는 받는다', () => {
+  const a = { lat: 0, lon: 0, alt: 0 };
+  const isRange = (e) => e && e.name === 'GeoError' && e.code === 'range';
+  for (const v of [1e300, -1e300, 1e12, 1e9, 1.7e8, -1.7e8]) {
+    assert.throws(() => enuToGps([v, 0, 0], a), isRange, `e=${v}`);
+    assert.throws(() => enuToGps([0, v, 0], a), isRange, `n=${v}`);
+    assert.throws(() => enuToGps([0, 0, v], a), isRange, `u=${v}`);
+  }
+  // 상한 안쪽(4바퀴 미만): 1.5e8 m ≈ 1347.5° → 1347.5 − 1440 = −92.5° 로 감싼 유한한 경도
+  const g = enuToGps([1.5e8, 0, 0], a);
+  assert.ok(Math.abs(g.lon - (1.5e8 / (6378137 * Math.PI / 180) - 1440)) < 1e-6, `${g.lon}`);
+  assert.equal(enuToGps([0, 0, 1.5e8], a).alt, 1.5e8);
+});
