@@ -10,7 +10,8 @@ import { ssim } from '../../metrics/ssim/index.mjs';
 import { packChunk } from '../../asset/pack/index.mjs';
 import { unpackChunk } from '../../asset/unpack/index.mjs';
 import { groupByTile } from '../../asset/tile_index/index.mjs';
-import { FORMAT_POINT27 } from '../../../contracts/asset/index.mjs';
+import { FORMAT_POINT27, parseHeader, bodyLayout } from '../../../contracts/asset/index.mjs';
+import { mortonOrder } from '../order/index.mjs';
 import { encodeChunk, decodeChunk } from '../chunk/index.mjs';
 
 export const QUALITY_MIN_SSIM = 0.98;
@@ -35,10 +36,27 @@ export const SCENES = {
   holes: { gen: () => genHoles({ seed: 1, count: 100000 }), vps: GROUND_VP },
 };
 
-/** 점군(format 1) → 타일별 조각 → packChunk(codec 0) → encodeChunk → decodeChunk → toSource 복원 → 합친 점군. */
+/** codec 0 파일에서 양자화 위치 평면(pos_e·pos_n·pos_u, u16)을 읽는다(encodeChunk 가 모턴 순서를 정할 때 쓰는 입력과 같다). */
+function readPosPlanes(raw) {
+  const h = parseHeader(raw);
+  const { planes } = bodyLayout(h.format, h.pointCount);
+  const out = {};
+  for (const p of planes) {
+    if (p.name !== 'pos_e' && p.name !== 'pos_n' && p.name !== 'pos_u') continue;
+    const rel = h.headerSize + p.offset;
+    out[p.name] = new Uint16Array(raw.slice(rel, rel + p.bytes).buffer);
+  }
+  return out;
+}
+
+/**
+ * 점군(format 1) → 타일별 조각 → packChunk(codec 0) → encodeChunk → decodeChunk → toSource 복원 → 합친 점군.
+ * perm[k] = 왕복 점군의 k 번째 점이 원본에서 온 인덱스(타일 묶음 순서 + 조각 안 mortonOrder 를 합성한 실제 순열).
+ */
 export function codecRoundTrip(cloud, { lossyColor = false } = {}) {
   const groups = groupByTile(cloud.positions);
   const parts = [];
+  const permParts = [];
   let total = 0, rawBytes = 0, codecBytes = 0;
   groups.forEach((g, ci) => {
     const n = g.indices.length;
@@ -54,6 +72,9 @@ export function codecRoundTrip(cloud, { lossyColor = false } = {}) {
       format: FORMAT_POINT27, segmentId: 1, level: 0, lod: 0, chunkIndex: ci,
       anchor: { lat: 0, lon: 0, alt: 0 }, fields: { positions, normals, colors },
     });
+    const pp = readPosPlanes(raw);
+    const ord = mortonOrder(pp.pos_e, pp.pos_n, pp.pos_u);
+    permParts.push(Uint32Array.from(ord, (k) => g.indices[k]));
     const enc = encodeChunk(raw, { lossyColor });
     const back = decodeChunk(enc);
     const { fields } = unpackChunk(back);
@@ -61,28 +82,48 @@ export function codecRoundTrip(cloud, { lossyColor = false } = {}) {
     total += n; rawBytes += raw.length; codecBytes += enc.length;
   });
   const out = { format: FORMAT_POINT27, count: total, positions: new Float32Array(3 * total), normals: new Float32Array(3 * total), colors: new Uint8Array(3 * total) };
+  const perm = new Uint32Array(total);
   let o = 0;
-  for (const f of parts) {
+  for (let pi = 0; pi < parts.length; pi++) {
+    const f = parts[pi];
     out.positions.set(f.positions, 3 * o); out.normals.set(f.normals, 3 * o); out.colors.set(f.colors, 3 * o);
+    perm.set(permParts[pi], o);
     o += f.positions.length / 3;
   }
-  return { cloud: out, chunks: groups.length, rawBytes, codecBytes };
+  return { cloud: out, perm, chunks: groups.length, rawBytes, codecBytes };
+}
+
+/** 원본 점군을 perm 순서로 재배열한 점군(양자화 없음). */
+export function reorderCloud(cloud, perm) {
+  const n = perm.length;
+  const out = { format: cloud.format, count: n, positions: new Float32Array(3 * n), normals: new Float32Array(3 * n), colors: new Uint8Array(3 * n) };
+  for (let k = 0; k < n; k++) {
+    const s = perm[k];
+    for (let a = 0; a < 3; a++) {
+      out.positions[3 * k + a] = cloud.positions[3 * s + a];
+      out.normals[3 * k + a] = cloud.normals[3 * s + a];
+      out.colors[3 * k + a] = cloud.colors[3 * s + a];
+    }
+  }
+  return out;
 }
 
 /**
- * 한 장면 8 시점: 원본 렌더 대 왕복 후 렌더의 SSIM.
+ * 한 장면 8 시점: 기준 렌더 대 왕복 후 렌더의 SSIM. 기준은 왕복의 실제 순열로 재배열한 원본(결정 0028)이라
+ * 동률 승자 차이 없이 양자화 효과만 잰다. alignReference=false 는 진단 전용(원본 순서 그대로).
  * @returns {{sceneId: string, rows: {vp: string, ssim: number}[], min: number, chunks: number, rawBytes: number, codecBytes: number}}
  */
-export function codecQualityEight(sceneId, { lossyColor = false, pointSizeM = POINT_SIZE_M, mutate } = {}) {
+export function codecQualityEight(sceneId, { lossyColor = false, pointSizeM = POINT_SIZE_M, mutate, alignReference = true } = {}) {
   const sc = SCENES[sceneId];
   if (!sc) throw new Error(`quality: 알 수 없는 장면 ${sceneId}`);
   const { cloud } = sc.gen();
-  let rt = codecRoundTrip(cloud, { lossyColor });
+  const rt = codecRoundTrip(cloud, { lossyColor });
   if (mutate) rt.cloud = mutate(rt.cloud); // 시험 전용: 왕복 결과를 일부러 훼손(변이)
   if (rt.cloud.count !== cloud.count) throw new Error(`quality: 점 수 불일치 ${rt.cloud.count} != ${cloud.count}`);
+  const ref = alignReference ? reorderCloud(cloud, rt.perm) : cloud;
   const rows = sc.vps.map((vp) => {
     const cam = viewpointToCamera({ eye: vp.eye, target: vp.target, up: vp.up, width: W, height: H, fov_y_deg: vp.fov });
-    const a = renderPoints(cam, cloud, { pointSizeM });
+    const a = renderPoints(cam, ref, { pointSizeM });
     const b = renderPoints(cam, rt.cloud, { pointSizeM });
     return { vp: vp.name, ssim: ssim(a.color, b.color, W, H, 3) };
   });
