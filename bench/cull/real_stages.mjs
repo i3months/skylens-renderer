@@ -106,10 +106,8 @@ export async function measureScene(hierarchy, cameras, { repeats = 3, now, point
   const staged = measureCullCost(hierarchy, cameras, { stages, repeats, now });
 
   const defaults = await loadDefaultImpls();
-  // Warm up cachedNormalCones for all cameras before measuring combined cold to exclude cone creation from timing
-  for (const cam of cameras) {
-    cachedNormalCones(hierarchy, leafNormalCones);
-  }
+  // Warm up cachedNormalCones before measuring combined cold to exclude cone creation from timing
+  cachedNormalCones(hierarchy, leafNormalCones);
   const calls = [];
   const removal = { backface: 0, occlusion: 0, frustum: 0, distance: 0 };
   const combinedStages = {
