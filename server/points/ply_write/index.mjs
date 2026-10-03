@@ -40,7 +40,9 @@ export function writePly(cloud) {
     for (let i = 0; i < n; i++) {
       const o = hb.length + i * st;
       put(p, 3, i, o, 3); put(nr, 3, i, o + 12, 3);
-      out.set(cols.c.subarray(i * 3, i * 3 + 3), o + 24);
+      out[o + 24] = cols.c[i * 3];
+      out[o + 25] = cols.c[i * 3 + 1];
+      out[o + 26] = cols.c[i * 3 + 2];
     }
   } else {
     const p = bits(cols.p); const d = bits(cols.d); const op = bits(cols.o); const s = bits(cols.s); const r = bits(cols.r);
