@@ -1,6 +1,7 @@
 // T06.8 SSIM 시험. 단순 이중 루프 기준 구현과 대조하고, 상수 영상은 해석해로 확인한다.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { ssim } from './index.mjs';
 
 function rng(seed) {
@@ -113,4 +114,43 @@ test('960x540x3 소요 시간 보고', () => {
   const ms = performance.now() - t;
   console.log(`ssim 960x540x3: ${ms.toFixed(0)} ms, 값 ${v.toFixed(6)}`);
   assert.ok(v > 0 && v < 1);
+});
+
+// ---- 공개 참조값(scikit-image) 대조: T06.8 완료 기준 "표준 시험 영상 쌍과 1e-3 이내" ----
+// skimage_pairs.json 의 영상 쌍과 expected 는 scikit-image 0.26.0 으로 만들었다.
+//   skimage.data.camera()(1/4)·astronaut()(1/8) 를 downscale_local_mean 으로 줄여 반올림하고,
+//   b = a + N(0,25) (numpy default_rng 시드 1, 2), 0..255 로 자른 뒤 반올림.
+//   expected = structural_similarity(a, b, gaussian_weights=True, sigma=1.5,
+//                                    use_sample_covariance=False, data_range=255[, channel_axis=2])
+// 아래 리터럴은 그 호출 결과다(JSON 의 expected 와 같은지도 확인한다).
+const PAIRS = JSON.parse(readFileSync(new URL('./skimage_pairs.json', import.meta.url), 'utf8')).pairs;
+const SKIMAGE_REF = { camera_quarter_noise: 0.3628325319197431, astronaut_eighth_noise: 0.7368730410228048 };
+const decode = (b64) => new Uint8Array(Buffer.from(b64, 'base64'));
+
+for (const [name, ref] of Object.entries(SKIMAGE_REF)) {
+  test(`scikit-image 참조값과 1e-3 이내: ${name}`, () => {
+    const p = PAIRS[name];
+    assert.equal(p.expected, ref, '픽스처 expected 와 리터럴이 같아야 함');
+    const a = decode(p.a), b = decode(p.b);
+    const got = ssim(a, b, p.width, p.height, p.channels);
+    assert.ok(Math.abs(got - ref) <= 1e-3, `${name}: ${got} vs ${ref}`);
+    // 변이(K2·σ·K1 을 바꾼 구현)는 같은 영상에서 참조값과 1e-3 넘게 벗어나야 한다. 리터럴만으로 잡힌다는 뜻이다.
+    for (const m of [{ k2: 0.04 }, { sigma: 2 }, { k1: 0.1 }]) {
+      const mut = naive(a, b, p.width, p.height, p.channels, m);
+      assert.ok(Math.abs(mut - ref) > 1e-3, `${name}: 변이 ${JSON.stringify(m)} 가 참조와 1e-3 이내(${mut})`);
+    }
+  });
+}
+
+test('입력 범위 밖 거부와 NaN 결과 오류', () => {
+  const a = new Uint8Array(121).fill(100);
+  const hi = new Float64Array(121).fill(100); hi[3] = 1e200;
+  const neg = new Float64Array(121).fill(100); neg[0] = -255;
+  const over = new Float64Array(121).fill(100); over[7] = 256;
+  assert.throws(() => ssim(a, hi, 11, 11, 1), /ssim:.*범위/);
+  assert.throws(() => ssim(neg, a, 11, 11, 1), /ssim:.*범위/);
+  assert.throws(() => ssim(a, over, 11, 11, 1), /ssim:.*범위/);
+  // 경계값 0 과 255 는 허용
+  const z = new Float64Array(121); const f = new Float64Array(121).fill(255);
+  assert.ok(Number.isFinite(ssim(z, f, 11, 11, 1)));
 });

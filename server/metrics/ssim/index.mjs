@@ -58,6 +58,8 @@ export function ssim(a, b, width, height, channels) {
     if (v.length !== n) throw new Error(`ssim: ${name} 길이 ${v.length} != ${n}`);
     for (let i = 0; i < n; i++) {
       if (typeof v[i] !== 'number' || !Number.isFinite(v[i])) throw new Error(`ssim: ${name}[${i}] 가 유한한 수가 아님`);
+      // data_range L=255 를 전제로 한 상수 C1·C2 이므로 0..255 밖 값은 클램프하지 않고 거부한다.
+      if (v[i] < 0 || v[i] > 255) throw new Error(`ssim: ${name}[${i}] = ${v[i]} 가 0..255 범위 밖`);
     }
   }
   const pix = width * height;
@@ -95,5 +97,7 @@ export function ssim(a, b, width, height, channels) {
     }
     total += sum / ma.length;
   }
-  return total / channels;
+  const result = total / channels;
+  if (Number.isNaN(result)) throw new Error('ssim: 결과가 NaN');
+  return result;
 }
