@@ -12,6 +12,7 @@ import { predictiveMask, predictCamera } from './predict/index.mjs';
 import { leafPriority, orderChunks } from './priority/index.mjs';
 import { cullAndSelect, cullAndSelectDefault } from './combine/index.mjs';
 import { clientFrustumCull, leafBoxesOf } from '../../client/cull/index.mjs';
+import { isDegenerateView } from './degenerate/index.mjs';
 
 const { cloud } = generate({ seed: 1, count: 3000 });
 const hier = buildHierarchy(cloud, { edge0M: 0.5, levelCount: 3, maxLeafPoints: 256 });
@@ -76,6 +77,7 @@ for (const [stage, f] of Object.entries(STAGES)) {
       }
       if (stage === 'predictCamera') { // 마스크가 아니라 카메라: NaN 이 그대로 퍼진다(던지지 않음)
         assert.ok(r && typeof r === 'object' && Array.isArray(r.R) && r.R.length === 9);
+        assert.equal(isDegenerateView(r), true);
         return;
       }
       if (stage === 'buildDepthPyramid') { // 빈 피라미드: 퇴화 표지·크기 0·모든 깊이 Infinity
@@ -86,6 +88,11 @@ for (const [stage, f] of Object.entries(STAGES)) {
         assert.ok(r.levels.length > 0 && r.levels.every((l) => l.every((v) => v === Infinity)), '빈 피라미드는 모든 깊이가 Infinity'); // 가릴 것이 없다
         return;
       }
+      if (stage === 'leafPriority' || stage === 'orderChunks') {
+        // leafPriority 반환값: Float64Array, orderChunks 반환값: Uint32Array. 둘 다 마스크가 아님.
+        return;
+      }
+      assert.equal(arr.length, n);
       assert.ok(arr.every((v) => v === 0), `${stage} 가 비어 있지 않음`);
     });
   }
