@@ -12,9 +12,12 @@
 // 퇴화 시점(카메라가 유한하지 않거나 해상도·초점거리 ≤ 0): 던지지 않고 전부 0 점수 / 빈 목록.
 // 입력 오류(계층·마스크)는 'cull:' 오류.
 
+import { isDegenerateView } from '../degenerate/index.mjs';
+
 const ERR = 'cull:';
 const NEAR_M = 0.01;
-const SCALE = 0.5; // 거친 깊이 버퍼 해상도 비율
+const SCALE = 0.5; // 거친 깊이 버퍼 해상도 비율(기본)
+const MAX_COARSE_CELLS = 4_000_000; // 거친 버퍼 칸 수 상한: 큰 해상도에서는 비율을 줄여 시간·메모리를 묶는다(F-120)
 
 function assertHierarchy(h) {
   const oc = h?.octree;
@@ -22,14 +25,6 @@ function assertHierarchy(h) {
     || !oc.leafIndex || !oc.boxMin || !oc.boxMax || oc.leafStart.length !== oc.leafCount + 1) {
     throw new Error(`${ERR} 계층(octree)이 올바르지 않음`);
   }
-}
-
-function degenerate(camera) {
-  if (!camera || typeof camera !== 'object') return true;
-  const { K, R, t, width, height } = camera;
-  if (!K || !Array.isArray(R) || R.length !== 9 || !Array.isArray(t) || t.length !== 3) return true;
-  if (![K.fx, K.fy, K.cx, K.cy, width, height, ...R, ...t].every((v) => typeof v === 'number' && Number.isFinite(v))) return true;
-  return !(K.fx > 0 && K.fy > 0 && width > 0 && height > 0);
 }
 
 /** 리프 상자 8 꼭짓점의 카메라 좌표 → 근평면 절단 → 투영 경계상자 ∩ 화면 면적. 안 보이면 0. */
@@ -64,13 +59,19 @@ function clippedArea(camera, mn, mx, out) {
   return w > 0 && h > 0 ? w * h : 0;
 }
 
-/** 단계 0 점을 거친 깊이 버퍼에 그려 리프별 이긴 칸 수를 센다. */
+function coarseScale(camera) {
+  const cells = camera.width * camera.height * SCALE * SCALE;
+  return cells <= MAX_COARSE_CELLS ? SCALE : SCALE * Math.sqrt(MAX_COARSE_CELLS / cells);
+}
+
+/** 단계 0 점을 거친 깊이 버퍼에 그려 리프별 이긴 칸 수(원 해상도 px 환산)를 센다. */
 function coarseWins(hierarchy, camera) {
   const oc = hierarchy.octree;
   const wins = new Float64Array(oc.leafCount);
   const lv = hierarchy.levels[0];
   const { K, R, t } = camera;
-  const w = Math.max(1, Math.round(camera.width * SCALE)), h = Math.max(1, Math.round(camera.height * SCALE));
+  const scale = coarseScale(camera);
+  const w = Math.max(1, Math.round(camera.width * scale)), h = Math.max(1, Math.round(camera.height * scale));
   const sx = w / camera.width, sy = h / camera.height;
   const depth = new Float32Array(w * h).fill(Infinity);
   const owner = new Int32Array(w * h).fill(-1);
@@ -95,6 +96,8 @@ function coarseWins(hierarchy, camera) {
     }
   }
   for (let q = 0; q < w * h; q++) if (owner[q] >= 0) wins[owner[q]]++;
+  const px = 1 / (sx * sy); // 칸 하나 = 원 해상도 px 수
+  for (let k = 0; k < wins.length; k++) wins[k] *= px;
   return wins;
 }
 
@@ -106,7 +109,7 @@ export function leafPriority(hierarchy, camera) {
   assertHierarchy(hierarchy);
   const oc = hierarchy.octree;
   const out = new Float64Array(oc.leafCount);
-  if (degenerate(camera)) return out;
+  if (isDegenerateView(camera)) return out;
   const node = new Int32Array(oc.leafCount).fill(-1);
   for (let i = 0; i < oc.nodeCount; i++) if (oc.leafIndex[i] >= 0) node[oc.leafIndex[i]] = i;
   const wins = coarseWins(hierarchy, camera);
@@ -115,7 +118,7 @@ export function leafPriority(hierarchy, camera) {
     const nd = node[k];
     if (nd < 0 || oc.leafStart[k + 1] === oc.leafStart[k]) continue;
     const A = clippedArea(camera, [oc.boxMin[3 * nd], oc.boxMin[3 * nd + 1], oc.boxMin[3 * nd + 2]], [oc.boxMax[3 * nd], oc.boxMax[3 * nd + 1], oc.boxMax[3 * nd + 2]], P);
-    const s = wins[k] / (SCALE * SCALE) + 0.5 * (A / (1 + A));
+    const s = wins[k] + 0.5 * (A / (1 + A));
     out[k] = Number.isFinite(s) ? s : 0;
   }
   return out;
@@ -130,7 +133,7 @@ export function orderChunks(hierarchy, camera, mask) {
   const n = hierarchy.octree.leafCount;
   if (!(mask instanceof Uint8Array) || mask.length !== n) throw new Error(`${ERR} 마스크는 길이 ${n} 의 Uint8Array 여야 함`);
   for (let i = 0; i < n; i++) if (mask[i] !== 0 && mask[i] !== 1) throw new Error(`${ERR} 마스크[${i}] = ${mask[i]} 는 0/1 이 아님`);
-  if (degenerate(camera)) return new Uint32Array(0); // 퇴화 시점: 계약(T08.10)상 아무것도 남기지 않는다
+  if (isDegenerateView(camera)) return new Uint32Array(0); // 퇴화 시점: 계약(T08.10)상 아무것도 남기지 않는다
   const score = leafPriority(hierarchy, camera);
   const ids = [];
   for (let i = 0; i < n; i++) if (mask[i]) ids.push(i);
