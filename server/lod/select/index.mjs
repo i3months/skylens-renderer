@@ -1,7 +1,7 @@
 // T07.4 화면 공간 오차 기반 단계 선택. 계약: contracts/lod/index.mjs 의 "거리 근거", Selection, LOD_API.select.
 //
 // selectLevels: 팔진 트리 리프마다
-//   1) 리프 상자가 카메라 시야 사각뿔 밖이면(8 꼭짓점이 모두 한 평면의 바깥: 앞(z>0)·좌·우·위·아래) NOT_DRAWN.
+//   1) 리프 상자가 카메라 시야 사각뿔 밖이면(8 꼭짓점이 모두 한 평면의 바깥: 앞(z>0)·좌·우·위·아래; ./view_check.mjs 공용) NOT_DRAWN.
 //      각 평면은 카메라 좌표에서 선형 반공간이므로 "꼭짓점 전부가 같은 평면 밖" 이면 상자 전체가 밖이다(보수적 판정:
 //      여러 평면에 걸쳐 밖인 모서리 상자는 그림으로 남을 수 있으나, 보여야 할 리프를 버리는 일은 없다).
 //   2) 아니면 ./screen_error.mjs 의 공용 규칙으로 단계를 고른다(budget·progressive 와 같은 규칙):
@@ -15,6 +15,7 @@
 import { NOT_DRAWN, assertCloud } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { screenErrorRule } from './screen_error.mjs';
+import { boxMayBeVisible } from './view_check.mjs';
 
 export { buildHierarchy } from '../hierarchy/index.mjs';
 
@@ -45,31 +46,6 @@ function checkCamera(camera) {
 }
 
 /**
- * 리프 상자가 시야 사각뿔 밖인지. 카메라 좌표 X_c = R·X_w + t 에서 시야는
- *   z > 0,  fx·x + cx·z ≥ 0,  fx·x + (cx − W)·z ≤ 0,  fy·y + cy·z ≥ 0,  fy·y + (cy − H)·z ≤ 0
- * 의 교집합이다(u = fx·x/z + cx ∈ [0, W], v ∈ [0, H]). 8 꼭짓점이 모두 한 반공간 밖이면 밖.
- */
-function outsideFrustum(camera, mn, mx) {
-  const { R, t, K, width: W, height: H } = camera;
-  const { fx, fy, cx, cy } = K;
-  let allBehind = true, allLeft = true, allRight = true, allTop = true, allBottom = true;
-  for (let c = 0; c < 8; c++) {
-    const X = c & 1 ? mx[0] : mn[0];
-    const Y = c & 2 ? mx[1] : mn[1];
-    const Z = c & 4 ? mx[2] : mn[2];
-    const x = R[0] * X + R[1] * Y + R[2] * Z + t[0];
-    const y = R[3] * X + R[4] * Y + R[5] * Z + t[1];
-    const z = R[6] * X + R[7] * Y + R[8] * Z + t[2];
-    if (z > 0) allBehind = false;
-    if (fx * x + cx * z >= 0) allLeft = false;
-    if (fx * x + (cx - W) * z <= 0) allRight = false;
-    if (fy * y + cy * z >= 0) allTop = false;
-    if (fy * y + (cy - H) * z <= 0) allBottom = false;
-  }
-  return allBehind || allLeft || allRight || allTop || allBottom;
-}
-
-/**
  * 리프마다 단계를 고른다.
  * @param {import('../../../contracts/lod/index.mjs').Hierarchy} hierarchy
  * @param {import('../../../contracts/raster/index.mjs').Camera} camera
@@ -90,7 +66,7 @@ export function selectLevels(hierarchy, camera, opts) {
     const k = octree.leafIndex[node];
     if (k < 0) continue;
     for (let a = 0; a < 3; a++) { mn[a] = octree.boxMin[3 * node + a]; mx[a] = octree.boxMax[3 * node + a]; }
-    if (outsideFrustum(camera, mn, mx)) continue;
+    if (!boxMayBeVisible(camera, mn, mx)) continue;
     const l = rule.leaf(mn, mx).level;
     leafLevel[k] = l;
     pointCount += levels[l].leafStart[k + 1] - levels[l].leafStart[k];
