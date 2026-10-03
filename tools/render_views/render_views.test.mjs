@@ -55,6 +55,12 @@ test('viewpointToCamera: aerial_overview 정답 검사', async (t) => {
   const projAbove = project(camera, pointAbove);
   assert.ok(projAbove.d > 0, '위쪽 점이 카메라 앞에 있어야 함');
   assert.ok(projAbove.v < projection.v, `위쪽 점이 더 작은 v를 가져야 함: ${projAbove.v} < ${projection.v}`);
+
+  // 검사 5: 좌우가 뒤집히지 않는지 (target의 우측 점이 더 큰 u를 가져야 함)
+  const pointRight = [10, 5, 0]; // target의 우측(x=10 > x=0)
+  const projRight = project(camera, pointRight);
+  assert.ok(projRight.d > 0, '우측 점이 카메라 앞에 있어야 함');
+  assert.ok(projRight.u > projection.u, `우측 점이 더 큰 u를 가져야 함: ${projRight.u} > ${projection.u}`);
 });
 
 test('renderViews: flat_boxes 시드 1 렌더링 (8장 생성)', async (t) => {
@@ -133,4 +139,41 @@ test('renderViews: 결정적 렌더링 (같은 입력 재실행 시 바이트 �
       `이미지 ${i} PNG 해시가 같아야 함: ${hashes1[i]} !== ${hashes2[i]}`
     );
   }
+});
+
+test('renderViews: 빈 viewpoints 배열 거부', async (t) => {
+  const flatBoxesModule = await import('../../fixtures/scenes/flat_boxes/index.mjs');
+  const sceneResult = flatBoxesModule.generate({ seed: 1, scene: 'flat_boxes' });
+  const cloud = sceneResult.cloud;
+
+  assert.throws(
+    () => renderViews(cloud, [], { pointSizeM: 0.05 }),
+    /render_views:/,
+    '빈 viewpoints 배열은 거부'
+  );
+});
+
+test('renderViews: null cloud 거부', async (t) => {
+  const viewpointsJson = JSON.parse(
+    await readFile(join(here, '../../fixtures/viewpoints/synthetic.json'), 'utf8')
+  );
+  const viewpoints = viewpointsJson.viewpoints;
+
+  assert.throws(
+    () => renderViews(null, viewpoints),
+    /render_views:/,
+    'null cloud는 거부'
+  );
+});
+
+test('renderViews: viewpoints 내 null 시점 거부', async (t) => {
+  const flatBoxesModule = await import('../../fixtures/scenes/flat_boxes/index.mjs');
+  const sceneResult = flatBoxesModule.generate({ seed: 1, scene: 'flat_boxes' });
+  const cloud = sceneResult.cloud;
+
+  assert.throws(
+    () => renderViews(cloud, [null]),
+    /render_views:|extrinsics:/,
+    'null 시점은 거부'
+  );
 });

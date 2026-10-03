@@ -25,6 +25,16 @@ test('raster_contract_empty_result', () => {
   assertRenderResult(r);
   r.depth[0] = 0; r.index[0] = -1; // 빈 칸인데 색이 있음
   assert.throws(() => assertRenderResult(r), /raster:/);
+
+  // 깊이 <= 0 인데 픽셀이 차있는 경우 거부
+  const r2 = emptyResult(4, 3);
+  r2.index[0] = 5;
+  r2.color[0] = 100;
+  r2.depth[0] = 0; // 음수도 거부
+  assert.throws(() => assertRenderResult(r2), /raster:/, '깊이 0 음성 시험');
+
+  r2.depth[0] = -5;
+  assert.throws(() => assertRenderResult(r2), /raster:/, '음수 깊이 음성 시험');
 });
 test('raster_contract_api_modules_listed', () => {
   assert.equal(Object.keys(RASTER_API).length, 10);

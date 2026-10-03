@@ -59,11 +59,6 @@ const SIZE = 0.5;
 const EXPECTED_EMPTY = 75097; // 320·240 − 도달 가능 픽셀 1703
 const holes = generate({ seed: 1, count: 5000 });
 
-test('holes: 점이 화면에 보인다(합집합이 비어 있지 않고 전체보다 작음)', () => {
-  const s = reachablePixelSet(camH, holes.cloud, SIZE);
-  assert.ok(s.size > 0 && s.size < 320 * 240, `size=${s.size}`);
-});
-
 test('holes: 빈 픽셀 수 정답(리터럴)', () => {
   const s = reachablePixelSet(camH, holes.cloud, SIZE);
   assert.equal(320 * 240 - s.size, EXPECTED_EMPTY);

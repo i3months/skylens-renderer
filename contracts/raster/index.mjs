@@ -37,7 +37,7 @@ export const EMPTY_INDEX = -1;
 
 /** 함수 서명(구현은 server/raster_ref/*, server/metrics/*). 이름과 모듈 위치는 이 표가 기준이다. */
 export const RASTER_API = Object.freeze({
-  project: { module: 'server/raster_ref/project/index.mjs', fn: 'project(camera, xw) -> {u, v, d}   d<=0 이면 d 만 믿고 u,v 는 NaN' },
+  project: { module: 'server/raster_ref/project/index.mjs', fn: 'project(camera, xw) -> {u, v, d}   d<=0 또는 d 가 극히 작으면 u,v 는 NaN' },
   unproject: { module: 'server/raster_ref/unproject/index.mjs', fn: 'unproject(camera, u, v, d) -> [xw, yw, zw]' },
   intrinsics: { module: 'server/raster_ref/intrinsics/index.mjs', fn: 'scaleIntrinsics(K, fromW, fromH, toW, toH) -> Intrinsics' },
   splat: { module: 'server/raster_ref/splat/index.mjs', fn: 'splatRadiusPx(camera, depth, sizeM) -> number  (= fx·sizeM/(2·d))' },

@@ -179,8 +179,8 @@ test('result_hash_chunk_boundary_matches_packRecords', () => {
   }
 });
 
-// F-090: format 2 의 유한성·사원수 길이, format 1 색 길이 거부 시험.
-test('assert_result_rejects_bad_gauss56_and_colors', () => {
+// F-095: format 2(GAUSS56) 의 유한성·사원수 단위 길이 거부 시험.
+test('format 2 유한성과 사원수 검증', () => {
   const ok = () => makeResult('terrain', 3, FORMAT_GAUSS56, cloud(4), truth);
   assertSceneResult(ok());
   for (const k of ['fdc', 'opacity', 'scales', 'rotations']) {
@@ -190,9 +190,9 @@ test('assert_result_rejects_bad_gauss56_and_colors', () => {
     }
   }
   const z = ok(); z.cloud.rotations.fill(0);
-  assert.throws(() => assertSceneResult(z), /rotations/);
+  assert.throws(() => assertSceneResult(z), /rotations/, '영 사원수 거부');
   const l = ok(); l.cloud.rotations[4] = 1.01;
-  assert.throws(() => assertSceneResult(l), /rotations/);
+  assert.throws(() => assertSceneResult(l), /rotations/, '단위 길이 아닌 사원수 거부');
   const s = ok(); s.cloud.rotations[0] = 1.0005; assertSceneResult(s);
 });
 test('assert_result_rejects_nan_opacity_and_zero_quaternions_end_to_end', () => {
