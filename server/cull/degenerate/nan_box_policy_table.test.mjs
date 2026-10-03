@@ -109,3 +109,13 @@ test('distanceCull × NaN 축(min.x) + 유한 축으로는 가까운 리프(반�
   });
   assert.equal(distanceCull(h, cam(), { maxDistanceM: 100 })[k], 1);
 });
+
+test('distanceCull × NaN 축(min.x=-Inf의 효과) + 유한 축(포함): 간격 1e6', () => {
+  const { k, h } = distanceWith((a, b, n) => {
+    a[3 * n] = NaN; b[3 * n] = -1e6;
+    a[3 * n + 1] = -1; b[3 * n + 1] = 1;
+    a[3 * n + 2] = -1; b[3 * n + 2] = 1;
+  });
+  assert.equal(distanceCull(h, cam(), { maxDistanceM: 1e6 + 1 })[k], 1);
+  assert.equal(distanceCull(h, cam(), { maxDistanceM: 1e6 - 1 })[k], 0);
+});
