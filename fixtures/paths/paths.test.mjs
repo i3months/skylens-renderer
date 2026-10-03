@@ -54,10 +54,40 @@ test('자유: 프레임 수·t 간격·속도 ≤ 15 m/s·각속도 ≤ 90°/s',
   }
 });
 
-test('자유: bounds 안에 머문다', () => {
+test('자유: 등속 10 m/s(누적 199.7 m ±5%, 프레임 속도 9~11 m/s)·yaw 범위 > 10°', () => {
+  // 599 구간 / 30 fps = 19.9667 s × 10 m/s = 199.67 m. 시드 3 은 기본 bounds 자르기에 걸려 일부 프레임이 느려지므로 제외.
+  for (const seed of [1, 2, 42, 777]) {
+    const p = freePath({ seed });
+    let len = 0, yMin = Infinity, yMax = -Infinity, prevYaw = null, yaw = 0;
+    for (let i = 0; i < p.frames.length; i++) {
+      if (i > 0) {
+        const v = norm(sub(p.frames[i].eye, p.frames[i - 1].eye));
+        len += v;
+        assert.ok(v * 30 >= 9 && v * 30 <= 11, `seed ${seed} 프레임 ${i} 속도 ${v * 30}`);
+      }
+      const d = sub(p.frames[i].target, p.frames[i].eye);
+      const y = Math.atan2(d[0], -d[2]); // 시선 yaw(라디안)
+      if (prevYaw === null) yaw = y;
+      else { let dy = y - prevYaw; while (dy > Math.PI) dy -= 2 * Math.PI; while (dy < -Math.PI) dy += 2 * Math.PI; yaw += dy; }
+      prevYaw = y;
+      yMin = Math.min(yMin, yaw); yMax = Math.max(yMax, yaw);
+    }
+    assert.ok(Math.abs(len - 199.7) <= 199.7 * 0.05, `seed ${seed} 누적 이동 ${len}`);
+    assert.ok(((yMax - yMin) * 180) / Math.PI > 10, `seed ${seed} yaw 범위 ${((yMax - yMin) * 180) / Math.PI}°`);
+  }
+});
+
+test('자유: bounds 안에 머문다(오버슈트 시드 276: 자르지 않으면 최대 9.18 m 벗어남)', () => {
   const bounds = { min: [-50, 10, -50], max: [50, 60, 50] };
-  const p = freePath({ seed: 5, bounds });
-  for (const f of p.frames) f.eye.forEach((v, c) => assert.ok(v >= bounds.min[c] && v <= bounds.max[c]));
+  const p = freePath({ seed: 276, bounds });
+  let touched = 0;
+  for (const f of p.frames) {
+    f.eye.forEach((v, c) => {
+      assert.ok(v >= bounds.min[c] && v <= bounds.max[c], `축 ${c} 값 ${v}`);
+      if (v === bounds.min[c] || v === bounds.max[c]) touched++;
+    });
+  }
+  assert.ok(touched > 0, '자르기가 실제로 작동하는 시드여야 함');
 });
 
 test('결정성: 같은 시드 JSON 동일, 다른 시드 다름', () => {
@@ -68,16 +98,26 @@ test('결정성: 같은 시드 JSON 동일, 다른 시드 다름', () => {
 });
 
 // ---- F-085 ⑥·F-088 ⑤·F-086 ④ ----
-test('드론: 프레임 간 이동 ≤ 한 바퀴 둘레/frames + 지터 여유(7바퀴 변형 차단)', () => {
-  // 반경 60·300프레임: 한 프레임 호 = 2π·60/300 ≈ 1.257 m. 지터 변화 포함 상한 3 m 로 고정.
+test('드론: 한 바퀴(회전 합 +2π±0.05)·프레임 이동 0.7~1.8 m·지터 존재(정지·2바퀴·0.5바퀴·역방향·지터 제거 변이 차단)', () => {
+  // 반경 60·300프레임: 한 프레임 호 = 2π·60/300 ≈ 1.257 m. 지터(축당 ≤1.5 m, 저주파) 변화가 프레임당 ≈0.5 m 이하이므로 0.7~1.8 m.
+  // 시간 속도로는 0.7*30 = 21 ~ 1.8*30 = 54 m/s 이다(드론 시나리오 값이며 자유 경로 15 m/s 상한과 무관).
   for (const seed of [1, 2, 3, 99]) {
     const p = dronePath({ seed });
-    for (let i = 1; i < p.frames.length; i++) {
-      const d = norm(sub(p.frames[i].eye, p.frames[i - 1].eye));
-      assert.ok(d <= 3, `seed ${seed} 프레임 ${i} 이동 ${d} m`);
+    const n = p.frames.length;
+    let rot = 0;
+    const r = p.frames.map((f) => Math.hypot(f.eye[0], f.eye[2]));
+    for (let i = 0; i < n; i++) {
+      const a = p.frames[i].eye, b = p.frames[(i + 1) % n].eye; // 마지막→처음 닫힘 구간 포함
+      let d = Math.atan2(b[2], b[0]) - Math.atan2(a[2], a[0]);
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      rot += d;
+      if (i === n - 1) continue; // 닫힘 구간은 지터가 주기적이지 않아 이음매 점프가 있다(회전 합에만 쓴다)
+      const m = norm(sub(b, a));
+      assert.ok(m >= 0.7 && m <= 1.8, `seed ${seed} 프레임 ${i} 이동 ${m} m`);
     }
-    // 시간 속도(30 fps)도 15 m/s 이하
-    assert.ok(norm(sub(p.frames[1].eye, p.frames[0].eye)) * 30 <= 90);
+    assert.ok(Math.abs(rot - 2 * Math.PI) <= 0.05, `seed ${seed} 회전 합 ${rot}`);
+    assert.ok(Math.max(...r) - Math.min(...r) > 1.0, `seed ${seed} 반경 지터 없음`);
   }
 });
 
@@ -117,6 +157,18 @@ test('입력 거부: frames·fps·center·bounds·seed 검증(명시적 Error)',
   bad(() => freePath({ seed: 1, bounds: mk([0, 0, NaN], [1, 1, 1]) }));
   bad(() => freePath({ seed: 1, bounds: mk([0, 0], [1, 1, 1]) }));
   bad(() => freePath({ seed: 1, bounds: null }));
+  // F-090: fps 하한·frames 상한·극단 bounds·결과 유한 검사는 명시적 paths: Error 여야 한다(TypeError 불가)
+  for (const g of [dronePath, freePath]) {
+    assert.throws(() => g({ seed: 1, fps: 1e-320 }), (e) => e.constructor === Error && /paths: fps/.test(e.message));
+    assert.throws(() => g({ seed: 1, fps: 5e-4 }), /paths: fps/);
+    assert.throws(() => g({ seed: 1, frames: 1e6 + 1 }), (e) => e.constructor === Error && /paths: frames/.test(e.message));
+  }
+  assert.throws(() => freePath({ seed: 1, bounds: mk([-1e308, 0, 0], [1e308, 1, 1]) }), (e) => e.constructor === Error && /paths:/.test(e.message));
+  assert.throws(() => freePath({ seed: 1, frames: 3, bounds: mk([-1e307, 0, 0], [1e307, 1, 1]) }), (e) => e.constructor === Error && /paths:/.test(e.message));
+  assert.throws(() => dronePath({ seed: 1, frames: 3, radius: 1e308 }), (e) => e.constructor === Error && /paths: 결과/.test(e.message));
+  assert.throws(() => dronePath({ seed: 1, frames: 3, center: [1e308, 0, 0], radius: 1e308 }), (e) => e.constructor === Error && /paths:/.test(e.message));
+  // F-091: opts 가 null 이어도 기본값으로 생성(TypeError 아님)
+  for (const g of [dronePath, freePath]) assert.ok(g(null).frames.length > 0);
   // fps 오류가 t=Infinity 프레임으로 새지 않는다
   assert.throws(() => dronePath({ seed: 1, fps: 0 }), /fps/);
 });
