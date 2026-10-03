@@ -218,6 +218,28 @@ test('머리 누적 복사량은 입력 길이에 선형이고 큰 청크의 본
   assert.deepEqual(concatCols(await collect(slices(s20.bytes, 1))).positions, s20.exp.positions);
 });
 
+test('호출자가 같은 Buffer 를 덮어쓰며 청크를 넘겨도 머리와 값이 같다(버퍼 재사용)', async () => {
+  // 머리를 4 KiB 블록보다 길게(주석 줄) 만들어 작은 청크 경로와 큰 청크 경로를 모두 지난다
+  const { bytes, exp } = synth(FORMAT_POINT27, 50);
+  const h = header(FORMAT_POINT27, 50);
+  const text = h.toString('latin1').replace('end_header\n', `comment ${'a'.repeat(10000)}\nend_header\n`);
+  const full = Buffer.concat([Buffer.from(text, 'latin1'), bytes.subarray(h.length)]);
+  for (const size of [1, 7, 100, 4095, 4096, 5000]) {
+    const scratch = Buffer.alloc(size);
+    async function* reuse() {
+      for (let o = 0; o < full.length; o += size) {
+        const n = Math.min(size, full.length - o);
+        full.copy(scratch, 0, o, o + n);
+        yield scratch.subarray(0, n);
+        scratch.fill(0xee); // 소비된 뒤 덮어쓴다: 참조만 보관했다면 머리가 깨진다
+      }
+    }
+    const parts = await collect(reuse());
+    assert.deepEqual(concatCols(parts).positions, exp.positions, `size ${size}`);
+    assert.deepEqual(concatCols(parts).colors, exp.colors, `size ${size}`);
+  }
+});
+
 // 청크마다 GC 후 보유량(arrayBuffers + heapUsed 의 기준선 대비 증가)의 최댓값을 잰다. 한계는 SPEC 의 32 MB 그대로다.
 for (const [format, ST] of [[FORMAT_POINT27, 27], [FORMAT_GAUSS56, 56]]) {
   test(`250만 점 ${ST} B 가상 스트림: 청크마다 GC 후 보유량 증가 ≤ 32 MB`, async () => {

@@ -52,6 +52,22 @@ test('rejects a vertex layout lacking x, y or z', () => {
   assert.throws(() => parsePlyHeader(hdr(10, 'property float y\nproperty float z\n')), /property x missing/);
   assert.throws(() => parsePlyHeader(hdr(10, 'property float x\nproperty float z\nproperty uchar r\n')), /property y missing/);
 });
+test('rejects a vertex count beyond the safe integer range', () => {
+  assert.throws(() => parsePlyHeader(hdr('9007199254740992')), /out of range/);
+  assert.throws(() => parsePlyHeader(hdr('99999999999999999999')), /out of range/);
+  assert.equal(parsePlyHeader(hdr('9007199254740991')).vertexCount, 9007199254740991);
+});
+test('rejects a duplicate element vertex', () => {
+  assert.throws(() => parsePlyHeader(raw(['ply', FMT, 'element vertex 1', ...XYZ, 'element vertex 2', 'end_header'])), /duplicate element vertex/);
+  assert.throws(() => parsePlyHeader(raw(['ply', FMT, 'element vertex 1', 'element vertex 1', ...XYZ, 'end_header'])), /duplicate element vertex/);
+});
+test('rejects duplicate property names in the vertex element', () => {
+  assert.throws(() => parsePlyHeader(hdr(1, 'property float x\nproperty float y\nproperty float z\nproperty float x\n')), /duplicate property x/);
+  assert.throws(() => parsePlyHeader(hdr(1, 'property float x\nproperty float y\nproperty float z\nproperty uchar y\n')), /duplicate property y/);
+  // 다른 element 의 같은 이름은 상관없다
+  const ok = parsePlyHeader(raw(['ply', FMT, 'element vertex 1', ...XYZ, 'element face 1', 'property float x', 'end_header']));
+  assert.equal(ok.stride, 12);
+});
 test('accepts extra properties besides x/y/z', () => {
   const h = parsePlyHeader(hdr(1, 'property float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty double w\n'));
   assert.equal(h.stride, 12 + 1 + 8);
