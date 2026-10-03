@@ -312,55 +312,66 @@ test('고속·시선에 수직 이동: 해석적 평행이동 시점(눈·목표
   assert.ok(allowed.size < oc.leafCount);
 });
 
-test('잘게/성기게 나눈 직선 이동: 마스크는 해석적 시점 합집합을 덮고, 기하 상한(|v|·구간 반폭) 안에 머문다(과잉 부풀림 없음)', () => {
-  const horizonS = 4;
-  // 느린 이동(5 mm/s: 4 s 동안 2 cm)은 고정 가산 여유(예: +0.2 m, +0.02 m)를, 빠른 이동은 배율 부풀림을 드러낸다.
-  // 각 사례의 네 번째 값 = 그 사례가 잡아야 하는 가산 변이(m 에 더하는 고정 여유, m). 값이 있으면 시험 안에서 '이 값에서만 변이와 원본이 다르다'를 단언한다.
-  // (이전 사례 2·3 [[-60,40,0]->[0,0,0] 과 [20,70,-50]->[-10,0,10]] 은 +0.2·+0.02 어느 변이도 놓쳤다: 리프 경계가 0.001~0.02 m 안에 없어 마스크가 같았다.
-  //  그래서 탐색으로 +0.02 m 에서도 마스크가 달라지는 시점으로 바꿨다. +0.02 를 잡으면 +0.2 도 잡는다. 사례 4·5 는 +0.2 만 잡는다.)
-  for (const [eye, tgt, v, addMut] of [[[-60, 40, 0], [0, 0, 0], [6, 0, 8]], [[36.4, 46.8, 31.2], [14.7, 5.4, -29.1], [0.003, 0, 0.004], 0.02], [[-28.3, 70.1, 44.1], [15.8, 14.1, -24.1], [0.003, 0, 0.004], 0.02],
-    [[-60, 30, -60], [-60, 45, -10], [0.003, 0, 0.004], 0.2], [[-30, 30, 30], [20, 40, 30], [0.003, 0, 0.004], 0.2]]) { // 사례 4·5: 0.2 m 부풀림이 리프 경계에 걸리는 시점(탐색으로 고름)
-  const camAt = (tau) => lookAt([eye[0] + v[0] * tau, eye[1] + v[1] * tau, eye[2] + v[2] * tau], [tgt[0] + v[0] * tau, tgt[1] + v[1] * tau, tgt[2] + v[2] * tau]);
-  // steps=80: 구간 반폭 0.025 s -> 부풀림 0.25 m. steps=4: 반폭 0.5 s -> 5 m(작은 계수 오차도 리프 경계에 걸리도록 크게).
-  for (const steps of [80, 4]) {
-    const hh = horizonS / steps / 2;
-    const m = predictiveMask(h, { camera: camAt(0), velocityMps: v }, { horizonS, steps, pointSizeM: 0 });
-    const exact = sampleUnion(camAt, horizonS, steps); // 하한: 여유 0(상한의 1e-3 여유를 쓰지 않는다)
-    for (const k of exact) assert.equal(m[k], 1, `steps=${steps}: 정확한 합집합의 리프 ${k} 가 빠짐`);
-    // 구현 식과 독립인 기하 상한: 이동만 있으므로 한 표본이 덮는 구간 반폭 동안 카메라는 |v|·hh 이상 움직일 수 없다.
-    // 표본을 4배 촘촘히 잡고 상자를 정확히 그 거리(+1e-3 m 수치 여유)만 부풀려 보이는 리프의 합집합이 상한이다(계수·덧셈 여유 없음).
-    const M = Math.hypot(...v) * hh + 1e-3;
-    const bound = new Set();
-    for (let i = 0; i <= steps * 4; i++) {
-      const cam = camAt((horizonS * i) / (steps * 4));
-      for (let k = 0; k < oc.leafCount; k++) {
-        const [a, b] = boxOf(k);
-        if (boxMayBeVisibleSplat(cam, a.map((x) => x - M), b.map((x) => x + M), 0)) bound.add(k);
-      }
-    }
-    for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(bound.has(k), `steps=${steps}: 기하 상한 밖 리프 ${k}`);
-    assert.ok(sum(m) >= exact.size);
-    if (addMut !== undefined) {
-      // 전제(판별력, 구현 상수 비의존): 기하 하한 식(M=|v|·hh, 배율·가산 없음)의 마스크는 predictiveMask 가 덮고,
-      // 같은 식에 고정 여유 addMut 를 더한 변이 식의 마스크는 기하 상한 밖 리프를 만든다. 즉 상한이 addMut 를 잡을 만큼 조이다.
-      const maskWith = (add) => {
-        const out = new Set();
-        for (let i = 0; i <= steps; i++) {
-          const cam = camAt((horizonS * i) / steps);
-          for (let k = 0; k < oc.leafCount; k++) {
-            const [a, b] = boxOf(k);
-            const mm = Math.hypot(...v) * hh + add;
-            if (boxMayBeVisibleSplat(cam, a.map((x) => x - mm), b.map((x) => x + mm), 0)) out.add(k);
-          }
+// 잘게/성기게 나눈 직선 이동(F-155 ④): 장면 시드에 기대지 않도록 상자를 해석적으로 놓는다(predict_analytic.test.mjs 와 같은 방식).
+// 좁은 화각 카메라 KN(fx = fy = 4000, 640×480)라 좌·우 반화각의 tan 이 TN = 320/4000 = 0.08 이다. R = I(+z 를 봄), 중심 (x_c, 0, 0).
+// 상자 [a,b]×[−q,q]×[z1,z2] (z2 > 0, y 가 0 을 감쌈) 의 판정은 오른쪽 a − x_c − TN·z2 <= 0, 왼쪽 b − x_c + TN·z2 >= 0 뿐이고
+// (위·아래·앞은 늘 참), 상자를 모든 축으로 M 만큼 부풀리면 오른쪽 좌변이 정확히 (1 + TN)·M 만큼 준다. 즉 오른쪽 틈 G 인 상자는 M >= G/(1+TN) 일 때만 보인다.
+const KN = { fx: 4000, fy: 4000, cx: 320, cy: 240 };
+const TN = KN.cx / KN.fx; // 0.08
+const KAPPA_N = 1 + TN;
+// 시각 τ 의 카메라(회전 없음, 중심 = v·τ, v 는 +x 방향). 구현과 독립으로 t = −C 를 직접 만든다.
+const slideCam = (vx) => (tau) => ({ width: 640, height: 480, K: KN, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [-vx * tau, 0, 0] });
+const ADD_GAP = 0.01; // 끝 시각 경계 상자의 틈 = KAPPA_N·(|v|·hh + ADD_GAP). 상한 수치 여유 1e-3 < ADD_GAP < 0.02 라 정확한 구현·상한은 못 닿고 +0.02 m 가산 변이는 닿는다.
+
+test('잘게/성기게 나눈 직선 이동(해석 배치): 마스크는 촘촘한 시점 합집합을 덮고, 기하 상한(|v|·구간 반폭) 안에 머문다(+0.02 m 가산 부풀림도 잡음)', () => {
+  const horizonS = 4, q = 1;
+  // 느린 이동(5 mm/s: 4 s 동안 2 cm)은 고정 가산 여유(+0.02 m)를, 빠른 이동(10 m/s)은 가산·배율(×1.2) 부풀림을 모두 드러낸다.
+  for (const vx of [10, 0.005]) {
+    const camAt = slideCam(vx);
+    // steps=80: 구간 반폭 0.025 s, steps=4: 반폭 0.5 s.
+    for (const steps of [80, 4]) {
+      const dt = horizonS / steps, hh = dt / 2, vdt = vx * dt, U = vx * hh;
+      // 상자 A(하한 판별): x 폭 0(x = vdt/2), 깊이 z ∈ [z2/2, z2], z2 = 0.1·vdt/TN 이라 보이는 x_c 구간이 [0.4·vdt, 0.6·vdt] 이다.
+      //   촘촘한 시각(8·steps 등분) τ = dt/2 에서는 보이고, 표본 x_c = 0, vdt 에서는 틈 0.4·vdt 로 안 보인다.
+      const zA = (0.1 * vdt) / TN, xA = vdt / 2;
+      // 상자 B(상한 판별): 마지막 시각 x_c = vx·horizonS 의 오른쪽 경계 밖 틈 G = KAPPA_N·(U + ADD_GAP). 앞선 시각은 x_c 가 작아 틈이 더 크다.
+      const G = KAPPA_N * (U + ADD_GAP), aB = vx * horizonS + G + TN * 100.5;
+      const boxes = [
+        [[xA, -q, zA / 2], [xA, q, zA]],
+        [[aB, -q, 99.5], [aB + 0.5, q, 100.5]],
+        [[-1, -q, 99.5], [1, q, 100.5]], // 시작 시각에 보이는 기준 리프
+      ];
+      const hier = { octree: { leafCount: 3, leafIndex: Int32Array.from([0, 1, 2]), boxMin: Float64Array.from(boxes.flatMap(([a]) => a)), boxMax: Float64Array.from(boxes.flatMap(([, b]) => b)) } };
+      const unionAt = (n, M) => {
+        const s = new Set();
+        for (let i = 0; i <= n; i++) {
+          const cam = camAt((horizonS * i) / n);
+          boxes.forEach(([a, b], k) => { if (boxMayBeVisibleSplat(cam, a.map((x) => x - M), b.map((x) => x + M), 0)) s.add(k); });
         }
-        return out;
+        return s;
       };
-      const base = maskWith(0), mut = maskWith(addMut);
-      for (const k of base) assert.equal(m[k], 1, `전제: 기하 하한 식 리프 ${k} (steps=${steps})`);
-      const outside = [...mut].filter((k) => !bound.has(k));
-      assert.ok(outside.length >= 1, `전제: +${addMut} m 변이는 상한 밖 리프를 만든다 (steps=${steps}, 변이 ${mut.size} / 하한 ${base.size}, 상한 밖 ${outside.length})`);
+      const m = predictiveMask(hier, { camera: camAt(0), velocityMps: [vx, 0, 0] }, { horizonS, steps, pointSizeM: 0 });
+      // 하한: 촘촘한 시각에서 부풀림 없이(여유 0) 보이는 리프는 모두 마스크에 있다.
+      const exact = unionAt(steps * 8, 0);
+      for (const k of exact) assert.equal(m[k], 1, `v=${vx}, steps=${steps}: 촘촘한 시각의 리프 ${k} 가 빠짐`);
+      // 구현 식과 독립인 기하 상한: 이동만 있으므로 구간 반폭 동안 카메라는 |v|·hh 이상 움직일 수 없다.
+      // 표본을 4배 촘촘히 잡고 상자를 정확히 그 거리(+1e-3 m 수치 여유)만 부풀려 보이는 리프의 합집합이 상한이다(계수·덧셈 여유 없음).
+      const bound = unionAt(steps * 4, U + 1e-3);
+      for (let k = 0; k < boxes.length; k++) if (m[k]) assert.ok(bound.has(k), `v=${vx}, steps=${steps}: 기하 상한 밖 리프 ${k}`);
+      // 전제(해석, 시드 무관): 상자 A 는 표본 사이에만 보이고, 정확한 반폭 hh 부풀림으로는 덮이며 반폭 h/2 로는 안 덮인다.
+      assert.ok(exact.has(0) && !unionAt(steps, 0).has(0), `전제: 상자 A 는 표본 사이에만 보임 (v=${vx}, steps=${steps})`);
+      assert.ok(KAPPA_N * IMPL_REL * U >= 0.4 * vdt && KAPPA_N * (IMPL_REL * U / 2 + IMPL_ABS) < 0.4 * vdt, '전제: 상자 A 의 식으로 본 경계 거리');
+      assert.ok(unionAt(steps, IMPL_REL * U + IMPL_ABS).has(0) && !unionAt(steps, IMPL_REL * U / 2 + IMPL_ABS).has(0), `전제: 상자 A 판정 (v=${vx}, steps=${steps})`);
+      // 전제(해석, 시드 무관): 상자 B 는 하한·기하 상한 밖이고, 정확한 구현 부풀림은 못 닿고, +0.02 m 가산 변이는 마지막 표본에서 닿는다.
+      assert.ok(KAPPA_N * (U + 1e-3) < G && KAPPA_N * (IMPL_REL * U + IMPL_ABS) < G && KAPPA_N * (IMPL_REL * U + IMPL_ABS + 0.02) >= G, `전제: 상자 B 의 식으로 본 경계 거리 (v=${vx}, steps=${steps})`);
+      assert.ok(!exact.has(1) && !bound.has(1), `전제: 상자 B 는 상한 밖 (v=${vx}, steps=${steps})`);
+      assert.ok(!unionAt(steps, IMPL_REL * U + IMPL_ABS).has(1), `전제: 정확한 부풀림은 상자 B 를 넣지 않음 (v=${vx}, steps=${steps})`);
+      assert.ok(unionAt(steps, IMPL_REL * U + IMPL_ABS + 0.02).has(1), `전제: +0.02 m 가산 부풀림은 상자 B 를 넣음 (v=${vx}, steps=${steps})`);
+      // 빠른 이동은 배율 부풀림(×1.2)도 상자 B 로 잡는다: 0.2·U >= 0.05 m > ADD_GAP.
+      if (vx >= 1) assert.ok(unionAt(steps, 1.2 * (IMPL_REL * U + IMPL_ABS)).has(1), `전제: ×1.2 부풀림은 상자 B 를 넣음 (steps=${steps})`);
+      assert.ok(exact.has(2));
+      assert.ok(sum(m) >= exact.size);
     }
-  }
   }
 });
 
