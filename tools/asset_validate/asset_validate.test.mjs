@@ -75,6 +75,28 @@ test('손상: bbox 폭이 65535 단계 초과(u 폭 101 m, quantExp 10)', () => 
   assert.deepEqual(codes(corrupt('point27.skla', (b, dv) => dv.setFloat64(64 + 16, 102, true))), ['range']);
 });
 
+// 헤더 필드 손상: 체크섬을 다시 계산해 해당 위반 하나만 남긴다. 위반 목록 전체를 비교한다.
+test('손상: tileX 2(bbox 가 타일 밖)', () => {
+  const v = validateAsset(corrupt('point27.skla', (b, dv) => dv.setInt32(20, 2, true)));
+  assert.deepEqual(v.map((x) => x.code), ['tile']);
+  assert.match(v[0].message, /axis 0/);
+});
+test('손상: codec 1', () => {
+  assert.deepEqual(codes(corrupt('point27.skla', (b) => { b[11] = 1; })), ['codec']);
+});
+test('손상: anchor 위도 NaN', () => {
+  assert.deepEqual(codes(corrupt('point27.skla', (b, dv) => dv.setFloat64(88, NaN, true))), ['field']);
+});
+test('손상: point_count 0', () => {
+  assert.deepEqual(codes(corrupt('point27.skla', (b, dv) => dv.setUint32(16, 0, true))), ['field']);
+});
+test('손상: tile_size 63', () => {
+  assert.deepEqual(codes(corrupt('point27.skla', (b, dv) => dv.setUint16(28, 63, true))), ['field']);
+});
+test('손상: lod 8', () => {
+  assert.deepEqual(codes(corrupt('point27.skla', (b) => { b[30] = 8; })), ['field']);
+});
+
 test('독립 위반은 모두 보고한다(snorm -128 + 체크섬 미갱신)', () => {
   const b = corrupt('point27.skla', (x) => { x[128 + 288] = 0x80; }, false);
   assert.deepEqual(codes(b).sort(), ['checksum', 'range']);
@@ -100,7 +122,10 @@ test('빈·1바이트·무작위 입력에서 던지지 않고 위반을 낸다'
     if (i % 3 === 0 && len >= 12) b.set([0x53, 0x4b, 0x4c, 0x41, 1, 0, 0, 0, 128, 0, 1 + (i % 2)]); // 매직·버전·형식만 맞춰 더 깊이 들어가게
     const v = validateAsset(b);
     assert.ok(Array.isArray(v) && v.length >= 1);
-    for (const x of v) assert.equal(typeof x.code, 'string');
+    for (const x of v) {
+      assert.equal(typeof x.code, 'string');
+      assert.ok(!x.message.includes('validator failure'), `내부 예외: ${x.message}`); // 내부 예외 금지
+    }
   }
   assert.ok(validateAsset(null).length >= 1);
 });
