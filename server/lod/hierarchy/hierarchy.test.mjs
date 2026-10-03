@@ -105,3 +105,15 @@ test('F-100 ⑧: 단계 0 법선은 단위 길이(길이 0 입력은 (0,0,0) 유
     assert.ok(len === 0 || Math.abs(len - 1) <= 1e-6);
   }
 });
+
+// F-099 ③: 단계별 positions 는 indices 순서 그대로의 입력 위치 사본(바이트 동일), 길이 3·count.
+test('단계별 positions = indices 순서의 입력 위치(바이트 동일)', () => {
+  const h = buildHierarchy(cloud, { edge0M: 0.4, levelCount: 4, maxLeafPoints: 1024 });
+  for (const lv of h.levels) {
+    assert.ok(lv.positions instanceof Float32Array);
+    assert.equal(lv.positions.length, 3 * lv.count);
+    const ref = new Float32Array(3 * lv.count);
+    lv.indices.forEach((i, s) => ref.set(cloud.positions.subarray(3 * i, 3 * i + 3), 3 * s));
+    assert.ok(Buffer.from(lv.positions.buffer).equals(Buffer.from(ref.buffer)), `level ${lv.level}`);
+  }
+});

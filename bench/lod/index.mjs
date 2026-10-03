@@ -26,9 +26,9 @@ export function measureSegmentBytes(cloud, opts = {}) {
   for (const lv of h.levels) {
     // 타일 키는 정수(tx·2^22 + tz). 문자열 키 Map 은 점마다 문자열을 만들어 느렸다. 값(타일 구성·순서)은 같다.
     const tiles = new Map();
+    const lp = lv.positions; // 단계별 대표점 위치(indices 순서, hierarchy 가 미리 담음)
     for (let s = 0; s < lv.count; s++) {
-      const i = lv.indices[s];
-      const tx = Math.floor(cloud.positions[3 * i] / TILE_SIZE), tz = Math.floor(cloud.positions[3 * i + 2] / TILE_SIZE);
+      const tx = Math.floor(lp[3 * s] / TILE_SIZE), tz = Math.floor(lp[3 * s + 2] / TILE_SIZE);
       if (!(Math.abs(tz) < TILE_KEY_HALF) || !(Math.abs(tx) < 2 ** 30)) throw new Error(`lod bench: 타일 좌표 범위 밖 (${tx},${tz})`);
       const key = tx * TILE_KEY_SPAN + tz;
       let arr = tiles.get(key);
@@ -40,8 +40,8 @@ export function measureSegmentBytes(cloud, opts = {}) {
       const m = list.length;
       const positions = new Float32Array(3 * m), normals = new Float32Array(3 * m), colors = new Uint8Array(3 * m);
       for (let d = 0; d < m; d++) {
-        const s = list[d], b = 3 * lv.indices[s];
-        positions[3 * d] = cloud.positions[b]; positions[3 * d + 1] = cloud.positions[b + 1]; positions[3 * d + 2] = cloud.positions[b + 2];
+        const s = list[d];
+        positions[3 * d] = lp[3 * s]; positions[3 * d + 1] = lp[3 * s + 1]; positions[3 * d + 2] = lp[3 * s + 2];
         normals[3 * d] = lv.normals[3 * s]; normals[3 * d + 1] = lv.normals[3 * s + 1]; normals[3 * d + 2] = lv.normals[3 * s + 2];
         colors[3 * d] = lv.colors[3 * s]; colors[3 * d + 1] = lv.colors[3 * s + 1]; colors[3 * d + 2] = lv.colors[3 * s + 2];
       }
@@ -56,8 +56,9 @@ export function measureSegmentBytes(cloud, opts = {}) {
 
 /**
  * materialize 시간 측정. 계층의 모든 리프를 단계 0 으로 고르고 그중 keepRatio 만큼(결정적 해시로) 선택해 materialize 한다.
- * 값만 보고하며 문턱 검사는 하지 않는다.
- * @returns {{selectedPoints: number, totalPoints: number, medianMs: number, runsMs: number[]}}
+ * 값만 보고하며 문턱 검사는 하지 않는다. maxMs 는 첫 호출을 포함한 회차 최댓값(F-099 ③ 확인 기준이 보는 값).
+ * positionBytes 는 단계별 미리 담은 위치(levels[l].positions)의 총 바이트(대표점당 12 B).
+ * @returns {{selectedPoints: number, totalPoints: number, medianMs: number, maxMs: number, runsMs: number[], positionBytes: number, representativePoints: number}}
  */
 export function measureMaterialize(hierarchy, { keepRatio = 0.736, runs = 5 } = {}) {
   const { octree, levels } = hierarchy;
@@ -78,7 +79,9 @@ export function measureMaterialize(hierarchy, { keepRatio = 0.736, runs = 5 } = 
     runsMs.push(performance.now() - t0);
   }
   const sorted = [...runsMs].sort((a, b) => a - b);
-  return { selectedPoints: pointCount, totalPoints: hierarchy.cloud.count, medianMs: sorted[sorted.length >> 1], runsMs };
+  let positionBytes = 0, representativePoints = 0;
+  for (const lv of levels) { positionBytes += lv.positions.byteLength; representativePoints += lv.count; }
+  return { selectedPoints: pointCount, totalPoints: hierarchy.cloud.count, medianMs: sorted[sorted.length >> 1], maxMs: sorted[sorted.length - 1], runsMs, positionBytes, representativePoints };
 }
 
 /**
