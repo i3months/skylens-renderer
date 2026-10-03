@@ -22,15 +22,16 @@ import { representativeColors } from '../colors/index.mjs';
  * @param {Float32Array} pos
  * @param {import('../../../contracts/lod/index.mjs').VoxelResult} vox
  * @param {import('../../../contracts/lod/index.mjs').Octree} octree
+ * @param {{_forceNoKey?: boolean}} opts - 내부 옵션. _forceNoKey: 합성 키 정렬 비활성화(테스트용).
  */
-function splitCellsByLeaf(pos, vox, octree) {
+function splitCellsByLeaf(pos, vox, octree, opts = {}) {
   const n = vox.cellOfPoint.length, edge = vox.edgeM, cellOf = vox.cellOfPoint;
   const cellOfPoint = new Uint32Array(n);
   const repList = [], leafOfPiece = [];
   const seg = new Uint32Array(n);
   let cellMax = 0;
   for (let i = 0; i < n; i++) if (cellOf[i] > cellMax) cellMax = cellOf[i];
-  const useKey = (cellMax + 1) * n <= Number.MAX_SAFE_INTEGER;
+  const useKey = !opts._forceNoKey && (cellMax + 1) * n <= Number.MAX_SAFE_INTEGER;
   const keys = useKey ? new Float64Array(n) : null;
   for (let k = 0; k < octree.leafCount; k++) {
     const s0 = octree.leafStart[k], s1 = octree.leafStart[k + 1];
@@ -78,7 +79,7 @@ function unitNormal(src, i, out, s) {
 /** @returns {import('../../../contracts/lod/index.mjs').Hierarchy} */
 export function buildHierarchy(cloud, opts = {}) {
   const n = assertCloud(cloud);
-  const { edge0M, levelCount, maxLeafPoints = 4096, maxDepth = 12 } = opts;
+  const { edge0M, levelCount, maxLeafPoints = 4096, maxDepth = 12, _forceNoKey = false } = opts;
   assertLevelParams(edge0M, levelCount);
   const octree = buildOctree(cloud, { maxLeafPoints, maxDepth });
   const levels = [];
@@ -96,7 +97,7 @@ export function buildHierarchy(cloud, opts = {}) {
       }
       leafStart.set(octree.leafStart);
     } else {
-      const pieces = splitCellsByLeaf(cloud.positions, voxelReduce(cloud, edgeOfLevel(edge0M, l)), octree);
+      const pieces = splitCellsByLeaf(cloud.positions, voxelReduce(cloud, edgeOfLevel(edge0M, l)), octree, { _forceNoKey });
       rep = pieces.rep;
       normals = representativeNormals(cloud, pieces);
       colors = representativeColors(cloud, pieces);

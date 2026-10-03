@@ -3,13 +3,13 @@
 // selectWithBudget(hierarchy, camera, {budgetPoints, thresholdPx}) -> Selection,  pointCount ≤ budgetPoints 를 항상 지킨다.
 //
 // server/lod/select(selectLevels) 결과에 의존하지 않는다: 리프별 목표 단계를 이 모듈 안에서 계산하되,
-// 화면 오차 규칙(f = max(fx,fy), d_eff = d·cMin², 거리표)은 server/lod/select/screen_error.mjs 의 공용 함수를 그대로 쓴다.
+// 화면 오차 규칙(f = max(fx,fy), d_eff = max(d·cMin², z_P·c_P), 거리표)은 server/lod/select/screen_error.mjs 의 공용 함수를 그대로 쓴다.
 //
 // 절차
 //  1) 시야 판정(../select/view_check.mjs 공용): 리프 상자 8 꼭짓점을 카메라 좌표로 옮겨, 한 절두체 평면(근평면 z>0, 화면 좌·우·위·아래)의
 //     바깥에 8 점이 모두 있으면 시야 밖 → NOT_DRAWN. 상자는 볼록이므로 이 판정은 보수적이다(보이는 리프를 버리지 않음).
 //     점이 하나도 없는 리프도 그릴 것이 없으므로 NOT_DRAWN.
-//  2) 거리 d: 카메라 중심에서 리프 상자까지의 최단 거리(상자 안이면 0). 실효 거리 d_eff = d·cMin²
+//  2) 거리 d: 카메라 중심에서 리프 상자까지의 최단 거리(상자 안이면 0). 실효 거리 d_eff = max(d·cMin², z_P·c_P)
 //     (cMin = 상자 꼭짓점의 광축 각 cos 최솟값, 가장자리 투영 확대 1/cos²α 보정, screen_error.mjs 머리 주석).
 //  3) 목표 단계 = 공용 규칙(f = max(fx,fy), τ = thresholdPx, edge0M·levelCount 는 계층 값)으로 d_eff 에서 고른 단계.
 //     d_eff = 0(카메라가 상자 안·상자가 카메라 평면에 걸침)이면 원본 단계 0.
@@ -35,6 +35,7 @@
 
 import { NOT_DRAWN, edgeOfLevel, assertCloud } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
+import { assertHierarchyInput } from '../select/index.mjs';
 import { screenErrorRule } from '../select/screen_error.mjs';
 import { boxMayBeVisible } from '../select/view_check.mjs';
 
@@ -42,21 +43,8 @@ const ERR = 'lod:';
 // 거리 하한(m). 탐욕 단계의 ΔE 분모(d_eff)가 0 이 되지 않게 막는다(d_eff = 0 인 리프는 ΔE 가 매우 커서 맨 나중에 거칠어진다).
 const MIN_DIST_M = 1e-3;
 
-/**
- * 계층 입력 검사(select 의 assertHierarchy 와 같은 규칙, 오류는 'lod:'). progressive 도 이 함수를 쓴다.
- * select/index.mjs 가 이를 내보내면 그쪽으로 합칠 수 있다(F-104 ③).
- */
-export function assertHierarchyInput(h) {
-  if (!h || typeof h !== 'object') throw new Error(`${ERR} 계층이 객체가 아님`);
-  const { octree, levels } = h;
-  assertCloud(h.cloud); // 오류는 이미 'lod:' 로 시작한다
-  if (!octree || typeof octree !== 'object' || !Number.isInteger(octree.leafCount) || octree.leafCount < 1 || !Number.isInteger(octree.nodeCount)) throw new Error(`${ERR} hierarchy.octree 가 계약대로가 아님`);
-  if (!(octree.boxMin instanceof Float32Array) || !(octree.boxMax instanceof Float32Array) || !(octree.leafIndex instanceof Int32Array)) throw new Error(`${ERR} 팔진 트리 상자·리프 번호 배열이 없음`);
-  if (!Array.isArray(levels) || levels.length < 1) throw new Error(`${ERR} hierarchy.levels 가 비어 있음`);
-  for (const lv of levels) {
-    if (!lv || !(lv.indices instanceof Uint32Array) || !(lv.leafStart instanceof Uint32Array) || lv.leafStart.length !== octree.leafCount + 1) throw new Error(`${ERR} levels[${String(lv?.level)}] 의 구간 배열이 올바르지 않음`);
-  }
-}
+// 계층 입력 검사는 select 쪽 공용 함수를 쓴다(F-107 ①). progressive 가 여기서 가져가므로 다시 내보낸다.
+export { assertHierarchyInput };
 
 function assertBudget(b) {
   if (typeof b !== 'number' || !Number.isInteger(b) || b < 0) {
@@ -107,7 +95,7 @@ function heapPop(h) {
 
 /**
  * 리프별 시야·거리·목표 단계를 계산한다(예산과 무관). 시험과 비교 기준이 같은 값을 쓰도록 내보낸다.
- * distM = 카메라 중심~상자 최소 거리(먼 리프부터 빼는 순서), effDistM = d·cMin²(화면 오차·목표 단계에 쓰는 실효 거리).
+ * distM = 카메라 중심~상자 최소 거리(먼 리프부터 빼는 순서), effDistM = d_eff(= max(d·cMin², z_P·c_P), screen_error.mjs 참조)(화면 오차·목표 단계에 쓰는 실효 거리).
  * @returns {{visible: Uint8Array, distM: Float64Array, effDistM: Float64Array, target: Uint8Array, countAt: (leaf:number, level:number)=>number, levelCount: number, focalPx: number}}
  */
 export function leafTargets(hierarchy, camera, thresholdPx) {
@@ -132,10 +120,11 @@ export function leafTargets(hierarchy, camera, thresholdPx) {
     if (n < 0) continue;
     const mn = octree.boxMin.subarray(3 * n, 3 * n + 3);
     const mx = octree.boxMax.subarray(3 * n, 3 * n + 3);
+    // 빈 리프·시야 밖 판정을 rule.leaf 앞에 둔다: d 가 Infinity 여도 select·progressive 와 같이 빈 결과(F-107 ②).
+    if (countAt(k, 0) === 0 || !boxMayBeVisible(camera, mn, mx)) continue;
     const e = rule.leaf(mn, mx);
     distM[k] = e.distM;
     effDistM[k] = e.effDistM;
-    if (countAt(k, 0) === 0 || !boxMayBeVisible(camera, mn, mx)) continue;
     visible[k] = 1;
     target[k] = e.level;
   }

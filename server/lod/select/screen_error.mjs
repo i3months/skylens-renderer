@@ -6,7 +6,7 @@
 //   (α = 광축과 p 가 이루는 각, r = |p| 이면 cos α = z/r). 따라서 화면 길이 ≤ f·e/(z·cos α) = f·e/(r·cos²α).
 //   축 위(α = 0)에서는 기존 f·e/d 와 같고, 가장자리에서는 1/cos²α 배 커진다(화각 90° 모서리 약 5.2배 → 실측 F-097).
 // 리프 상자 전체에 대한 보수적 하한: 상자 안 모든 점에서 r ≥ d(카메라 중심~상자 최소 거리), cos α ≥ cMin 이므로
-//   r·cos²α ≥ d_eff = d · cMin²,   cMin = 상자 8 꼭짓점의 z/r 최솟값.
+//   r·cos²α ≥ d·cMin²,   cMin = 상자 8 꼭짓점의 z/r 최솟값. (상자 전체 하한. 최종 d_eff 는 아래 max(d·cMin², z_P·c_P))
 //   cMin 이 꼭짓점 최솟값인 이유: {p : α(p) ≤ θ} (θ < 90°) 는 볼록 원뿔이므로 꼭짓점이 모두 그 안이면 상자 전체가 그 안이다.
 //   꼭짓점 하나라도 z ≤ 0 이면(상자가 카메라 평면에 닿거나 뒤로 걸침) cMin = 0 이다.
 // 상자 안에 놓인 길이 e 인 선분은 화면 길이 ≤ ∫ f/(r·cos²α) ≤ f·e/d_eff 이다. 그래서 거리표에 d 대신 d_eff 를 넣으면
@@ -40,15 +40,12 @@ export function cameraCenter({ R, t }) {
 
 /** 점 C 와 축 정렬 상자의 최소 거리(안이면 0). */
 export function boxDistanceM(C, mn, mx) {
-  let s = 0;
-  for (let a = 0; a < 3; a++) {
-    const g = C[a] < mn[a] ? mn[a] - C[a] : C[a] > mx[a] ? C[a] - mx[a] : 0;
-    s += g * g;
-  }
-  return Math.sqrt(s);
+  const g = (a) => (C[a] < mn[a] ? mn[a] - C[a] : C[a] > mx[a] ? C[a] - mx[a] : 0);
+  // √(g0²+g1²+g2²) 는 간격 약 1.3e154 이상에서 넘쳐 Infinity, 약 1e-162 이하에서 밑넘쳐 0 이 된다(F-107 ②) → hypot
+  return Math.hypot(g(0), g(1), g(2));
 }
 
-/** 상자 8 꼭짓점에서 cos α = z/r 의 최솟값. 꼭짓점이 z ≤ 0 이면 0 이하를 돌려준다. */
+/** 상자 8 꼭짓점에서 cos α = z/r 의 최솟값. 꼭짓점 하나라도 z ≤ 0 이면 0 을 돌려준다. */
 export function minCosToAxis({ R, t }, mn, mx) {
   let c = Infinity;
   for (let k = 0; k < 8; k++) {
@@ -87,6 +84,7 @@ const BOX_EDGES = [];
 for (let a = 0; a < 8; a++) for (let b = a + 1; b < 8; b++) { const x = a ^ b; if (x === 1 || x === 2 || x === 4) BOX_EDGES.push(a, b); }
 const REL_TOL = 1e-9; // 경계 판정 여유(넓게 받아 후보를 더 넣으면 최솟값이 작아질 뿐이라 보수적)
 const SAFETY = 1 - 1e-12; // 교점 반올림 오차 몫
+const C_ROUND = 4 * Number.EPSILON; // C = −Rᵀt 반올림 몫(‖C‖ 배, 위 3.4e-16 의 두 배 넘는 8.9e-16)
 
 /**
  * 상자 ∩ 시야 사각뿔 P 의 z 최솟값과 cos α 최솟값(머리 주석 '화면 안 부분'). P 의 꼭짓점을 모두 후보로 센다:
@@ -113,10 +111,9 @@ export function visiblePartBound(camera, C, mn, mx) {
     return true;
   };
   let zMin = Infinity, cMin = Infinity, any = false;
-  const take = (x, y, z) => {
+  const take = (x, y, z, c = z / Math.hypot(x, y, z)) => {
     any = true;
     if (z < zMin) zMin = z;
-    const c = z / Math.hypot(x, y, z);
     if (c < cMin) cMin = c;
   };
   for (let k = 0; k < 8; k++) if (inV(P[3 * k], P[3 * k + 1], P[3 * k + 2])) take(P[3 * k], P[3 * k + 1], P[3 * k + 2]);
@@ -131,20 +128,27 @@ export function visiblePartBound(camera, C, mn, mx) {
     }
   }
   // 화면 모서리 광선 p(s) = s·(a, b, 1) (카메라 좌표), 월드 방향 Rᵀ(a, b, 1). 상자(조금 넓힘)와의 들어가는 점.
+  // 여유 pad 는 C 기준 상대 좌표(lo0 = mn − C, hi0 = mx − C)로 잡는다(F-107 ⑤). 예전처럼 월드 좌표 |mn|·|mx| 에 비례시키면
+  //   좌표 1e9 에서 pad ≈ 2 m 라 카메라가 상자 밖 2 m 안이면 들어가는 점이 s = 0(카메라 중심)이 되어 cos 가 0/0 = NaN 으로
+  //   빠지고 c_P 가 실제보다 커졌다. 상대 좌표의 반올림 몫은 REL_TOL 항, C = −Rᵀt 자체의 반올림(성분마다
+  //   ≤ γ₃·Σⱼ|Rⱼᵢ||tⱼ| ≤ γ₃·‖t‖ ≈ 3.4e-16·‖C‖, 코시-슈바르츠·‖Rᵀ 행‖ = 1)은 C_ROUND·‖C‖ 항이 덮는다. 넓히면 후보가 늘어 최솟값이 작아질 뿐(보수적).
+  // 광선 위 cos α 는 s 와 무관하게 1/‖(a, b, 1)‖ 이므로 점에서 다시 계산하지 않고 그 값을 쓴다(s = 0 이어도 정의됨).
+  const cAbs = C_ROUND * Math.hypot(C[0], C[1], C[2]);
   for (let q = 0; q < 4; q++) {
     const da = ((q & 1 ? W : 0) - cx) / fx, db = ((q & 2 ? H : 0) - cy) / fy;
     const dir = [R[0] * da + R[3] * db + R[6], R[1] * da + R[4] * db + R[7], R[2] * da + R[5] * db + R[8]];
     let s0 = 0, s1 = Infinity;
     for (let ax = 0; ax < 3 && s0 <= s1; ax++) {
-      const pad = REL_TOL * (mx[ax] - mn[ax] + Math.abs(mn[ax]) + Math.abs(mx[ax]));
-      const lo = mn[ax] - pad - C[ax], hi = mx[ax] + pad - C[ax];
+      const lo0 = mn[ax] - C[ax], hi0 = mx[ax] - C[ax];
+      const pad = REL_TOL * (hi0 - lo0 + Math.abs(lo0) + Math.abs(hi0)) + cAbs;
+      const lo = lo0 - pad, hi = hi0 + pad;
       if (dir[ax] === 0) { if (lo > 0 || hi < 0) s1 = -1; continue; }
       let ta = lo / dir[ax], tb = hi / dir[ax];
       if (ta > tb) [ta, tb] = [tb, ta];
       if (ta > s0) s0 = ta;
       if (tb < s1) s1 = tb;
     }
-    if (s0 <= s1 && s1 > 0) take(s0 * da, s0 * db, s0);
+    if (s0 <= s1 && s1 > 0) take(s0 * da, s0 * db, s0, 1 / Math.hypot(da, db, 1));
   }
   return any ? { zMinM: zMin * SAFETY, cosMin: cMin * SAFETY } : null;
 }

@@ -93,13 +93,6 @@ function coarseStats(h, sel) {
   }
   return { coarsePts, maxLevel };
 }
-// 단계 선택을 0 으로 고정한 가짜 선택(시야 밖 판정은 유지)
-function forceLevel0(h, sel) {
-  const leafLevel = Uint8Array.from(sel.leafLevel, (l) => (l === NOT_DRAWN ? NOT_DRAWN : 0));
-  let pointCount = 0;
-  for (let k = 0; k < leafLevel.length; k++) if (leafLevel[k] !== NOT_DRAWN) pointCount += h.levels[0].leafStart[k + 1] - h.levels[0].leafStart[k];
-  return { leafLevel, pointCount };
-}
 const camOf = (vp) => viewpointToCamera({ eye: vp.eye, target: vp.target, up: [0, 1, 0], width: W, height: H, fov_y_deg: FOV_Y_DEG });
 
 const ratios = [];
@@ -140,19 +133,8 @@ for (const seed of SEEDS) {
   });
 }
 
-// 음성 시험: 단계 선택을 0 으로 고정한 가짜 변이는 '거친 단계 사용' 구조 단언(단계≥1 점 > 0, 점 비율 상한)에서 실패해야 한다.
-// 단계 0 선택은 렌더가 원본과 같아 SSIM 으로는 못 잡으므로 구조로 잡는다.
-test('음성: 단계 0 고정 변이는 거친 단계 사용·점 비율 단언에서 실패한다', () => {
-  const { cloud, h } = scene(1);
-  for (const vp of VP) {
-    const sel = selectLevels(h, camOf(vp), { thresholdPx: THRESHOLD_PX });
-    assert.ok(coarseStats(h, sel).coarsePts > 0, `정상 선택은 통과해야 함: ${vp.name}`);
-    const bad = forceLevel0(h, sel);
-    assert.ok(bad.pointCount > sel.pointCount, `변이 ${vp.name}: 점 수가 줄지 않음`);
-  }
-  const meanBad = VP.reduce((acc, vp) => acc + forceLevel0(h, selectLevels(h, camOf(vp), { thresholdPx: THRESHOLD_PX })).pointCount / cloud.count, 0) / VP.length;
-  assert.ok(meanBad > MEAN_RATIO_MAX, `변이의 평균 점 비율 ${meanBad.toFixed(3)} 가 상한 ${MEAN_RATIO_MAX} 이하`);
-});
+// 음성(단계 0 고정 변이) 시험은 구현을 거치지 않는 가짜 선택이라 뺐다. 대신 위 '거친 단계 사용 + SSIM' 시험의 단언
+// (단계 ≥ 1 점 > 0)과 아래 평균 점 비율 상한이 구현의 단계 선택에 직접 걸린다(구현을 단계 0 으로 고정하면 둘 다 실패).
 
 test(`시점 8곳 평균 점 비율 ≤ ${MEAN_RATIO_MAX}`, () => {
   assert.equal(ratios.length, VP.length, '시점별 시험이 모두 돌지 않음');
