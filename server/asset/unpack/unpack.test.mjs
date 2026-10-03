@@ -3,114 +3,82 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  FORMAT_POINT27, FORMAT_GAUSS56, CODEC_RAW_PLANAR, VERSION_MAJOR, VERSION_MINOR, HEADER_SIZE, TILE_SIZE_M,
-  POSITION_Q_MAX, SH_C0, SCALE_LOG_MIN, SCALE_LOG_STEPS_PER_UNIT, OCT_SNORM_MAX, ROT_COMPONENT_CENTER, ROT_COMPONENT_MAX,
-  OFFSETS, ERROR_BOUNDS, AssetFormatError, bodyLayout, serializeHeader, parseHeader,
+  FORMAT_POINT27, FORMAT_GAUSS56, HEADER_SIZE, SH_C0, SCALE_LOG_MIN,
+  OFFSETS, ERROR_BOUNDS, AssetFormatError, bodyLayout, parseHeader,
 } from '../../../contracts/asset/index.mjs';
-import { ANCHOR, buildPoint27, buildGauss56 } from '../../../fixtures/asset_golden/generate.mjs';
+import {
+  ANCHOR, encodeOct, encodeRot, encodeFdc, encodeOpacity, encodeScale,
+} from '../../../fixtures/asset_golden/generate.mjs';
+import { packChunk, encodeOctNormal, encodeRotation } from '../pack/index.mjs';
 import { unpackChunk, toSourceRecords, decodeOctNormal, decodeRotation } from './index.mjs';
 
 const GOLDEN = new URL('../../../fixtures/asset_golden/', import.meta.url);
 
 // ---------------------------------------------------------------------------
-// 참조 부호화: generate.mjs 의 내부 함수(encodeOct·encodeRot·assemble)를 그대로 옮긴 것.
-// generate.mjs 가 이 함수들을 내보내지 않아 복사했고, 아래 `reference_encoder_matches_generate` 가
-// 골든 입력을 이 복사본으로 다시 부호화해 generate.mjs 결과와 체크섬 외 바이트가 같음을 확인한다.
+// 부호화는 제품 packChunk 로 한다. generate.mjs 의 참조 부호기는 사이드카 손계산 대조에만 쓴다.
 // ---------------------------------------------------------------------------
-const round = (x) => Math.floor(x + 0.5);
-const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
-function fold(u, v) {
-  const su = u >= 0 ? 1 : -1;
-  const sv = v >= 0 ? 1 : -1;
-  return [(1 - Math.abs(v)) * su, (1 - Math.abs(u)) * sv];
-}
-function encodeOct(x, y, z) {
-  const l1 = Math.abs(x) + Math.abs(y) + Math.abs(z);
-  let u = x / l1;
-  let v = y / l1;
-  if (z < 0) [u, v] = fold(u, v);
-  return [clamp(round(u * OCT_SNORM_MAX), -OCT_SNORM_MAX, OCT_SNORM_MAX), clamp(round(v * OCT_SNORM_MAX), -OCT_SNORM_MAX, OCT_SNORM_MAX)];
-}
-function encodeRot(w, x, y, z) {
-  let q = [w, x, y, z];
-  const len = Math.hypot(...q);
-  q = q.map((c) => c / len);
-  let m = 0;
-  for (let k = 1; k < 4; k++) if (Math.abs(q[k]) > Math.abs(q[m])) m = k;
-  if (q[m] < 0) q = q.map((c) => -c);
-  const rest = [];
-  for (let k = 0; k < 4; k++) if (k !== m) rest.push(clamp(round(q[k] * Math.SQRT2 * ROT_COMPONENT_CENTER) + ROT_COMPONENT_CENTER, 0, ROT_COMPONENT_MAX));
-  return ((m << 30) | (rest[0] << 20) | (rest[1] << 10) | rest[2]) >>> 0;
-}
-function bounds(pos, n) {
-  const min = [Infinity, Infinity, Infinity];
-  const max = [-Infinity, -Infinity, -Infinity];
-  for (let i = 0; i < n; i++) for (let a = 0; a < 3; a++) {
-    const v = pos[3 * i + a];
-    if (v < min[a]) min[a] = v;
-    if (v > max[a]) max[a] = v;
-  }
-  return { min, max };
-}
-function quantExp(min, max) {
-  for (const k of [10, 9, 8]) if ([0, 1, 2].every((a) => (max[a] - min[a]) * 2 ** k <= POSITION_Q_MAX)) return k;
-  throw new Error('extent too large');
-}
-/** generate.mjs assemble 과 같고 체크섬만 0 으로 둔다. */
-function assemble(format, meta, pos, n, planeValues) {
-  const { min, max } = bounds(pos, n);
-  const qexp = quantExp(min, max);
-  const tileX = Math.floor(min[0] / TILE_SIZE_M);
-  const tileY = Math.floor(min[1] / TILE_SIZE_M);
-  if (Math.floor(max[0] / TILE_SIZE_M) !== tileX || Math.floor(max[1] / TILE_SIZE_M) !== tileY) throw new Error('points span tiles');
-  const layout = bodyLayout(format, n);
-  const header = serializeHeader({
-    versionMajor: VERSION_MAJOR, versionMinor: VERSION_MINOR, headerSize: HEADER_SIZE, format, codec: CODEC_RAW_PLANAR,
-    segmentId: meta.segmentId, level: meta.level, pointCount: n, tileX, tileY, tileSizeM: TILE_SIZE_M,
-    lod: meta.lod, quantExp: qexp, chunkIndex: meta.chunkIndex, bodyBytes: layout.requiredBytes,
-    bboxMin: min, bboxMax: max, anchor: ANCHOR, checksum: 0,
-  });
-  const file = new Uint8Array(HEADER_SIZE + layout.requiredBytes);
-  file.set(header, 0);
-  const dv = new DataView(file.buffer);
-  const posQ = [0, 1, 2].map((a) => Array.from({ length: n }, (_, i) => clamp(round((pos[3 * i + a] - min[a]) * 2 ** qexp), 0, POSITION_Q_MAX)));
-  const values = { pos_e: posQ[0], pos_n: posQ[1], pos_u: posQ[2], ...planeValues };
-  for (const p of layout.planes) {
-    const vals = values[p.name];
-    const base = HEADER_SIZE + p.offset;
-    for (let i = 0; i < n; i++) {
-      if (p.type === 'u16') dv.setUint16(base + 2 * i, vals[i], true);
-      else if (p.type === 'u8') dv.setUint8(base + i, vals[i]);
-      else if (p.type === 'i8') dv.setInt8(base + i, vals[i]);
-      else if (p.type === 'u32') dv.setUint32(base + 4 * i, vals[i], true);
-    }
-  }
-  return { file, qexp, min, posQ };
+const META27 = { segmentId: 7, level: 2, lod: 0, chunkIndex: 0 };
+const META56 = { segmentId: 7, level: 3, lod: 1, chunkIndex: 2 };
+
+/** 조각 본문에서 평면 하나의 값을 읽는다(복원기와 무관하게 바이트에서 직접). */
+function readPlane(file, format, n, name) {
+  const p = bodyLayout(format, n).planes.find((x) => x.name === name);
+  const dv = new DataView(file.buffer, file.byteOffset, file.byteLength);
+  const o = HEADER_SIZE + p.offset;
+  return Array.from({ length: n }, (_, i) => (p.type === 'u16' ? dv.getUint16(o + 2 * i, true)
+    : p.type === 'u8' ? dv.getUint8(o + i) : p.type === 'i8' ? dv.getInt8(o + i) : dv.getUint32(o + 4 * i, true)));
 }
 
-/** 원본 필드 → 조각 바이트(§5 식). */
-function packPoint27(pos, nrm, rgb, n) {
-  const planes = { color_r: [], color_g: [], color_b: [], normal_oct_x: [], normal_oct_y: [] };
-  for (let i = 0; i < n; i++) {
-    planes.color_r.push(rgb[3 * i]); planes.color_g.push(rgb[3 * i + 1]); planes.color_b.push(rgb[3 * i + 2]);
-    const [qx, qy] = encodeOct(nrm[3 * i], nrm[3 * i + 1], nrm[3 * i + 2]);
-    planes.normal_oct_x.push(qx); planes.normal_oct_y.push(qy);
-  }
-  return assemble(FORMAT_POINT27, { segmentId: 7, level: 2, lod: 0, chunkIndex: 0 }, pos, n, planes);
+/** 제품 packChunk 로 부호화하고 위치 검사에 쓸 저장 값을 바이트에서 꺼낸다. */
+function packProduct(format, meta, fields) {
+  const file = packChunk({ format, ...meta, anchor: ANCHOR, fields });
+  const n = fields.positions.length / 3;
+  const h = parseHeader(file);
+  // bbox_min 은 원본 최솟값과 같아야 한다(§5.1)
+  const min = [0, 1, 2].map((a) => { let m = Infinity; for (let i = 0; i < n; i++) m = Math.min(m, fields.positions[3 * i + a]); return m; });
+  assert.deepEqual(h.bboxMin, min);
+  const posQ = ['pos_e', 'pos_n', 'pos_u'].map((name) => readPlane(file, format, n, name));
+  return { file, qexp: h.quantExp, min, posQ };
 }
-function packGauss56(pos, fdc, opa, scl, rot, n) {
-  const planes = { color_r: [], color_g: [], color_b: [], opacity: [], scale_0: [], scale_1: [], scale_2: [], rotation: [] };
-  for (let i = 0; i < n; i++) {
-    const col = [0, 1, 2].map((k) => clamp(round((0.5 + SH_C0 * fdc[3 * i + k]) * 255), 0, 255));
-    planes.color_r.push(col[0]); planes.color_g.push(col[1]); planes.color_b.push(col[2]);
-    planes.opacity.push(clamp(round(255 / (1 + Math.exp(-opa[i]))), 0, 255));
-    for (let k = 0; k < 3; k++) {
-      planes[`scale_${k}`].push(clamp(round((scl[3 * i + k] - SCALE_LOG_MIN) * SCALE_LOG_STEPS_PER_UNIT), 0, 255));
-    }
-    planes.rotation.push(encodeRot(rot[4 * i], rot[4 * i + 1], rot[4 * i + 2], rot[4 * i + 3]));
-  }
-  return assemble(FORMAT_GAUSS56, { segmentId: 7, level: 3, lod: 1, chunkIndex: 2 }, pos, n, planes);
+
+// f32 순서 키: 정수 비교가 f32 값 순서와 같다
+const F32 = new Float32Array(1);
+const U32 = new Uint32Array(F32.buffer);
+const f32Key = (x) => { F32[0] = x; const b = U32[0]; return b & 0x80000000 ? -(b & 0x7fffffff) : b; };
+const keyF32 = (k) => { U32[0] = k < 0 ? (0x80000000 | -k) >>> 0 : k; return F32[0]; };
+const nextUp = (x) => keyF32(f32Key(x) + 1);
+/** 단조 증가 enc 에서 enc(x) ≥ t 인 가장 작은 f32 키(lo..hi 안). */
+function firstKey(enc, t, lo, hi) {
+  while (lo < hi) { const m = Math.floor((lo + hi) / 2); if (enc(keyF32(m)) >= t) hi = m; else lo = m + 1; }
+  return lo;
 }
+/**
+ * 저장 값 v=0..255 각각을 만드는 가장 작은·가장 큰 f32 원본(§5 식, f64 계산). [lo, hi] 키 범위 안에서 찾는다.
+ * @returns {{v: number, lo: number, hi: number}[]}
+ */
+function codeEnds(enc, loKey, hiKey) {
+  const out = [];
+  for (let v = 0; v <= 255; v++) {
+    const a = firstKey(enc, v, loKey, hiKey);
+    const b = v === 255 ? hiKey : firstKey(enc, v + 1, loKey, hiKey + 1) - 1;
+    out.push({ v, lo: keyF32(a), hi: keyF32(b) });
+  }
+  return out;
+}
+const round5 = (x) => Math.floor(x + 0.5);
+const clamp8 = (x) => Math.min(255, Math.max(0, x));
+const encFdcSpec = (f) => clamp8(round5((0.5 + SH_C0 * f) * 255));
+const encOpaSpec = (l) => clamp8(round5(255 / (1 + Math.exp(-l))));
+// f_dc 상한 적용 범위 0.5 + C0·f ∈ [0, 1] 의 f32 끝
+let FDC_LO_KEY = f32Key(Math.fround(-0.5 / SH_C0));
+while (0.5 + SH_C0 * keyF32(FDC_LO_KEY) < 0) FDC_LO_KEY++;
+let FDC_HI_KEY = f32Key(Math.fround(0.5 / SH_C0));
+while (0.5 + SH_C0 * keyF32(FDC_HI_KEY) > 1) FDC_HI_KEY--;
+const F32_MAX_KEY = f32Key(3.4028234663852886e38);
+/** 색 코드 c 마다 끝점 f32 원본(§5.2). */
+const FDC_ENDS = codeEnds(encFdcSpec, FDC_LO_KEY, FDC_HI_KEY);
+/** 불투명도 q 마다 끝점 f32 로짓 원본(§5.5). q=0·255 는 ±f32 최댓값까지. */
+const OPA_ENDS = codeEnds(encOpaSpec, -F32_MAX_KEY, F32_MAX_KEY);
 
 // ---------------------------------------------------------------------------
 // 무작위·측정 도구
@@ -239,7 +207,7 @@ test('unpack_error_bound', () => {
       nrm.set(v.map((c) => c / l), 3 * i);
       for (let k = 0; k < 3; k++) rgb[3 * i + k] = Math.floor(rnd() * 256);
     }
-    const enc = packPoint27(pos, nrm, rgb, N);
+    const enc = packProduct(FORMAT_POINT27, META27, { positions: pos, normals: nrm, colors: rgb });
     const { header, fields } = unpackChunk(enc.file);
     assert.equal(header.format, FORMAT_POINT27);
     assert.ok(fields.positions instanceof Float32Array && fields.normals instanceof Float32Array && fields.colors instanceof Uint8Array);
@@ -270,9 +238,31 @@ test('unpack_error_bound', () => {
   }
 
   // 형식 2: 56 B 가우시안
+  // 끝점 원본: 저장 구간 아래 끝(닫힘)은 f32 복원 후에도 상한 안이어야 한다(§8, 반올림 방향).
+  // 위 끝(열림)은 §8 의 f64 상한 + f32 반올림(|f32 복원 − f64 복원|)까지 허용한다.
+  const EDGE_FDC = [];
+  const EDGE_FDC_OPEN = [];
+  for (const v of [0, Math.fround(-0.5 / SH_C0 * 0.9999999), Math.fround(0.5 / SH_C0 * 0.9999999), (127.5 / 255 - 0.5) / SH_C0]) {
+    for (let k = 0; k < 3; k++) { EDGE_FDC.push(v); EDGE_FDC_OPEN.push(false); }
+  }
+  for (const e of FDC_ENDS) {
+    EDGE_FDC.push(e.lo, e.hi);
+    EDGE_FDC_OPEN.push(false, e.v < 255);
+  }
   const EDGE_OPACITY = [-30, -20, -6.2324, 0, 6.2324, 20, 30];
+  const EDGE_OPACITY_OPEN = EDGE_OPACITY.map(() => false);
+  for (const e of OPA_ENDS) {
+    EDGE_OPACITY.push(e.lo, e.hi);
+    EDGE_OPACITY_OPEN.push(false, e.v > 0 && e.v < 255);
+  }
+  assert.ok(EDGE_FDC.length <= 3 * N && EDGE_OPACITY.length <= N);
+  // 끝점이 빈틈없이 이어진다: c 의 위 끝 바로 다음 f32 = c+1 의 아래 끝(가장 작은·가장 큰 원본)
+  for (const ends of [FDC_ENDS, OPA_ENDS]) {
+    for (let v = 0; v < 255; v++) assert.equal(nextUp(ends[v].hi), ends[v + 1].lo, `ends ${v}→${v + 1}`);
+  }
+  // f64 기준식 비교의 f64 연산 반올림 여유(예: c=128 아래 끝 −9.8e-17 에서 7e-17 초과)
+  const EPS64 = 1e-15;
   const EDGE_SCALE = [SCALE_LOG_MIN, 5.9375];
-  const EDGE_FDC = [0, Math.fround(-0.5 / SH_C0 * 0.9999999), Math.fround(0.5 / SH_C0 * 0.9999999), (127.5 / 255 - 0.5) / SH_C0];
   for (const cfg of CHUNKS) {
     const pos = randomPositions(rnd, cfg, N);
     const fdc = new Float32Array(3 * N);
@@ -281,9 +271,9 @@ test('unpack_error_bound', () => {
     const rot = new Float32Array(4 * N);
     for (let i = 0; i < N; i++) {
       for (let k = 0; k < 3; k++) {
-        // 앞 몇 점은 동점·끝 값: f_dc 0(c·255 = 127.5), ±0.5/C0 에 가까운 값
-        fdc[3 * i + k] = i < EDGE_FDC.length ? EDGE_FDC[i] : (rnd() - 0.5) / SH_C0;
-        scl[3 * i + k] = i < EDGE_SCALE.length ? EDGE_SCALE[i] : SCALE_LOG_MIN + rnd() * (5.9375 - SCALE_LOG_MIN);
+        const j = 3 * i + k;
+        fdc[j] = j < EDGE_FDC.length ? EDGE_FDC[j] : (rnd() - 0.5) / SH_C0;
+        scl[j] = i < EDGE_SCALE.length ? EDGE_SCALE[i] : SCALE_LOG_MIN + rnd() * (5.9375 - SCALE_LOG_MIN);
       }
       opa[i] = i < EDGE_OPACITY.length ? EDGE_OPACITY[i] : (rnd() - 0.5) * 24;
       let q;
@@ -292,25 +282,45 @@ test('unpack_error_bound', () => {
       const l = Math.hypot(...q);
       rot.set(q.map((c) => c / l), 4 * i);
     }
-    const enc = packGauss56(pos, fdc, opa, scl, rot, N);
+    const enc = packProduct(FORMAT_GAUSS56, META56, { positions: pos, fdc, opacity: opa, scales: scl, rotations: rot });
     const { header, fields } = unpackChunk(enc.file);
     assert.equal(header.format, FORMAT_GAUSS56);
     viol.pos += checkPositions(enc, pos, fields.positions, N, stats, cfg);
+    const storedC = [readPlane(enc.file, FORMAT_GAUSS56, N, 'color_r'), readPlane(enc.file, FORMAT_GAUSS56, N, 'color_g'), readPlane(enc.file, FORMAT_GAUSS56, N, 'color_b')];
+    const storedQ = readPlane(enc.file, FORMAT_GAUSS56, N, 'opacity');
+    // 끝점 원본이 제품 부호화에서도 의도한 저장 값이 되는지
+    for (let e = 0; e < FDC_ENDS.length; e++) {
+      for (const [side, off] of [['lo', 0], ['hi', 1]]) {
+        const j = 12 + 2 * e + off;
+        assert.equal(storedC[j % 3][Math.floor(j / 3)], e, `f_dc ${side} end c=${e}`);
+      }
+      assert.equal(storedQ[7 + 2 * e], e, `opacity lo end q=${e}`);
+      assert.equal(storedQ[8 + 2 * e], e, `opacity hi end q=${e}`);
+    }
     let mCount = [0, 0, 0, 0];
     for (let i = 0; i < N; i++) {
       for (let k = 0; k < 3; k++) {
         const c = 0.5 + SH_C0 * fdc[3 * i + k];
         assert.ok(c >= 0 && c <= 1, 'f_dc 상한 적용 범위');
-        const ef = Math.abs(fields.fdc[3 * i + k] - fdc[3 * i + k]);
+        const j = 3 * i + k;
+        const ef = Math.abs(fields.fdc[j] - fdc[j]);
         stats.fdc = Math.max(stats.fdc, ef);
-        if (!(ef <= ERROR_BOUNDS.gaussFdc)) viol.fdc++;
+        // f64 복원(§6)은 상한 안, f32 복원은 열린 끝에서만 f32 반올림만큼 더 허용
+        const r64 = (storedC[k][i] / 255 - 0.5) / SH_C0;
+        const open = j < EDGE_FDC.length && EDGE_FDC_OPEN[j];
+        const slack = open ? Math.abs(fields.fdc[j] - r64) : 0;
+        if (!(Math.abs(r64 - fdc[j]) <= ERROR_BOUNDS.gaussFdc + EPS64) || !(ef <= ERROR_BOUNDS.gaussFdc + slack)) viol.fdc++;
         const es = Math.abs(fields.scales[3 * i + k] - scl[3 * i + k]);
         stats.scale = Math.max(stats.scale, es);
         if (!(es <= ERROR_BOUNDS.scaleLog)) viol.scale++;
       }
       const ea = Math.abs(sigmoid(fields.opacity[i]) - sigmoid(opa[i]));
       stats.alpha = Math.max(stats.alpha, ea);
-      if (!(ea <= ERROR_BOUNDS.opacityAlpha) || !Number.isFinite(fields.opacity[i])) viol.alpha++;
+      const a64 = Math.min(509 / 510, Math.max(1 / 510, storedQ[i] / 255));
+      const openA = i < EDGE_OPACITY.length && EDGE_OPACITY_OPEN[i];
+      const slackA = openA ? Math.abs(sigmoid(fields.opacity[i]) - a64) : 0;
+      if (!(Math.abs(a64 - sigmoid(opa[i])) <= ERROR_BOUNDS.opacityAlpha + EPS64) || !(ea <= ERROR_BOUNDS.opacityAlpha + slackA)
+        || !Number.isFinite(fields.opacity[i])) viol.alpha++;
       const src = Array.from(rot.subarray(4 * i, 4 * i + 4));
       const dec = Array.from(fields.rotations.subarray(4 * i, 4 * i + 4));
       const er = rotAngleDeg(src, dec);
@@ -342,11 +352,11 @@ test('unpack_error_bound', () => {
   // 조각과 별도로 법선·회전 무작위 20만 개를 직접 왕복(최대 오차 관측용)
   for (let i = 0; i < 200000; i++) {
     const v = [gauss(rnd), gauss(rnd), gauss(rnd)];
-    const ang = vecAngleDeg(v, decodeOctNormal(...encodeOct(...v)));
+    const ang = vecAngleDeg(v, decodeOctNormal(...encodeOctNormal(...v)));
     stats.normalDeg = Math.max(stats.normalDeg, ang);
     if (!(ang <= ERROR_BOUNDS.normalDeg)) viol.normal++;
     const q = [gauss(rnd), gauss(rnd), gauss(rnd), gauss(rnd)];
-    const er = rotAngleDeg(q, decodeRotation(encodeRot(...q)));
+    const er = rotAngleDeg(q, decodeRotation(encodeRotation(...q)));
     stats.rotDeg = Math.max(stats.rotDeg, er);
     if (!(er <= ERROR_BOUNDS.rotationDeg)) viol.rot++;
   }
@@ -364,37 +374,46 @@ test('unpack_error_bound', () => {
   assert.deepEqual(viol, { pos: 0, normal: 0, color: 0, fdc: 0, alpha: 0, scale: 0, rot: 0 });
 });
 
-test('reference_encoder_matches_generate', () => {
-  // 골든 입력 규칙(사이드카 inputRule)을 복사본 부호화로 다시 만들어 generate.mjs 결과와 비교(체크섬 4바이트 제외)
-  const same = (a, b) => {
-    assert.equal(a.length, b.length);
-    for (let i = 0; i < a.length; i++) if (i < OFFSETS.checksum || i >= OFFSETS.checksum + 4) assert.equal(a[i], b[i], `byte ${i}`);
-  };
-  {
-    const n = 32;
-    const NORMALS = [[0, 0, 1], [0.6, 0, 0.8], [0, -0.6, -0.8], [0.36, 0.48, 0.8]];
-    const pos = new Float32Array(3 * n), nrm = new Float32Array(3 * n), rgb = new Uint8Array(3 * n);
-    for (let i = 0; i < n; i++) {
-      pos.set([64 + (i % 8) * 0.5, -128 + Math.floor(i / 8) * 0.75, 1 + i * 0.0625], 3 * i);
-      nrm.set(NORMALS[i % 4], 3 * i);
-      rgb.set([i * 8, 255 - i * 8, (i * 37) % 256], 3 * i);
+test('sidecar_stored_matches_golden_and_reference_encoder', () => {
+  // 사이드카의 손계산 stored 값 = 골든 바이트 = generate.mjs 참조 부호기(원본 → 저장 값)
+  const cases = [
+    { file: 'point27.skla', json: 'point27.json', format: FORMAT_POINT27, keys: ['firstPoint', 'lastPoint', 'foldedNormalPoint'] },
+    { file: 'gauss56.skla', json: 'gauss56.json', format: FORMAT_GAUSS56, keys: ['firstPoint', 'lastPoint', 'rotationM3Point'] },
+  ];
+  for (const c of cases) {
+    const bytes = new Uint8Array(readFileSync(new URL(c.file, GOLDEN)));
+    const side = JSON.parse(readFileSync(new URL(c.json, GOLDEN), 'utf8'));
+    const n = side.header.pointCount;
+    for (const key of c.keys) {
+      const pt = side[key];
+      assert.ok(pt, `${c.json} ${key}`);
+      for (const [name, v] of Object.entries(pt.stored)) {
+        assert.equal(readPlane(bytes, c.format, n, name)[pt.index], v, `${c.json} ${key}.${name}`);
+      }
+      const src = pt.source;
+      if (c.format === FORMAT_POINT27) {
+        // 원본은 Float32Array 에 담긴 값으로 부호화된다
+        const nv = Array.from(new Float32Array(src.normal));
+        assert.deepEqual(encodeOct(...nv), [pt.stored.normal_oct_x, pt.stored.normal_oct_y]);
+        assert.deepEqual(encodeOctNormal(...nv), [pt.stored.normal_oct_x, pt.stored.normal_oct_y]);
+      } else {
+        const fdc = new Float32Array(src.rgbTarget.map((t) => (t / 255 - 0.5) / SH_C0));
+        assert.deepEqual(Array.from(fdc, encodeFdc), [pt.stored.color_r, pt.stored.color_g, pt.stored.color_b]);
+        assert.equal(encodeOpacity(Math.fround(src.opacityLogit)), pt.stored.opacity);
+        assert.deepEqual(src.scaleLog.map((v) => encodeScale(Math.fround(v))), [pt.stored.scale_0, pt.stored.scale_1, pt.stored.scale_2]);
+        const rv = Array.from(new Float32Array(src.rotation));
+        assert.equal(encodeRot(...rv), pt.stored.rotation);
+        assert.equal(encodeRotation(...rv), pt.stored.rotation);
+      }
     }
-    same(packPoint27(pos, nrm, rgb, n).file, buildPoint27());
   }
-  {
-    const n = 21;
-    const pos = new Float32Array(3 * n), fdc = new Float32Array(3 * n), opa = new Float32Array(n);
-    const scl = new Float32Array(3 * n), rot = new Float32Array(4 * n);
-    for (let i = 0; i < n; i++) {
-      pos.set([10 + (i % 7), 20 + Math.floor(i / 7) * 2, -2 + i * 0.25], 3 * i);
-      const target = [i * 12, 128, 255 - i * 12];
-      for (let k = 0; k < 3; k++) fdc[3 * i + k] = (target[k] / 255 - 0.5) / SH_C0;
-      opa[i] = (i - 10) * 0.5;
-      scl.set([-6 + i * 0.25, -3.5, -2 - i * 0.125], 3 * i);
-      const half = (i * 7.5 * Math.PI) / 180;
-      rot.set([Math.cos(half), 0, 0, Math.sin(half)], 4 * i);
-    }
-    same(packGauss56(pos, fdc, opa, scl, rot, n).file, buildGauss56());
+  // 참조 부호기와 제품 부호기가 무작위 입력에서도 같다(복사 드리프트 감시)
+  const rnd = mulberry32(0x0610);
+  for (let i = 0; i < 20000; i++) {
+    const v = [gauss(rnd), gauss(rnd), gauss(rnd)];
+    assert.deepEqual(encodeOctNormal(...v), encodeOct(...v));
+    const q = [gauss(rnd), gauss(rnd), gauss(rnd), gauss(rnd)];
+    assert.equal(encodeRotation(...q), encodeRot(...q));
   }
 });
 
@@ -462,6 +481,22 @@ test('unpack_golden_sidecar', () => {
     assert.ok(rotAngleDeg(Array.from(fields.rotations.subarray(80, 84)), l.source.rotation) <= ERROR_BOUNDS.rotationDeg);
     assert.deepEqual(decodeRotation(l.stored.rotation).map(Math.fround), Array.from(fields.rotations.subarray(80, 84)));
     assert.deepEqual(decodeRotation(f.stored.rotation), [1, 0, 0, 0]);
+
+    // m=3 점(8): 저장 w 성분 872 → w = 361/(511√2), z = √(1 − w²)
+    const r = s56.rotationM3Point;
+    assert.equal(r.stored.rotation >>> 30, 3);
+    nearArr(fields.rotations.subarray(4 * r.index, 4 * r.index + 4), r.decodedRotation, 1e-7, 'g56 m=3 rotation');
+    assert.ok(rotAngleDeg(Array.from(fields.rotations.subarray(4 * r.index, 4 * r.index + 4)), r.source.rotation) <= ERROR_BOUNDS.rotationDeg);
+    assert.deepEqual(Array.from(fields.positions.subarray(3 * r.index, 3 * r.index + 3)), r.source.position);
+  }
+  {
+    // 접힘 법선 점(2): 저장 (73, −127) → z<0 접힘 복원 (0, −54, −73)/√8245
+    const { fields } = unpackChunk(p27);
+    const p = s27.foldedNormalPoint;
+    assert.ok(p.source.normal[2] < 0);
+    nearArr(fields.normals.subarray(3 * p.index, 3 * p.index + 3), p.decodedNormal, 1e-7, 'p27 folded normal');
+    assert.ok(vecAngleDeg(Array.from(fields.normals.subarray(3 * p.index, 3 * p.index + 3)), p.source.normal) <= ERROR_BOUNDS.normalDeg);
+    assert.deepEqual(Array.from(fields.positions.subarray(3 * p.index, 3 * p.index + 3)), p.source.position);
   }
 });
 

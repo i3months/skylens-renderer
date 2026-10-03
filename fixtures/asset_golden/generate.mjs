@@ -24,14 +24,16 @@ function fold(u, v) {
   const sv = v >= 0 ? 1 : -1;
   return [(1 - Math.abs(v)) * su, (1 - Math.abs(u)) * sv];
 }
-function encodeOct(x, y, z) {
+/** 법선 팔면체 snorm8(§5.3). 사이드카 손계산 대조용으로 내보낸다. */
+export function encodeOct(x, y, z) {
   const l1 = Math.abs(x) + Math.abs(y) + Math.abs(z);
   let u = x / l1;
   let v = y / l1;
   if (z < 0) [u, v] = fold(u, v);
   return [clamp(round(u * OCT_SNORM_MAX), -OCT_SNORM_MAX, OCT_SNORM_MAX), clamp(round(v * OCT_SNORM_MAX), -OCT_SNORM_MAX, OCT_SNORM_MAX)];
 }
-function encodeRot(w, x, y, z) {
+/** 회전 smallest-three(§5.4). 사이드카 손계산 대조용으로 내보낸다. */
+export function encodeRot(w, x, y, z) {
   let q = [w, x, y, z];
   const len = Math.hypot(...q);
   q = q.map((c) => c / len);
@@ -42,6 +44,12 @@ function encodeRot(w, x, y, z) {
   for (let k = 0; k < 4; k++) if (k !== m) rest.push(clamp(round(q[k] * Math.SQRT2 * ROT_COMPONENT_CENTER) + ROT_COMPONENT_CENTER, 0, ROT_COMPONENT_MAX));
   return ((m << 30) | (rest[0] << 20) | (rest[1] << 10) | rest[2]) >>> 0;
 }
+/** 색 f_dc → c(§5.2). */
+export const encodeFdc = (f) => clamp(round((0.5 + SH_C0 * f) * 255), 0, 255);
+/** 불투명도 로짓 → q(§5.5). */
+export const encodeOpacity = (l) => clamp(round(255 / (1 + Math.exp(-l))), 0, 255);
+/** 크기 ln s → q(§5.6). */
+export const encodeScale = (s) => clamp(round((s - SCALE_LOG_MIN) * SCALE_LOG_STEPS_PER_UNIT), 0, 255);
 
 function bounds(pos, n) {
   const min = [Infinity, Infinity, Infinity];
@@ -136,14 +144,12 @@ export function buildGauss56() {
     scl[3 * i + 2] = -2 - i * 0.125;
     const half = (i * 7.5 * Math.PI) / 180;
     rot.set([Math.cos(half), 0, 0, Math.sin(half)], 4 * i);
-    const col = [0, 1, 2].map((k) => clamp(round((0.5 + SH_C0 * fdc[3 * i + k]) * 255), 0, 255));
+    const col = [0, 1, 2].map((k) => encodeFdc(fdc[3 * i + k]));
     planes.color_r.push(col[0]);
     planes.color_g.push(col[1]);
     planes.color_b.push(col[2]);
-    planes.opacity.push(clamp(round(255 / (1 + Math.exp(-opa[i]))), 0, 255));
-    for (let k = 0; k < 3; k++) {
-      planes[`scale_${k}`].push(clamp(round((scl[3 * i + k] - SCALE_LOG_MIN) * SCALE_LOG_STEPS_PER_UNIT), 0, 255));
-    }
+    planes.opacity.push(encodeOpacity(opa[i]));
+    for (let k = 0; k < 3; k++) planes[`scale_${k}`].push(encodeScale(scl[3 * i + k]));
     planes.rotation.push(encodeRot(rot[4 * i], rot[4 * i + 1], rot[4 * i + 2], rot[4 * i + 3]));
   }
   return assemble(FORMAT_GAUSS56, { segmentId: 7, level: 3, lod: 1, chunkIndex: 2 }, pos, n, planes);
