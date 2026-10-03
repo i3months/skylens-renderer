@@ -6,8 +6,8 @@
 /** @typedef {[number, number, number]} Enu [동, 북, 위] m */
 /** @typedef {[number, number, number]} Scene [x, y, z] = [동, 위, −북] */
 
-/** WGS-84 타원체 상수. 기본 GPS↔ENU 는 skylens `geo.ts` 와 같은 등장방형 근사(EARTH_RADIUS_M)를 쓰고(F-071),
- * 이 상수는 참고용 정확식(server/geo/enu 의 gpsToEnuExact)과 client/geo 가 쓴다. */
+/** WGS-84 타원체 상수. 기본 GPS↔ENU 는 skylens `geo.ts` 와 같은 등장방형 근사(EARTH_RADIUS_M = 6378137)를 쓰고(F-071),
+ * 이 상수는 정확한 변형 함수(gpsToEnuExact, enuToGpsExact)에서만 쓴다. */
 export const WGS84 = Object.freeze({ a: 6378137, f: 1 / 298.257223563 });
 
 export class GeoError extends Error {
