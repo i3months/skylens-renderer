@@ -33,6 +33,62 @@ test('boxMayBeVisible: 좌 경계(u = 0)의 등호는 안, 바깥은 밖', () =>
   assert.equal(boxMayBeVisible(CAM, [x - 1, 0, 10], [x - 0.01, 0.1, 10]), false);
 });
 
+// F-102 ①: 평면 네 개 각각의 경계 직전·경계·직후·완전히 밖. 모든 상자는 z = 9 의 얇은 판(mn.z = mx.z = 9)이다.
+// 손계산(fx = fy = 90, cx = 160, cy = 90, W = 320, H = 180, z = 9):
+//   왼쪽  90x + 160·9 ≥ 0   ⇔ x ≥ −16        오른쪽  90x + (160 − 320)·9 ≤ 0 ⇔ x ≤ 16
+//   위    90y +  90·9 ≥ 0   ⇔ y ≥ −9         아래    90y + (90 − 180)·9  ≤ 0 ⇔ y ≤ 9
+// 경계 값이 모두 정수라 부동소수 오차 없이 등호가 정확히 0 이 된다. 시험 상자는 다른 평면에는 확실히 안쪽이다.
+const slab = (x0, x1, y0, y1) => [CAM, [x0, y0, 9], [x1, y1, 9]];
+
+test('boxMayBeVisible: 오른쪽 평면 x = 16 (직전·경계·직후·완전히 밖)', () => {
+  assert.equal(boxMayBeVisible(...slab(16.001, 17, 0, 1)), false, '직후(최소 x 16.001)');
+  assert.equal(boxMayBeVisible(...slab(16, 17, 0, 1)), true, '경계(최소 x = 16, 등호는 안)');
+  assert.equal(boxMayBeVisible(...slab(15.999, 17, 0, 1)), true, '직전(최소 x 15.999)');
+  assert.equal(boxMayBeVisible(...slab(20, 21, 0, 1)), false, '완전히 밖');
+  assert.equal(boxMayBeVisible(...slab(10, 11, 0, 1)), true, '안쪽 상자');
+});
+
+test('boxMayBeVisible: 왼쪽 평면 x = −16 (직전·경계·직후·완전히 밖)', () => {
+  assert.equal(boxMayBeVisible(...slab(-17, -16.001, 0, 1)), false, '직후(최대 x −16.001)');
+  assert.equal(boxMayBeVisible(...slab(-17, -16, 0, 1)), true, '경계(최대 x = −16)');
+  assert.equal(boxMayBeVisible(...slab(-17, -15.999, 0, 1)), true, '직전(최대 x −15.999)');
+  assert.equal(boxMayBeVisible(...slab(-21, -20, 0, 1)), false, '완전히 밖');
+});
+
+test('boxMayBeVisible: 위 평면 y = −9 (직전·경계·직후·완전히 밖)', () => {
+  assert.equal(boxMayBeVisible(...slab(0, 1, -10, -9.001)), false, '직후(최대 y −9.001)');
+  assert.equal(boxMayBeVisible(...slab(0, 1, -10, -9)), true, '경계(최대 y = −9)');
+  assert.equal(boxMayBeVisible(...slab(0, 1, -10, -8.999)), true, '직전(최대 y −8.999)');
+  assert.equal(boxMayBeVisible(...slab(0, 1, -20, -15)), false, '완전히 밖');
+});
+
+test('boxMayBeVisible: 아래 평면 y = 9 (직전·경계·직후·완전히 밖)', () => {
+  assert.equal(boxMayBeVisible(...slab(0, 1, 9.001, 10)), false, '직후(최소 y 9.001)');
+  assert.equal(boxMayBeVisible(...slab(0, 1, 9, 10)), true, '경계(최소 y = 9)');
+  assert.equal(boxMayBeVisible(...slab(0, 1, 8.999, 10)), true, '직전(최소 y 8.999)');
+  assert.equal(boxMayBeVisible(...slab(0, 1, 15, 20)), false, '완전히 밖');
+});
+
+test('boxMayBeVisible: 네 평면 밖 상자는 select·budget 에서도 NOT_DRAWN, 안쪽은 그려짐', () => {
+  // z 20..20.001 판, 점 두 개. 평면 값은 z = 20 에서 x ∈ [−35.55.., 35.55..], y ∈ [−20, 20].
+  const mk = (x, y) => {
+    const pts = [x, y, 20, x + 0.001, y + 0.001, 20.001];
+    const cloud = { format: 1, count: 2, positions: Float32Array.from(pts), normals: new Float32Array(6), colors: new Uint8Array(6) };
+    return buildHierarchy(cloud, { edge0M: 0.25, levelCount: 3, maxLeafPoints: 64 });
+  };
+  for (const [name, x, y, vis] of [
+    ['오른쪽 밖(x 60)', 60, 0, false], ['왼쪽 밖(x −60)', -60, 0, false],
+    ['위 밖(y −40)', 0, -40, false], ['아래 밖(y 40)', 0, 40, false], ['안', 0, 0, true],
+  ]) {
+    const h = mk(x, y);
+    const a = selectLevels(h, CAM, { thresholdPx: 1 }).leafLevel[0];
+    const b = selectWithBudget(h, CAM, { budgetPoints: 1000, thresholdPx: 1 }).leafLevel[0];
+    assert.equal(a !== NOT_DRAWN, vis, `select ${name}`);
+    assert.equal(b !== NOT_DRAWN, vis, `budget ${name}`);
+    assert.equal(progressiveChunks(h, CAM, { thresholdPx: 1 }).length > 0, vis, `progressive ${name}`);
+  }
+});
+
 test('경계 통일: 앞쪽 z = 5e-7 만 걸친 리프를 select·budget·progressive 모두 버리지 않음', () => {
   const h = oneLeafHierarchy(-1, 5e-7);
   const sel = selectLevels(h, CAM, { thresholdPx: 1 });
