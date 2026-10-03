@@ -124,3 +124,13 @@ export function pointMultiset(planes) {
   rows.sort();
   return rows;
 }
+
+/**
+ * 스트림별 원바이트(entropy rawLen) 허용 범위 [최소, 최대]. 서버·클라이언트가 같은 표를 쓴다(F-169).
+ * 범위 밖이면 CodecError('limit'). n = 헤더 point_count.
+ * @param {number} n
+ * @returns {{pos: [number, number], normal: [number, number], color: [number, number]}}
+ */
+export function streamRawBounds(n) {
+  return { pos: [n, 7 * n], normal: [2 * n, 6 * n], color: [Math.min(n + 5, 3 * n + 1), 3 * n + 770] };
+}
