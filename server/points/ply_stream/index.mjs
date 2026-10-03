@@ -107,7 +107,7 @@ export async function* readPlyStream(source, opts) {
       const end = headLen + found + 1;
       const head = Buffer.concat([...headParts, block.subarray(0, blockLen), raw.subarray(0, found + 1)], end);
       headParts = null; block = null;
-      try { hdr = parsePlyHeader(head); } catch (e) { throw new PointsError('header', e.message); }
+      try { hdr = parsePlyHeader(head); } catch (e) { throw new PointsError(/vertex count out of range/.test(e.message) ? 'range' : 'header', e.message); } // 안전 정수 초과 점 수는 range
       if (!(hdr.vertexCount <= MAX_VERTEX_COUNT)) throw new PointsError('range', `vertexCount ${hdr.vertexCount}`);
       format = detectFormat(hdr.properties);
       if (!format) throw new PointsError('format', 'unknown vertex layout');
