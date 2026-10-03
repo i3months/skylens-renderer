@@ -21,3 +21,17 @@ test('andMasks·chunksOfMask', () => {
   assert.deepEqual([...chunksOfMask(m)], [0, 3]);
   assert.equal(chunksOfMask(new Uint8Array(3)).length, 0);
 });
+
+test('andMasks: 다른 길이는 오류', () => {
+  assert.throws(() => andMasks([new Uint8Array([1, 1, 0, 1])], 3), /^Error: cull:/);
+  assert.throws(() => andMasks([new Uint8Array([1, 1])], 4), /^Error: cull:/);
+});
+
+test('andMasks: 값 2 는 오류', () => {
+  assert.throws(() => andMasks([new Uint8Array([0, 2, 1])], 3), /^Error: cull:/);
+});
+
+test('andMasks: 빈 목록은 모두 1', () => {
+  const m = andMasks([], 3);
+  assert.deepEqual([...m], [1, 1, 1]);
+});

@@ -52,6 +52,8 @@
 /** 컬링 단계 이름(통계·사유 표기용). */
 export const CULL_STAGES = Object.freeze(['frustum', 'backface', 'occlusion', 'distance']);
 
+/** 뒷면 제거의 정의: 법선이 카메라를 등진 점도 렌더는 그린다. 뒷면 단계는 화면 결과가 달라지지 않을 때만 리프를 0 으로 한다(앞면으로 그려진 점이 있거나, 뒷면 점이 가림막에 덮이지 않으면 남김). */
+
 /** 거짓 제거 판정 기준: 보이는 리프(참조 래스터 index 로 확인)가 제거되면 거짓 제거다. 허용 0. */
 export const MAX_FALSE_REMOVALS = 0;
 /** T08.2 법선 컬링이 렌더 결과에 주는 SSIM 변화 상한 (SPEC 성공 기준). */
@@ -63,9 +65,9 @@ export const COMBINE_MIN_SSIM = 0.95;
 export const CULL_API = Object.freeze({
   degenerate: { module: 'server/cull/degenerate/index.mjs', fn: 'isDegenerateView(camera) -> boolean ; emptyMask(hierarchy) -> LeafMask(전부 0) ; assertHierarchyForCull(hierarchy) -> void ("cull:" 오류)' },
   frustum: { module: 'server/cull/frustum/index.mjs', fn: 'frustumCull(hierarchy, camera, {pointSizeM?}) -> LeafMask   리프 상자의 점이 지름 pointSizeM(m) 원판으로 그려져도 화면에 확실히 안 걸칠 때만 0(좌·우·위·아래 평면을 원판 반경 fx·pointSizeM/(2z) px 만큼 바깥으로 민다). pointSizeM 이 없으면 좌·우·위·아래로는 제거 없음(앞 z > 0 만). 퇴화 시점이면 전부 0' },
-  backface: { module: 'server/cull/backface/index.mjs', fn: 'leafNormalCones(hierarchy) -> NormalCones ; backfaceCull(hierarchy, camera, cones) -> LeafMask   리프의 모든 점이 카메라를 등지는 것이 확실할 때만 0' },
-  occlusion: { module: 'server/cull/occlusion/index.mjs', fn: 'buildDepthPyramid(hierarchy, camera, {size=64}) -> {size, levels:Float32Array[]}   CPU 거친 깊이 피라미드(칸마다 가장 가까운 깊이의 보수적 하한이 아닌 "가림막" 깊이 = 칸 안 모든 픽셀이 이보다 가깝게 채워진 깊이의 최댓값) ; occlusionCull(hierarchy, camera, pyramid?) -> LeafMask   리프 상자 전체가 가림막 뒤일 때만 0' },
-  distance: { module: 'server/cull/distance/index.mjs', fn: 'distanceCull(hierarchy, camera, {maxDistanceM}) -> LeafMask   카메라 중심~상자 최소 거리 > maxDistanceM 이면 0 (경계 = 남김)' },
+  backface: { module: 'server/cull/backface/index.mjs', fn: 'leafNormalCones(hierarchy) -> NormalCones ; backfaceCull(hierarchy, camera, cones, {pointSizeM?, requireCover?, marginDeg?}) -> LeafMask   리프의 모든 점이 카메라를 등지는 것이 확실할 때만 0' },
+  occlusion: { module: 'server/cull/occlusion/index.mjs', fn: 'buildDepthPyramid(hierarchy, camera, {size=64, pointSizeM?, occluderLevel?, occluderMask?}) -> {size, levels:Float32Array[]}   CPU 거친 깊이 피라미드(칸마다 가장 가까운 깊이의 보수적 하한이 아닌 "가림막" 깊이 = 칸 안 모든 픽셀이 이보다 가깝게 채워진 깊이의 최댓값) ; occlusionCull(hierarchy, camera, pyramid?) -> LeafMask   리프 상자 전체가 가림막 뒤일 때만 0' },
+  distance: { module: 'server/cull/distance/index.mjs', fn: 'distanceCull(hierarchy, camera, {maxDistanceM}) -> LeafMask   카메라 중심~상자 최소 거리 > maxDistanceM 이면 0 (경계 = 남김) [maxDistanceM 기준 미정(의사결정 대기)]' },
   predict: { module: 'server/cull/predict/index.mjs', fn: 'predictCamera(camera, {velocityMps, angularRadPerS}, dtS) -> Camera ; predictiveMask(hierarchy, state, {horizonS, steps, pointSizeM?}) -> LeafMask   현재와 예측 시점들의 frustumCull 합집합(OR)' },
   priority: { module: 'server/cull/priority/index.mjs', fn: 'leafPriority(hierarchy, camera) -> Float64Array(leafCount)   화면 기여 점수(클수록 먼저) ; orderChunks(hierarchy, camera, mask) -> Uint32Array   남은 리프를 점수 내림차순(동률은 번호 작은 쪽)' },
   client: { module: 'client/cull/index.mjs', fn: 'clientFrustumCull(leafBoxes, camera, {pointSizeM?}) -> Uint8Array   leafBoxes = {boxMin:Float32Array(3·n), boxMax:Float32Array(3·n)}(리프 번호 순); 같은 pointSizeM 의 서버 frustumCull 과 같은 마스크(없으면 좌·우·위·아래 제거 없음)' },
