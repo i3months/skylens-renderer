@@ -121,7 +121,7 @@ export function leafPriority(hierarchy, camera) {
   if (degenerateCamera(camera)) return out;
   const node = new Int32Array(oc.leafCount).fill(-1);
   for (let i = 0; i < oc.nodeCount; i++) if (oc.leafIndex[i] >= 0) node[oc.leafIndex[i]] = i;
-  const wins = coarseWins(hierarchy, camera);
+  const wins = guardHierarchyRead(() => coarseWins(hierarchy, camera)); // levels[0] 접근자 예외도 cull: 오류로(F-148)
   const P = new Float64Array(24);
   for (let k = 0; k < oc.leafCount; k++) {
     const nd = node[k];
