@@ -50,6 +50,16 @@ export function isDegenerateView(camera) {
  * 값이 NaN·Infinity·0 이하·비회전인 것은 구조 오류가 아니라 퇴화 시점이다(isDegenerateView 가 판정).
  */
 export function assertCameraShape(camera) {
+  try {
+    assertCameraShapeBody(camera);
+  } catch (e) {
+    // 접근자(getter)·Proxy 가 던져도 원래 오류가 새지 않게 'cull:' 로 감싼다(F-143 ⑨).
+    if (String(e?.message ?? e).startsWith('cull:')) throw e;
+    throw new Error(`cull: 카메라 필드를 읽지 못함: ${String(e?.message ?? e)}`, { cause: e });
+  }
+}
+
+function assertCameraShapeBody(camera) {
   const ERR = 'cull:';
   if (!camera || typeof camera !== 'object') throw new Error(`${ERR} 카메라가 객체가 아님`);
   const { K, R, t } = camera;
