@@ -109,6 +109,8 @@ export function clientFrustumCull(leafBoxes, camera, opts) {
   const { boxMin, boxMax } = leafBoxes;
   if (boxMin.length % 3 !== 0 || boxMin.length !== boxMax.length) throw new Error(`${ERR} boxMin·boxMax 는 같은 길이의 3의 배수여야 함`);
   const n = boxMin.length / 3;
+  // F-148 ②: 상자 0 개는 빈 마스크가 아니라 구조 오류(계약: 빈 마스크를 돌려주지 않는다). 카메라 검사·퇴화 판정보다 먼저.
+  if (n < 1) throw new Error(`${ERR} 상자가 0 개(n < 1): 빈 마스크를 돌려주지 않음`);
   const out = new Uint8Array(n);
   assertCameraShapeClient(camera);
   if (isDegenerateViewClient(camera)) return out;
