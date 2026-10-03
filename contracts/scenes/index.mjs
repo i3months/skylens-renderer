@@ -72,7 +72,10 @@ export function point27ToGauss56(c, sigma = 0.05) {
   const scales = new Float32Array(3 * n).fill(Math.log(sigma));
   const rotations = new Float32Array(4 * n);
   for (let i = 0; i < n; i++) rotations[4 * i] = 1;
-  return { format: FORMAT_GAUSS56, count: n, positions: Float32Array.from(c.positions), fdc, opacity, scales, rotations };
+  // positions 는 입력 점군과 버퍼를 공유한다(복사 없음: 250만 점에서 30 MB 절약). 안전한 이유: 이 모듈과 모든 장면은
+  // 점군을 만든 뒤 변경하지 않고, makeResult 는 27 B 점군을 결과에 남기지 않는다(format 2 결과만 반환). 호출자가 입력의
+  // positions 를 이후 직접 고치면 결과도 바뀌므로, 그런 호출자는 먼저 복사해서 넘겨야 한다.
+  return { format: FORMAT_GAUSS56, count: n, positions: c.positions, fdc, opacity, scales, rotations };
 }
 
 /**
@@ -82,6 +85,7 @@ export function point27ToGauss56(c, sigma = 0.05) {
  * @returns {SceneResult}
  */
 export function makeResult(scene, seed, format, cloud27, truth) {
+  format = checkFormat(format);
   const cloud = format === FORMAT_GAUSS56 ? point27ToGauss56(cloud27) : cloud27;
   return { scene, seed, format, count: cloud.count, cloud, truth };
 }
@@ -144,9 +148,26 @@ export function assertSceneResult(r, expect = {}) {
     if (!(c[k] instanceof T) || c[k].length !== m * n) bad(`${k} 열 길이/형`);
   }
   for (let i = 0; i < 3 * n; i++) if (!Number.isFinite(c.positions[i])) bad(`positions[${i}] 비유한`);
+  if (r.format === FORMAT_POINT27) {
+    // 법선: 유한이고 단위 길이(허용 1e-3). 27 B 는 법선 3 float 를 그대로 싣는다.
+    for (let i = 0; i < n; i++) {
+      const x = c.normals[3 * i], y = c.normals[3 * i + 1], z = c.normals[3 * i + 2];
+      const len = Math.hypot(x, y, z);
+      if (!Number.isFinite(len)) bad(`normals[${i}] 비유한`);
+      if (Math.abs(len - 1) > 1e-3) bad(`normals[${i}] 단위 길이 아님(${len})`);
+    }
+  }
   const t = r.truth;
   if (!t || !Array.isArray(t.bounds?.min) || !Array.isArray(t.bounds?.max)) bad('truth.bounds {min,max} 없음');
-  if (JSON.stringify(t) === undefined) bad('truth 는 JSON 직렬화 가능해야 함');
+  // truth 안의 비유한 수(NaN/Infinity)는 JSON 에서 null 이 되어 조용히 사라지므로 직접 찾는다.
+  const seen = new Set();
+  const scan = (v, path) => {
+    if (typeof v === 'number') { if (!Number.isFinite(v)) bad(`truth${path} 비유한 수`); return; }
+    if (v === null || typeof v !== 'object' || seen.has(v)) return;
+    seen.add(v);
+    for (const k of Object.keys(v)) scan(v[k], `${path}.${k}`);
+  };
+  scan(t, '');
   for (let a = 0; a < 3; a++) if (!(t.bounds.min[a] <= t.bounds.max[a])) bad('truth.bounds min>max');
 }
 

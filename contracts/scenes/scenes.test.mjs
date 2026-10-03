@@ -80,3 +80,69 @@ test('check_format_only_1_or_2', () => {
   assert.equal(checkFormat(undefined), 1); assert.equal(checkFormat(2), 2);
   for (const v of [3, 0, '1', null]) assert.throws(() => checkFormat(v), /format/);
 });
+
+// ---- F-083: 56 B 포장 검사(장면 모듈에 의존하지 않는 인라인 점군) ----
+const C0 = 0.28209479177387814;
+const f32 = Math.fround;
+test('pack56_offsets_per_field', () => {
+  const c = cloud(6);
+  const g = makeResult('terrain', 1, FORMAT_GAUSS56, c, truth).cloud;
+  const b = packRecords(g); const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  assert.equal(b.length, 56 * 6);
+  for (let i = 0; i < 6; i++) {
+    const o = 56 * i; const F = (k) => dv.getFloat32(o + 4 * k, true);
+    for (let k = 0; k < 3; k++) assert.equal(F(k), c.positions[3 * i + k], `위치 ${i}/${k}`);
+    for (let k = 0; k < 3; k++) assert.ok(Math.abs(F(3 + k) - (c.colors[3 * i + k] / 255 - 0.5) / C0) < 1e-5, `f_dc ${i}/${k}`);
+    assert.ok(Math.abs(F(6) - Math.log(9)) < 1e-6, 'opacity 로짓 = logit(0.9)');
+    for (let k = 0; k < 3; k++) assert.ok(Math.abs(F(7 + k) - Math.log(0.05)) < 1e-6, `scale ${k} = ln 0.05`);
+    assert.deepEqual([F(10), F(11), F(12), F(13)], [1, 0, 0, 0]);
+  }
+});
+test('format1_and_2_share_positions_from_same_input', () => {
+  const r1 = makeResult('terrain', 1, FORMAT_POINT27, cloud(20), truth);
+  const r2 = makeResult('terrain', 1, FORMAT_GAUSS56, cloud(20), truth);
+  assert.deepEqual([...r2.cloud.positions], [...r1.cloud.positions]);
+  assert.ok(r2.cloud.positions.some((x) => x !== 0));
+});
+test('gauss56_fdc_inverse_recovers_colors', () => {
+  const c = cloud(30);
+  const g = point27ToGauss56(c);
+  for (let i = 0; i < 90; i++) assert.ok(Math.abs((g.fdc[i] * C0 + 0.5) * 255 - c.colors[i]) < 1e-2, `fdc ${i}`);
+});
+test('gauss56_scales_are_log_sigma', () => {
+  const g = point27ToGauss56(cloud(4), 0.05);
+  for (const s of g.scales) assert.ok(Math.abs(s - Math.log(0.05)) < 1e-6);
+  assert.ok(g.scales[0] < 0, '로그 값이면 음수(σ=0.05 그대로면 양수)');
+  const h = point27ToGauss56(cloud(2), 2);
+  assert.ok(Math.abs(h.scales[0] - Math.log(2)) < 1e-6);
+});
+
+// ---- F-085 ⑦ / F-086 ② / F-088 ④ ----
+test('assert_result_rejects_bounds_min_gt_max_seed_and_format_mismatch', () => {
+  const ok = () => makeResult('terrain', 3, FORMAT_POINT27, cloud(4), truth);
+  assert.throws(() => assertSceneResult({ ...ok(), truth: { bounds: { min: [0, 0, 5], max: [1, 1, 1] } } }), /min>max/);
+  for (const seed of [-1, 2 ** 32, 1.5, NaN]) assert.throws(() => assertSceneResult({ ...ok(), seed }), /seed/);
+  assert.throws(() => assertSceneResult({ ...ok(), format: FORMAT_GAUSS56 }), /format/);
+  const g = makeResult('terrain', 3, FORMAT_GAUSS56, cloud(4), truth);
+  assert.throws(() => assertSceneResult({ ...g, format: FORMAT_POINT27 }), /format/);
+});
+test('assert_result_rejects_nonfinite_numbers_in_truth', () => {
+  const mk = (t) => makeResult('terrain', 3, FORMAT_POINT27, cloud(4), t);
+  const b = { min: [0, 0, 0], max: [1, 1, 1] };
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    assert.throws(() => assertSceneResult(mk({ bounds: b, extra: { deep: [1, bad] } })), /비유한/);
+    assert.throws(() => assertSceneResult(mk({ bounds: { min: [0, 0, 0], max: [1, 1, bad] } })), /비유한|min>max/);
+  }
+  assertSceneResult(mk({ bounds: b, extra: { deep: [1, 2] } }));
+});
+test('make_result_rejects_bad_format', () => {
+  for (const f of [3, 0, '1', null]) assert.throws(() => makeResult('terrain', 1, f, cloud(2), truth), /format/);
+  assert.equal(makeResult('terrain', 1, undefined, cloud(2), truth).format, 1);
+});
+test('assert_result_checks_27b_normals_finite_and_unit', () => {
+  const ok = () => makeResult('terrain', 3, FORMAT_POINT27, cloud(4), truth);
+  assertSceneResult(ok());
+  for (const v of [NaN, Infinity]) { const r = ok(); r.cloud.normals[4] = v; assert.throws(() => assertSceneResult(r), /normals/); }
+  const z = ok(); z.cloud.normals.fill(0); assert.throws(() => assertSceneResult(z), /단위 길이/);
+  const l = ok(); l.cloud.normals[3] = 0.5; l.cloud.normals[4] = 1; assert.throws(() => assertSceneResult(l), /단위 길이/);
+});
