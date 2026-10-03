@@ -17,3 +17,6 @@ export function sceneToEnu(s) { return [s[0], -s[2], s[1]]; }
 export class GeoError extends Error {
   constructor(code, message) { super(`geo: ${code}: ${message}`); this.name = 'GeoError'; this.code = code; }
 }
+
+/** skylens src/shared/geo.ts 의 지구 반경 R(m). GPS↔ENU 소영역 등장방형 근사가 쓴다(F-071). */
+export const EARTH_RADIUS_M = 6378137;
