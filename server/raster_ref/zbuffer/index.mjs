@@ -1,7 +1,8 @@
 // T06.5 깊이 버퍼 래스터: 점마다 원판(splat)을 그리고 픽셀마다 가장 가까운 점을 남긴다.
 // 같은 깊이면 먼저 온(번호 작은) 점이 이긴다(엄격 < 로만 갱신). 빈 픽셀은 메우지 않는다.
+// 56 B 점의 opacity·scale·rot 는 쓰지 않고 pointSizeM 고정 원판으로 그린다(contracts/raster 문구 참조).
 // 이 단계의 색은 점 색 그대로다(셰이딩은 별도 하위 작업).
-import { assertCamera, assertRenderResult, emptyResult } from '../../../contracts/raster/index.mjs';
+import { assertCamera, assertRenderResult, emptyResult, pointCount } from '../../../contracts/raster/index.mjs';
 import { projectMany } from '../project/index.mjs';
 import { radiusUnchecked, splatPixels } from '../splat/index.mjs';
 
@@ -36,14 +37,13 @@ function pointColors(cloud) {
  */
 export function renderPointsWith(camera, cloud, opts, wins) {
   assertCamera(camera);
-  if (!cloud || !(cloud.positions instanceof Float32Array) || cloud.positions.length % 3 !== 0) throw new Error(`${ERR} cloud.positions 는 길이가 3 의 배수인 Float32Array 여야 함`);
+  const n = pointCount(cloud); // 점 수 정의는 no_fill 과 공유(count 불일치는 'raster:' 오류)
   const pointSizeM = opts?.pointSizeM ?? 0.05;
   if (typeof pointSizeM !== 'number' || !Number.isFinite(pointSizeM) || !(pointSizeM > 0)) throw new Error(`${ERR} pointSizeM 은 양의 유한 수여야 함: ${String(pointSizeM)}`);
   const validate = opts?.validate ?? true;
   const { width, height } = camera;
   const fx = camera.K.fx;
   const res = emptyResult(width, height);
-  const n = cloud.positions.length / 3;
   if (n === 0) {
     if (validate) assertRenderResult(res);
     return res;
