@@ -7,7 +7,7 @@
 //
 // 순서:
 //   0) 입력 검사(계층·카메라 구조·옵션) — 틀리면 'cull:' 오류.
-//   1) 퇴화 시점(NaN·Infinity, 해상도·초점거리 ≤ 0, R 이 회전이 아님)이면 던지지 않고 빈 결과:
+//   1) 퇴화 시점(isDegenerateView: 래스터 카메라 조건의 상위집합 — NaN·Infinity, 해상도·초점거리 ≤ 0, 시야각 하한 미만, 해상도 상한 초과, R 이 회전이 아님, t 가 유한 3-벡터가 아님 등)이면 던지지 않고 빈 결과:
 //      mask 전부 0, chunks 비움, leafLevel 전부 NOT_DRAWN, pointCount 0, stats.degenerate = true.
 //      opts.pointSizeM(래스터 원판 지름 m)은 stageOpts 로 모든 단계에 전달된다. 없으면 거리 단계처럼 가림 단계는 아무것도 버리지 않는다.
 //      (LOD 선택 selectLevels 도 pointSizeM 이 있으면 같은 원판 규칙을 쓴다.)
@@ -21,8 +21,7 @@
 //      (그릴 점이 없는 조각을 전송·정렬 대상으로 만들지 않는다). stats.kept 는 chunks 길이.
 import { CULL_API, CULL_STAGES, andMasks, chunksOfMask, assertLeafMask } from '../../../contracts/cull/index.mjs';
 import { NOT_DRAWN } from '../../../contracts/lod/index.mjs';
-import { assertCamera } from '../../../contracts/raster/index.mjs';
-import { isDegenerateView } from '../degenerate/index.mjs';
+import { isDegenerateView, assertCameraShape } from '../degenerate/index.mjs';
 import { selectLevels, assertHierarchyInput } from '../../lod/select/index.mjs';
 
 const ERR = 'cull:';
@@ -30,6 +29,15 @@ const STAT_KEY = Object.freeze({ frustum: 'removedFrustum', backface: 'removedBa
 
 /** 기본 단계 순서(계약의 CULL_STAGES). */
 export const DEFAULT_STAGES = CULL_STAGES;
+
+// 계층마다 법선 원뿔은 한 번만 만든다. 호출(loadDefaultImpls)마다 새로 만들지 않도록 모듈 수준에 둔다(계층 객체가 사라지면 같이 사라진다).
+const coneCache = new WeakMap();
+/** 계층의 법선 원뿔을 캐시해서 돌려준다. compute 는 처음 한 번만 불린다(주입은 시험용). */
+export function cachedNormalCones(hierarchy, compute) {
+  let c = coneCache.get(hierarchy);
+  if (c === undefined) { c = compute(hierarchy); coneCache.set(hierarchy, c); }
+  return c;
+}
 
 const repoUrl = (rel) => new URL(`../../../${rel}`, import.meta.url).href;
 
@@ -42,15 +50,13 @@ export async function loadDefaultImpls() {
   const [deg, fr, bf, oc, di, pr] = await Promise.all(
     ['degenerate', 'frustum', 'backface', 'occlusion', 'distance', 'priority'].map((k) => import(repoUrl(CULL_API[k].module))),
   );
-  const cones = new WeakMap(); // 계층마다 법선 원뿔은 한 번만 만든다
   const stageImpls = {
     // pointSizeM 은 래스터 원판 지름(m). 없으면 절두체는 좌·우·위·아래로 버리지 않고, 가림은 아무것도 버리지 않는다(보수적).
     frustum: (h, cam, o) => fr.frustumCull(h, cam, { pointSizeM: o.pointSizeM }),
     // 뒷면 단계의 덮임 판정은 래스터 원판 지름이 필요하다. 없으면(0 포함) 가림 단계처럼 아무것도 버리지 않는다(F-123).
     backface: (h, cam, o) => {
       if (o.pointSizeM === undefined || o.pointSizeM === 0) return new Uint8Array(h.octree.leafCount).fill(1);
-      if (!cones.has(h)) cones.set(h, bf.leafNormalCones(h));
-      return bf.backfaceCull(h, cam, cones.get(h), { pointSizeM: o.pointSizeM });
+      return bf.backfaceCull(h, cam, cachedNormalCones(h, bf.leafNormalCones), { pointSizeM: o.pointSizeM });
     },
     occlusion: (h, cam, o) => (o.pointSizeM === undefined || o.pointSizeM === 0
       ? new Uint8Array(h.octree.leafCount).fill(1)
@@ -75,21 +81,6 @@ export async function cullAndSelectDefault(hierarchy, camera, opts = {}) {
     orderChunks: opts.orderChunks ?? d.orderChunks,
     isDegenerateView: opts.isDegenerateView ?? d.isDegenerateView,
   });
-}
-
-/** 카메라 구조 검사(구조 위반만 오류; 값이 NaN·0 이하·비회전인 것은 퇴화 시점으로 넘긴다). */
-function assertCameraShape(camera) {
-  if (!camera || typeof camera !== 'object') throw new Error(`${ERR} 카메라가 객체가 아님`);
-  const { K, R, t } = camera;
-  if (typeof camera.width !== 'number' || typeof camera.height !== 'number') throw new Error(`${ERR} 카메라 width·height 는 수여야 함`);
-  if (!K || typeof K !== 'object' || !['fx', 'fy', 'cx', 'cy'].every((n) => typeof K[n] === 'number')) throw new Error(`${ERR} 카메라 K 는 fx·fy·cx·cy 수를 가진 객체여야 함`);
-  if (!Array.isArray(R) || R.length !== 9 || !R.every((x) => typeof x === 'number')) throw new Error(`${ERR} 카메라 R 은 수 9개 배열이어야 함`);
-  if (!Array.isArray(t) || t.length !== 3 || !t.every((x) => typeof x === 'number')) throw new Error(`${ERR} 카메라 t 는 수 3개 배열이어야 함`);
-}
-
-/** 주입이 없을 때의 퇴화 판정: 계약상 퇴화 조건은 raster 카메라 검사 실패와 같다(구조 검사는 앞에서 끝남). */
-function localIsDegenerate(camera) {
-  return isDegenerateView(camera);
 }
 
 function assertOpts(opts) {
@@ -139,7 +130,7 @@ export function cullAndSelect(hierarchy, camera, opts) {
   const stages = assertOpts(opts);
   const leafCount = hierarchy.octree.leafCount;
 
-  const degenerate = (opts.isDegenerateView ?? localIsDegenerate)(camera);
+  const degenerate = (opts.isDegenerateView ?? isDegenerateView)(camera);
   if (degenerate) {
     return {
       cull: { mask: new Uint8Array(leafCount), chunks: new Uint32Array(0), stats: { ...emptyStats(leafCount), degenerate: true } },

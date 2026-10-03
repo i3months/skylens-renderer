@@ -5,7 +5,7 @@
 // 빈 리프(levels[0] 구간이 빈 리프)는 그릴 점이 없으므로 0. 퇴화 시점이면 던지지 않고 전부 0.
 import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 
-import { isDegenerateView } from '../degenerate/index.mjs';
+import { isDegenerateView, degenerateCamera } from '../degenerate/index.mjs';
 
 const ERR = 'cull:';
 
@@ -46,7 +46,7 @@ export function frustumCull(hierarchy, camera, opts) {
   const pointSizeM = pointSizeOf(opts);
   const oc = hierarchy.octree;
   const mask = new Uint8Array(oc.leafCount);
-  if (isDegenerateView(camera)) return mask;
+  if (degenerateCamera(camera)) return mask;
   const ls = hierarchy.levels[0].leafStart;
   const mn = [0, 0, 0], mx = [0, 0, 0];
   for (let node = 0; node < oc.nodeCount; node++) {

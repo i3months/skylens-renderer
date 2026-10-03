@@ -12,7 +12,7 @@
 // 퇴화 시점(카메라가 유한하지 않거나 해상도·초점거리 ≤ 0): 던지지 않고 전부 0 점수 / 빈 목록.
 // 입력 오류(계층·마스크)는 'cull:' 오류.
 
-import { isDegenerateView } from '../degenerate/index.mjs';
+import { degenerateCamera } from '../degenerate/index.mjs';
 
 const ERR = 'cull:';
 const NEAR_M = 0.01;
@@ -109,7 +109,7 @@ export function leafPriority(hierarchy, camera) {
   assertHierarchy(hierarchy);
   const oc = hierarchy.octree;
   const out = new Float64Array(oc.leafCount);
-  if (isDegenerateView(camera)) return out;
+  if (degenerateCamera(camera)) return out;
   const node = new Int32Array(oc.leafCount).fill(-1);
   for (let i = 0; i < oc.nodeCount; i++) if (oc.leafIndex[i] >= 0) node[oc.leafIndex[i]] = i;
   const wins = coarseWins(hierarchy, camera);
@@ -133,7 +133,7 @@ export function orderChunks(hierarchy, camera, mask) {
   const n = hierarchy.octree.leafCount;
   if (!(mask instanceof Uint8Array) || mask.length !== n) throw new Error(`${ERR} 마스크는 길이 ${n} 의 Uint8Array 여야 함`);
   for (let i = 0; i < n; i++) if (mask[i] !== 0 && mask[i] !== 1) throw new Error(`${ERR} 마스크[${i}] = ${mask[i]} 는 0/1 이 아님`);
-  if (isDegenerateView(camera)) return new Uint32Array(0); // 퇴화 시점: 계약(T08.10)상 아무것도 남기지 않는다
+  if (degenerateCamera(camera)) return new Uint32Array(0); // 퇴화 시점: 계약(T08.10)상 아무것도 남기지 않는다
   const score = leafPriority(hierarchy, camera);
   const ids = [];
   for (let i = 0; i < n; i++) if (mask[i]) ids.push(i);

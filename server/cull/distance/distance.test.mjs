@@ -284,24 +284,25 @@ test('거리 컬링: 큰 좌표에서 경계 정확성', () => {
 test('거리 컬링: 입력 오류 없음 (퇴화 시점은 빈 마스크)', () => {
   const h = makeSimpleHierarchy(2);
 
-  // NaN 카메라 센터 -> 빈 마스크로 처리
-  // R·t = identity·[-Inf, -Inf, -Inf] = [-Inf, -Inf, -Inf]
-  // C = -R·t = [Inf, Inf, Inf] (제대로 된 동작은 아니지만 테스트 입력으로만 쓰임)
+  // 해상도·K·R 이 정상이므로 t = -Infinity 만이 퇴화 원인이다(값 퇴화 -> 빈 마스크).
   const cameraBad = {
+    width: 640,
+    height: 480,
     K: { fx: 1000, fy: 1000, cx: 320, cy: 240 },
     R: [1, 0, 0, 0, 1, 0, 0, 0, 1],
-    t: new Float32Array([-Infinity, -Infinity, -Infinity]),
+    t: [-Infinity, -Infinity, -Infinity],
   };
 
-  // maxDistanceM 이 Infinity 인 경우 빈 리프 제외 모두 남김
-  // (NaN 카메라는 boxDistanceM 에서 NaN 을 반환할 수 있음)
-  // 그래도 함수는 예외를 던지지 않아야 함
-  const mask = distanceCull(h, cameraBad, { maxDistanceM: 100 });
-  // NaN > 100 -> false (비교 연산) -> mask[k] = 1
-  // 이 경우는 실제로 구현에 따라 다를 수 있음
-  // 하지만 여기서는 빈 마스크가 아닌 상태로 반환됨
-  assert(mask instanceof Uint8Array);
-  assert.equal(mask.length, 2);
+  for (const maxD of [100, Infinity]) {
+    const mask = distanceCull(h, cameraBad, { maxDistanceM: maxD });
+    assert(mask instanceof Uint8Array);
+    assert.equal(mask.length, 2);
+    // 퇴화 시점은 빈 마스크: 모든 칸이 0
+    assert.deepEqual([...mask], [0, 0]);
+  }
+  // 같은 카메라에서 t 만 정상으로 바꾸면 비어 있지 않다(퇴화 원인이 t 뿐임을 확인)
+  const ok = distanceCull(h, { ...cameraBad, t: [0, 0, 0] }, { maxDistanceM: Infinity });
+  assert.deepEqual([...ok], [1, 1]);
 });
 
 // ---- F-115: 내부 노드가 있는 실제 buildHierarchy 계층 ----
@@ -366,7 +367,7 @@ test('거리 컬링: 무작위 시점·여러 maxDistanceM 에서 거짓 제거 
 
 test('거리 컬링: 퇴화 카메라(NaN 이동)는 점 있는 리프도 전부 0', () => {
   const cam = makeCamera([0, 5, 0]);
-  cam.t = new Float32Array([NaN, 0, 0]);
+  cam.t = [NaN, 0, 0];
   for (const maxD of [20, Infinity]) {
     const mask = distanceCull(real, cam, { maxDistanceM: maxD });
     assert.equal(mask.length, real.octree.leafCount);
@@ -426,7 +427,7 @@ test('F-127③: leafIndex 범위·일대일 위반은 cull: 오류', () => {
 test('F-127④: 회전이 아닌 R(0, 2I, 반사)은 빈 마스크', () => {
   const h = makeSimpleHierarchy(3);
   for (const R of [[0, 0, 0, 0, 0, 0, 0, 0, 0], [2, 0, 0, 0, 2, 0, 0, 0, 2], [1, 0, 0, 0, 1, 0, 0, 0, -1]]) {
-    const cam = { ...makeCamera([0, 0, 0]), R: new Float32Array(R) };
+    const cam = { ...makeCamera([0, 0, 0]), R };
     assert.deepEqual([...distanceCull(h, cam, { maxDistanceM: Infinity })], [0, 0, 0]);
     assert.deepEqual([...distanceCull(h, cam, { maxDistanceM: 100 })], [0, 0, 0]);
   }

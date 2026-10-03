@@ -8,6 +8,7 @@ import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
 import { frustumCull } from '../frustum/index.mjs';
 import { predictCamera, predictiveMask } from './index.mjs';
+import { isDegenerateView } from '../degenerate/index.mjs';
 
 const K = { fx: 400, fy: 400, cx: 320, cy: 240 };
 function lookAt(eye, target) {
@@ -183,4 +184,92 @@ test("입력 오류는 'cull:' 로 던진다", () => {
   assert.throws(() => predictCamera(null, {}, 1), /^Error: cull:/);
   assert.throws(() => predictCamera(st.camera, null, 1), /^Error: cull:/);
   assert.throws(() => predictiveMask(h, st, null), /^Error: cull:/);
+});
+
+// ---- F-129: 예측 마스크의 상한(위쪽 경계)·음성 시험 ----
+// 허용 집합: 시각 τ(0..horizonS 를 n 등분)의 카메라에서, 상자를 그 시점 중심에서의 이동·회전 변위 상한만큼 부풀려 보이는 리프의 합집합.
+// 변위 상한 = speed·hh + omega·hh·(상자 최원점 거리 + speed·hh)(hh = 구간 반폭).
+function allowedUnion(camAt, horizonS, n, speed, omega, hh, pointSizeM = 0) {
+  const s = new Set();
+  for (let i = 0; i <= n; i++) {
+    const cam = camAt((horizonS * i) / n), C = cameraCenter(cam);
+    for (let k = 0; k < oc.leafCount; k++) {
+      const [a, b] = boxOf(k);
+      const far = Math.hypot(...[0, 1, 2].map((d) => Math.max(Math.abs(a[d] - C[d]), Math.abs(b[d] - C[d]))));
+      const M = 1.001 * (speed * hh + omega * hh * (far + speed * hh)) + 1e-6;
+      if (boxMayBeVisibleSplat(cam, a.map((x) => x - M), b.map((x) => x + M), pointSizeM)) s.add(k);
+    }
+  }
+  return s;
+}
+
+test('상한: 움직이는 카메라의 예측 마스크 ⊆ (표본 시점들의 보이는 리프 + 부풀림 여유), 모두 1 이 아니다', () => {
+  const horizonS = 4, steps = 8, hh = horizonS / steps / 2;
+  const cases = [
+    [lookAt([-70, 30, 0], [0, 0, 0]), [10, 0, 0], [0, 0, 0]],
+    [lookAt([0, 50, 0], [30, 0, 0]), [0, 0, 0], [0, 0.05, 0]],
+    [lookAt([30, 35, -40], [0, 0, 0]), [-4, 1, 6], [0.02, -0.03, 0.01]],
+  ];
+  for (const [cam, v, w] of cases) {
+    const speed = Math.hypot(...v), omega = Math.hypot(...w);
+    const camAt = (tau) => predictCamera(cam, { velocityMps: v, angularRadPerS: w }, tau);
+    const allowed = allowedUnion(camAt, horizonS, steps * 4, speed, omega, hh);
+    const m = predictiveMask(h, { camera: cam, velocityMps: v, angularRadPerS: w }, { horizonS, steps, pointSizeM: 0 });
+    for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(allowed.has(k), `허용 밖 리프 ${k}`);
+    assert.ok(allowed.size < oc.leafCount, `전제: 허용 집합이 전체가 아님 ${allowed.size}/${oc.leafCount}`);
+    assert.ok(sum(m) >= visibleSet(cam).size);
+  }
+});
+
+test('음성: 장면 밖(시선이 장면 반대쪽)을 향해 천천히 움직이면 마스크는 전부 0', () => {
+  const cam = lookAt([0, 60, 0], [0, 300, 0]); // 위쪽 하늘을 본다
+  assert.equal(visibleSet(cam).size, 0, '전제: 현재 보이는 리프 없음');
+  const m = predictiveMask(h, { camera: cam, velocityMps: [0, 2, 0], angularRadPerS: [0, 0.05, 0] }, { horizonS: 2, steps: 4, pointSizeM: 0 });
+  assert.equal(m.length, oc.leafCount);
+  assert.equal(sum(m), 0);
+});
+
+test('고속·시선에 수직 이동: 해석적 평행이동 시점(눈·목표를 같이 이동)의 보이는 리프가 모두 남고, 새로 보이는 리프가 생긴다', () => {
+  const eye = [-60, 40, 0], tgt = [0, 0, 0], v = [0, 0, 35], horizonS = 4, steps = 8; // 시선 +x, 이동 +z = 수직
+  const camAt = (tau) => lookAt([eye[0] + v[0] * tau, eye[1] + v[1] * tau, eye[2] + v[2] * tau], [tgt[0] + v[0] * tau, tgt[1] + v[1] * tau, tgt[2] + v[2] * tau]);
+  const cam = camAt(0);
+  const m = predictiveMask(h, { camera: cam, velocityMps: v }, { horizonS, steps, pointSizeM: 0 });
+  const cur = visibleSet(cam);
+  let missed = 0, gained = new Set();
+  for (let i = 0; i <= steps; i++) for (const k of visibleSet(camAt((horizonS * i) / steps))) { if (!m[k]) missed++; if (!cur.has(k)) gained.add(k); }
+  assert.equal(missed, 0);
+  assert.ok(gained.size >= 3, `전제: 이동으로 새로 보이는 리프 ${gained.size}`);
+  for (const k of gained) assert.equal(m[k], 1);
+  // 상한: 평행이동뿐이므로 부풀림은 v·h 만.
+  const allowed = allowedUnion(camAt, horizonS, steps * 4, Math.hypot(...v), 0, horizonS / steps / 2);
+  for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(allowed.has(k), `허용 밖 리프 ${k}`);
+  assert.ok(allowed.size < oc.leafCount);
+});
+
+test('잘게 나눈 직선 이동: 마스크는 해석적 시점 합집합을 덮고, 부풀림 여유 안에 머문다(과잉 부풀림 없음)', () => {
+  const eye = [-60, 40, 0], tgt = [0, 0, 0], v = [6, 0, 8], horizonS = 4, steps = 80; // 구간 반폭 h = 0.025 s, 부풀림 0.25 m
+  const camAt = (tau) => lookAt([eye[0] + v[0] * tau, eye[1] + v[1] * tau, eye[2] + v[2] * tau], [tgt[0] + v[0] * tau, tgt[1] + v[1] * tau, tgt[2] + v[2] * tau]);
+  const m = predictiveMask(h, { camera: camAt(0), velocityMps: v }, { horizonS, steps, pointSizeM: 0 });
+  const exact = allowedUnion(camAt, horizonS, steps, 0, 0, 0);
+  for (const k of exact) assert.equal(m[k], 1, `정확한 합집합의 리프 ${k} 가 빠짐`);
+  const allowed = allowedUnion(camAt, horizonS, steps * 4, Math.hypot(...v), 0, horizonS / steps / 2);
+  for (let k = 0; k < oc.leafCount; k++) if (m[k]) assert.ok(allowed.has(k), `허용 밖 리프 ${k}`);
+  assert.ok(sum(m) <= allowed.size, '마스크가 허용 집합을 넘음');
+});
+
+// ---- F-134: 유한하지만 극단적인 입력 ----
+test('극단 유한 입력: 부풀림이 비유한이어도 현재 시점(s=0)은 순수 절두체 판정과 같고, 예측 시점은 보수적으로 남긴다', () => {
+  const cam = lookAt([0, 60, 0], [10, 0, 10]);
+  const plain = visibleSet(cam);
+  // 속도 1e308·horizon 1e10: 부풀림 Infinity, 예측 시점의 중심도 Infinity 라 퇴화 -> s=0 만 남는다. 마스크 = 순수 절두체 집합.
+  const a = predictiveMask(h, { camera: cam, velocityMps: [1e308, 0, 0] }, { horizonS: 1e10, steps: 1, pointSizeM: 0 });
+  assert.equal(sum(a), plain.size);
+  for (let k = 0; k < oc.leafCount; k++) assert.equal(a[k], plain.has(k) ? 1 : 0);
+  // 같은 극단 horizon 이어도 속도 0 이면 순수 절두체 집합(horizon 1e300).
+  const z = predictiveMask(h, { camera: cam, velocityMps: [0, 0, 0] }, { horizonS: 1e300, steps: 2, pointSizeM: 0 });
+  assert.equal(sum(z), plain.size);
+  // 각속도 1e307·horizon 1: 예측 카메라는 유한(정상)인데 부풀림이 Infinity -> 상한을 못 잡으므로 빈 리프가 아닌 리프는 모두 남긴다.
+  const w = predictiveMask(h, { camera: cam, angularRadPerS: [0, 1e307, 0] }, { horizonS: 1, steps: 1, pointSizeM: 0 });
+  assert.equal(isDegenerateView(predictCamera(cam, { angularRadPerS: [0, 1e307, 0] }, 1)), false, '전제: 예측 카메라는 정상');
+  assert.equal(sum(w), oc.leafCount);
 });

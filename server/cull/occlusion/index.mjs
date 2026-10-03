@@ -18,7 +18,7 @@
 //    사각형이 화면 밖으로 완전히 나가면 남긴다(시야 밖 제거는 frustum 몫).
 // 퇴화 시점(NaN 카메라 등)은 예외 없이 빈 마스크(전부 0). 입력 오류는 'cull:' 오류.
 //
-// 가림막 수 제한(F-121): 시점마다 시야 안 리프의 점 전부를 칠하던 비용(100만 점 35~87 ms)을 두 가지로 줄인다.
+// 가림막 수 제한(F-121): 시점마다 시야 안 리프의 점 전부를 칠하는 비용을 두 가지로 줄인다.
 //   (a) 정확한 생략(결과 동일): 블록 하나를 '확실히 덮으려면' 원판 반경이 그 블록의 모서리 픽셀 중심 사이 반대각
 //       rNeed = √((wMin−1)²+(hMin−1)²)/2 이상이어야 한다(wMin·hMin = 가장 좁은 블록의 픽셀 수, 1×1 블록이 있을 수 있으면 0).
 //       리프 노드 상자의 최소 카메라 깊이 zmin 으로 반경 상한 fx·s/(2·zmin) 이 rNeed 보다 작으면 그 리프의 점은 어떤 블록도
@@ -27,16 +27,13 @@
 //       (같으면 리프 번호)으로 보며, 넣으면 상한을 넘는 리프는 건너뛴다. 가까운 리프가 화면을 가장 넓게 덮는 가림막이다.
 //   픽셀 동일 보장: 가림막은 '참조 렌더에서 실제로 그려지는 점'만 쓸 수 있다. (b) 는 단계 0 점(원본 전부, 참조 렌더가 모두 그림)의
 //   부분집합만 쓰므로 블록 값은 그대로 참조 깊이의 상한이고, 덜 칠한 블록은 +∞(가림막 아님)로 남아 제거가 줄 뿐 거짓 제거는 없다.
-//   occluderLevel ≥ 1 은 쓰지 않았다: 대표점도 원본 부분집합이라 안전하지만, 같은 점 지름으로 성기게 칠해 구멍이 생겨
-//   100만 점 flat_boxes 320×180 시점 4·5·8 의 제거가 1882·1888·1602 → 267·194·0 으로 무너진다.
-//   측정(100만 점 flat_boxes·terrain 시드 1, buildHierarchy edge0M 0.5·levelCount 3·maxLeafPoints 256, 시점 8곳, size 64,
-//   시점당 3회 중 최솟값 ms, 바꾸기 전 → 후):
-//     1280×720 s 0.75: 49~87 → 1.5~44 · s 0.05: 35~77 → 1.4~1.7 · 320×180 s 0.75: 45~74 → 19~37 · s 0.05: 35~75 → 20~26.
-//     제거 리프(flat_boxes 1280×720 s 0.75 시점 4·6·7·8): 2012·135·322·1656 → 1982·129·319·1641, 320×180 시점 4: 1882 → 1877. 나머지 같음(terrain 은 전후 0).
+//   occluderLevel ≥ 1 은 쓰지 않았다: 대표점도 원본 부분집합이라 안전하지만, 같은 점 지름으로 성기게 칠하면 구멍이 생겨
+//   덮임 판정이 약해진다(제거가 줄 뿐 거짓 제거는 없다). 판정은 안전성(거짓 제거 0)이 먼저고 제거 수는 그 안에서만 늘린다.
 import { projectMany } from '../../raster_ref/project/index.mjs';
 import { radiusUnchecked } from '../../raster_ref/splat/index.mjs';
 import { boxMayBeVisible } from '../../lod/select/view_check.mjs';
-import { isDegenerateView } from '../degenerate/index.mjs';
+import { degenerateCamera } from '../degenerate/index.mjs';
+export { degenerateCamera };
 
 const ERR = 'cull:';
 /** 상자 꼭짓점이 이 깊이(m) 이하이면 가림 판정을 포기한다. */
@@ -88,20 +85,6 @@ function leafNodes(oc) {
   return out;
 }
 
-/**
- * 카메라 구조 검사. 구조가 틀리면 'cull:' 오류, 값이 퇴화(NaN·비정수/과대 해상도·R 비회전 등)면 true.
- * 퇴화 판정은 server/cull/degenerate 의 isDegenerateView 하나만 쓴다(규칙 중복 없음).
- */
-export function degenerateCamera(camera) {
-  if (!camera || typeof camera !== 'object') throw new Error(`${ERR} 카메라가 객체가 아님`);
-  const { width, height, K, R, t } = camera;
-  if (!K || typeof K !== 'object') throw new Error(`${ERR} 카메라 K 가 객체가 아님`);
-  if (!Array.isArray(R) || R.length !== 9) throw new Error(`${ERR} 카메라 R 은 길이 9 배열이어야 함`);
-  if (!Array.isArray(t) || t.length !== 3) throw new Error(`${ERR} 카메라 t 는 길이 3 배열이어야 함`);
-  const nums = [width, height, K.fx, K.fy, K.cx, K.cy, ...R, ...t];
-  if (!nums.every(isNum)) throw new Error(`${ERR} 카메라 값은 수여야 함`);
-  return isDegenerateView(camera);
-}
 
 function readSize(size) {
   if (!Number.isInteger(size) || size < 1 || size > 4096 || (size & (size - 1)) !== 0) {
@@ -117,11 +100,12 @@ function readPointSize(s) {
 
 // 리프마다 실제 점(단계 0 = 원본 전부)의 꼭 맞는 상자. 팔진 트리 노드 상자(정육면체)보다 작아 판정이 덜 헐겁다.
 // 리프의 모든 점(그리고 그 부분집합인 거친 단계 대표점)이 이 상자 안에 있다. 점이 없는 리프는 빈 상자(min > max).
-const tightCache = new WeakMap();
+const tightCache = new WeakMap(); // 계층 객체 → { mn, mx, 만든 입력 참조 }
 function tightLeafBoxes(h) {
-  let tb = tightCache.get(h);
-  if (tb) return tb;
   const L = h.octree.leafCount, lv = h.levels[0], pos = lv.positions;
+  // 같은 객체에서 배열을 바꿔 끼운 경우(contracts/lod 불변 규칙: 지문이 달라져 재검증되는 경우)를 위해 상자를 만든 입력 참조를 함께 둔다.
+  let tb = tightCache.get(h);
+  if (tb && tb.pos === pos && tb.leafStart === lv.leafStart && tb.L === L) return tb;
   const mn = new Float32Array(3 * L).fill(Infinity), mx = new Float32Array(3 * L).fill(-Infinity);
   for (let k = 0; k < L; k++) {
     for (let s = lv.leafStart[k]; s < lv.leafStart[k + 1]; s++) {
@@ -133,7 +117,7 @@ function tightLeafBoxes(h) {
       }
     }
   }
-  tb = { mn, mx };
+  tb = { mn, mx, pos, leafStart: lv.leafStart, L };
   tightCache.set(h, tb);
   return tb;
 }

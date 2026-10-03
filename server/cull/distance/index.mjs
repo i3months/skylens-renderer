@@ -2,7 +2,7 @@
 // 거리 = 카메라 중심과 리프 상자의 최소 거리. 경계(거리 = maxDistanceM)는 보수적으로 남긴다.
 
 import { cameraCenter, boxDistanceM } from '../../lod/select/screen_error.mjs';
-import { isDegenerateView } from '../degenerate/index.mjs';
+import { degenerateCamera } from '../degenerate/index.mjs';
 
 const ERR = 'cull:';
 
@@ -64,7 +64,7 @@ export function distanceCull(hierarchy, camera, opts = {}) {
   }
 
   // 퇴화 시점(NaN·Infinity 등)이면 전부 0
-  if (isDegenerateView(camera)) return mask;
+  if (degenerateCamera(camera)) return mask;
 
   // maxDistanceM = Infinity 면 비어있지 않은 리프 전부 남김
   if (maxDistanceM === Infinity) {

@@ -5,8 +5,8 @@
 //   m = fx·pointSizeM/2 를 더해 바깥으로 민다: fx·x + cx·z + m ≥ 0, fx·x + (cx − W)·z − m ≤ 0, fy·y + cy·z + m ≥ 0,
 //   fy·y + (cy − H)·z − m ≤ 0. X_c 의 1차식이라 8 꼭짓점 판정이 정확하다.
 // opts.pointSizeM 이 없으면 원판 크기를 모르므로 좌·우·위·아래로는 아무것도 버리지 않는다(앞 z > 0 만 판정).
-// 퇴화 시점(서버 isDegenerateView 와 같은 식: NaN·Infinity, 해상도·초점거리 ≤ 0 또는 해상도 > 1e6, 시야각 < 1e-6 rad, R 이 회전 아님)이면 던지지 않고 전부 0 을 돌려준다.
-// 입력 오류(leafBoxes 형식)는 'cull:' 오류.
+// 퇴화 시점(서버 isDegenerateView 와 같은 식: NaN·Infinity, 해상도·초점거리 ≤ 0, 해상도 > 1e6, 해상도가 정수 아님, 픽셀 수 > 2^26, 시야각 < 1e-6 rad, R 이 회전 아님)이면 던지지 않고 전부 0 을 돌려준다.
+// 카메라 구조 오류(객체 아님·width/height/K·R·t 누락·수가 아닌 값·R·t 가 일반 배열이 아님·길이 틀림, 서버 assertCameraShape 와 같은 규칙)와 입력 오류(leafBoxes 형식)는 'cull:' 오류(F-132).
 const ERR = 'cull:';
 const ROT_TOL = 1e-6;
 const MIN_FOV_RAD = 1e-6; // 서버 degenerate 와 같은 값
@@ -36,6 +36,16 @@ export function isDegenerateViewClient(camera) {
     const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
     return !(Math.abs(det - 1) <= ROT_TOL);
   } catch { return true; }
+}
+
+/** 카메라 구조 검사. 서버 assertCameraShape 와 같은 규칙: 구조가 틀리면 'cull:' 오류. 값 퇴화는 여기서 던지지 않는다(F-132). */
+export function assertCameraShapeClient(camera) {
+  if (!camera || typeof camera !== 'object') throw new Error(`${ERR} 카메라가 객체가 아님`);
+  const { K, R, t } = camera;
+  if (typeof camera.width !== 'number' || typeof camera.height !== 'number') throw new Error(`${ERR} 카메라 width·height 는 수여야 함`);
+  if (!K || typeof K !== 'object' || !['fx', 'fy', 'cx', 'cy'].every((n) => typeof K[n] === 'number')) throw new Error(`${ERR} 카메라 K 는 fx·fy·cx·cy 수를 가진 객체여야 함`);
+  if (!Array.isArray(R) || R.length !== 9 || !R.every((x) => typeof x === 'number')) throw new Error(`${ERR} 카메라 R 은 수 9개 배열이어야 함`);
+  if (!Array.isArray(t) || t.length !== 3 || !t.every((x) => typeof x === 'number')) throw new Error(`${ERR} 카메라 t 는 수 3개 배열이어야 함`);
 }
 
 /** 팔진 트리에서 리프 번호 순서의 상자를 모은다(순수 함수). octree: {leafCount, leafIndex, boxMin, boxMax}. */
@@ -74,6 +84,7 @@ export function clientFrustumCull(leafBoxes, camera, opts) {
   if (boxMin.length % 3 !== 0 || boxMin.length !== boxMax.length) throw new Error(`${ERR} boxMin·boxMax 는 같은 길이의 3의 배수여야 함`);
   const n = boxMin.length / 3;
   const out = new Uint8Array(n);
+  assertCameraShapeClient(camera);
   if (isDegenerateViewClient(camera)) return out;
   const { R, t, K, width: W, height: H } = camera;
   const { fx, fy, cx, cy } = K;

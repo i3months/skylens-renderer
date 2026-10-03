@@ -2,7 +2,7 @@
 // frustumCull(server/cull/frustum)은 다른 하위 작업의 소유라 여기서는 같은 규칙(boxMayBeVisibleSplat)을 직접 쓴다.
 import { boxMayBeVisibleSplat } from '../../lod/select/view_check.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
-import { isDegenerateView } from '../degenerate/index.mjs';
+import { isDegenerateView, degenerateCamera } from '../degenerate/index.mjs';
 
 const ERR = 'cull:';
 const fin = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -99,7 +99,7 @@ export function predictiveMask(hierarchy, state, opts) {
   const cam = state?.camera;
   const v = vec3(state?.velocityMps, 'velocityMps'); // 형식 오류는 퇴화 카메라보다 먼저 던진다
   const w = vec3(state?.angularRadPerS, 'angularRadPerS');
-  if (isDegenerateView(cam)) return out;
+  if (degenerateCamera(cam)) return out;
   if (!v.every(fin) || !w.every(fin)) return out; // 퇴화 속도: 빈 마스크
   const speed = Math.hypot(v[0], v[1], v[2]);
   const omega = Math.hypot(w[0], w[1], w[2]);
@@ -123,6 +123,11 @@ export function predictiveMask(hierarchy, state, opts) {
         const dz = Math.max(Math.abs(mn[3 * k + 2] - C[2]), Math.abs(mx[3 * k + 2] - C[2]));
         far = Math.hypot(dx, dy, dz);
         m = 1.0001 * (speed * h + omega * h * (far + speed * h)) + 1e-9;
+        // 부풀림이 유한수로 표현되지 않으면 상한을 잡을 수 없다: 현재 시점(tau=0)은 부풀림 없이 판정하고, 예측 시점은 보수적으로 남긴다(거짓 제거 방지).
+        if (!Number.isFinite(m)) {
+          if (tau === 0) m = 0;
+          else { out[k] = 1; continue; }
+        }
       }
       for (let a = 0; a < 3; a++) { lo[a] = mn[3 * k + a] - m; hi[a] = mx[3 * k + a] + m; }
       if (boxMayBeVisibleSplat(pc, lo, hi, pointSizeM)) out[k] = 1;

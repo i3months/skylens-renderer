@@ -45,6 +45,26 @@ export function isDegenerateView(camera) {
   try { return checkCamera(camera); } catch { return true; }
 }
 
+/**
+ * 카메라 구조 검사(F-132). 구조가 틀리면(객체 아님·width/height/K·R·t 필드 누락·수가 아닌 값·R·t 가 일반 배열이 아님·길이 틀림) 'cull:' 오류를 던진다.
+ * 값이 NaN·Infinity·0 이하·비회전인 것은 구조 오류가 아니라 퇴화 시점이다(isDegenerateView 가 판정).
+ */
+export function assertCameraShape(camera) {
+  const ERR = 'cull:';
+  if (!camera || typeof camera !== 'object') throw new Error(`${ERR} 카메라가 객체가 아님`);
+  const { K, R, t } = camera;
+  if (typeof camera.width !== 'number' || typeof camera.height !== 'number') throw new Error(`${ERR} 카메라 width·height 는 수여야 함`);
+  if (!K || typeof K !== 'object' || !['fx', 'fy', 'cx', 'cy'].every((n) => typeof K[n] === 'number')) throw new Error(`${ERR} 카메라 K 는 fx·fy·cx·cy 수를 가진 객체여야 함`);
+  if (!Array.isArray(R) || R.length !== 9 || !R.every((x) => typeof x === 'number')) throw new Error(`${ERR} 카메라 R 은 수 9개 배열이어야 함`);
+  if (!Array.isArray(t) || t.length !== 3 || !t.every((x) => typeof x === 'number')) throw new Error(`${ERR} 카메라 t 는 수 3개 배열이어야 함`);
+}
+
+/** 모든 컬링 단계의 카메라 입구: 구조 오류는 'cull:' 로 던지고, 값 퇴화면 true 를 돌려준다(F-132). */
+export function degenerateCamera(camera) {
+  assertCameraShape(camera);
+  return isDegenerateView(camera);
+}
+
 /** 빈 마스크: 길이 leafCount, 전부 0(아무것도 남기지 않음). 계층이 올바르지 않으면 'cull:' 오류. */
 export function emptyMask(hierarchy) {
   assertHierarchyForCull(hierarchy);

@@ -21,13 +21,14 @@
 //   보장 조건: 덮임 판정의 점 지름 = 렌더 점 지름, 가림막 점은 원본의 부분집합(단계 0) → 버린 리프를 뺀 렌더는 원본 전체 렌더와
 //   픽셀 단위로 같다. 여기 쓰이는 여유(블록 반대각만큼 줄인 원판, rmax+1 px 사각형, REL/ABS 1e-6)는 occlusion 모듈의 식 그대로다.
 //   가림막 제한: 후보 사각형이 닿는 피라미드 칸과 원판이 겹칠 수 있는 가림막 리프만 투영한다. 판정은 그 칸들의 값만 읽고
-//   (상위 칸이 실패하면 사각형과 겹치는 자식으로만 내려간다), 가림막을 빼면 칸 값은 커지기만 하므로 결과는 전체 가림막과 같고
-//   어떤 경우에도 제거가 늘지 않는다(보장 유지).
+//   (상위 칸이 실패하면 사각형과 겹치는 자식으로만 내려간다), 가림막을 빼면 칸 값은 커지기만 하므로
+//   가림막 점 수가 occlusion 의 maxOccluderPoints(기본값) 상한에 닿지 않는 동안은 결과가 전체 가림막과 같다.
+//   상한에 닿으면 가까운 리프부터 일부만 쓰이므로 제거가 줄 수 있으나 늘지는 않는다(보장 유지).
 //   opts.pointSizeM 이 없으면 렌더 지름을 모르므로 보장 조건을 확인할 수 없다 → 2단계 후보를 전부 남긴다(제거 0).
 //   opts.requireCover = false 이면 2단계를 끄고 1단계(순수 법선 판정)만 쓴다(기하 성질 시험·비교 측정용).
 import { assertHierarchyInput } from '../../lod/select/index.mjs';
 import { cameraCenter } from '../../lod/select/screen_error.mjs';
-import { isDegenerateView } from '../degenerate/index.mjs';
+import { degenerateCamera } from '../degenerate/index.mjs';
 import { buildDepthPyramid, occlusionCull, NEAR_M } from '../occlusion/index.mjs';
 
 const ERR = 'cull:';
@@ -116,7 +117,7 @@ export function backfaceCull(hierarchy, camera, cones, opts) {
   const { octree } = hierarchy;
   const L = octree.leafCount;
   checkCones(cones, L);
-  if (isDegenerateView(camera)) return new Uint8Array(L);
+  if (degenerateCamera(camera)) return new Uint8Array(L);
   const C = cameraCenter(camera);
   const mask = new Uint8Array(L).fill(1);
   const nodes = leafNodes(octree);
@@ -146,12 +147,13 @@ export function backfaceCull(hierarchy, camera, cones, opts) {
   return coverFilter(hierarchy, camera, mask, pointSizeM);
 }
 
-// 리프마다 단계 0 점의 딱 맞는 상자(occlusion 판정이 쓰는 상자와 같은 값). 계층마다 한 번.
-const tightCache = new WeakMap();
+// 리프마다 단계 0 점의 딱 맞는 상자(occlusion 판정이 쓰는 상자와 같은 값). 입력(positions·leafStart·leafCount)이 같은 동안 한 번.
+const tightCache = new WeakMap(); // 계층 객체 → { mn, mx, 만든 입력 참조 }
 function tightBoxes(h) {
-  let tb = tightCache.get(h);
-  if (tb) return tb;
   const L = h.octree.leafCount, lv = h.levels[0], pos = lv.positions;
+  // 같은 객체에서 배열을 바꿔 끼운 경우(contracts/lod 불변 규칙: 지문이 달라져 재검증되는 경우)를 위해 상자를 만든 입력 참조를 함께 둔다.
+  let tb = tightCache.get(h);
+  if (tb && tb.pos === pos && tb.leafStart === lv.leafStart && tb.L === L) return tb;
   const mn = new Float32Array(3 * L).fill(Infinity), mx = new Float32Array(3 * L).fill(-Infinity);
   for (let k = 0; k < L; k++) {
     for (let s = lv.leafStart[k]; s < lv.leafStart[k + 1]; s++) {
@@ -162,7 +164,7 @@ function tightBoxes(h) {
       }
     }
   }
-  tb = { mn, mx };
+  tb = { mn, mx, pos, leafStart: lv.leafStart, L };
   tightCache.set(h, tb);
   return tb;
 }

@@ -42,5 +42,11 @@ test("입력 오류('cull:')는 그대로", () => {
   const h = scene();
   assert.throws(() => occlusionCull(null, CAM), /^Error: cull:/);
   assert.throws(() => occlusionCull(h, null), /^Error: cull:/);
+  // 구조 오류(F-132)는 값 퇴화와 달리 던진다: 빈 객체·R 누락·R 길이 틀림.
+  const { R, ...noR } = CAM;
+  for (const bad of [{}, noR, { ...CAM, R: CAM.R.slice(0, 8) }]) {
+    assert.throws(() => occlusionCull(h, bad), /^Error: cull:/);
+    assert.throws(() => buildDepthPyramid(h, bad), /^Error: cull:/);
+  }
   assert.throws(() => buildDepthPyramid(h, CAM, { occluderMask: new Uint8Array(1) }), /^Error: cull:/);
 });
