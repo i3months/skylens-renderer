@@ -6,7 +6,7 @@ import { measureSegmentBytes, printTable, writeJSON } from './index.mjs';
 // 구성
 const COUNT = 2500000;
 const LEVEL_COUNT = 4;
-const OUTPUT_JSON = './bench/lod/result_2.5m.json';
+const OUTPUT_JSON = process.env.LOD_BENCH_OUT ?? '/tmp/lod_bench_2.5m.json';
 
 console.log('LOD 벤치마크 시작...');
 console.log(`장면: terrain, 점 수: ${COUNT.toLocaleString()}, 시드: 1, 레벨: ${LEVEL_COUNT}`);
