@@ -4,7 +4,20 @@ import { detectFormat, PointsError, FORMAT_POINT27 } from '../../../contracts/po
 
 const MAX_HEADER = 1 << 20; // 머리 상한(끝 표시 없이 무한히 쌓이는 것을 막는다)
 const MARKER = Buffer.from('end_header\n');
+// KMP 실패 함수
+const FAIL = (() => {
+  const f = new Uint8Array(MARKER.length);
+  for (let i = 1, k = 0; i < MARKER.length; i++) {
+    while (k > 0 && MARKER[i] !== MARKER[k]) k = f[k - 1];
+    if (MARKER[i] === MARKER[k]) k++;
+    f[i] = k;
+  }
+  return f;
+})();
+const BLOCK = 4096; // 머리 누적 블록 크기
 const DEFAULT_CHUNK = 65536;
+const MAX_CHUNK_POINTS = 1 << 20; // 조각 하나의 점 수 상한(열 배열 할당 크기를 묶는다)
+const MAX_VERTEX_COUNT = 2 ** 30; // 머리가 선언할 수 있는 점 수 상한
 
 // 열 배열 한 조각 할당
 function makeChunk(format, n) {
@@ -42,9 +55,16 @@ function decode(format, c, i, dv, o) {
  */
 export async function* readPlyStream(source, opts = {}) {
   const chunkPoints = opts.chunkPoints ?? DEFAULT_CHUNK;
-  if (!Number.isInteger(chunkPoints) || chunkPoints < 1) throw new PointsError('range', `chunkPoints ${chunkPoints}`);
+  if (!Number.isInteger(chunkPoints) || chunkPoints < 1 || chunkPoints > MAX_CHUNK_POINTS) throw new PointsError('range', `chunkPoints ${chunkPoints}`);
+  if (source == null || (typeof source[Symbol.asyncIterator] !== 'function' && typeof source[Symbol.iterator] !== 'function')) {
+    throw new PointsError('header', 'source is not iterable');
+  }
 
-  let head = Buffer.alloc(0); // 머리 누적(본문이 시작되면 버린다)
+  let headParts = []; // 머리 청크 목록(끝 표시를 찾은 뒤에 한 번만 합친다)
+  let headLen = 0;
+  let block = Buffer.allocUnsafe(BLOCK);
+  let blockLen = 0;
+  let m = 0; // 끝 표시와 지금까지 일치한 길이(KMP 상태)
   let hdr = null;
   let format = 0;
   let total = 0; // 지금까지 해독한 점 수
@@ -55,25 +75,43 @@ export async function* readPlyStream(source, opts = {}) {
   let partLen = 0;
   let extra = false;
 
-  for await (const raw of source) {
+  // 청크 하나를 처리하는 동기 제너레이터(동기 소스에서 청크마다 await 하지 않으려고 분리)
+  function* consume(raw) {
+    if (!(raw instanceof Uint8Array)) throw new PointsError('header', 'chunk is not a Uint8Array');
     let bytes = raw;
     if (!hdr) {
-      const prev = head.length;
-      head = Buffer.concat([head, bytes]);
-      const at = head.indexOf(MARKER, Math.max(0, prev - MARKER.length + 1));
-      if (at < 0) {
-        if (head.length > MAX_HEADER) throw new PointsError('header', 'end_header not found within limit');
-        continue;
+      // 끝 표시를 바이트 단위 KMP 로 찾는다(할당 없이 청크 경계를 넘어 이어 간다)
+      let found = -1;
+      for (let j = 0; j < raw.length; j++) {
+        const c = raw[j];
+        while (m > 0 && c !== MARKER[m]) m = FAIL[m - 1];
+        if (c === MARKER[m]) m++;
+        if (m === MARKER.length) { found = j; break; }
       }
-      try { hdr = parsePlyHeader(head.subarray(0, at + MARKER.length)); } catch (e) { throw new PointsError('header', e.message); }
+      if (found < 0) {
+        // 작은 청크는 4 KiB 블록에 모아 복사한다(호출자가 버퍼를 재사용해도 안전하고 객체 수도 줄어든다)
+        if (raw.length > BLOCK - blockLen) {
+          if (blockLen > 0) { headParts.push(block.subarray(0, blockLen)); block = Buffer.allocUnsafe(BLOCK); blockLen = 0; }
+          if (raw.length >= BLOCK) headParts.push(Buffer.from(raw));
+          else { block.set(raw, 0); blockLen = raw.length; }
+        } else { block.set(raw, blockLen); blockLen += raw.length; }
+        headLen += raw.length;
+        if (headLen > MAX_HEADER) throw new PointsError('header', 'end_header not found within limit');
+        return;
+      }
+      const end = headLen + found + 1; // 표시 끝까지 포함한 머리 길이
+      const head = Buffer.concat([...headParts, block.subarray(0, blockLen), raw]);
+      headParts = null; block = null;
+      if (end > MAX_HEADER) throw new PointsError('header', 'end_header not found within limit');
+      try { hdr = parsePlyHeader(head.subarray(0, end)); } catch (e) { throw new PointsError('header', e.message); }
+      if (!(hdr.vertexCount <= MAX_VERTEX_COUNT)) throw new PointsError('range', `vertexCount ${hdr.vertexCount}`);
       format = detectFormat(hdr.properties);
       if (!format) throw new PointsError('format', 'unknown vertex layout');
       part = new Uint8Array(hdr.stride);
       partDv = new DataView(part.buffer);
       bytes = head.subarray(hdr.headerBytes);
-      head = null;
     }
-    if (bytes.length === 0) continue;
+    if (bytes.length === 0) return;
 
     const stride = hdr.stride;
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -96,7 +134,12 @@ export async function* readPlyStream(source, opts = {}) {
       }
       if (fill === cur.count) { const out = cur; cur = null; yield out; }
     }
-    if (extra) break;
+  }
+
+  if (typeof source[Symbol.asyncIterator] === 'function') {
+    for await (const raw of source) { for (const out of consume(raw)) yield out; if (extra) break; }
+  } else {
+    for (const raw of source) { for (const out of consume(raw)) yield out; if (extra) break; }
   }
 
   if (!hdr) throw new PointsError('header', 'stream ended before end_header');
