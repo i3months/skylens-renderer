@@ -3,10 +3,13 @@
 // 구간별 최고 수준 점군이 cloud 에 연속으로 들어 있고(구간 s 는 [s*count, (s+1)*count)),
 // 낮은 수준은 그 점들 중 앞에서부터 균등 간격으로 뽑은 부분집합이다(교체이지 누적이 아니다).
 
-import { mulberry32, subSeed, makeResult, LEVEL_STEPS, FORMAT_POINT27 } from '../../../contracts/scenes/index.mjs';
+import { mulberry32, subSeed, makeResult, LEVEL_STEPS, FORMAT_POINT27, checkCount, normalizeSeed, checkFormat } from '../../../contracts/scenes/index.mjs';
 
 const STRIP = 50;
-const RATIOS = [8, 4, 2, 1]; // 수준(최고 기준 위에서부터)별 분모
+// 수준(최고 기준 위에서부터)별 분모. 8:4:2:1 은 낮은 수준일수록 성긴 점(250 스텝이 가장 성김)이라는
+// 계약(RULES §1.1)만 만족하면 되는 합성용 임의 선택이며, 실제 학습 스텝(250/1000/3500/7000)의 비율이나
+// 측정에서 나온 값이 아니다. 비율이 정수 2배 사다리라 count 가 8 이상이면 수준 점 수가 엄격 증가한다.
+const RATIOS = [8, 4, 2, 1];
 const AMP = 2;
 
 /** 기복의 파라미터를 시드에서 뽑는다(구간 경계에서 이어지도록 전 장면 공통). */
@@ -25,7 +28,7 @@ function height(rp, x, z) {
 function normalAt(rp, x, z) {
   const [a, b, c, d] = rp.p;
   const hx = 0.11 * Math.cos(0.11 * x + a) * Math.cos(0.09 * z + b) + 0.6 * 0.23 * Math.cos(0.23 * x + 0.19 * z + c);
-  const hz = -0.09 * Math.sin(0.11 * x + a) * Math.sin(0.09 * z + b) - 0.6 * 0.19 * Math.sin(0.23 * x + 0.19 * z + c) - 0.4 * 0.31 * Math.sin(0.31 * z + d);
+  const hz = -0.09 * Math.sin(0.11 * x + a) * Math.sin(0.09 * z + b) + 0.6 * 0.19 * Math.cos(0.23 * x + 0.19 * z + c) - 0.4 * 0.31 * Math.sin(0.31 * z + d);
   const nx = -hx, ny = 1, nz = -hz;
   const l = Math.hypot(nx, ny, nz);
   return [nx / l, ny / l, nz / l];
@@ -46,13 +49,17 @@ function spaced(N, n) {
 }
 
 export function generate(opts = {}) {
-  const seed = opts.seed >>> 0;
+  const seed = normalizeSeed(opts.seed);
+  const format = checkFormat(opts.format);
   const segments = opts.segments ?? 8;
   const levels = opts.levels ?? 4;
-  const count = opts.count ?? 20000;
+  const count = checkCount(opts.count, 20000);
   if (!Number.isInteger(segments) || segments < 1) throw new RangeError('segments 는 1 이상 정수');
   if (!Number.isInteger(levels) || levels < 1 || levels > 4) throw new RangeError('levels 는 1..4');
-  if (!Number.isInteger(count) || count < 1) throw new RangeError('count 는 1 이상 정수');
+  // 수준 점 수가 엄격 증가하려면 가장 성긴 수준이 floor(count/분모) >= 1 이고 이웃 수준이 서로 달라야 한다:
+  // 분모가 2배씩이므로 count >= RATIOS[4-levels] (levels=4 → 8, 3 → 4, 2 → 2, 1 → 1) 이면 충분하다.
+  const minCount = RATIOS[4 - levels];
+  if (count < minCount) throw new RangeError(`levels=${levels} 이면 count 는 ${minCount} 이상이어야 수준 점 수가 엄격 증가함: ${count}`);
 
   const rp = reliefParams(seed);
   const total = segments * count;
@@ -82,7 +89,7 @@ export function generate(opts = {}) {
       for (let k = 0; k < 3; k++) colors[3 * i + k] = Math.min(255, base + tint[k] * (k === s % 3 ? 1 : 0.4) + stripe + noise) | 0;
     }
     const lv = counts.map((n, k) => {
-      const e = { level: k, step: LEVEL_STEPS[k], count: n };
+      const e = { level: k, step: LEVEL_STEPS[k + (4 - levels)], count: n };
       if (k < levels - 1) e.indices = spaced(count, n).map((q) => s * count + q);
       else { e.start = s * count; }
       return e;
@@ -97,7 +104,7 @@ export function generate(opts = {}) {
     segments: segTruth,
   };
   const cloud27 = { format: FORMAT_POINT27, count: total, positions, normals, colors };
-  return makeResult('levels', seed, opts.format ?? 1, cloud27, truth);
+  return makeResult('levels', seed, format, cloud27, truth);
 }
 
 /**

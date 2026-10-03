@@ -1,7 +1,7 @@
 // 완만한 지형 장면(T05.2). 해석적 높이장 h(x,z) 위에 점을 뿌린다. 새로 작성한 코드.
 // h = offset + Σ a_k sin(kx_k x + kz_k z + φ_k). 높이 0~30 m, 최대 경사 15° 이하가 구성상 보장된다
 // (|∇h| ≤ Σ a_k |k_k| = SLOPE_BUDGET < tan 15°).
-import { mulberry32, subSeed, makeResult } from '../../../contracts/scenes/index.mjs';
+import { mulberry32, subSeed, makeResult, checkCount, normalizeSeed, checkFormat } from '../../../contracts/scenes/index.mjs';
 import { FORMAT_POINT27 } from '../../../contracts/points/index.mjs';
 
 export const DEFAULT_COUNT = 200000;
@@ -59,9 +59,10 @@ export function makeParams(seed) {
 
 const clamp255 = (v) => Math.max(0, Math.min(255, Math.round(v)));
 
-export function generate(opts) {
-  const seed = opts.seed >>> 0;
-  const n = opts.count ?? DEFAULT_COUNT;
+export function generate(opts = {}) {
+  const seed = normalizeSeed(opts.seed);
+  const n = checkCount(opts.count, DEFAULT_COUNT);
+  const format = checkFormat(opts.format);
   const params = makeParams(seed);
   const rnd = mulberry32(subSeed(seed, 1));
   const positions = new Float32Array(3 * n);
@@ -96,5 +97,5 @@ export function generate(opts) {
     maxSlopeDeg: Math.atan(params.waves.reduce((s, w) => s + Math.abs(w.a) * Math.hypot(w.kx, w.kz), 0)) * 180 / Math.PI,
     heightAt: { description: 'h(x,z)=offset+Σ a·sin(kx·x+kz·z+phase); 모듈의 heightAt(params,x,z)', params },
   };
-  return makeResult('terrain', seed, opts.format ?? FORMAT_POINT27, cloud27, truth);
+  return makeResult('terrain', seed, format, cloud27, truth);
 }
