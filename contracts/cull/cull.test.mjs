@@ -102,7 +102,7 @@ test('CULL_API: fn 문자열의 함수명이 실제 export 와 일치', async ()
     assert(functionNames.size > 0, `${key}: fn 문자열에서 함수명을 추출할 수 없음: ${fnString}`);
 
     for (const fnName of functionNames) {
-      assert(typeof mod[fnName] === 'function' || typeof mod[fnName] !== 'undefined',
+      assert(typeof mod[fnName] === 'function',
         `${key}: 모듈 ${entry.module} 에서 '${fnName}' 을 export 하지 않음`);
     }
   }

@@ -115,11 +115,6 @@ test('정상 카메라는 퇴화가 아님', () => {
   assert.equal(isDegenerateView(good()), false);
 });
 
-test('정상 카메라 (Array 명시)', () => {
-  const c = good();
-  assert.equal(isDegenerateView(c), false);
-});
-
 test('R 희소 배열 구멍은 assertCameraShape 에서 던짐', () => {
   const c = good();
   c.R = [1, 0, 0, 0, 1, 0, 0, 0, 1];

@@ -40,6 +40,16 @@ export function isDegenerateViewClient(camera) {
 
 /** 카메라 구조 검사. 서버 assertCameraShape 와 같은 규칙: 구조가 틀리면 'cull:' 오류. 값 퇴화는 여기서 던지지 않는다(F-132). */
 export function assertCameraShapeClient(camera) {
+  try {
+    assertCameraShapeBody(camera);
+  } catch (e) {
+    // 접근자(getter)·Proxy 가 던져도 원래 오류가 새지 않게 'cull:' 로 감싼다(F-143 ⑨).
+    if (String(e?.message ?? e).startsWith(ERR)) throw e;
+    throw new Error(`${ERR} 카메라 필드를 읽지 못함: ${String(e?.message ?? e)}`, { cause: e });
+  }
+}
+
+function assertCameraShapeBody(camera) {
   if (!camera || typeof camera !== 'object') throw new Error(`${ERR} 카메라가 객체가 아님`);
   const { K, R, t } = camera;
   if (typeof camera.width !== 'number' || typeof camera.height !== 'number') throw new Error(`${ERR} 카메라 width·height 는 수여야 함`);
@@ -52,8 +62,10 @@ export function assertCameraShapeClient(camera) {
 
 /** 팔진 트리에서 리프 번호 순서의 상자를 모은다(순수 함수). octree: {leafCount, leafIndex, boxMin, boxMax}. */
 export function leafBoxesOf(octree) {
+  if (!octree || typeof octree !== 'object') throw new Error(`${ERR} octree 는 객체여야 함`);
   const { leafCount, leafIndex, boxMin, boxMax } = octree;
-  if (!Number.isInteger(leafCount) || leafCount < 0 || !leafIndex || !boxMin || !boxMax) throw new Error(`${ERR} octree 형식이 올바르지 않음`);
+  // 리프 0 개 계층은 서버 predict·lod·occlusion 과 같이 거부한다(계층 계약: leafCount ≥ 1).
+  if (!Number.isInteger(leafCount) || leafCount < 1 || !leafIndex || !boxMin || !boxMax) throw new Error(`${ERR} octree 형식이 올바르지 않음`);
   // F-122 ⑥: 짧은 boxMin/boxMax 는 subarray 가 조용히 잘려 NaN·0 상자가 되므로 길이를 먼저 검사한다.
   if (boxMin.length < 3 * leafIndex.length || boxMax.length < 3 * leafIndex.length) {
     throw new Error(`${ERR} boxMin(${boxMin.length})·boxMax(${boxMax.length}) 길이가 3×노드 수(${3 * leafIndex.length}) 보다 짧음`);

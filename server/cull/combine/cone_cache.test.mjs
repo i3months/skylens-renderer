@@ -93,3 +93,33 @@ test('cachedNormalCones: 리프 수(leafStart/L)를 교체하면 다시 계산�
   cachedNormalCones(h, compute);
   assert.equal(calls, 4);
 });
+
+test('cachedNormalCones: null hierarchy 는 cull: 오류', () => {
+  assert.throws(
+    () => cachedNormalCones(null, () => ({})),
+    { message: /^cull:/ }
+  );
+});
+
+test('cachedNormalCones: 비객체 hierarchy 는 cull: 오류', () => {
+  assert.throws(
+    () => cachedNormalCones('not an object', () => ({})),
+    { message: /^cull:/ }
+  );
+  assert.throws(
+    () => cachedNormalCones(42, () => ({})),
+    { message: /^cull:/ }
+  );
+});
+
+test('cachedNormalCones: 비함수 compute 는 cull: 오류', () => {
+  const h = { octree: { leafCount: 1 }, levels: [{ normals: new Float32Array(), leafStart: new Uint32Array() }] };
+  assert.throws(
+    () => cachedNormalCones(h, null),
+    { message: /^cull:/ }
+  );
+  assert.throws(
+    () => cachedNormalCones(h, 'not a function'),
+    { message: /^cull:/ }
+  );
+});
