@@ -28,7 +28,7 @@ assert.equal(IMPL_MAX_COARSE_CELLS, MAX_COARSE_CELLS, '구현 상수가 시험 �
 // Float32Array.from/of 는 실제로 세어진다 (생성자 호출이므로 Proxy 를 탄다).
 // 세어지지 않는 것은 map·slice·subarray 와 '첫 인자가 숫자가 아닌' 생성(배열·ArrayBuffer 인자도 construct 트랩은 타지만 첫 인자가 숫자가 아니라 세지 않음).
 function trackAlloc(fn) {
-  const names = ['Float32Array', 'Float64Array', 'Int32Array', 'Uint32Array', 'Uint8Array'];
+  const names = ['Float32Array', 'Float64Array', 'Int32Array', 'Uint32Array', 'Uint8Array', 'Int8Array', 'Int16Array', 'Uint16Array', 'Uint8ClampedArray', 'BigInt64Array', 'BigUint64Array'];
   const orig = {};
   const st = { max: 0, total: 0 };
   for (const nm of names) {
@@ -43,6 +43,12 @@ function trackAlloc(fn) {
   try { st.result = fn(); } finally { for (const nm of names) globalThis[nm] = orig[nm]; }
   return st;
 }
+
+test('F-152 ②: trackAlloc counts Int16Array allocations', () => {
+  const st = trackAlloc(() => new Int16Array(4));
+  assert.equal(st.total, 4);
+  assert.equal(st.max, 4);
+});
 
 const DEGENERATE = {
   'width 1 + fx 1e7 (시야각 < 1e-6)': withK({ fx: 1e7 }, { width: 1 }),
