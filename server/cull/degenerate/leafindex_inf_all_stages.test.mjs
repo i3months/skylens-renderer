@@ -60,7 +60,7 @@ const STAGES = [
   ['predictiveMask', (h) => predictiveMask(h, state(), PRED)],
   ['occlusionCull', (h) => occlusionCull(h, good(), okPyr)],
   ['leafPriority', (h) => leafPriority(h, good())],
-  ['clientFrustumCull', (h) => clientFrustumCull(leafBoxesOf(h.octree), good(), { pointSizeM: 0.1 })],
+  ['leafBoxesOf + clientFrustumCull', (h) => clientFrustumCull(leafBoxesOf(h.octree), good(), { pointSizeM: 0.1 })],
 ];
 
 for (const [stage, run] of STAGES) {

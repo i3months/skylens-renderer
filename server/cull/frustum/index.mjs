@@ -74,7 +74,7 @@ export function frustumCull(hierarchy, camera, opts) {
     if (k < 0) continue;
     if (ls[k + 1] === ls[k]) continue; // 빈 리프
     for (let a = 0; a < 3; a++) { mn[a] = oc.boxMin[3 * node + a]; mx[a] = oc.boxMax[3 * node + a]; }
-    // NaN 좌표가 있는 상자는 꼭짓점 판정에서 NaN 꼭짓점이 모든 평면을 '밖'으로 만들어 거짓 제거된다. 계약: NaN 리프는 통과.
+    // NaN 좌표가 있는 상자는 꼭짓점 판정에서 그 좌표를 쓰는 4개 꼭짓점이 평면 판정을 깬다. 계약: NaN 리프는 통과.
     if (hasNaN6(mn, mx) || boxMayBeVisibleSplat(camera, mn, mx, pointSizeM)) mask[k] = 1;
   }
   return mask;

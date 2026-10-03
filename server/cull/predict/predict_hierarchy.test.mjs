@@ -50,3 +50,23 @@ test('배열 길이가 nodeCount 보다 짧으면 cull: 오류', () => {
   h.octree.boxMax = h.octree.boxMax.slice(0, 3 * h.octree.nodeCount - 3);
   assert.throws(() => predictiveMask(h, state, opts), CULL);
 });
+
+test('leafIndex 가 모든 리프를 정확히 한 번씩만 참조하는지 검사: 중복은 cull: 오류', () => {
+  const h = mk();
+  const leaves = leafNodes(h.octree);
+  // 중복은 있지만 빠진 리프는 없도록: 같은 리프를 두 노드에서 참조
+  if (leaves.length >= 2) {
+    const leaf0 = h.octree.leafIndex[leaves[0]];
+    const leaf1 = h.octree.leafIndex[leaves[1]];
+    h.octree.leafIndex[leaves[1]] = leaf0; // 리프[0]의 값으로 덮으면 리프[1]은 빠짐
+    assert.throws(() => predictiveMask(h, state, opts), CULL);
+  }
+});
+
+test('levels[0].leafStart 의 길이가 leafCount 와 맞지 않으면 cull: 오류', () => {
+  const h = mk();
+  if (h.levels && h.levels[0]) {
+    h.levels[0].leafStart = h.levels[0].leafStart.slice(0, h.octree.leafCount - 1);
+    assert.throws(() => predictiveMask(h, state, opts), CULL);
+  }
+});

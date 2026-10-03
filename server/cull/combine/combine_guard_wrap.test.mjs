@@ -3,6 +3,8 @@
 // 검사 시점의 읽기 예외는 'cull:' 오류가 되고, 정상 입력의 결과는 그대로다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { dirname, sep } from 'node:path';
 import { buildHierarchy } from '../../lod/select/index.mjs';
 import { cullAndSelect } from './index.mjs';
 
@@ -18,6 +20,26 @@ function scene() {
 const ones = (h) => new Uint8Array(h.levels[0].leafStart.length - 1).fill(1);
 const OPTS = { thresholdPx: 0.5, stages: ['distance'], stageImpls: { distance: ones } };
 const RX = /^Error: cull:/;
+
+const SELF = fileURLToPath(import.meta.url);
+const COMBINE_DIR = dirname(SELF) + sep;
+const FRAME_FILE = /\(?((?:file:\/\/)?[^\s()]+?):\d+:\d+\)?$/;
+// 스택 전체를 훑어 첫 프로젝트 프레임이 combine 디렉터리인지 본다(테스트 파일·node 내부·익명 프레임은 건너뜀).
+function directCaller() {
+  const limit = Error.stackTraceLimit;
+  Error.stackTraceLimit = Infinity;
+  const frames = String(new Error().stack).split('\n').slice(1);
+  Error.stackTraceLimit = limit;
+  for (const f of frames) {
+    const m = FRAME_FILE.exec(f.trim());
+    if (!m) continue;
+    let file = m[1];
+    if (file.startsWith('file://')) { try { file = fileURLToPath(file); } catch { continue; } }
+    if (file === SELF || file.startsWith('node:')) continue;
+    return file.startsWith(COMBINE_DIR) ? 'combine' : 'other';
+  }
+  return 'other';
+}
 
 function withLeafCount(h, get) {
   const oc = Object.create(h.octree);
@@ -39,27 +61,25 @@ test('검사 시점에 첫 읽기부터 던지는 Proxy octree 도 cull: 오류'
 test('leafCount 는 검사 블록에서 읽은 값을 그대로 쓴다(검사 뒤 cullAndSelect 의 재독 금지)', () => {
   const h = scene();
   const real = h.octree.leafCount;
-  // 검사 완료 시점 = 카메라 접근자 첫 읽기(검사 블록 다음에 assertCameraShape 가 읽는다).
-  // 그 뒤 cullAndSelect(combine/index.mjs) 가 직접 읽으면 다른 값을 내고 읽은 횟수를 센다.
-  // selectLevels(select/index.mjs) 안의 읽기는 호출 스택으로 구분해 real 을 돌려주고 판정에서 뺀다.
-  // 읽기 횟수 상수는 쓰지 않으므로 select 쪽의 동작 같은 리팩터에도 깨지지 않는다.
-  let armed = false;
-  let lateCombineReads = 0;
+  // 검사 블록(combine/index.mjs) 안의 leafCount 읽기는 마지막 계층 읽기라서 그 읽기가 검사 완료 시점이다.
+  // 카메라 읽기는 그 뒤라서 쓰지 않는다(검사 블록과 카메라 검사 사이의 재독도 잡기 위해).
+  // 읽은 곳은 호출 스택 전체에서 첫 프로젝트 프레임(이 테스트 파일과 node 내부 프레임 제외)으로 정한다.
+  // 그 프레임이 combine 디렉터리 안이면 combine 이 직접 읽은 것이다(헬퍼·Reflect.get 재독 포함).
+  // selectLevels(select/index.mjs) 안의 읽기는 첫 프로젝트 프레임이 select 라서 real 을 돌려주고 판정에서 뺀다.
+  // 읽기 횟수 상수는 select 쪽에는 쓰지 않으므로 select 쪽의 동작 같은 리팩터에도 깨지지 않는다.
+  let combineReads = 0;
   const probe = withLeafCount(h, () => {
-    if (!armed) return real;
-    const caller = String(new Error().stack).split('\n')[2] ?? '';
-    if (caller.includes('combine')) {
-      lateCombineReads++;
-      return real + 1;
-    }
-    return real;
+    if (directCaller() !== 'combine') return real;
+    combineReads++;
+    // 첫 읽기는 검사 블록의 읽기(허용). 그 뒤 읽기는 다른 값을 내서 재사용 여부도 드러낸다.
+    return combineReads === 1 ? real : real + 1;
   });
-  const cam = new Proxy(CAM, { get(t, k, r) { armed = true; return Reflect.get(t, k, r); } });
+  const cam = CAM;
   const r = cullAndSelect(probe, cam, OPTS);
-  assert.ok(armed, '카메라 읽기가 일어나 검사 완료 시점이 표시되어야 함');
+  assert.ok(combineReads >= 1, '검사 블록의 leafCount 읽기가 combine 에서 일어나야 함');
   assert.equal(r.cull.mask.length, real);
   assert.equal(r.cull.stats.leafCount, real);
-  assert.equal(lateCombineReads, 0, '검사 뒤 cullAndSelect 가 leafCount 를 다시 읽음');
+  assert.equal(combineReads, 1, '검사 블록 밖에서 combine 이 leafCount 를 다시 읽음');
 });
 
 test('정상 입력 결과는 그대로', () => {

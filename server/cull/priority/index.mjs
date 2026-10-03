@@ -45,8 +45,7 @@ function readHierarchy(h, makeBuf) {
   // makeBuf 가 있으면 길이 leafCount 의 0 으로 채워진 버퍼를 만들어 검사표로 빌려 쓰고(추가 할당 없음) 검사 뒤 0 으로 비운다. 없으면 검사표를 새로 만든다.
   // 할당 실패는 계층 읽기 오류가 아니므로 가드 밖에서 만든다. 할당 실패(RangeError)는 범위 밖 오류다.
   const buf = makeBuf ? makeBuf(oc.leafCount) : undefined;
-  checkLeafIndexOneToOne(oc, buf);
-  if (buf) buf.fill(0);
+  if (checkLeafIndexOneToOne(oc, buf) && buf) buf.fill(0); // 캐시 적중이면 buf 를 건드리지 않았으므로 비우지 않는다
   // 2단계: levels[0] 검사.
   return guardHierarchyRead(() => {
     const { leafCount } = oc;
