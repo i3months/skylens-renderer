@@ -17,13 +17,17 @@ function checkCamera(camera) {
   if (!camera || typeof camera !== 'object') return true;
   const { width, height, K, R, t } = camera;
   if (!isPosFin(width) || !isPosFin(height)) return true;
+  if (!Number.isInteger(width) || !Number.isInteger(height)) return true;
   if (width > MAX_RESOLUTION_PX || height > MAX_RESOLUTION_PX) return true;
+  if (width * height > 0x4000000) return true; // 2**26 버퍼 할당 한계
   if (!K || typeof K !== 'object') return true;
   if (!isPosFin(K.fx) || !isPosFin(K.fy) || !isFin(K.cx) || !isFin(K.cy)) return true;
   // 시야각: 가로 2·atan(width/(2fx)), 세로 2·atan(height/(2fy)). 둘 중 하나라도 1e-6 rad 미만이면 퇴화.
   if (2 * Math.atan(width / (2 * K.fx)) < MIN_FOV_RAD || 2 * Math.atan(height / (2 * K.fy)) < MIN_FOV_RAD) return true;
-  if (!Array.isArray(R) || R.length !== 9 || !R.every(isFin)) return true;
-  if (!Array.isArray(t) || t.length !== 3 || !t.every(isFin)) return true;
+  if (!Array.isArray(R) || R.length !== 9) return true;
+  for (let i = 0; i < 9; i++) if (typeof R[i] !== 'number' || !Number.isFinite(R[i])) return true;
+  if (!Array.isArray(t) || t.length !== 3) return true;
+  for (let i = 0; i < 3; i++) if (typeof t[i] !== 'number' || !Number.isFinite(t[i])) return true;
   for (let i = 0; i < 3; i++) {
     for (let j = 0; j < 3; j++) {
       let s = 0;
