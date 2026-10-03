@@ -1,3 +1,8 @@
+// 합성 장면용 뷰포인트 검증 테스트(T05)
+// 주의: 이 파일은 테스트 코드이면서 동시에 fixtures/viewpoints/synthetic.json 문서의 검증 명세 역할을 한다.
+// fixtures/viewpoints/synthetic.json 은 이 테스트가 정의한 8개 위치만 승인한다.
+// 실제 자산용 viewpoints.json(fixtures/viewpoints/viewpoints.json)과는 별개이다.
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -9,6 +14,18 @@ const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 test('synthetic_viewpoints_eight_ids_1_to_8', () => {
   assert.equal(doc.scene, 'flat_boxes');
   assert.deepEqual(doc.viewpoints.map((v) => v.id), [1, 2, 3, 4, 5, 6, 7, 8]);
+  // 8개 위치의 고정된 이름(숫자·문자열로 명시된 승인 목록)
+  const expectedNames = [
+    'aerial_overview',
+    'aerial_oblique_ne',
+    'top_down',
+    'street_level',
+    'low_close_box',
+    'tower_high',
+    'tower_mid',
+    'edge_far',
+  ];
+  assert.deepEqual(doc.viewpoints.map((v) => v.name), expectedNames);
   assert.equal(new Set(doc.viewpoints.map((v) => v.name)).size, 8);
 });
 test('synthetic_viewpoints_fields_valid', () => {
