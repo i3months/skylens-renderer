@@ -94,12 +94,17 @@ test('네 가장자리(위·아래·오른쪽 포함) 반경 안 점도 pointSiz
 // 점을 두고, 기대값은 참조 래스터가 실제로 픽셀을 그렸는지에서 얻는다. 래스터는 칸 중심이 원 안(거리 ≤ r)일 때 그리므로
 // 그려지는 가장 바깥 중심은 u = −r + 0.5 이고 그 값은 부동소수 동률이라, 0.25 px 안쪽(−r + 0.75)을 쓴다.
 // 다른 좌표는 칸 중심(270.5·480.5)에 둬서 가장자리 칸까지의 거리가 한 축 거리와 같게 한다.
-// 깊이는 r ≥ 8.5 px 이 되게 골라 여유를 10 % 만 줄여도(0.1·r > 0.75) 반경 안 점이 버려지게 한다.
+// 판별력(F-137⑤): 선택은 중심이 가장자리 바깥 off ≤ k·r 일 때 남긴다(k = 여유 계수, 정답 1). off = r − 0.75 이면
+// k·r < r − 0.75, 곧 (1 − k)·r > 0.75 일 때 변이가 반경 안 점을 버린다. 여유를 1 %만 줄인 변이(k = 0.99)도 잡으려면
+// r > 75 px 이 필요하므로 깊이 0.1 m 를 더한다(r = 225 px(fx 900)·150 px(fx 600), 0.01·r = 2.25·1.5 px > 0.75).
+// 래스터 쪽 하한은 동률 때문에 0.5 px 보다 커야 하므로 오프셋 여유 0.75 px 은 바꾸지 않고, r 을 키워 상대 오차 1 %가
+// 0.75 px 을 넘게 한다. 깊이 1·1.75 m(r 8.6–22.5 px)는 작은 원판 쪽 회귀용으로 둔다(이 깊이에서는 ×0.97 도 통과할 수 있다).
 const MARGIN_CAMS = [
   { width: W, height: H, K: { fx: 900, fy: 600, cx: 410.25, cy: 300.75 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] },
   { width: W, height: H, K: { fx: 600, fy: 900, cx: 530.5, cy: 240.25 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] },
 ];
-const MARGIN_DEPTHS = [1, 1.75];
+const MARGIN_DEPTHS = [0.1, 1, 1.75];
+const SHARP_DEPTH = 0.1; // 위 판별력 조건 (1 − 0.99)·r > 0.75 를 만족하는 깊이
 
 const unprojectWith = (cam, u, v, d) => [((u - cam.K.cx) * d) / cam.K.fx, ((v - cam.K.cy) * d) / cam.K.fy, d];
 const rasterPixelsWith = (cam, h) => {
@@ -125,6 +130,7 @@ test('F-129② 네 가장자리 반경 바로 안(r − 0.75 px 바깥): 래스�
   for (const cam of MARGIN_CAMS) {
     for (const d of MARGIN_DEPTHS) {
       const r = (cam.K.fx * SIZE_M) / (2 * d); // 래스터 원판 반경(위·아래도 fx)
+      if (d === SHARP_DEPTH) assert.ok(0.01 * r > 0.75, `여유 ×0.99 변이를 가를 만큼 r 이 큼 (fx=${cam.K.fx} r=${r})`);
       for (const [edge, u, v] of edgePoints(r - 0.75)) {
         const tag = `${edge} fx=${cam.K.fx} fy=${cam.K.fy} d=${d} r=${r.toFixed(3)}`;
         const h = onePointHierarchy(unprojectWith(cam, u, v, d));
