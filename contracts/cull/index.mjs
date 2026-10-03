@@ -34,7 +34,7 @@
  *
  * @typedef {Object} CullStats
  * @property {number} leafCount
- * @property {number} kept          남은 리프 수
+ * @property {number} kept          그려질 리프 수(chunks 길이: 마스크 1 이면서 LOD 가 NOT_DRAWN 으로 두지 않은 리프)
  * @property {number} removedFrustum
  * @property {number} removedBackface
  * @property {number} removedOcclusion
