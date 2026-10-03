@@ -20,13 +20,14 @@ function fillChecksum(file) {
   new DataView(file.buffer, file.byteOffset, file.byteLength).setUint32(OFFSETS.checksum, c, true);
 }
 
-/** @param {Uint8Array} file */
+/** 호출 전에 checkRawInput 을 통과한 파일만 받는다(평면 범위는 그쪽이 보장). @param {Uint8Array} file */
 function readPlanesRaw(file, h) {
   const { planes } = bodyLayout(h.format, h.pointCount);
   const out = {};
   for (const p of planes) {
     const rel = h.headerSize + p.offset;
-    if (rel + p.bytes > file.length) throw new CodecError('length', `평면 ${p.name} 이 파일 끝을 넘는다`);
+    // 평면 범위 검사는 두지 않는다: checkRawInput 이 file.length == header_size + body_bytes 와 body_bytes >= requiredBytes 를
+    // 이미 보장하므로 마지막 평면 끝(header_size + requiredBytes)이 파일 끝을 넘을 수 없다(도달 불가 중복 검사였다, F-174 ③).
     const raw = new Uint8Array(file.subarray(rel, rel + p.bytes)); // 복사본(Buffer 입력이어도 byteOffset 0)
     out[p.name] = p.type === 'u16' ? new Uint16Array(raw.buffer) : p.type === 'i8' ? new Int8Array(raw.buffer) : raw;
   }
@@ -46,6 +47,8 @@ function checksumOf(file) {
 function checkRawInput(file, h) {
   checkHeaderSemantics(h);
   if (file.length !== h.headerSize + h.bodyBytes) throw new CodecError('length', 'file length != header_size + body_bytes');
+  // point_count 와 실제 점 수의 일치는 형식이 따로 검증하지 않는다. n=5 파일의 point_count 를 6 으로 바꿔도 필수 본문 바이트가
+  // 같으면(pad4 때문, §3.1) §3.2-10(body_bytes >= 필수 합)을 만족하는 유효한 파일이라 받아들이고, 패딩 자리가 0 점이 된다(F-175 ①).
   const { requiredBytes } = bodyLayout(h.format, h.pointCount);
   if (h.bodyBytes < requiredBytes) throw new CodecError('length', `body_bytes ${h.bodyBytes} < ${requiredBytes}`);
   if (checksumOf(file) !== h.checksum) throw new CodecError('checksum', 'checksum mismatch');
@@ -65,6 +68,8 @@ function decodeBounded(bytes, [min, max]) {
       mul *= 128;
       if ((b & 0x80) === 0) { ok = !(b === 0 && k > 1); break; }
     }
+    // rawLen > max 항은 entropyDecode(max) 의 같은 검사와 겹치지만(같은 'limit' 코드), min 과 함께 한 메시지로 범위를 알리려고
+    // 한 조건으로 둔다. 겹쳐도 오류 코드는 같다(F-175 ⑦).
     if (ok && (rawLen < min || rawLen > max)) throw new CodecError('limit', `entropy rawLen ${rawLen} not in [${min}, ${max}]`);
   }
   return entropyDecode(bytes, max);
