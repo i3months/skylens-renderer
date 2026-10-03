@@ -107,7 +107,7 @@ test('조각 순서: 거친 단계 먼저, 한 리프는 최대 2개(교체열)�
 });
 
 test('같은 단계 안에서는 카메라에 가까운 리프 먼저', () => {
-  // 여러 시점에서 단계 >= 2 및 최대 단계 상한을 검증한다
+  // 여러 시점에서 단계 >= 2 및 최대 단계 도달을 검증한다
   const stageReached = new Set();
 
   // 기본 시점들(TAU=1) + 합성 카메라(tau=3 으로 단계 >= 2 및 최대 단계 도달용)
@@ -140,7 +140,7 @@ test('같은 단계 안에서는 카메라에 가까운 리프 먼저', () => {
       stageReached.add(T);
       const n = node.get(leaf);
       const dEff = refEffDist(cam, C, h.octree.boxMin.subarray(3 * n, 3 * n + 3), h.octree.boxMax.subarray(3 * n, 3 * n + 3));
-      const expect = dEff > 0 ? Math.min(LEVELS - 1, levelForDistance(table, dEff)) : 0;
+      const expect = dEff > 0 ? levelForDistance(table, dEff) : 0;
       assert.equal(T, expect, `${label} 리프 ${leaf} 목표 단계`);
     }
   }
