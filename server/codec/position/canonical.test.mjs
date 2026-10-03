@@ -19,9 +19,9 @@ test('위치 LEB128 최소 표현은 통과: [00] 키 0, [80 01] 키 128, [7f] �
   assert.deepEqual([a.qe[0], a.qn[0], a.qu[0]], [0, 0, 0]);
   // 키 128 = 비트 7 → 모턴 비트 7 은 축 (7 % 3 = 1 → n 축) 의 비트 2
   const b = decodePositionStream(U([0x80, 0x01]), 1);
-  assert.equal(b.qe[0] + b.qn[0] + b.qu[0] > 0, true);
+  assert.deepEqual([b.qe[0], b.qn[0], b.qu[0]], [0, 4, 0]);
   const c = decodePositionStream(U([0x7f]), 1);
-  assert.equal(c.qe[0] + c.qn[0] + c.qu[0] > 0, true);
+  assert.deepEqual([c.qe[0], c.qn[0], c.qu[0]], [7, 3, 3]);
 });
 
 test('위치 LEB128 8 바이트 이어짐은 stream, 잘림도 stream, 키 ≥ 2^48 은 range', () => {

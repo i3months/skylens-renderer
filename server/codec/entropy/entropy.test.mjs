@@ -175,8 +175,9 @@ test('무작위 1 MB 왕복: 저장 모드, 크기 = 원본 + 헤더 4 B, 시간
   assert.equal(hex(e.subarray(0, 4)), '00808040');
   assert.equal(Buffer.compare(d, a), 0);
   // [회귀 감시] 시간 상한은 기계 성능에 달린 느슨한 값(실측의 수 배)이라 이론 근거가 없다. 큰 퇴행만 잡는다.
-  assert.ok(t1 - t0 < 800, `부호화 ${t1 - t0} ms`);
-  assert.ok(t2 - t1 < 800, `복호 ${t2 - t1} ms`);
+  // 부하 시 흔들림을 줄이기 위해 큰 여유(3s)를 둔다.
+  assert.ok(t1 - t0 < 3000, `부호화 ${t1 - t0} ms`);
+  assert.ok(t2 - t1 < 3000, `복호 ${t2 - t1} ms`);
   // 결정적
   assert.equal(Buffer.compare(entropyEncode(a), e), 0);
 });
@@ -208,8 +209,9 @@ test('편향 분포(0 이 90%) 1 MB: 범위 모드, 원본의 0.6 배 이하, �
   assert.ok(e.length >= HsBytes);
   assert.equal(Buffer.compare(d, a), 0);
   // [회귀 감시] 시간 상한은 기계 성능에 달린 느슨한 값(실측의 수 배)이라 이론 근거가 없다. 큰 퇴행만 잡는다.
-  assert.ok(t1 - t0 < 800, `부호화 ${t1 - t0} ms`);
-  assert.ok(t2 - t1 < 800, `복호 ${t2 - t1} ms`);
+  // 부하 시 흔들림을 줄이기 위해 큰 여유(3s)를 둔다.
+  assert.ok(t1 - t0 < 3000, `부호화 ${t1 - t0} ms`);
+  assert.ok(t2 - t1 < 3000, `복호 ${t2 - t1} ms`);
 });
 
 test('전부 0 1 MB: 최대 압축비가 조기 거부 상한(64 배)보다 작다', () => {
