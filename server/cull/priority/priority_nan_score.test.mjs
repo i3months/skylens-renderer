@@ -1,15 +1,13 @@
-// F-162③: NaN 좌표를 가진 리프의 점수 계산 검증.
-// leafPriority 는 점수의 합(wins[k] + 0.5 * (A / (1 + A)))이 유한하지 않을 때만 0 으로 설정하며,
-// boxMin.x=NaN 같은 단일 NaN 좌표는 clippedArea 계산이 일부 꼭짓점을 유한 값으로 반환할 수 있어
-// 점수가 0 이 아닌 값이 될 수 있음을 시험한다.
+// F-162③/F-164①: NaN 좌표를 가진 리프의 점수 계산 검증.
+// 계약(leaf_check)상 NaN 상자 좌표는 구조 오류가 아니라 단계별 정책대로 통과한다. leafPriority 는 단일 NaN 좌표가 있어도
+// clippedArea 가 나머지 꼭짓점의 유한 투영으로 면적을 계산하므로 점수는 유한하다(NaN 이 점수로 새지 않는다).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildHierarchy } from '../../lod/select/index.mjs';
 import { leafPriority } from './index.mjs';
 
-// 시험 1: boxMin.x=NaN 인 리프의 점수가 NaN 이 아닌 유한값이 되는 경우
-test('boxMin.x=NaN 인 리프의 점수는 유한·양수(현재 구현의 버그)', () => {
-  // 시험용 카메라: 카메라는 점들을 정면에서 봄, 초점거리 400, 시야각 적당.
+// 시험 1: 리프 k 의 노드(leafIndex.indexOf(k))의 boxMin.x 를 NaN 으로 바꾸면 그 리프 점수가 바뀌되 유한하다.
+test('리프 노드의 boxMin.x=NaN 이면 그 리프 점수가 바뀌지만 유한하다', () => {
   const CAM = { width: 320, height: 180, K: { fx: 400, fy: 400, cx: 160, cy: 90 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
 
   // 20×12 격자 점 240개: 중심 (0, 0, 1.5).
@@ -19,24 +17,27 @@ test('boxMin.x=NaN 인 리프의 점수는 유한·양수(현재 구현의 버�
   const cloud = { format: 1, count: n, positions: Float32Array.from(pos), normals: new Float32Array(3 * n), colors: new Uint8Array(3 * n).fill(200) };
   const h = buildHierarchy(cloud, { edge0M: 0.05, levelCount: 2, maxLeafPoints: 16 });
 
-  // 리프 1 의 boxMin.x 를 NaN 으로 바꾼다.
-  // clippedArea 는 8 꼭짓점 중 일부만 x=NaN 이므로, 다른 꼭짓점의 유한 투영으로부터
-  // 0 이 아닌 경계상자 면적을 계산할 수 있다. 따라서 점수는 0 이 아니다.
-  const bmin = Float32Array.from(h.octree.boxMin);
-  const nd = 1; // 리프 1 에 대응하는 노드
-  bmin[3 * nd] = NaN; // boxMin.x = NaN
-  const bad = { ...h, octree: { ...h.octree, boxMin: bmin } };
-  const score = leafPriority(bad, CAM);
+  const before = leafPriority(h, CAM);
+  const k = 1;
+  assert.ok(k < h.octree.leafCount, '리프 1 이 있어야 함');
+  // nd=1 같은 번호는 내부 노드일 수 있으므로(leafIndex[nd] = -1) 리프 k 의 노드를 leafIndex 에서 찾는다.
+  const nd = Array.from(h.octree.leafIndex).indexOf(k);
+  assert.ok(nd >= 0, `리프 ${k} 의 노드를 찾아야 함`);
 
-  // 리프 1 의 점수가 유한하고 0 보다 크다는 것을 확인한다.
-  // 이는 현재 구현이 NaN 좌표를 가진 리프도 0 이 아닌 점수를 줄 수 있음을 보여준다(버그).
-  // 구현 수정 후에는 이 테스트가 점수가 0 이 되므로 실패할 것이다.
-  assert.ok(Number.isFinite(score[1]), `리프 1 점수는 유한해야 함: ${score[1]}`);
-  assert.ok(score[1] > 0, `리프 1 점수는 > 0(현재 동작): ${score[1]}`);
+  const bmin = Float32Array.from(h.octree.boxMin); // 새 typed array: 검사 캐시가 다시 검사하게 한다
+  bmin[3 * nd] = NaN;
+  const bad = { ...h, octree: { ...h.octree, boxMin: bmin } };
+  const after = leafPriority(bad, CAM);
+
+  assert.ok(Number.isFinite(before[k]) && Number.isFinite(after[k]), `점수는 유한해야 함: ${before[k]} → ${after[k]}`);
+  assert.notEqual(after[k], before[k], `NaN 주입 전후 리프 ${k} 점수가 달라야 함(상자가 실제로 쓰임): ${before[k]}`);
+  // 다른 리프는 영향받지 않는다.
+  for (let i = 0; i < before.length; i++) if (i !== k) assert.equal(after[i], before[i], `리프 ${i} 점수는 그대로여야 함`);
 });
 
-// 시험 2: 점수 합이 유한값일 때 그 값을 저장하고, 유한하지 않을 때 0 으로 변환하는 메커니즘 검증
-test('점수 합이 유한하면 그 값을 저장, 유한하지 않으면 0 으로 변환하는 메커니즘', () => {
+// 시험 2: 카메라 뒤·화면 밖 리프는 0, 화면 안 리프는 양수, 모든 점수 유한.
+// 참고: index.mjs 의 `Number.isFinite(s) ? s : 0` 가드는 유효한 카메라(퇴화 검사 통과)·상자(±Infinity 거부)에서는 닿지 않는 방어 코드다.
+test('카메라 뒤·화면 밖 리프는 점수 0, 화면 안 리프는 양수이며 모든 점수는 유한', () => {
   // 카메라 뒤의 점과 화면 밖의 점을 포함한 계층을 만든다.
   // 이렇게 하면 일부 리프는 score = 0, 일부는 score > 0 이 된다.
   const CAM = { width: 320, height: 180, K: { fx: 400, fy: 400, cx: 160, cy: 90 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
@@ -62,14 +63,9 @@ test('점수 합이 유한하면 그 값을 저장, 유한하지 않으면 0 으
   // score = 0 인 리프가 있어야 한다(카메라 뒤나 화면 밖).
   // 이는 s = wins[k] + 0.5*(A/(1+A)) = 0 + 0 = 0 인 경우다.
   const hasZeroScore = score.some((v) => v === 0);
-  assert.ok(hasZeroScore, '점수 0 인 리프가 있어야 하고, 이는 유한하므로 0 으로 저장됨');
+  assert.ok(hasZeroScore, '점수 0 인 리프가 있어야 하고, 모든 점수가 유한');
 
   // score > 0 인 리프도 있어야 한다(카메라 앞 화면 내).
   const hasPositiveScore = score.some((v) => v > 0);
   assert.ok(hasPositiveScore, '점수 > 0 인 리프가 있어야 함');
-
-  // 이는 점수 공식 s = wins[k] + 0.5*(A/(1+A)) 에서:
-  // - s 가 유한하면 out[k] = s (저장)
-  // - s 가 유한하지 않으면(NaN 또는 Infinity) out[k] = 0 (변환)
-  // 의 메커니즘을 검증한다.
 });
