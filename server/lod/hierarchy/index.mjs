@@ -24,12 +24,24 @@ function splitCellsByLeaf(pos, vox, octree) {
   const cellOfPoint = new Uint32Array(n);
   const repList = [], leafOfPiece = [];
   const seg = new Uint32Array(n);
+  let cellMax = 0;
+  for (let i = 0; i < n; i++) if (cellOf[i] > cellMax) cellMax = cellOf[i];
+  const useKey = (cellMax + 1) * n <= Number.MAX_SAFE_INTEGER;
+  const keys = useKey ? new Float64Array(n) : null;
   for (let k = 0; k < octree.leafCount; k++) {
     const s0 = octree.leafStart[k], s1 = octree.leafStart[k + 1];
     const m = s1 - s0;
     const part = seg.subarray(0, m);
-    part.set(octree.order.subarray(s0, s1));
-    part.sort((a, b) => cellOf[a] - cellOf[b] || a - b);
+    if (useKey) {
+      // 합성 키 cell·n + 점 번호 (< 2^53 이라 정확) 를 비교 함수 없이 숫자 정렬한다. 순서는 (칸, 번호) 사전순과 같다.
+      const kp = keys.subarray(0, m);
+      for (let q = 0; q < m; q++) { const i = octree.order[s0 + q]; kp[q] = cellOf[i] * n + i; }
+      kp.sort();
+      for (let q = 0; q < m; q++) part[q] = kp[q] % n;
+    } else {
+      part.set(octree.order.subarray(s0, s1));
+      part.sort((a, b) => cellOf[a] - cellOf[b] || a - b);
+    }
     let best = -1, bestD = Infinity;
     for (let q = 0; q < m; q++) {
       const i = part[q];
