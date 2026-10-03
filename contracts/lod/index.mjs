@@ -11,6 +11,16 @@
 //   단계 l 의 사용 구간은 [maxDistanceM(l), maxDistanceM(l+1)) 이고 마지막 단계는 그 위로 열려 있다. 거리 d 에는 f_view·edgeM(l)/d ≤ τ 를 만족하는 가장 큰 l 을 쓴다.
 //   edge0M 하한(참고용, 강제 안 함): 깊이 해상도 Δd(d_c, b) = d_c²/(f_camera·b) 보다 촘촘하게 둘 필요 없다(T07.3 이 표로 기록). buildHierarchy 는 이 하한을 적용하지 않는다(결정 0020 ③).
 // 점 수 정의: 점 수는 positions.length/3 이고 cloud.count 와 같아야 한다(다르면 명시 오류).
+//
+// 검증 뒤 불변(F-121·F-122 ②⑧): server/lod/select 의 assertHierarchyInput(과 그 안의 assertCloudCached)은 통과한 계층·점군을
+//   WeakMap 으로 기억해, 같은 객체가 다시 오면 지문(검사가 읽는 배열·객체 참조, 배열 길이, count·format·nodeCount·leafCount,
+//   단계 객체)만 비교하고 내용 검사(O(점 수)·O(노드 수))를 건너뛴다. 그래서 규칙은 다음과 같다.
+//   - 한 번 검증을 통과한 Hierarchy(와 그 cloud·octree·levels 및 모든 형식 배열)는 불변으로 다룬다. 내용을 고치지 않는다.
+//   - 배열 "내용" 을 제자리에서 바꾸면(예: octree.leafIndex[3] = -2, cloud.positions[0] = NaN, leafStart 값 변경)
+//     캐시는 이를 잡지 못하고 다음 호출도 통과시킨다(의도된 동작, server/lod/select/validate_cache.test.mjs 가 고정).
+//   - 배열·객체를 바꿔 끼우거나 길이·count·nodeCount·leafCount·단계 수가 달라지면 지문이 달라져 매번 다시 검사한다.
+//   - 내용을 바꿔야 하면 새 계층 객체(바꾼 배열은 사본)를 만들어 넘긴다. 새 객체는 처음부터 다시 검사된다.
+//   이 규칙 덕분에 cullAndSelect 한 번(앞에서 assertHierarchyInput, 안에서 selectLevels)의 실제 검사는 계층마다 한 번이다.
 
 /**
  * @typedef {import('../points/index.mjs').Point27Cloud} Point27Cloud
@@ -70,11 +80,11 @@ export const LOD_API = Object.freeze({
   normals: { module: 'server/lod/normals/index.mjs', fn: 'representativeNormals(cloud, voxel) -> Float32Array(3·count)   칸 안 법선 합의 정규화, 합이 0 이면 (0,0,0) ; maxAngleErrorDeg(cloud, voxel, normals) -> number' },
   colors: { module: 'server/lod/colors/index.mjs', fn: 'representativeColors(cloud, voxel) -> Uint8Array(3·count)   칸 안 평균색(반올림) ; meanColorError(cloud, voxel, colors) -> number' },
   hierarchy: { module: 'server/lod/hierarchy/index.mjs', fn: 'buildHierarchy(cloud, {edge0M, levelCount, maxLeafPoints}) -> Hierarchy' },
-  select: { module: 'server/lod/select/index.mjs', fn: 'buildHierarchy(재내보냄, hierarchy 와 같음) ; assertHierarchyInput(h) ; selectLevels(hierarchy, camera, {thresholdPx}) -> Selection ; materialize(hierarchy, selection) -> Point27Cloud' },
+  select: { module: 'server/lod/select/index.mjs', fn: 'buildHierarchy(재내보냄, hierarchy 와 같음) ; assertHierarchyInput(h) ; selectLevels(hierarchy, camera, {thresholdPx, pointSizeM?}) -> Selection   pointSizeM(원판 지름 m)을 주면 시야 판정이 boxMayBeVisibleSplat(F-126) ; assertCloudCached(cloud) ; validationStats() -> {full, cached} ; materialize(hierarchy, selection) -> Point27Cloud' },
   screen_error: { module: 'server/lod/select/screen_error.mjs', fn: 'screenFocalPx(K) ; cameraCenter(camera) ; boxDistanceM(C, mn, mx) ; minCosToAxis(camera, mn, mx) ; viewMinCos(camera) ; visiblePartBound(camera, C, mn, mx) ; effectiveDistance(camera, C, mn, mx) -> {distM, cosMin, visible, effDistM} ; screenErrorRule(camera, {thresholdPx, edge0M, levelCount})' },
-  budget: { module: 'server/lod/budget/index.mjs', fn: 'selectWithBudget(hierarchy, camera, {budgetPoints, thresholdPx}) -> Selection   pointCount ≤ budgetPoints ; leafTargets(hierarchy, camera, thresholdPx) -> {visible, distM, effDistM, target, countAt, levelCount, focalPx} ; assertHierarchyInput(h) 재내보냄' },
+  budget: { module: 'server/lod/budget/index.mjs', fn: 'selectWithBudget(hierarchy, camera, {budgetPoints, thresholdPx, pointSizeM?}) -> Selection   pointCount ≤ budgetPoints ; leafTargets(hierarchy, camera, thresholdPx, {pointSizeM?}?) -> {visible, distM, effDistM, target, countAt, levelCount, focalPx} ; assertHierarchyInput(h) 재내보냄' },
   view_score: { module: 'server/lod/view_score/index.mjs', fn: 'angleScore(thetaDeg) -> number ; scaleScore(s) -> number ; viewScore(refCam, candCam, points) -> number ; cameraCenter(cam) ; rayAngleDeg(camI, camJ, xw) ; rankViews(refCam, candCams, points) -> ViewScoreEntry[] 점수 내림차순' },
-  progressive: { module: 'server/lod/progressive/index.mjs', fn: 'progressiveChunks(hierarchy, camera, {thresholdPx}) -> {level, leaf, indices:Uint32Array}[]   거친 단계 먼저, 한 리프는 목표 단계 한 번만(교체이지 누적이 아님) ; applyChunks(hierarchy, chunks, k) -> 앞 k 개 조각까지 적용한 결과' },
+  progressive: { module: 'server/lod/progressive/index.mjs', fn: 'progressiveChunks(hierarchy, camera, {thresholdPx, pointSizeM?}) -> {level, leaf, indices:Uint32Array}[]   거친 단계 먼저, 한 리프는 목표 단계 한 번만(교체이지 누적이 아님) ; applyChunks(hierarchy, chunks, k) -> 앞 k 개 조각까지 적용한 결과' },
   no_fill: { module: 'server/lod/no_fill/index.mjs', fn: 'emptyRatioPreserved(cloud, selectedCloud, camera, opts?) -> {original, lod, equal, filled, noFill}   빈 픽셀 비율, 원본에서 빈데 LOD 에서 칠해진 픽셀 수(filled)와 filled===0 여부(noFill)(참조 래스터라이저)' },
   bench: { module: 'bench/lod/index.mjs', fn: 'measureSegmentBytes(cloud, opts) -> {points, bytesByLevel}' },
 });

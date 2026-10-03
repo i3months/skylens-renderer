@@ -3,6 +3,8 @@
 // selectLevels: 팔진 트리 리프마다
 //   0) 점이 하나도 없는 리프(단계 0 구간이 빔)는 그릴 것이 없으므로 NOT_DRAWN(F-104 ④: budget·progressive 와 같은 규칙).
 //   1) 리프 상자가 카메라 시야 사각뿔 밖이면(8 꼭짓점이 모두 한 평면의 바깥: 앞(z>0)·좌·우·위·아래; ./view_check.mjs 공용) NOT_DRAWN.
+//      opts.pointSizeM(래스터 원판 지름 m)을 주면 좌·우·위·아래 평면을 원판 반경 m = fx·pointSizeM/2 만큼 민 판정
+//      (boxMayBeVisibleSplat, 컬링 절두체와 같은 식)을 쓴다(F-126). 없으면 원판 중심 규칙 그대로(기존 결과·시험 값 불변).
 //      각 평면은 카메라 좌표에서 선형 반공간이므로 "꼭짓점 전부가 같은 평면 밖" 이면 상자 전체가 밖이다(보수적 판정:
 //      여러 평면에 걸쳐 밖인 모서리 상자는 그림으로 남을 수 있으나, 보여야 할 리프를 버리는 일은 없다).
 //   2) 아니면 ./screen_error.mjs 의 공용 규칙으로 단계를 고른다(budget·progressive 와 같은 규칙):
@@ -18,13 +20,59 @@
 import { NOT_DRAWN, assertCloud } from '../../../contracts/lod/index.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { screenErrorRule } from './screen_error.mjs';
-import { boxMayBeVisible } from './view_check.mjs';
+import { lodVisibilityTest } from './view_check.mjs';
 
 export { buildHierarchy } from '../hierarchy/index.mjs';
 
 const ERR = 'lod:';
 /** 노드 훑기를 통과한 팔진 트리(약한 참조). 통과 당시의 배열 참조를 함께 기억한다. */
 const scanned = new WeakMap();
+/** assertCloud 를 통과한 점군(약한 참조) → 통과 당시의 지문(F-121). */
+const cloudChecked = new WeakMap();
+/** assertHierarchyInput 전체를 통과한 계층(약한 참조) → 통과 당시의 지문(F-121). */
+const hierarchyChecked = new WeakMap();
+/** 검사 횟수(시험·측정용): full = 실제 검사를 끝까지 돈 횟수, cached = 지문이 같아 건너뛴 횟수. */
+const stats = { full: 0, cached: 0 };
+
+/** 검사 캐시 통계의 사본. 시험이 '한 번만 검사' 를 확인하는 데 쓴다. */
+export function validationStats() {
+  return { full: stats.full, cached: stats.cached };
+}
+
+// 지문: 검사가 읽는 모든 참조·스칼라(배열 참조와 길이, count·format·nodeCount·leafCount, 단계 객체 참조)를 평평한 배열로 모은다.
+// 배열이나 객체를 바꿔 끼우거나 스칼라가 달라지면 지문이 달라져 다시 검사한다. 배열 "내용" 변조는 잡지 못한다
+// (계약: 검증 뒤 계층·점군은 불변; contracts/lod/index.mjs '검증 뒤 불변' 절). 비용은 O(단계 수)로 점 수와 무관하다.
+function cloudPrint(c) {
+  if (!c || typeof c !== 'object') return null;
+  const { positions: p, normals: n, colors: k } = c;
+  return [c.format, c.count, p, p?.length, n, n?.length, k, k?.length];
+}
+function hierarchyPrint(h) {
+  const { cloud, octree: o, levels } = h;
+  const out = [cloud, ...(cloudPrint(cloud) ?? []), o, o?.leafCount, o?.nodeCount, o?.leafIndex, o?.leafIndex?.length,
+    o?.boxMin, o?.boxMin?.length, o?.boxMax, o?.boxMax?.length, levels, levels?.length];
+  if (Array.isArray(levels)) {
+    for (const lv of levels) {
+      out.push(lv, lv?.level, lv?.indices, lv?.indices?.length, lv?.leafStart, lv?.leafStart?.length,
+        lv?.positions, lv?.positions?.length, lv?.normals, lv?.normals?.length, lv?.colors, lv?.colors?.length);
+    }
+  }
+  return out;
+}
+function samePrint(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return false;
+  return true;
+}
+
+/** assertCloud 의 WeakMap 캐시판(F-121). 같은 점군 객체가 같은 지문으로 이미 통과했으면 O(1)로 건너뛴다. */
+export function assertCloudCached(cloud) {
+  const fp = cloudPrint(cloud);
+  if (fp && samePrint(cloudChecked.get(cloud), fp)) return cloud.count;
+  const n = assertCloud(cloud);
+  cloudChecked.set(cloud, fp);
+  return n;
+}
 
 /**
  * 계층 입력 검사(구조·길이·타입). select·budget·progressive 가 공용으로 쓴다(F-107 ①). 오류는 모두 'lod:' 로 시작.
@@ -32,8 +80,18 @@ const scanned = new WeakMap();
  */
 export function assertHierarchyInput(h) {
   if (!h || typeof h !== 'object') throw new Error(`${ERR} 계층이 객체가 아님`);
+  // 계층 전체 캐시(F-121): 같은 계층 객체가 같은 지문으로 이미 통과했으면 점 수와 무관하게 O(단계 수)로 끝낸다.
+  // 그래서 cullAndSelect 가 앞에서 한 번, selectLevels 가 안에서 또 한 번 불러도 실제 검사는 계층마다 한 번이다.
+  const fp = hierarchyPrint(h);
+  if (samePrint(hierarchyChecked.get(h), fp)) { stats.cached++; return; }
+  validateHierarchy(h);
+  stats.full++;
+  hierarchyChecked.set(h, fp);
+}
+
+function validateHierarchy(h) {
   const { octree, levels } = h;
-  assertCloud(h.cloud);
+  assertCloudCached(h.cloud);
   if (!octree || typeof octree !== 'object' || !Number.isInteger(octree.leafCount) || octree.leafCount < 1) throw new Error(`${ERR} 계층의 팔진 트리가 올바르지 않음`);
   const nc = octree.nodeCount;
   if (!Number.isInteger(nc) || nc < octree.leafCount) throw new Error(`${ERR} octree.nodeCount 는 leafCount 이상의 정수: ${String(nc)}`);
@@ -98,7 +156,8 @@ function checkCamera(camera) {
  * 리프마다 단계를 고른다.
  * @param {import('../../../contracts/lod/index.mjs').Hierarchy} hierarchy
  * @param {import('../../../contracts/raster/index.mjs').Camera} camera
- * @param {{thresholdPx:number}} opts thresholdPx = 허용 화면 오차 τ(px)
+ * @param {{thresholdPx:number, pointSizeM?:number}} opts thresholdPx = 허용 화면 오차 τ(px),
+ *   pointSizeM = 래스터 원판 지름(m, 선택). 주면 시야 판정이 원판 반경 여유를 둔다(F-126); 없으면 원판 중심 규칙.
  * @returns {import('../../../contracts/lod/index.mjs').Selection}
  */
 export function selectLevels(hierarchy, camera, opts) {
@@ -106,6 +165,7 @@ export function selectLevels(hierarchy, camera, opts) {
   checkCamera(camera);
   const thresholdPx = opts?.thresholdPx;
   if (!(typeof thresholdPx === 'number' && Number.isFinite(thresholdPx) && thresholdPx > 0)) throw new Error(`${ERR} thresholdPx 는 양의 유한수: ${String(thresholdPx)}`);
+  const mayBeVisible = lodVisibilityTest(opts.pointSizeM);
   const { octree, levels, edge0M } = hierarchy;
   const rule = screenErrorRule(camera, { thresholdPx, edge0M, levelCount: levels.length });
   const leafLevel = new Uint8Array(octree.leafCount).fill(NOT_DRAWN);
@@ -116,7 +176,7 @@ export function selectLevels(hierarchy, camera, opts) {
     if (k < 0) continue;
     if (levels[0].leafStart[k + 1] === levels[0].leafStart[k]) continue; // 빈 리프는 NOT_DRAWN
     for (let a = 0; a < 3; a++) { mn[a] = octree.boxMin[3 * node + a]; mx[a] = octree.boxMax[3 * node + a]; }
-    if (!boxMayBeVisible(camera, mn, mx)) continue;
+    if (!mayBeVisible(camera, mn, mx)) continue;
     const l = rule.leaf(mn, mx).level;
     leafLevel[k] = l;
     pointCount += levels[l].leafStart[k + 1] - levels[l].leafStart[k];
