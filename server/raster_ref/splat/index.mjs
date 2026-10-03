@@ -11,7 +11,15 @@ export function splatRadiusPx(camera, depth, sizeM) {
   assertCamera(camera);
   if (!isFiniteNum(depth) || !(depth > 0)) throw new Error(`${ERR} 깊이는 양의 유한 수여야 함: ${String(depth)}`);
   if (!isFiniteNum(sizeM) || !(sizeM > 0)) throw new Error(`${ERR} sizeM 은 양의 유한 수여야 함: ${String(sizeM)}`);
-  const r = (camera.K.fx * sizeM) / (2 * depth);
+  return radiusUnchecked(camera.K.fx, depth, sizeM);
+}
+
+/**
+ * 입력 검사를 호출자가 이미 마친 경우의 반경 계산(점마다 카메라를 다시 검사하지 않으려는 용도).
+ * 카메라·depth(>0)·sizeM(>0) 이 유효하다는 보장은 호출자 몫이며, 결과가 비유한이면 같은 'raster:' 오류를 낸다.
+ */
+export function radiusUnchecked(fx, depth, sizeM) {
+  const r = (fx * sizeM) / (2 * depth);
   if (!Number.isFinite(r)) throw new Error(`${ERR} 원판 반경이 유한하지 않음(깊이 ${depth}, sizeM ${sizeM} 이 너무 극단적임)`);
   return r;
 }
@@ -35,14 +43,17 @@ export function splatPixels(u, v, rPx, width, height) {
   const j0 = Math.max(0, Math.min(cj, Math.floor(v - rPx - 0.5)));
   const j1 = Math.min(height - 1, Math.max(cj, Math.ceil(v + rPx - 0.5)));
   const r2 = rPx * rPx;
-  const out = [];
+  // 한 번 세고 한 번 채운다(점마다 배열 push 와 Int32Array.from 복사를 피한다).
   // 행(j) 바깥, 열(i) 안쪽으로 돌면 번호가 저절로 오름차순이 된다.
-  for (let j = j0; j <= j1; j += 1) {
+  const inside = (i, j) => {
+    const dx = i + 0.5 - u;
     const dy = j + 0.5 - v;
-    for (let i = i0; i <= i1; i += 1) {
-      const dx = i + 0.5 - u;
-      if (dx * dx + dy * dy <= r2 || (i === ci && j === cj)) out.push(j * width + i);
-    }
-  }
-  return Int32Array.from(out);
+    return dx * dx + dy * dy <= r2 || (i === ci && j === cj);
+  };
+  let count = 0;
+  for (let j = j0; j <= j1; j += 1) for (let i = i0; i <= i1; i += 1) if (inside(i, j)) count += 1;
+  const out = new Int32Array(count);
+  let o = 0;
+  for (let j = j0; j <= j1; j += 1) for (let i = i0; i <= i1; i += 1) if (inside(i, j)) out[o++] = j * width + i;
+  return out;
 }

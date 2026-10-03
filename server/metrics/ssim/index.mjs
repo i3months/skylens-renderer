@@ -22,10 +22,10 @@ const KERNEL = (() => {
 })();
 
 // 유효 영역 분리 가우시안 필터: src(w x h) -> (w-10) x (h-10)
-function filterValid(src, w, h) {
+// tmp 는 길이 ow·h 이상, out 은 길이 ow·oh 이상의 Float64Array 로 호출자가 한 번 할당해 재사용한다.
+function filterValid(src, w, h, tmp, out) {
   const ow = w - WIN + 1;
   const oh = h - WIN + 1;
-  const tmp = new Float64Array(ow * h);
   for (let y = 0; y < h; y++) {
     const row = y * w;
     for (let x = 0; x < ow; x++) {
@@ -34,7 +34,6 @@ function filterValid(src, w, h) {
       tmp[y * ow + x] = s;
     }
   }
-  const out = new Float64Array(ow * oh);
   for (let y = 0; y < oh; y++) {
     for (let x = 0; x < ow; x++) {
       let s = 0;
@@ -67,6 +66,14 @@ export function ssim(a, b, width, height, channels) {
   const paa = new Float64Array(pix);
   const pbb = new Float64Array(pix);
   const pab = new Float64Array(pix);
+  const ow = width - WIN + 1;
+  const oh = height - WIN + 1;
+  const tmp = new Float64Array(ow * height);
+  const ma = new Float64Array(ow * oh);
+  const mb = new Float64Array(ow * oh);
+  const eaa = new Float64Array(ow * oh);
+  const ebb = new Float64Array(ow * oh);
+  const eab = new Float64Array(ow * oh);
   let total = 0;
   for (let c = 0; c < channels; c++) {
     for (let i = 0; i < pix; i++) {
@@ -74,11 +81,11 @@ export function ssim(a, b, width, height, channels) {
       const y = b[i * channels + c];
       pa[i] = x; pb[i] = y; paa[i] = x * x; pbb[i] = y * y; pab[i] = x * y;
     }
-    const ma = filterValid(pa, width, height);
-    const mb = filterValid(pb, width, height);
-    const eaa = filterValid(paa, width, height);
-    const ebb = filterValid(pbb, width, height);
-    const eab = filterValid(pab, width, height);
+    filterValid(pa, width, height, tmp, ma);
+    filterValid(pb, width, height, tmp, mb);
+    filterValid(paa, width, height, tmp, eaa);
+    filterValid(pbb, width, height, tmp, ebb);
+    filterValid(pab, width, height, tmp, eab);
     let sum = 0;
     for (let i = 0; i < ma.length; i++) {
       const sa = eaa[i] - ma[i] * ma[i];
