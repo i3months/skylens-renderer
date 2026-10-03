@@ -77,6 +77,7 @@ export async function* readPlyStream(source, opts) {
 
   // 청크 하나를 처리하는 동기 제너레이터(동기 소스에서 청크마다 await 하지 않으려고 분리)
   function* consume(raw) {
+    // source 는 Uint8Array만 허용한다(Buffer는 instanceof 검사에서 엔진마다 다를 수 있음)
     if (!(raw instanceof Uint8Array)) throw new PointsError('header', 'chunk is not a Uint8Array');
     let bytes = raw;
     if (!hdr) {
@@ -145,6 +146,7 @@ export async function* readPlyStream(source, opts) {
     for (const raw of source) { for (const out of consume(raw)) yield out; if (extra) break; }
   }
 
+  // 헤더 끝 표시("end_header\n")를 찾지 못함(CRLF 헤더면 "\r\n" 때문에 실패할 수 있음)
   if (!hdr) throw new PointsError('header', 'stream ended before end_header');
   if (extra) throw new PointsError('size', 'extra bytes after vertex data');
   if (total < hdr.vertexCount || partLen > 0) throw new PointsError('truncated', `got ${total} of ${hdr.vertexCount} points`);
