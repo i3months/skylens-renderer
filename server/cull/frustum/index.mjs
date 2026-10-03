@@ -41,6 +41,11 @@ function assertHierarchyLocal(h) {
   }
 }
 
+/** 상자 여섯 좌표 중 NaN 이 하나라도 있으면 true. */
+function hasNaN6(mn, mx) {
+  return mn[0] !== mn[0] || mn[1] !== mn[1] || mn[2] !== mn[2] || mx[0] !== mx[0] || mx[1] !== mx[1] || mx[2] !== mx[2];
+}
+
 /** opts 검사 후 pointSizeM(없으면 undefined)을 돌려준다. */
 function pointSizeOf(opts) {
   if (opts === undefined || opts === null) return undefined;
@@ -69,7 +74,8 @@ export function frustumCull(hierarchy, camera, opts) {
     if (k < 0) continue;
     if (ls[k + 1] === ls[k]) continue; // 빈 리프
     for (let a = 0; a < 3; a++) { mn[a] = oc.boxMin[3 * node + a]; mx[a] = oc.boxMax[3 * node + a]; }
-    if (boxMayBeVisibleSplat(camera, mn, mx, pointSizeM)) mask[k] = 1;
+    // NaN 좌표가 있는 상자는 꼭짓점 판정에서 NaN 꼭짓점이 모든 평면을 '밖'으로 만들어 거짓 제거된다. 계약: NaN 리프는 통과.
+    if (hasNaN6(mn, mx) || boxMayBeVisibleSplat(camera, mn, mx, pointSizeM)) mask[k] = 1;
   }
   return mask;
 }
