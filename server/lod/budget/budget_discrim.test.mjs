@@ -1,18 +1,19 @@
 // F-096 ③: 예산 선택이 균일 축소보다 나은 "판별하는" 중간 예산 여러 개를 시점별로 비교하고,
 // 효율식을 뒤집은 가짜 변이가 그 예산들에서 실패하는지 본다(변이는 이 파일 안의 사본이며 index.mjs 는 건드리지 않는다).
 //
-// budget.test.mjs 는 150000·600 에서 선택 = 균일 축소(둘 다 7.3269 / 2.0824)라 판별은 30000 하나뿐이었다.
-// 아래 예산은 선택 ≠ 균일 인 값만 골랐다. 값 근거(측정, 2026-10-03): 같은 장면·계층·시점·렌더 조건(아래 상수)에서
-// 8시점 SSIM 을 재서 얻은 표. 각 항목 = 합(선택 / 균일 / 효율 반전 변이).
-//   예산     합 선택  합 균일  합 변이   균일을 이기는 시점 수(차 > 0.01)
-//   100000   7.1186   6.2420   5.7289   5
-//    80000   6.7409   5.7856   4.4711   7
-//    45000   5.3163   3.5202   3.1004   8
-//    20000   3.9215   2.6084   2.4961   8
-//    10000   2.9013   2.3660   2.3330   7
-// 예산 값은 budget/index.mjs 가 수정 중이어도 판별이 유지되도록 서로 멀리 떨어뜨렸고, 단언 한계(minGap·minWins)는
-// 측정 차이의 절반 안팎으로 느슨하게 잡았다(측정값에 꼭 맞춘 기준 아님). 시점별로는 균일보다 0.01 넘게 낮지 않아야 한다
-// (60000 의 시점 2 처럼 0.007 낮은 경우가 실제로 있어 이 허용을 둔다).
+// budget.test.mjs 는 150000·600 에서 선택 = 균일 축소라 판별은 30000 하나뿐이었다. 아래 예산은 선택 ≠ 균일 인 값만 골랐다.
+// 시드는 환경변수 DISCRIM_SEED(기본 1)로 바꾼다. 값 근거(측정, 2026-10-03): 시드 1·2·3 에서 같은 장면 생성기·계층·시점·렌더
+// 조건(아래 상수)으로 8시점 SSIM 을 재서 얻은 표. 항목 = 합 선택 − 합 균일(차) / 균일보다 0.02 넘게 나은 시점 수(이김).
+//   예산     시드1 차/이김   시드2 차/이김   시드3 차/이김   최솟값 차/이김   한계(최솟값의 절반, 이김은 내림)
+//   100000   1.0505 / 8      0.9214 / 7      1.1241 / 8      0.9214 / 7       0.46 / 3
+//    80000   0.5326 / 6      1.3084 / 6      0.6640 / 7      0.5326 / 6       0.26 / 3
+//    45000   1.6355 / 8      1.7003 / 8      1.6755 / 8      1.6355 / 8       0.81 / 4
+//    20000   1.2328 / 6      1.2980 / 7      1.3655 / 6      1.2328 / 6       0.61 / 3
+//    10000   0.5672 / 4      0.7257 / 3      0.5807 / 4      0.5672 / 3       0.28 / 1
+// 효율 반전 변이의 합은 모든 시드·예산에서 균일 이하(예: 시드 3 의 20000 만 균일보다 0.012 높음)라 합 차 한계에서 걸린다.
+// 근거: 한계를 측정 최솟값에 맞추지 않고 시드 사이 변동(최대 약 2.5배, 80000 의 시드 1 대 2)을 받도록 최솟값의 절반으로 잡았다.
+// 시점별 허용 VIEW_TOL = 0.02: 시드 1·2·3 에서 선택이 균일보다 낮은 최악 시점 차는 −0.0119(시드 2, 80000 시점 2)이며 그 두 배
+// 가까이로 잡았다. 효율 반전 변이는 이 허용에서도 시드 1·2·3 모두 다섯 예산 전부에서 조건을 어긴다(위반 3~8건).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -32,7 +33,8 @@ const HIER = { edge0M: 0.25, levelCount: 6, maxLeafPoints: 2048 };
 
 const vpFile = JSON.parse(fs.readFileSync(new URL('../../../fixtures/viewpoints/synthetic.json', import.meta.url), 'utf8'));
 const cameras = vpFile.viewpoints.map((vp) => viewpointToCamera({ ...vp, width: W, height: H }));
-const scene = generate({ seed: 1, count: 200000 });
+const SEED = Number(process.env.DISCRIM_SEED ?? 1);
+const scene = generate({ seed: SEED, count: 200000 });
 const cloud = scene.cloud;
 const hier = buildHierarchy(cloud, HIER);
 
@@ -142,25 +144,25 @@ function greedySelect(h, camera, budget, invert) {
 const ref = cameras.map((cam) => renderPoints(cam, cloud, { pointSizeM: POINT_SIZE_M }).color);
 const ssimOf = (cam, i, sel) => ssim(ref[i], renderPoints(cam, materializeLocal(hier, sel), { pointSizeM: POINT_SIZE_M }).color, W, H, 3);
 
-// 예산별 한계(측정 표 참조): minGap = 합 선택 − 합 균일 의 하한, minWins = 균일보다 0.01 넘게 나은 시점 수의 하한.
+// 예산별 한계(머리 표: 시드 1·2·3 최솟값의 절반): minGap = 합 선택 − 합 균일 의 하한, minWins = 균일보다 VIEW_TOL 넘게 나은 시점 수의 하한.
 const DISCRIM = [
-  { budget: 100000, minGap: 0.5, minWins: 4 },
-  { budget: 80000, minGap: 0.5, minWins: 5 },
-  { budget: 45000, minGap: 1.0, minWins: 7 },
-  { budget: 20000, minGap: 0.8, minWins: 6 },
-  { budget: 10000, minGap: 0.3, minWins: 5 },
+  { budget: 100000, minGap: 0.46, minWins: 3 },
+  { budget: 80000, minGap: 0.26, minWins: 3 },
+  { budget: 45000, minGap: 0.81, minWins: 4 },
+  { budget: 20000, minGap: 0.61, minWins: 3 },
+  { budget: 10000, minGap: 0.28, minWins: 1 },
 ];
-const SLACK = 0.01;
+const VIEW_TOL = 0.02;
 
 const measure = (budget, pick) => {
   const per = cameras.map((cam, i) => ({ sel: ssimOf(cam, i, pick(cam)), uni: ssimOf(cam, i, uniformSelect(hier, cam, budget)) }));
   return { per, sumSel: per.reduce((a, r) => a + r.sel, 0), sumUni: per.reduce((a, r) => a + r.uni, 0) };
 };
-// 판별 조건: 시점마다 균일보다 SLACK 넘게 낮지 않고, 이기는 시점 수 ≥ minWins, 합의 차 ≥ minGap. 어기면 사유 목록을 돌려준다.
+// 판별 조건: 시점마다 균일보다 VIEW_TOL 넘게 낮지 않고, 이기는 시점 수 ≥ minWins, 합의 차 ≥ minGap. 어기면 사유 목록을 돌려준다.
 const violations = (m, { budget, minGap, minWins }) => {
   const v = [];
-  m.per.forEach((r, i) => { if (r.sel < r.uni - SLACK) v.push(`예산 ${budget} 시점 ${i + 1}: 선택 ${r.sel.toFixed(4)} < 균일 ${r.uni.toFixed(4)}`); });
-  const wins = m.per.filter((r) => r.sel - r.uni > SLACK).length;
+  m.per.forEach((r, i) => { if (r.sel < r.uni - VIEW_TOL) v.push(`예산 ${budget} 시점 ${i + 1}: 선택 ${r.sel.toFixed(4)} < 균일 ${r.uni.toFixed(4)}`); });
+  const wins = m.per.filter((r) => r.sel - r.uni > VIEW_TOL).length;
   if (wins < minWins) v.push(`예산 ${budget}: 이기는 시점 ${wins} < ${minWins}`);
   if (m.sumSel - m.sumUni < minGap) v.push(`예산 ${budget}: 합 차 ${(m.sumSel - m.sumUni).toFixed(4)} < ${minGap}`);
   return v;
@@ -170,15 +172,19 @@ const real = new Map();
 const realOf = (c) => { if (!real.has(c.budget)) real.set(c.budget, measure(c.budget, (cam) => selectWithBudget(hier, cam, { budgetPoints: c.budget, thresholdPx: TAU }))); return real.get(c.budget); };
 
 test('판별 예산에서 선택 ≠ 균일이고, 시점별로 균일보다 낮지 않으며 합 차가 한계 이상', () => {
+  const all = [];
   for (const c of DISCRIM) {
     cameras.forEach((cam) => {
       const sel = selectWithBudget(hier, cam, { budgetPoints: c.budget, thresholdPx: TAU });
       assert.ok(sel.pointCount <= c.budget);
     });
     const m = realOf(c);
-    console.log(`budget ${c.budget}: 합 선택 ${m.sumSel.toFixed(4)}, 균일 ${m.sumUni.toFixed(4)}; 시점별 ${m.per.map((r) => `${r.sel.toFixed(3)}/${r.uni.toFixed(3)}`).join(' ')}`);
-    assert.deepEqual(violations(m, c), []);
+    const wins = m.per.filter((r) => r.sel - r.uni > VIEW_TOL).length;
+    const worst = Math.min(...m.per.map((r) => r.sel - r.uni));
+    console.log(`seed ${SEED} budget ${c.budget}: 합 선택 ${m.sumSel.toFixed(4)}, 균일 ${m.sumUni.toFixed(4)}, 차 ${(m.sumSel - m.sumUni).toFixed(4)}, 이김 ${wins}, 최악 시점 차 ${worst.toFixed(4)}`);
+    all.push(...violations(m, c));
   }
+  assert.deepEqual(all, []);
 });
 
 test('변이 사본(효율 그대로)은 selectWithBudget 과 같은 선택 — 변이가 충실함', () => {
