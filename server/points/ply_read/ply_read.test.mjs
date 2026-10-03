@@ -79,45 +79,45 @@ test('ply_read_golden', () => {
   assert.equal(code(() => readPly(Buffer.concat([header(1, unk), Buffer.alloc(12)]))), 'format');
 });
 
-test('ply_read_header_alloc: 헤더 단계 추가 할당은 본문 크기와 무관하게 ≈ 0', () => {
-  // 청크마다가 아니라 측정 직전에 GC 를 강제해 앞 반복의 버퍼 회수가 측정에 섞이지 않게 한다
-  v8.setFlagsFromString('--expose-gc');
-  const gc = vm.runInNewContext('gc');
-  const settle = () => { gc(); gc(); };
-  const measure = (b) => {
+// 측정 전에만 GC 로 앞 사용분을 비우고, 호출 직후(호출 뒤 GC 없이) 증가량을 잰다: 쓰고 버리는 전체 복사도 보인다
+v8.setFlagsFromString('--expose-gc');
+const gc = vm.runInNewContext('gc');
+const settle = () => { gc(); gc(); };
+
+for (const [name, stride, props] of [['27B', 27, POINT27_PROPERTIES], ['56B', 56, GAUSS56_PROPERTIES]]) {
+  test(`ply_read_header_alloc ${name}: 헤더 단계 추가 할당은 본문 크기와 무관하게 ≈ 0`, () => {
+    const n = 2_500_000;
+    settle();
+    const h = header(n, props);
+    const b = Buffer.alloc(h.length + stride * n); h.copy(b);
+    // 결정적 검사: 헤더 파싱에서 본문 크기만큼 복사되지 않는다(복사 바이트 수 직접 계수)
+    const copiedHdr = countCopies(() => { parsePlyHeader(b); parsePlyHeader(b.subarray(0, PLY_HEADER_MAX_BYTES)); });
+    assert.ok(copiedHdr < 64 * 1024, `${name}: parsePlyHeader copied ${copiedHdr} B`);
     settle();
     const before = process.memoryUsage().arrayBuffers;
     for (let i = 0; i < 20; i++) parsePlyHeader(b.subarray(0, PLY_HEADER_MAX_BYTES));
     parsePlyHeader(b); // 공개 서명에 전체 버퍼를 넘겨도 복사하지 않아야 한다
-    settle();
-    return process.memoryUsage().arrayBuffers - before;
-  };
-  const n = 2_500_000;
-  for (const [name, stride, props] of [['27B', 27, POINT27_PROPERTIES], ['56B', 56, GAUSS56_PROPERTIES]]) {
-    let b = null;
-    settle(); // 앞 반복에서 쓴 버퍼 회수
-    const h = header(n, props);
-    b = Buffer.alloc(h.length + stride * n); h.copy(b);
-    const body = b.length;
-    // 결정적 검사: 헤더 파싱·readPly 경로에서 본문 크기만큼 복사되지 않는다(복사 바이트 수 직접 계수)
-    const copiedHdr = countCopies(() => { parsePlyHeader(b); parsePlyHeader(b.subarray(0, PLY_HEADER_MAX_BYTES)); });
-    assert.ok(copiedHdr < 64 * 1024, `${name}: parsePlyHeader copied ${copiedHdr} B`);
-    const delta = measure(b);
-    console.log(`header alloc ${name}: body=${body} B, copied=${copiedHdr} B, extra arrayBuffers=${delta} B`);
+    const delta = process.memoryUsage().arrayBuffers - before; // 호출 뒤 GC 없음
+    console.log(`header alloc ${name}: body=${b.length} B, copied=${copiedHdr} B, extra arrayBuffers=${delta} B`);
     // 한쪽만 단언: 증가량만 문제이고 감소(다른 곳의 회수)는 무관하다
     assert.ok(delta < 64 * 1024, `${name}: ${delta}`);
-    // readPly 전체 경로도 헤더 단계에서 본문 크기만큼 늘지 않음: 결과 열 배열 외 추가 복사 없음
+  });
+
+  test(`ply_read_alloc ${name}: readPly 증가량은 열 배열 크기와 같다(추가 복사 없음, 하한 포함)`, () => {
+    const n = 2_500_000;
+    settle();
+    const h = header(n, props);
+    const b = Buffer.alloc(h.length + stride * n); h.copy(b);
+    const cols = stride === 27 ? 27 * n : (3 + 3 + 1 + 3 + 4) * 4 * n;
     settle();
     const before = process.memoryUsage().arrayBuffers;
     const c = readPly(b);
-    settle();
-    const out = process.memoryUsage().arrayBuffers - before;
-    const cols = stride === 27 ? 27 * n : (3 + 3 + 1 + 3 + 4) * 4 * n;
+    const out = process.memoryUsage().arrayBuffers - before; // 호출 뒤 GC 없음
     console.log(`readPly ${name}: arrayBuffers +${out} B (열 배열 ${cols} B)`);
     assert.ok(out <= cols + 64 * 1024, `${name}: readPly +${out} > ${cols}`);
+    assert.ok(out >= cols, `${name}: readPly +${out} < 열 배열 ${cols} (측정이 열 배열을 못 봄)`);
     assert.equal(c.count, n);
     const copiedRead = countCopies(() => readPly(b));
     assert.ok(copiedRead < 64 * 1024, `${name}: readPly copied ${copiedRead} B (열 배열 제외)`);
-    b = null;
-  }
-});
+  });
+}
