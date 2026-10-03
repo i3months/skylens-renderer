@@ -85,6 +85,16 @@ test('quantExp 는 범위에 따라 10 → 9 → 8', () => {
   assert.equal(mk(127.99), 9);
   assert.equal(mk(128), 8);
   assert.equal(mk(255.99), 8);
+  // 등호 경계(§5.1 `≤ 65535`): extent = 65535·2^-k 는 k 그대로, 바로 위 f32 는 한 단계 아래
+  const up = (x) => { const b = new Float32Array([x]); new Uint32Array(b.buffer)[0]++; return b[0]; };
+  for (const [k, next] of [[10, 9], [9, 8]]) {
+    const e = 65535 / 2 ** k;
+    assert.equal(Math.fround(e), e);
+    assert.equal(mk(e), k, `extent 65535/2^${k}`);
+    assert.equal(mk(up(e)), next, `extent nextUp(65535/2^${k})`);
+  }
+  assert.equal(mk(65535 / 256), 8);
+  assert.throws(() => mk(up(65535 / 256)), (e) => e instanceof AssetFormatError && e.code === 'range');
 });
 
 test('범위 초과 → range, 두 타일 → tile', () => {
