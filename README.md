@@ -62,6 +62,8 @@ node tools/baseline_report/cli.mjs --status summary.json
 ### 점 입력과 좌표 (T04)
 27 B 점과 56 B 가우시안 PLY 를 읽고 쓴다. 계약 `contracts/points/`·`contracts/geo/`, 서버 모듈 `server/points/`(PLY 읽기·쓰기·스트리밍·손상 입력 거부·법선 정규화·구간 파일 식별)와 `server/geo/`(GPS↔ENU, ENU↔씬 좌표 x=동, y=위, z=−북), 클라이언트 변환 `client/geo/`, 점 통계 `tools/points_stat/`. GPS↔ENU 는 skylens `geo.ts` 와 같은 등장방형 근사(R = 6378137 m)이며, geo.ts 를 옮긴 기준 함수와 1 mm 이내로 일치함을 테스트한다. 경도 차이(|Δλ|)가 180°를 넘으면 360° − |Δλ|를 쓴다.
 
+ENU 변환에서 skylens geo.ts 와 다른 점은 두 가지다. 첫째, 경도 차 |Δλ| > 180° 를 감싼 뒤 결과 경도를 (−180, 180] 범위로 정규화하며, 실제 측정값으로 |Δλ| ≤ 180 범위는 비트까지 geo.ts 와 같다(결정 0017). 둘째, 극 앵커(위도 ±90°)에서 gpsToEnu 가 동쪽 성분 e 를 0 으로 명시적 설정하여, cos 90° ≈ 6e-17 이 만드는 1e-10 m 잔여를 없앤다. 극 앵커에서는 동쪽 방향이 정의되지 않으므로 이 가지는 geo.ts 와 다른 범위에서 동작한다(결정 0018).
+
 ### 합성 장면과 뷰포인트 (T05)
 테스트·측정용 8가지 합성 장면. 각 장면 생성기는 `fixtures/scenes/<이름>/index.mjs` 에 위치하고 `generate(opts)` 를 내보내며 `SceneResult` 를 반환한다(계약은 `contracts/scenes/index.mjs`). 좌표는 GeoAnchor 기준 로컬 ENU(1 unit = 1 m). 점 형식: 27 B(위치+법선) 또는 56 B(가우시안·불투명도·크기·회전).
 
@@ -150,6 +152,8 @@ One chunk is one file (128 B header + per-field planar body, little-endian, coor
 
 ### Point input and coordinates (T04)
 Reads and writes 27 B point and 56 B Gaussian PLY files. Contracts live in `contracts/points/` and `contracts/geo/`; server modules in `server/points/` (PLY read/write/streaming, rejection of corrupt input, normal normalization, segment file identification) and `server/geo/` (GPS↔ENU, ENU↔scene axes x=east, y=up, z=−north); the client conversion in `client/geo/`; point statistics in `tools/points_stat/`. GPS↔ENU uses the same equirectangular approximation as skylens `geo.ts` (R = 6378137 m) and is tested against a transcribed reference function to within 1 mm. When longitude difference |Δλ| exceeds 180°, use 360° − |Δλ|.
+
+The ENU conversion differs from skylens geo.ts in two ways. First, after wrapping longitude difference |Δλ| > 180°, the result longitude is normalized to the range (−180, 180], and in the measured range |Δλ| ≤ 180° the output matches geo.ts bit-for-bit (decision 0017). Second, at a pole anchor (latitude ±90°), gpsToEnu explicitly sets the east component e to 0, eliminating the 1e-10 m residual created by cos 90° ≈ 6e-17. At a pole anchor the east direction is undefined, so this branch operates in a different range than geo.ts (decision 0018).
 
 ### Synthetic scenes and viewpoints (T05)
 8 synthetic scenes for testing and measurement. Each scene generator lives in `fixtures/scenes/<name>/index.mjs` and exports `generate(opts)` returning a `SceneResult` (contract in `contracts/scenes/index.mjs`). Coordinates are local ENU anchored at the GeoAnchor, 1 unit = 1 m. Point formats: 27 B (position + normal) and 56 B (Gaussian with opacity, scale, rotation).
