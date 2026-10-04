@@ -1,5 +1,5 @@
 import test from 'node:test';
-import assert from 'node:assert';
+import assert from 'node:assert/strict';
 import { missingNotices } from './index.mjs';
 
 test('missingNotices - basic case: mixed arrived and missing segments', () => {
@@ -54,17 +54,25 @@ test('missingNotices - input not an array', () => {
 });
 
 test('missingNotices - input immutability and frozen input', () => {
-  const states = [
+  const deepFreeze = (o) => {
+    if (o && typeof o === 'object') {
+      Object.values(o).forEach(deepFreeze);
+      Object.freeze(o);
+    }
+    return o;
+  };
+  const states = deepFreeze([
     { segmentId: 0, level: -1, missing: true, pieces: [] },
     { segmentId: 1, level: 0, missing: false, pieces: [] },
-  ];
-  Object.freeze(states);
+  ]);
+  const stateCopy = JSON.parse(JSON.stringify(states));
   const result = missingNotices(states);
   assert.deepEqual(result, [{ segmentId: 0, text: '없음' }]);
-  // Verify that the input is still frozen and unchanged
-  assert.equal(Object.isFrozen(states), true);
-  assert.equal(states[0].level, -1);
-  assert.equal(states[1].level, 0);
+  // Verify that the input hasn't been modified after function call
+  assert.deepEqual(states, stateCopy);
+  // Modify the result and verify input is still unchanged
+  result[0].text = 'modified';
+  assert.deepEqual(states, stateCopy);
 });
 
 test('missingNotices - empty input', () => {

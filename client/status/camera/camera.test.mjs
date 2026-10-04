@@ -198,6 +198,7 @@ test('잘못된 입력 거부', () => {
   bad(pose, { width: 800, height: 600.5, devicePixelRatio: 1 }, 0, RangeError);
   bad(pose, { width: 800, height: 600, devicePixelRatio: 0 }, 0, RangeError);
   bad(pose, { width: 65536, height: 600, devicePixelRatio: 1 }, 0, RangeError);
+  bad(pose, { width: 800, height: 65536, devicePixelRatio: 1 }, 0, RangeError);
   bad(pose, null, 0, TypeError);
   bad(pose, SIZE, -1, RangeError);
   bad(pose, SIZE, 2 ** 32, RangeError);
