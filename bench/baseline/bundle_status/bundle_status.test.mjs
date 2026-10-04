@@ -358,7 +358,7 @@ test('dist: 폐포 밖 JS 가 있으면 경고가 method 와 manifest 에 남는
 
 // 실제 develop vite dist(SKYLENS_DIR/dist)가 있을 때만: 못 푼 참조가 0 으로 method 에 기록돼야 한다.
 const REAL_DIST = process.env.SKYLENS_DIR ? join(process.env.SKYLENS_DIR, 'dist') : null;
-test('실제 dist: 못 푼 동적/mapDeps 참조가 0 으로 method 에 기록된다', { skip: !REAL_DIST || !existsSync(join(REAL_DIST, 'res', 'static', 'status.html')) }, async () => {
+test('실제 dist: 못 푼 동적/mapDeps 참조가 0 으로 method 에 기록된다', { skip: (!REAL_DIST || !existsSync(join(REAL_DIST, 'res', 'static', 'status.html'))) ? 'REAL_DIST' : false }, async () => {
   const r = await run({ skylensDir: process.env.SKYLENS_DIR, outDir: null, commit: COMMIT, inputs: { distDir: REAL_DIST } });
   assert.match(r[0].method, /unresolved dynamic\/mapDeps refs: 0(?:;|$)/);
 });

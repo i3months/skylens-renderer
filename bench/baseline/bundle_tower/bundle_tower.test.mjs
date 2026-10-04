@@ -289,7 +289,7 @@ test('dist: 깨진 sourcemap·sources 가 빈 맵은 앱 판정이 아니라 코
 
 // 실제 develop vite dist(SKYLENS_DIR/dist)가 있을 때만: 못 푼 참조가 0 으로 method 에 기록돼야 한다.
 const REAL_DIST = process.env.SKYLENS_DIR ? join(process.env.SKYLENS_DIR, 'dist') : null;
-test('실제 dist: 못 푼 동적/mapDeps 참조가 0 으로 method 에 기록된다', { skip: !REAL_DIST || !existsSync(join(REAL_DIST, 'res', 'static', 'control.html')) }, async () => {
+test('실제 dist: 못 푼 동적/mapDeps 참조가 0 으로 method 에 기록된다', { skip: (!REAL_DIST || !existsSync(join(REAL_DIST, 'res', 'static', 'control.html'))) ? 'REAL_DIST' : false }, async () => {
   const r = await run({ skylensDir: process.env.SKYLENS_DIR, commit: COMMIT, inputs: { distDir: REAL_DIST } });
   assert.match(r[0].method, /못 푼 동적\/mapDeps 참조 0개/);
 });
