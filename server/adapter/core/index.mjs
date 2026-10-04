@@ -62,8 +62,10 @@
 //     빈칸이 생길 수 있음), 이 재시도는 LEVEL_ARRIVED 를 내보내지 않는다. 받는 쪽은 완료 표시 없는 조각을 수준 도착으로
 //     세지 않는다. 실패한 시도가 LEVEL_ARRIVED 를 이미 썼다면 받는 쪽은 그 수준을 완료로 센다 — 어댑터는 emit 을 불렀는지만
 //     알 수 있으므로 그 경우 levelArrivedMaybeSent 로 표시하고 그 key 를 놓으라고 알리지 않는다(위 skip 규칙, F-235).
-//     이 경로는 L ≤ M(기계의 현재 수준 M 이 재시도 수준 L 이상: decideArrival 은 도착 수준이 현재 이하이면 skip) 이라
-//     기계가 쥐지 않은 key 의 서버 내부 해제 알림도 함께 생략한다(F-239 ⑨). 어댑터는 그 key 를 onRelease 로 알리지 않는다 — 호출자가 levelArrivedMaybeSent 를 보고 판단한다
+//     해제 알림 생략의 조건은 levelArrivedTried(실패한 시도가 LEVEL_ARRIVED emit 을 불렀는가)뿐이다(F-242 ③): 그 분기는
+//     L·M 을 보지 않고 abandoned 를 [] 로 돌려주므로, 기계가 쥐지 않은 key 의 서버 내부 해제 알림도 함께 생략한다(F-239 ⑨).
+//     (이 skip 경로에 오는 것은 L ≤ M 일 때다 — decideArrival 은 도착 수준이 현재 이하이면 skip — 그러나 그것은 생략의
+//     이유가 아니라 이 경로에 들어오는 조건이다.) 어댑터는 그 key 를 onRelease 로 알리지 않는다 — 호출자가 levelArrivedMaybeSent 를 보고 판단한다
 //     (그 key 가 선에 쓰였을 수 있는지, 서버 쪽 자원을 따로 놓아야 하는지).
 //     재시도가 영구히 실패할 때의 복구(F-219 ④): 어댑터 하나로는 풀 수 없다(같은 이벤트 재시도 말고는 모두 거부).
 //     호출자는 그 어댑터를 버리고 새로 만든다. 새 어댑터의 firstPieceSeq 는 옛 어댑터가 썼을 수 있는 모든 순번보다 커야

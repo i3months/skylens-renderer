@@ -1,4 +1,4 @@
-// 재접속·이어받기 세션 저장소(T11.7). 의존성은 계약(contracts/proto)뿐, 시계는 주입(now)만 쓴다.
+// 재접속·이어받기 세션 저장소(T11.7). 의존성은 계약(contracts/proto·contracts/asset)뿐, 시계는 주입(now)만 쓴다.
 //   createSessionStore({ maxSessions, ttlMs, now, randomId?, maxEntriesPerSession?, maxBytesPerSession? }) -> SessionStore
 //   open({sessionId, lastPieceSeq}) -> { sessionId, resumed, nextPieceSeq, reason }
 //     sessionId 0 = 새 세션(reason null). 알 수 없거나 만료된 id 로 이어받기 요청 = 새 세션 + resumed=false,
@@ -32,35 +32,42 @@
 //     LEVEL_ARRIVED 는 pieceSeq 를 쓰지 않아 lastPieceSeq·ACK 로 수신을 확인할 수 없다. 끊김으로 잃으면 그 수준이 영구히
 //     완료되지 않으므로 저장소가 따로 기록했다가 이어받기 때 다시 보낸다(resendPlan). 창 = firstPieceSeq..last
 //     (last = firstPieceSeq + pieceCount − 1). 자기 조각을 모두 recordSent 한 뒤에 부른다: last 는 이미 기록한 최대 순번
-//     이하여야 하고, 창은 앞서 기록한 LEVEL_ARRIVED 의 창과 겹치면 안 된다: firstPieceSeq > 앞 기록의 last(F-238 ③,
-//     어댑터는 수준 도착마다 새 조각·더 큰 순번을 쓴다). 겹치는 창을 받으면 resendPlan 이 창마다 같은 순번을 다시 훑는다.
-//     멱등(F-238 ①): 창이 마지막 기록의 창 끝 이하에서 시작하는(firstPieceSeq ≤ 마지막 기록의 last) 기록은 새 기록이 아니다.
-//     다음 순서로 판정하고, 어느 경우든 아무것도 바꾸지 않는다(저장하지 않는다, stats().levels 그대로):
-//       (a) 마지막으로 기록한 것, 또는 남아 있는 기록(levels) 가운데 네 값(segmentId·level·firstPieceSeq·pieceCount)이
-//           모두 같은 것이 있으면 true — 어댑터 재시도와, resendPlan 의 메시지를 다시 내보내며 기록하는 이어받기 재전송.
-//       (b) 창이 남아 있는 기록의 창과 한 순번이라도 겹치면(네 값이 다르면) RangeError.
-//       (c) 창이 이미 다시 보낼 수 없는 상태면 true: 창 끝 ≤ ackedUpTo(조각을 모두 받았다고 확인됨), 또는 창 안 미확인
-//           순번(> ackedUpTo) 가운데 살아 있는 미확인 조각이 아닌 것(같은 key 대체로 dead, 추월당함, 기록된 적 없음)이
-//           있다. 확인(ack)·대체로 이미 지워졌거나 기록 때 보관되지 않은 기록의 재시도가 여기에 든다 — 지워진 기록은 네 값을 대조할 정보가
-//           없으므로, 이 경로는 같은 창의 다른 값 기록을 잡지 못한다(recordSent 의 F-219 ③ 과 같은 대가). 창 안 조각이
-//           모두 대체된 뒤의 재시도는 true 지만 아무것도 저장하지 않는다(stats().levels 0, resendPlan 에 없음).
-//       (d) 그 밖(창 안 미확인 조각이 모두 살아 있는데 앞선 기록의 창과 겹침 = 순서 위반)은 RangeError.
+//     이하여야 하고(어기면 RangeError '조각 먼저 기록'), 새 기록의 창은 앞서 받은 LEVEL_ARRIVED 의 창과 겹치면 안 된다:
+//     firstPieceSeq > 마지막으로 받은 기록의 last(F-238 ③, 어댑터는 수준 도착마다 새 조각·더 큰 순번을 쓴다).
+//     segmentId 는 0 이상 SEGMENT_ID_LIMIT(2^30, contracts/asset) 미만이다(F-242 ④). 클라이언트(contracts/client_raster)가
+//     그 밖을 거부하므로 저장소도 RangeError 로 거부한다(recordSent·shouldSend 의 key.segmentId 도 같다). 운영 경로의
+//     어댑터는 수준 기계(contracts/levels)가 먼저 거른다.
+//     기억(F-241): 받은 기록은 모두 네 값(segmentId·level·firstPieceSeq·pieceCount)을 창 끝으로 찾을 수 있게 기억한다 —
+//     보관 중인 기록과, 지운(ack·대체·상한) 또는 보관하지 않은 기록의 묘비. 묘비는 세션당 최대 maxEntriesPerSession + 1
+//     개이고, 넘으면 가장 먼저 묘비가 된 것부터 잊는다. 지평(horizon) = 잊은 묘비의 창 끝 최댓값(처음 0).
+//     재시도(firstPieceSeq ≤ 마지막으로 받은 기록의 last)는 새 기록이 아니다. 다음 순서로 판정하고, 어느 경우든 아무것도
+//     바꾸지 않는다(저장하지 않는다):
+//       (a) 기억한 기록(보관 중이든 묘비든) 가운데 네 값이 모두 같은 것이 있으면 true — 어댑터 재시도와, resendPlan 의
+//           메시지를 다시 내보내며 기록하는 이어받기 재전송. 그 사이 ack·대체로 기록이 지워졌어도 같다.
+//       (b) 창 끝 ≤ 지평이면 true(잊은 묘비의 재시도일 수 있어 대조할 정보가 없다). levelStats().blind 를 센다.
+//       (c) 그 밖은 RangeError(겹침·순서 위반). 지평 뒤에 창 끝이 있는 받은 기록은 모두 기억하므로, (c) 에 오는 입력은 받은
+//           기록의 재시도가 아니다.
+//     판정은 ackedUpTo·windowLive(추월)를 보지 않는다: 같은 값 재시도는 언제나 true 이고, 다른 값은 (b) 범위 밖이면 언제나
+//     RangeError 다. 대가: 묘비가 maxEntriesPerSession + 1 개를 넘어 잊힌 범위(창 끝 ≤ 지평)에서는 다른 값도 대조 없이
+//     true 로 받는다(저장하지 않는다). 지평은 묘비가 생길 때(ack 로 지울 때 포함)만 오르므로, 다른 값의 판정이 RangeError 에서
+//     true 로 바뀌는 것은 그 범위가 잊혔을 때뿐이다. 비용: 판정은 창 끝 Map 조회 하나(levelStats().work 가 호출당 1).
 //     모르는 세션이면 false.
 //     확인 규칙: ackedUpTo > last 이면 클라이언트가 그 뒤 조각을 받았으므로(한 연결 안에서 순서 보장, 어댑터는 조각 →
-//     LEVEL_ARRIVED 를 연달아 보낸다) LEVEL_ARRIVED 도 받았다 — 기록을 지운다. ackedUpTo == last 는 조각은 다 받았지만
-//     LEVEL_ARRIVED 는 모르는 상태라 남긴다.
-//     판정 windowLive(resendPlan 과 같은 판정): 창 안 미확인 순번(> ackedUpTo)이 모두 다시 보낼 조각(죽지 않았고 추월당하지
-//     않은 미확인 항목, unacked 와 같은 규칙)이다. 창 끝 ≤ ackedUpTo 면 검사할 순번이 없어 참.
-//     정리(F-238 ②): 기록 때 windowLive 가 거짓이면(같은 key 대체로 dead, 추월당함, 또는 기록된 적 없는 순번) 보관하지 않고,
-//     보관한 뒤 창 안 미확인 조각이 대체(drop)로 죽으면 지운다(순번은 다시 쓰이지 않으므로 resendPlan 이 영영 내보낼 수 없다).
-//     '창 안 조각이 모두 dead' 인 기록도 여기에 든다. 예외: 보관한 뒤 창 안 조각이 추월당하면 기록은 지우지 않는다 — 추월은
-//     그 조각이 ack 되면 풀리고(창 안 미확인 순번에서 빠진다) 그때 다시 내보내야 하기 때문이다. 그동안 resendPlan 은 그
-//     기록을 건너뛰고, stats().levels 도 resendPlan 과 같은 windowLive 판정으로 세므로 세지 않는다(levels == resendPlan 의
-//     LEVEL_ARRIVED 수). 보관 중인 기록 수(내부)는 그 이상일 수 있고 아래 상한을 따른다.
-//     창이 겹치지 않으므로 남은 기록은 저마다 서로 다른 살아 있는 미확인 조각을 하나 이상 갖거나(창 끝 > ackedUpTo),
-//     창 끝 == ackedUpTo 인 하나뿐이다: 남은 기록 수 ≤ (dead 아닌) 미확인 조각 수 + 1 ≤ maxEntriesPerSession + 1.
-//     방어용 상한 maxEntriesPerSession + 1 을 따로 둔다(불변식상 걸리지 않는다). 상한을 maxEntriesPerSession 으로 두면
-//     창 끝 == ackedUpTo 인 기록(조각은 확인, 완료 표시 수신 미상)을 지워 resendPlan 에서 빠지므로 + 1 이어야 한다.
+//     LEVEL_ARRIVED 를 연달아 보낸다) LEVEL_ARRIVED 도 받았다 — 기록을 지운다(묘비). ackedUpTo == last 는 조각은 다
+//     받았지만 LEVEL_ARRIVED 는 모르는 상태라 남긴다.
+//     보관 판정(F-241 ②, '죽음·기록 없음' 만 본다): 새 기록은 last ≥ ackedUpTo 이고 창 안 미확인 순번(> ackedUpTo)이 모두
+//     기록됐고 같은 key 대체로 죽지 않았으면 보관한다. 추월은 보지 않는다 — 추월은 그 조각이 ack 되면 풀리고 그때 다시
+//     내보내야 하므로, LEVEL_ARRIVED 를 추월 조각보다 먼저 기록하든 뒤에(F-238 ⑤ 의 늦은 첫 기록) 기록하든 결과가 같다.
+//     보관하지 않은 기록은 묘비가 되고 levelStats().unstored 를 센다. 보관한 뒤 창 안 미확인 조각이 대체(drop)로 죽으면
+//     지운다(묘비. 순번은 다시 쓰이지 않으므로 resendPlan 이 영영 내보낼 수 없다).
+//     내보내기 판정 windowLive(resendPlan·stats().levels): 창 안 미확인 순번이 모두 다시 보낼 조각(죽지 않았고 추월당하지
+//     않은 미확인 항목, unacked 와 같은 규칙)이다. 창 끝 ≤ ackedUpTo 면 검사할 순번이 없어 참. 추월당한 조각이 있는
+//     보관 기록은 resendPlan·stats().levels 가 건너뛴다(levels == resendPlan 의 LEVEL_ARRIVED 수).
+//     불변식: 보관 기록의 창은 겹치지 않고, 창 끝 > ackedUpTo 인 기록은 저마다 서로 다른 죽지 않은 미확인 조각(추월당한
+//     조각도 미확인 항목이다)을 하나 이상 가지며, 창 끝 == ackedUpTo 인 기록은 많아야 하나다: 보관 기록 수
+//     (levelStats().stored) ≤ stats().unacked + 1 ≤ maxEntriesPerSession + 1. 방어용 상한 maxEntriesPerSession + 1 을 따로
+//     둔다(불변식상 걸리지 않는다. 걸리면 levelStats().capDropped). 상한을 maxEntriesPerSession 으로 두면 창 끝 ==
+//     ackedUpTo 인 기록(조각은 확인, 완료 표시 수신 미상)을 지워 resendPlan 에서 빠지므로 + 1 이어야 한다.
 //   resendPlan(sessionId) -> Message[]   이어받기 뒤 다시 보낼 순서(F-236). 순번 오름차순의 PIECE {type, pieceSeq, key}
 //     (unacked 와 같은 조각, chunk 는 호출자가 붙인다)와 LEVEL_ARRIVED {type, segmentId, level, pieceCount, firstPieceSeq}.
 //     LEVEL_ARRIVED 는 자기 창의 마지막 조각 뒤, 더 큰 순번의 PIECE 앞에 둔다(어댑터 송출 순서 그대로). 창 안의
@@ -70,8 +77,12 @@
 //   close(sessionId)                         세션을 지운다(이어받기 불가).
 //   size() -> 살아 있는 세션 수. stats(sessionId) -> { entries, retainedBytes, unacked, groups, levels } | null (계측용).
 //     groups = groupMax 에 남은 묶음 수. levels = 남은 LEVEL_ARRIVED 기록 가운데 지금 resendPlan 이
-//     내보낼 것의 수(windowLive 판정, resendPlan 의 LEVEL_ARRIVED 수와 같다. 보관 수 ≤ maxEntriesPerSession + 1,
-//     결정 0032 계측). 기록 수에 비례해 걷는다(계측용).
+//     내보낼 것의 수(windowLive 판정, resendPlan 의 LEVEL_ARRIVED 수와 같다. 결정 0032 계측). 기록 수에 비례해 걷는다(계측용).
+//   levelStats(sessionId) -> { stored, tombstones, horizon, unstored, blind, capDropped, work } | null (계측용, F-242 ⑥).
+//     stored = 보관 기록 수(추월 포함, ≤ stats().unacked + 1), tombstones = 기억한 묘비 수(≤ maxEntriesPerSession + 1),
+//     horizon = 지평. 세션 누계: unstored = 보관하지 않고 true 를 돌려준 새 기록, blind = (b) 로 대조 없이 true 를 돌려준
+//     재시도, capDropped = 방어용 상한이 지운 기록, work = 재시도 판정이 본 기록 수(호출당 1). stats() 모양은 바꾸지
+//     않는다(어댑터 시험이 stats() 전체를 대조한다) — 그래서 따로 둔다.
 //   retainedBytes() -> 모든 세션이 보관 중인 조각 바이트 합(계측용).
 // 보관 정책(F-192):
 //   - ack(또는 이어받기 open)로 확인된 항목은 즉시 bytes 를 놓는다(보관 바이트 0). 항목 자체(key·seq)와 묶음별 최고 수준
@@ -94,6 +105,7 @@
 //   만료되지 않은 첫 세션에서 멈춘다.
 import { randomInt } from 'node:crypto';
 import { overtakeGroup, pieceKeyString, PIECE_SEQ_MIN } from '../../../contracts/proto/index.mjs';
+import { SEGMENT_ID_LIMIT } from '../../../contracts/asset/index.mjs';
 
 const U32_MAX = 0xffffffff;
 /** 세션당 항목 수 기본 상한(F-192). */
@@ -110,6 +122,11 @@ function assertKey(k) {
     if (!Number.isInteger(k[f]) || k[f] < 0) throw new RangeError(`key.${f} 범위 밖: ${k[f]}`);
   }
   for (const f of ['tileX', 'tileY']) if (!Number.isInteger(k[f])) throw new RangeError(`key.${f} 는 정수여야 한다`);
+  assertSegmentId(k.segmentId, 'key.segmentId');
+}
+// segmentId 상한(F-242 ④): 계약 SEGMENT_ID_LIMIT(2^30) 미만. 클라이언트(contracts/client_raster)는 그 밖을 거부한다.
+function assertSegmentId(v, name) {
+  if (!Number.isInteger(v) || v < 0 || v >= SEGMENT_ID_LIMIT) throw new RangeError(`${name} 는 0 이상 ${SEGMENT_ID_LIMIT} 미만 정수여야 한다: ${v}`);
 }
 function byteSize(bytes) {
   if (bytes === undefined) return 0;
@@ -257,9 +274,12 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     // groupRefs: 묶음 -> sent 에 남은 그 묶음 항목 수(0 이 되면 groupMax 도 지운다).
     // levels: 확인되지 않은 LEVEL_ARRIVED 기록(창 끝 last 오름차순, 창은 겹치지 않음, F-236·F-238). 정리된 기록은 gone 표시만
     // 남기고(levelsGone 개) 머리에서 걷거나 압축한다. levelsLive = 남은 기록 수. lastLevel: 마지막으로 기록한 것(지워져도 남는다).
+    // byLast: 창 끝 -> 기억한 기록(보관 중 + 묘비, F-241). tombQ: 묘비(묘비가 된 순서, ≤ maxEntries + 1 개). horizon: 잊은
+    // 묘비의 창 끝 최댓값. lv: levelStats 누계.
     const s = {
       last: t, nextSeq: PIECE_SEQ_MIN, ackedUpTo: 0, sent: new Map(), groupMax: new Map(), groupRefs: new Map(),
       pendingQ: new Queue(), ackedQ: new AckedQueue(evictionDiag), retained: 0, deadQ: 0, levels: new Queue(), levelsGone: 0, levelsLive: 0, lastLevel: null,
+      byLast: new Map(), tombQ: new Queue(), horizon: 0, lv: { unstored: 0, blind: 0, capDropped: 0, work: 0 },
     };
     sessions.set(id, s);
     return id;
@@ -284,7 +304,17 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   function shiftLevel(s) {
     const r = s.levels.shift();
     if (r.gone) s.levelsGone--;
-    else { r.gone = true; s.levelsLive--; }
+    else { r.gone = true; s.levelsLive--; tomb(s, r); }
+  }
+  // 지웠거나 보관하지 않은 기록을 묘비로 기억한다(F-241). 묘비가 maxEntries + 1 개를 넘으면 가장 먼저 묘비가 된 것부터
+  // 잊고 지평을 올린다. 받은 기록은 창이 겹치지 않아 창 끝이 서로 달라 byLast 의 키가 겹치지 않는다.
+  function tomb(s, r) {
+    s.tombQ.push(r);
+    while (s.tombQ.length > maxEntries + 1) {
+      const x = s.tombQ.shift();
+      s.byLast.delete(x.last);
+      if (x.last > s.horizon) s.horizon = x.last;
+    }
   }
   // 가운데 기록을 지운다: gone 표시만 하고, 표시가 살아 있는 수보다 많아지면 압축한다(상각 O(1)).
   function dropLevel(s, r) {
@@ -292,6 +322,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     r.gone = true;
     s.levelsLive--;
     s.levelsGone++;
+    tomb(s, r);
     if (s.levelsGone * 2 > s.levels.length) { s.levels.compact((x) => !x.gone); s.levelsGone = 0; }
   }
   // 순번 seq 를 창에 담은 남은 기록(창이 겹치지 않아 많아야 하나). 없으면 null.
@@ -302,25 +333,16 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   }
   // 추월당한 항목인가(같은 묶음에서 더 높은 수준을 이미 기록, F-199).
   const overtaken = (s, e) => (s.groupMax.get(e.g) ?? -1) > e.key.level;
-  // 창 first..last 와 한 순번이라도 겹치는 남은 기록이 있는가. levels 는 창 끝 오름차순·서로 겹치지 않는다.
-  function levelOverlapping(s, first, last) {
-    const a = s.levels.a;
-    for (let i = s.levels.lowerBound((x) => x.last >= first); i < a.length; i++) {
-      const x = a[i];
-      if (x.gone) continue;
-      return x.firstPieceSeq <= last;
-    }
-    return false;
-  }
   // 창 안 미확인 순번(> ackedUpTo)이 모두 다시 보낼 조각(죽지 않았고 추월당하지 않은 미확인 항목)인가 — resendPlan 이
   // LEVEL_ARRIVED 를 넣는 조건과 같다. pendingQ 는 순번 오름차순이라 이진 탐색 뒤 창만 걷는다.
-  function windowLive(s, r) {
+  // withOvertake=false 면 추월은 보지 않는다 — 보관 판정(창 안 미확인 순번이 모두 기록됐고 죽지 않았는가, F-241 ②).
+  function windowLive(s, r, withOvertake = true) {
     let q = Math.max(r.firstPieceSeq, s.ackedUpTo + 1);
     if (q > r.last) return true;
     const pq = s.pendingQ;
     for (let i = pq.lowerBound((e) => e.seq >= q); q <= r.last; i++) {
       const e = pq.a[i];
-      if (!e || e.seq !== q || e.dead || overtaken(s, e)) return false;
+      if (!e || e.seq !== q || e.dead || (withOvertake && overtaken(s, e))) return false;
       q++;
     }
     return true;
@@ -464,7 +486,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     recordLevelArrived(sessionId, la) {
       if (la === null || typeof la !== 'object') throw new TypeError('LEVEL_ARRIVED 기록은 객체여야 한다');
       const { segmentId, level, firstPieceSeq, pieceCount } = la;
-      assertU32(segmentId, 'segmentId');
+      assertSegmentId(segmentId, 'segmentId');
       if (!Number.isInteger(level) || level < 0 || level > 3) throw new RangeError(`level 범위 밖: ${level}`);
       assertU32(firstPieceSeq, 'firstPieceSeq');
       assertU32(pieceCount, 'pieceCount');
@@ -475,26 +497,34 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       if (!s) return false;
       if (last >= s.nextSeq) throw new RangeError(`LEVEL_ARRIVED 창 끝 ${last} 은 이미 기록한 최대 순번(${s.nextSeq - 1}) 이하여야 한다(조각 먼저 기록)`);
       const tail = s.lastLevel;
-      const r = { segmentId, level, firstPieceSeq, pieceCount, last, gone: false };
       if (tail && firstPieceSeq <= tail.last) {
-        // 새 기록이 아니다(F-238 ①, 머리 주석 (a)–(d)). 어느 경우든 아무것도 바꾸지 않는다.
-        const same = (x) => x && x.last === last && x.firstPieceSeq === firstPieceSeq && x.segmentId === segmentId && x.level === level;
-        const overlap = () => new RangeError(`LEVEL_ARRIVED 창 ${firstPieceSeq}..${last} 이 앞선 기록의 창과 겹친다: 창 시작은 앞선 기록의 창 끝(${tail.last})보다 커야 한다`);
-        if (!same(tail) && !same(levelContaining(s, last))) {           // (a) 아님
-          if (levelOverlapping(s, firstPieceSeq, last)) throw overlap(); // (b)
-          if (last > s.ackedUpTo && windowLive(s, r)) throw overlap();   // (d); 나머지는 (c) 다시 보낼 수 없는 창 = 지워진 기록의 재시도
+        // 새 기록이 아니다(F-241, 머리 주석 (a)–(c)). 어느 경우든 아무것도 바꾸지 않는다. ackedUpTo·추월을 보지 않는다.
+        s.lv.work++;
+        const x = s.byLast.get(last);
+        if (!(x && x.firstPieceSeq === firstPieceSeq && x.segmentId === segmentId && x.level === level)) { // (a) 아님
+          if (last > s.horizon) { // (c)
+            throw new RangeError(`LEVEL_ARRIVED 창 ${firstPieceSeq}..${last} 이 앞선 기록의 창과 겹친다: 창 시작은 앞선 기록의 창 끝(${tail.last})보다 커야 한다`);
+          }
+          s.lv.blind++; // (b) 잊은 묘비의 재시도일 수 있다
         }
         touch(sessionId, s, now());
         return true;
       }
+      const r = { segmentId, level, firstPieceSeq, pieceCount, last, gone: false };
       s.lastLevel = r;
-      // last < ackedUpTo 면 이미 받은 것으로 확인됨: 보관할 것 없음. 창 안에 살아 있지 않은 미확인 순번이 있으면 다시 보낼 수 없다.
-      if (last >= s.ackedUpTo && windowLive(s, r)) {
+      s.byLast.set(last, r);
+      // last < ackedUpTo 면 이미 받은 것으로 확인됨: 보관할 것 없음. 창 안 미확인 순번이 죽었거나 기록된 적 없으면 다시 보낼
+      // 수 없다. 추월은 보지 않는다(F-241 ②). 보관하지 않은 기록은 묘비로 기억한다.
+      if (last >= s.ackedUpTo && windowLive(s, r, false)) {
         s.levels.push(r);
         s.levelsLive++;
-        // 방어용 상한(F-238 ②): 불변식상 levelsLive ≤ 미확인 조각 수 + 1 ≤ maxEntries + 1 이라 걸리지 않는다. maxEntries 로
+        // 방어용 상한(F-238 ②): 불변식상 levelsLive ≤ stats().unacked + 1 ≤ maxEntries + 1 이라 걸리지 않는다. maxEntries 로
         // 두면 창 끝 == ackedUpTo 인 기록(완료 표시 수신 미상)을 지워 resendPlan 에서 빠진다.
-        while (s.levelsLive > maxEntries + 1) shiftLevel(s);
+        while (s.levelsLive > maxEntries + 1) { shiftLevel(s); s.lv.capDropped++; }
+      } else {
+        r.gone = true;
+        tomb(s, r);
+        s.lv.unstored++;
       }
       touch(sessionId, s, now());
       return true;
@@ -529,6 +559,11 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       let levels = 0;
       for (const r of s.levels) if (!r.gone && windowLive(s, r)) levels++; // resendPlan 과 같은 판정(추월당한 미확인 조각이 있는 창은 빠진다)
       return { entries: s.sent.size, retainedBytes: s.retained, unacked, groups: s.groupMax.size, levels };
+    },
+    levelStats(sessionId) {
+      const s = live(sessionId);
+      if (!s) return null;
+      return { stored: s.levelsLive, tombstones: s.tombQ.length, horizon: s.horizon, ...s.lv };
     },
     /** BENCH-ONLY: 진단용(테스트): 축출 횟수와 걸음 수(건너뛴 자리 + 압축이 훑은 자리). 두 work 모두 해당 큐 전체 누계(압축 포함)다. */
     evictionStats() {
