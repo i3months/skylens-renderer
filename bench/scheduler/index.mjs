@@ -39,6 +39,7 @@ function replacements(cap, n) {
 
 const cpus = os.cpus();
 const load = os.loadavg();
+console.log(`\n=== Scheduler benchmark (report-only, exit code always 0) ===`);
 console.log(`node ${process.version}, ${os.platform()}/${os.arch()}, ${cpus.length} CPU cores (${cpus[0]?.model ?? 'unknown'}), load average ${load.map((x) => x.toFixed(2)).join(' / ')} (1/5/15 min)`);
 
 const cases = [
@@ -57,5 +58,7 @@ const N = 250000;
 const small = best(3, () => replacements(1000, N));
 const big = best(3, () => replacements(65536, N));
 console.log(`${N} replacements: maxSentGroups 1000 ${(small / N * 1000).toFixed(2)} us/op, 65536 ${(big / N * 1000).toFixed(2)} us/op (x${(big / small).toFixed(2)}, info only)`);
-console.log(missed === 0 ? 'all targets met' : `${missed} target(s) missed`);
-console.log(`load average after run ${os.loadavg().map((x) => x.toFixed(2)).join(' / ')}`);
+console.log();
+console.log(`Summary: ${missed === 0 ? 'all targets met' : `${missed} target(s) missed`}`);
+console.log(`Note: Targets are report-only and do not affect exit code. The scheduler test suite (F-221) asserts deterministic counts instead.`);
+console.log(`Load average after run: ${os.loadavg().map((x) => x.toFixed(2)).join(' / ')}`);
