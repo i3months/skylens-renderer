@@ -196,9 +196,25 @@ test('det = +1 전단 행렬(직교 아님)은 직교 검사로 거부', () => {
   const v = { ...identityView(), R: S };
   assert.throws(() => projectMarkers(v, [{ id: 'a', enu: [0, 0, 1] }]), { name: 'RangeError', message: /직교/ });
   assert.throws(() => unprojectToEnu(v, 320, 240, 1), { name: 'RangeError', message: /직교/ });
-  // 허용치(1e-6) 밖의 작은 전단도 거부: 0.002 → S·Sᵀ 의 (0,0) 은 1 + 4e-6
+  // 허용치(1e-6) 밖의 작은 전단도 거부: 0.002 → S·Sᵀ 의 비대각 (0,1) 이 0.002 라 비대각 분기에서 걸린다
+  // ((0,0) 은 1 + 4e-6 으로 대각 분기도 넘지만, 이 입력만으로는 대각 분기를 따로 확인하지 못한다. 아래 시험 참조).
   const small = { ...identityView(), R: [1, 0.002, 0, 0, 1, 0, 0, 0, 1] };
   assert.throws(() => projectMarkers(small, []), { name: 'RangeError', message: /직교/ });
+});
+
+test('det = +1 대각 행렬 diag(1.01, 1/1.01, 1)(직교 아님)은 직교 검사의 대각 분기로 거부', () => {
+  // D·Dᵀ = diag(1.0201, 0.9803…, 1): 비대각은 정확히 0 이라 비대각 분기는 통과하고, det = 1(±1 ulp)이라 행렬식 검사도
+  // 통과한다. 대각 성분 |1.0201 − 1| = 0.0201 > 1e-6 이 i === j 분기에서만 걸린다.
+  const D = [1.01, 0, 0, 0, 1 / 1.01, 0, 0, 0, 1];
+  const det = D[0] * D[4] * D[8];
+  assert.ok(Math.abs(det - 1) <= 1e-15, `det ${det}`);
+  for (const [i, j] of [[0, 1], [0, 2], [1, 2]]) {
+    assert.equal(D[3 * i] * D[3 * j] + D[3 * i + 1] * D[3 * j + 1] + D[3 * i + 2] * D[3 * j + 2], 0);
+  }
+  const v = { ...identityView(), R: D };
+  assert.throws(() => projectMarkers(v, [{ id: 'a', enu: [0, 0, 1] }]), { name: 'RangeError', message: /직교/ });
+  assert.throws(() => projectMarkers(v, []), { name: 'RangeError', message: /직교/ });
+  assert.throws(() => unprojectToEnu(v, 320, 240, 1), { name: 'RangeError', message: /직교/ });
 });
 
 test('넘침: depth > 0 이어도 u·v·depth 가 비유한이면 visible false, u = v = 0', () => {
