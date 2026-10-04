@@ -59,8 +59,8 @@ test('s2c 종류 부호화 바이트 고정', () => {
     [5, 1, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 1, 0x0d, 0x0c, 0x0b, 0x0a]);
   assert.deepEqual(hex(encodeMessage({ type: 'PIECE', pieceSeq: 2, key: KEY, chunk: Uint8Array.of(0xaa, 0xbb) })),
     [6, 1, 0, 0, 22, 0, 0, 0, 2, 0, 0, 0, ...KEY_BYTES, 0xaa, 0xbb]);
-  assert.deepEqual(hex(encodeMessage({ type: 'LEVEL_ARRIVED', segmentId: 7, level: 3, pieceCount: 258 })),
-    [7, 1, 0, 0, 9, 0, 0, 0, 7, 0, 0, 0, 3, 2, 1, 0, 0]);
+  assert.deepEqual(hex(encodeMessage({ type: 'LEVEL_ARRIVED', segmentId: 7, level: 3, pieceCount: 258, firstPieceSeq: 0x01020304 })),
+    [7, 1, 0, 0, 13, 0, 0, 0, 7, 0, 0, 0, 3, 2, 1, 0, 0, 4, 3, 2, 1]);
   assert.deepEqual(hex(encodeMessage({ type: 'MISSING', segmentId: 0x3fffffff })), [8, 1, 0, 0, 4, 0, 0, 0, 255, 255, 255, 0x3f]);
   assert.deepEqual(hex(encodeMessage({ type: 'ERROR', code: 4, text: '한' })),
     [9, 1, 0, 0, 7, 0, 0, 0, 4, 0, 3, 0, 0xed, 0x95, 0x9c]);
@@ -70,7 +70,7 @@ test('서버 복호는 s2c 종류를 direction 으로 거부', () => {
   for (const m of [
     { type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 1 },
     { type: 'PIECE', pieceSeq: 1, key: KEY, chunk: Uint8Array.of(1) },
-    { type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 1 },
+    { type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 1, firstPieceSeq: 1 },
     { type: 'MISSING', segmentId: 0 },
     { type: 'ERROR', code: 1, text: '' },
   ]) assert.equal(code(() => decodeMessage(encodeMessage(m))), 'direction', m.type);
@@ -170,7 +170,7 @@ test('부호화 field 오류', () => {
   assert.equal(code(() => encodeMessage({ type: 'ACK', upToPieceSeq: 2 ** 32 })), 'field');
   assert.equal(code(() => encodeMessage({ type: 'ACK', upToPieceSeq: -1 })), 'field');
   assert.equal(code(() => encodeMessage({ type: 'ACK', upToPieceSeq: 1.5 })), 'field');
-  assert.equal(code(() => encodeMessage({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 4, pieceCount: 0 })), 'field');
+  assert.equal(code(() => encodeMessage({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 4, pieceCount: 0, firstPieceSeq: 1 })), 'field');
   assert.equal(code(() => encodeMessage({ type: 'MISSING', segmentId: 2 ** 30 })), 'field');
   assert.equal(code(() => encodeMessage({ type: 'WELCOME', sessionId: 0, resumed: 1, nextPieceSeq: 1 })), 'field');
   assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 1, key: KEY, chunk: new Uint8Array(0) })), 'field');
@@ -217,9 +217,22 @@ test('서버 복호: s2c 프레임(WELCOME)은 nextPieceSeq 값(0·1)과 무관�
 });
 
 test('LEVEL_ARRIVED pieceCount 0 은 부호화 field, 1 은 통과(계약 >= 1)', () => {
-  const m = (pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount });
+  const m = (pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount, firstPieceSeq: 1 });
   assert.equal(code(() => encodeMessage(m(0))), 'field');
-  assert.deepEqual(hex(encodeMessage(m(1))), [...H(7, 9), 5, 0, 0, 0, 2, 1, 0, 0, 0]);
+  assert.deepEqual(hex(encodeMessage(m(1))), [...H(7, 13), 5, 0, 0, 0, 2, 1, 0, 0, 0, 1, 0, 0, 0]);
   // 복호는 s2c 를 direction 으로 거부하므로 서버 코덱에는 복호 경로가 없다.
   assert.equal(code(() => decodeMessage(encodeMessage(m(1)))), 'direction');
+});
+
+test('LEVEL_ARRIVED firstPieceSeq 는 필수, 1 이상, 창 끝 ≤ u32(F-236)', () => {
+  const m = (pieceCount, firstPieceSeq) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount, firstPieceSeq });
+  assert.equal(code(() => encodeMessage({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount: 1 })), 'field');
+  assert.equal(code(() => encodeMessage(m(1, 0))), 'field');
+  assert.equal(code(() => encodeMessage(m(1, 1.5))), 'field');
+  assert.equal(code(() => encodeMessage(m(1, 2 ** 32))), 'field');
+  assert.equal(code(() => encodeMessage(m(2, 0xffffffff))), 'field');
+  assert.equal(code(() => encodeMessage(m(0xffffffff, 2))), 'field');
+  // 창 끝이 정확히 0xFFFFFFFF 인 경계는 통과
+  assert.deepEqual(hex(encodeMessage(m(2, 0xfffffffe))).slice(8), [5, 0, 0, 0, 2, 2, 0, 0, 0, 0xfe, 0xff, 0xff, 0xff]);
+  assert.deepEqual(hex(encodeMessage(m(0xffffffff, 1))).slice(8), [5, 0, 0, 0, 2, 0xff, 0xff, 0xff, 0xff, 1, 0, 0, 0]);
 });

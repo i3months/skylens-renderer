@@ -66,16 +66,23 @@
 // ④ 그리기 규칙(수준 도착, contracts/proto LEVEL_ARRIVED): 조각(PIECE)은 받는 것만으로 그리지 않는다.
 //   - 조각은 그 (segmentId, level) 의 LEVEL_ARRIVED 를 받은 뒤에만 그린다. 뒤따르는 LEVEL_ARRIVED 가 없는 조각은 절대 그리지 않는다.
 //   - arrived 항목은 {segmentId, level, keys} 이고 keys 는 그 수준에서 완료된 조각 key 집합(ASSET_FORMAT §11 정규 문자열,
-//     모두 같은 segmentId·level)이다. 가장 높은 수준 M 의 조각 중 그 집합에 든 key 만 그린다. 집합 밖의 M 수준 key 는 시도가
-//     중간에 버린(abandoned) 조각이라 그리지 않고 discard 로 돌려준다. 곧 abandoned key 는 그리기 전에 해제된다(호출자가
-//     releasePiece). keys 가 없거나 빈 배열인 항목은 ClientRasterError('piece')다(LEVEL_ARRIVED 는 pieceCount ≥ 1).
+//     모두 같은 segmentId·level)이다. 가장 높은 수준 M 의 조각 중 그 집합에 든 key 만 그린다. 집합 밖의 M 수준 key 는 그 수준의
+//     어느 LEVEL_ARRIVED 창에도 들지 않은 조각(선에서 완료 표시를 받지 못한 시도의 조각)이라 그리지 않고 discard 로 돌려준다.
+//     호출자는 discard 를 releasePiece 로 해제한다. keys 가 없거나 빈 배열인 항목은 ClientRasterError('piece')다(LEVEL_ARRIVED 는
+//     pieceCount ≥ 1).
 //   - 선의 LEVEL_ARRIVED 는 {segmentId, level, pieceCount} 뿐이라 keys 는 받은 PIECE 열로 만든다(./arrival.mjs completedKeys·
 //     collectArrivals). 규칙: 같은 pieceSeq·같은 PieceKey 의 PIECE 는 한 조각(재전송), 같은 pieceSeq 에 다른 PieceKey 는 거부.
 //     s = 그 LEVEL_ARRIVED 전까지 받은 가장 큰 pieceSeq, n = pieceCount 일 때 완료 집합은 pieceSeq s−n+1..s 의 조각 n 개의 key 다.
 //     그 n 개를 다 받지 못했거나(모자람) 다른 (segmentId, level) 이 섞였거나 key 가 겹치면 ClientRasterError('piece').
 //     server/adapter/core 는 한 수준을 PIECE f..f+n−1 → LEVEL_ARRIVED 로 연달아 내고 그 사이 다른 이벤트를 내지 않으므로(F-204)
-//     창은 정확히 그 수준의 조각이다. 실패한 시도가 남긴 조각(재시도 skip 으로 pieceSeq 를 태운 것, 교체된 어댑터의 것)은 뒤
-//     LEVEL_ARRIVED 의 창 밖이라 완료가 아니다(같거나 낮은 수준이면 discard, 도착 수준이 없거나 높으면 pending).
+//     창은 정확히 그 수준의 조각이다. 실패한 시도가 남긴 조각: LEVEL_ARRIVED 가 쓰였으면 완료로 센다(그 시도가 LEVEL_ARRIVED
+//     까지 쓴 뒤 실패하고 재시도가 skip 이 되어도 선에는 완료 표시가 있다, F-235). LEVEL_ARRIVED 가 쓰이지 않은 시도의 조각
+//     (재시도 skip 으로 pieceSeq 를 태운 것, 교체된 어댑터의 것)은 뒤 LEVEL_ARRIVED 의 창 밖이라 완료가 아니다(같거나 낮은
+//     수준이면 discard, 도착 수준이 없거나 높으면 pending). 입력은 한 세션의 수신 이력이고 새 pieceSeq 는 늘기만 한다(F-234,
+//     ./arrival.mjs 규칙 ⓪①).
+//   - 해제 근거(F-235): 클라이언트가 releasePiece 를 부르는 근거는 selectDrawable 의 discard 와 아래 pending 정리 규칙 둘뿐이다.
+//     서버 어댑터(server/adapter/core)의 해제 알림은 서버 안의 콜백이고 proto 에 해제 메시지가 없으며, LEVEL_ARRIVED 를 쓴 뒤의
+//     skip 처럼 클라이언트가 그리는 key 를 담을 수 있다. 그 알림을 releasePiece 로 직결하는 것은 금지한다.
 //   - 수준은 쌓이지 않고 바뀐다: 한 구간에서 도착한 가장 높은 수준 M 의 조각만 그린다. 더 높은 수준이 도착하면 낮은 수준의
 //     조각은(도착했든 아직 LEVEL_ARRIVED 를 기다리든) 버린다(releasePiece). M 보다 높은 수준의 조각은 자기 LEVEL_ARRIVED 를
 //     기다리며 그리지 않는다.
@@ -113,7 +120,8 @@
  * @typedef {Object} Renderer  클라이언트 경량 래스터라이저 인스턴스
  * @property {(key: string, bytes: Uint8Array) => Promise<void>} uploadPiece  .skla 조각을 비동기로 업로드(복호는 Worker 에서). key 는 ASSET_FORMAT §11 정규 문자열
  * @property {(key: string) => void} releasePiece  조각 메모리 해제
- *   같은 key 중복 해제를 견뎌야 한다(어댑터 info.abandoned 재통지 때문).
+ *   근거는 selectDrawable discard 와 pending 정리뿐이다(④ 해제 근거, 서버 어댑터 알림 직결 금지). 같은 key 중복 해제를
+ *   견뎌야 한다(discard 와 pending 정리가 같은 key 를 여러 번 낼 수 있다).
  * @property {(view: View) => void} setView  카메라 뷰 설정
  * @property {() => FrameStats} draw  프레임 렌더링 및 통계 반환
  * @property {() => number} memoryBytes  현재 GPU 메모리 사용량(바이트)
@@ -156,7 +164,7 @@ export const PIECE_KEY_PATTERN = /^(0|[1-9][0-9]*)\.[0-3]\.(0|-?[1-9][0-9]*)\.(0
 export const CLIENT_RASTER_API = Object.freeze({
   createRenderer: { fn: 'createRenderer(options) -> Renderer  options: {canvas, maxPieceBytes, maxResidentBytes}' },
   uploadPiece: { fn: 'renderer.uploadPiece(key, bytes) -> Promise<void>  key: ASSET_FORMAT §11 "seg.level.tileX.tileY.lod.chunk", bytes: .skla piece (format 1|2)' },
-  releasePiece: { fn: 'renderer.releasePiece(key) -> void  같은 key 중복 해제를 견뎌야 한다(어댑터 info.abandoned 재통지 때문)' },
+  releasePiece: { fn: 'renderer.releasePiece(key) -> void  basis: selectDrawable discard + pending cleanup only (no direct wiring of server adapter release notices); must tolerate repeated release of the same key' },
   setView: { fn: 'renderer.setView(view) -> void  view: {R, t, K, width, height, devicePixelRatio}  K·width·height in CSS px' },
   draw: { fn: 'renderer.draw() -> FrameStats  {drawnPoints, drawnPieces, droppedFrames, drawMs}' },
   memoryBytes: { fn: 'renderer.memoryBytes() -> number' },
@@ -389,6 +397,11 @@ export function parsePieceKey(key) {
  * keys 에 같은 key 가 여러 번 있으면 첫 등장만 남기고 나머지는 버린다(draw·pending·discard 어디에도 한 번만 나온다).
  * 호출 주기: LEVEL_ARRIVED 도착 이벤트마다 부르며 프레임마다 부르지 않는다(결과는 다음 도착까지 재사용한다).
  * 비용: key 는 한 번만 해석한다(arrived.keys 에서 해석한 결과를 keys 처리에서 재사용한다).
+ * 비용: key 당 Map get 1회·set 1회가 더 든다. 중복 key 제거(EMITTED 표시)와 해석 결과 재사용을 한 Map 이 겸하므로 key 마다 get(조회)과
+ *   set(처리 표시)이 필요하고, 중복 없는 10만 key 에서 해석 한 번만 하는 단순 구현(약 45~47 ms) 대비 약 1.6배(약 71~80 ms)다.
+ *   중복 제거를 포기하지 않는 한 key 당 get·set 을 더 줄일 수 없어 그대로 두었다(F-237 ⑤). 도착 이벤트마다 한 번 부르는 주기에서는 감수한다.
+ * completedKeys(./arrival.mjs) 주의: completedKeys 는 호출마다 pieces 전체로 색인을 다시 만든다(n=100k 한 번에 약 105 ms).
+ *   도착 이벤트마다 부르면 O(n·k) 이므로 이벤트마다 호출하지 않는다. 이벤트를 따라가는 증분 경로는 collectArrivals 다(F-237 ④).
  * @param {string[]} keys ASSET_FORMAT §11 정규 문자열
  * @param {{segmentId: number, level: number, keys: string[]}[]} arrived 받은 LEVEL_ARRIVED 마다 completedKeys 로 만든 항목
  *   (segmentId < SEGMENT_ID_LIMIT = 2^30, -0 은 거부). keys 는 그 수준의 완료 key 집합이고 모두 (segmentId, level) 의 key 여야 한다.

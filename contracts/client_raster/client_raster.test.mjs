@@ -423,7 +423,7 @@ test('CLIENT_RASTER_API 서명은 문자열 전체가 기대값과 같다(순서
   const expected = {
     createRenderer: 'createRenderer(options) -> Renderer  options: {canvas, maxPieceBytes, maxResidentBytes}',
     uploadPiece: 'renderer.uploadPiece(key, bytes) -> Promise<void>  key: ASSET_FORMAT §11 "seg.level.tileX.tileY.lod.chunk", bytes: .skla piece (format 1|2)',
-    releasePiece: 'renderer.releasePiece(key) -> void  같은 key 중복 해제를 견뎌야 한다(어댑터 info.abandoned 재통지 때문)',
+    releasePiece: 'renderer.releasePiece(key) -> void  basis: selectDrawable discard + pending cleanup only (no direct wiring of server adapter release notices); must tolerate repeated release of the same key',
     setView: 'renderer.setView(view) -> void  view: {R, t, K, width, height, devicePixelRatio}  K·width·height in CSS px',
     draw: 'renderer.draw() -> FrameStats  {drawnPoints, drawnPieces, droppedFrames, drawMs}',
     memoryBytes: 'renderer.memoryBytes() -> number',

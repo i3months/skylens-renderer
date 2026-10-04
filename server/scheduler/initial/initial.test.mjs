@@ -62,8 +62,8 @@ test('항목 크기 선택 [3000,1000,400], 예산 3500: 3000·400 선택, 중�
   const r = buildInitialBundle({ pose: { ...pose, fovY: 2.0 }, catalog: cat, budgetBytes: 3500 + 2 * PIECE_FRAME_OVERHEAD_BYTES });
   assert.equal(r.items.length, 2);
   assert.equal(r.totalBytes, 3400);
-  // WELCOME(27 B) + LEVEL_ARRIVED(27 B) 도 예산에 든다: 3400 + 2×38 + 54
-  assert.equal(r.frameBytes, 3530);
+  // WELCOME(27 B) + LEVEL_ARRIVED(31 B) 도 예산에 든다: 3400 + 2×38 + 58
+  assert.equal(r.frameBytes, 3534);
   assert.equal(r.droppedCount, 1);
   assert.deepEqual(r.items.map((i) => i.bytes), [3000, 400]);
 });
@@ -74,21 +74,21 @@ const cell = (i, bytes) => ({
   bbox: { min: [45 + i * 10, 0, 0], max: [55 + i * 10, 10, 1] }
 });
 
-test('경계: 초기 묶음 정확히 채우기 (프레임 바이트 15,000,000 B = 4×(2,999,950+38) + (2,999,956+38) + 54)', () => {
-  const cat = Array.from({ length: 5 }, (_, i) => cell(i, i < 4 ? 2_999_950 : 2_999_956));
+test('경계: 초기 묶음 정확히 채우기 (프레임 바이트 15,000,000 B = 4×(2,999,950+38) + (2,999,952+38) + 58)', () => {
+  const cat = Array.from({ length: 5 }, (_, i) => cell(i, i < 4 ? 2_999_950 : 2_999_952));
   const r = buildInitialBundle({ pose: { ...pose, fovY: 2.0 }, catalog: cat });
   assert.equal(r.items.length, 5);
-  assert.equal(r.totalBytes, 14_999_756);
+  assert.equal(r.totalBytes, 14_999_752);
   assert.equal(r.frameBytes, 15_000_000);
   assert.equal(r.droppedCount, 0);
 });
 
-test('경계: 한 바이트 넘으면 버림 (2,999,952 x 5: 프레임 15,000,004 B)', () => {
+test('경계: 한 바이트 넘으면 버림 (2,999,952 x 5: 프레임 15,000,008 B)', () => {
   const cat = Array.from({ length: 5 }, (_, i) => cell(i, 2_999_952));
   const r = buildInitialBundle({ pose: { ...pose, fovY: 2.0 }, catalog: cat });
   assert.equal(r.items.length, 4);
   assert.equal(r.droppedCount, 1);
-  assert.equal(r.frameBytes, 4 * 2_999_990 + 54); // + WELCOME 27 + LEVEL_ARRIVED 27
+  assert.equal(r.frameBytes, 4 * 2_999_990 + 58); // + WELCOME 27 + LEVEL_ARRIVED 31
 });
 
 test('경계: 초기 묶음 초과 (3MB x 6개): 4개만, 2개 버림', () => {

@@ -30,7 +30,7 @@ test('F-209: budgetBytes validation (integers >= WELCOME frame only)', () => {
 test('F-217: WELCOME_FRAME_BYTES matches the real frame (contract header 8 B)', () => {
   assert.equal(FRAME_HEADER_BYTES, 8);
   assert.equal(WELCOME_FRAME_BYTES, encodeMessage({ type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 1 }).length + WS_HEADER_MAX_BYTES);
-  assert.equal(LEVEL_ARRIVED_FRAME_BYTES, encodeMessage({ type: 'LEVEL_ARRIVED', segmentId: 1, level: 0, pieceCount: 1 }).length + WS_HEADER_MAX_BYTES);
+  assert.equal(LEVEL_ARRIVED_FRAME_BYTES, encodeMessage({ type: 'LEVEL_ARRIVED', segmentId: 1, level: 0, pieceCount: 1, firstPieceSeq: 1 }).length + WS_HEADER_MAX_BYTES);
 });
 
 test('F-217: frameBytes never exceeds budgetBytes, even at the minimum budget', () => {
@@ -61,7 +61,7 @@ test('F-209: WELCOME + PIECE + LEVEL_ARRIVED real frame sum <= 15,000,000 B', ()
       perSegment.set(it.key.segmentId, (perSegment.get(it.key.segmentId) ?? 0) + 1);
     });
     for (const [segmentId, pieceCount] of perSegment) {
-      real += wire({ type: 'LEVEL_ARRIVED', segmentId, level: 0, pieceCount });
+      real += wire({ type: 'LEVEL_ARRIVED', segmentId, level: 0, pieceCount, firstPieceSeq: 1 });
     }
     assert.ok(real <= 15_000_000, `n=${n}: real sum ${real}`);
     assert.ok(r.frameBytes >= real && r.frameBytes <= 15_000_000);

@@ -101,9 +101,8 @@ for (const extLevel of [0, 1]) {
 
     const n = wire.length;
     const r = ad.handle(piecesEvent(1, 0, 2));
-    // F-227: 같은 수준(extLevel 0)이면 기계가 이미 확정한 첫 조각(key)은 지금 그려지므로 abandoned 에서 뺀다.
-    // F-223 ①: 실패한 시도가 일부를 내보냈을 수 있으므로 그 key 들을 abandoned 로 알린다.
-    assert.deepEqual(r, { action: 'skip', emitted: 0, released: [], abandoned: piecesEvent(1, 0, 2).pieces.slice(extLevel === 0 ? 1 : 0).map((p) => ({ ...p.key })) });
+    // F-235: 실패한 시도가 LEVEL_ARRIVED emit 을 불렀으므로(선에 쓰였을 수 있다) 그 key 를 놓으라고 알리지 않는다.
+    assert.deepEqual(r, { action: 'skip', emitted: 0, released: [], abandoned: [], levelArrivedMaybeSent: true });
     assert.equal(wire.length, n, 'skip 은 아무것도 내보내지 않는다');
     assert.equal(ad.unfinishedEvent(), null, '끝나지 않은 표시가 지워진다');
     assert.equal(ad.nextPieceSeq(), 3, '실패한 시도에 묶였던 pieceSeq 1·2 는 소비된다');

@@ -136,7 +136,8 @@ test('abandoned 섞인 재시도(F-223 ①): 어댑터가 abandoned 로 알린 k
   assert.deepEqual(arrived, [{ segmentId: 9, level: 3, keys: ['9.3.1.-2.0.0', '9.3.1.-2.0.1'] }]);
   const sel = selectDrawable(keys, arrived);
   assert.deepEqual(sel, { draw: ['9.3.1.-2.0.0', '9.3.1.-2.0.1'], pending: [], discard: ['9.1.1.-2.0.0'] });
-  // 어댑터가 abandoned 로 알린 key 중 선에 나간 것은 모두 discard 다(그리지 않는다)
+  // 이 경우(LEVEL_ARRIVED 가 쓰이지 않음) 어댑터가 abandoned 로 알린 key 중 선에 나간 것은 모두 discard 다. 클라이언트의
+  // 해제 근거는 이 discard 이고 어댑터 알림이 아니다(F-235, index.mjs ④ 해제 근거).
   const abandoned = h.released.flatMap((x) => x.keys.map(pieceKeyToString));
   for (const k of keys) if (abandoned.includes(k)) assert.ok(sel.discard.includes(k), k);
   // 뒤 수준 전: 태운 조각은 도착 수준이 없어 pending(그리지 않음)
@@ -161,19 +162,37 @@ test('abandoned 섞인 재시도(어댑터 교체, F-219 ④): 같은 수준의 
   assert.deepEqual(selectDrawable(keys, arrived), { draw: ['9.1.1.-2.0.1', '9.1.1.-2.0.2'], pending: [], discard: ['9.1.1.-2.0.0'] });
 });
 
-test('현재 어댑터 출력 기준: LEVEL_ARRIVED 를 쓴 뒤 실패하고 재시도가 skip 이면 선에는 완료 표시가 이미 있다', () => {
-  // 어댑터는 이 key 들을 abandoned 로 알리지만(F-223 주석의 'LEVEL_ARRIVED 완료 표시가 없으므로' 가정과 다름) 선에는
-  // PIECE 들과 LEVEL_ARRIVED 가 모두 나갔다. 받는 쪽 규칙은 선만 보므로 완료로 센다.
-  const machine = createLevelMachine();
-  const h = harness({ machine });
-  assert.throws(() => h.run(event(9, 1, [0, 1]), { call: 3, where: 'after' }), /송출 실패/);
-  machine.arrive(9, 3, event(9, 3, [0]).pieces);
-  const r = h.run(event(9, 1, [0, 1]));
-  assert.equal(r.action, 'skip');
-  assert.deepEqual(r.abandoned.map(pieceKeyToString), ['9.1.1.-2.0.0', '9.1.1.-2.0.1']);
-  const { keys, arrived } = collectArrivals(h.decoded());
-  assert.deepEqual(arrived, [{ segmentId: 9, level: 1, keys: ['9.1.1.-2.0.0', '9.1.1.-2.0.1'] }]);
-  assert.deepEqual(selectDrawable(keys, arrived).draw, ['9.1.1.-2.0.0', '9.1.1.-2.0.1']);
+test('재시도 skip(F-235): LEVEL_ARRIVED 가 쓰였으면 완료, 안 쓰였으면 아님. 클라이언트가 놓는 key 와 그리는 key 는 겹치지 않는다', () => {
+  // 'before' call 2: 선에 P1 만 → 완료 표시 없음. 'after' call 3: 선에 P1 P2 LA → 완료 표시 있음(받는 쪽은 선만 본다).
+  for (const [f, wire, draw, pending] of [
+    [{ call: 2, where: 'before' }, [['PIECE', 1]], [], ['9.1.1.-2.0.0']],
+    [{ call: 3, where: 'after' }, [['PIECE', 1], ['PIECE', 2], ['LEVEL_ARRIVED', undefined]], ['9.1.1.-2.0.0', '9.1.1.-2.0.1'], []],
+  ]) {
+    const machine = createLevelMachine();
+    const h = harness({ machine });
+    assert.throws(() => h.run(event(9, 1, [0, 1]), f), /송출 실패/);
+    machine.arrive(9, 3, event(9, 3, [0]).pieces); // 다른 경로로 더 높은 수준 확정(선에는 없음)
+    const r = h.run(event(9, 1, [0, 1]));
+    assert.equal(r.action, 'skip', f.where);
+    const msgs = h.decoded();
+    assert.deepEqual(msgs.map((m) => [m.type, m.pieceSeq]), wire, f.where);
+    const { keys, arrived } = collectArrivals(msgs);
+    const sel = selectDrawable(keys, arrived);
+    assert.deepEqual(sel, { draw, pending, discard: [] }, f.where);
+    // 클라이언트 해제 근거(discard·pending 정리)와 draw 는 겹치지 않는다
+    for (const k of [...sel.discard, ...sel.pending]) assert.ok(!sel.draw.includes(k), `${f.where} ${k}`);
+    // 어댑터 abandoned 를 이 계약의 규칙(LEVEL_ARRIVED 가 쓰였으면 완료)으로 읽으면 draw 와 겹치지 않는다.
+    // 선에 완료 표시가 있는 key 는 abandoned 가 아니다.
+    const completed = new Set(arrived.flatMap((a) => a.keys));
+    const abandoned = (r.abandoned ?? []).map(pieceKeyToString);
+    const abandonedOnClient = abandoned.filter((k) => !completed.has(k));
+    assert.deepEqual(abandonedOnClient.filter((k) => sel.draw.includes(k)), [], f.where);
+    // 어댑터가 낸 abandoned 그대로와 draw 의 교집합: 'before' 는 언제나 비고, 'after' 는 지금 어댑터(F-235 어댑터 측 수정 전)
+    // 에서는 선에 완료 표시가 있는 두 key 이고 수정 뒤에는 빈다. 어느 쪽이든 그 key 는 선의 완료 집합 안에 있다.
+    const overlap = abandoned.filter((k) => sel.draw.includes(k));
+    if (f.where === 'before') assert.deepEqual(overlap, []);
+    else assert.ok(overlap.length === 0 || overlap.every((k) => completed.has(k)), JSON.stringify(overlap));
+  }
 });
 
 test('빈 keys 항목은 던진다: 변환 결과의 keys 를 비우면 selectDrawable 이 거부', () => {
@@ -217,4 +236,47 @@ test('이상 입력은 ClientRasterError(piece)', () => {
   assert.throws(() => collectArrivals([P(1, 7, 0, 0), LA(7, 0, 2), P(2, 7, 0, 1)]), isPiece);
   // 다른 종류는 건너뛴다
   assert.deepEqual(collectArrivals([{ type: 'MISSING', segmentId: 3 }, P(1, 7, 0, 0), LA(7, 0, 1)]).arrived, [{ segmentId: 7, level: 0, keys: ['7.0.0.0.0.0'] }]);
+});
+
+test('새 세션(F-234): WELCOME resumed=false 가 PIECE 뒤에 오면 거부, 처음 보는 pieceSeq 가 줄면 거부', () => {
+  const P = (pieceSeq, segmentId, level, chunkIndex) => ({ type: 'PIECE', pieceSeq, key: { segmentId, level, lod: 0, chunkIndex, tileX: 0, tileY: 0 }, chunk: Uint8Array.of(1) });
+  const LA = (segmentId, level, pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId, level, pieceCount });
+  const W = (sessionId, resumed, nextPieceSeq) => ({ type: 'WELCOME', sessionId, resumed, nextPieceSeq });
+  // 감독 재현 입력: 예전에는 arrived [{9,1,['9.1.0.0.0.1']}] → draw ['9.1.0.0.0.1'] 이었다. 이제 던진다.
+  const input = [P(1, 9, 1, 0), P(2, 9, 1, 1), W(77, false, 1), P(1, 9, 1, 0), LA(9, 1, 1)];
+  let out = null;
+  try { out = collectArrivals(input); } catch (e) { assert.ok(isPiece(e) && /WELCOME resumed=false/.test(e.message), String(e)); }
+  assert.equal(out, null, 'collectArrivals 가 던져야 한다');
+  // 같은 입력에서 둘째 세션의 P1 은 첫 세션 P1 과 순번·key 가 같아 재전송과 구별되지 않는다. 그래서 WELCOME 검사가 필요하다.
+  // 단조 검사(규칙 ①): 같은 순번에 다른 key 는 '두 key', 처음 보는 순번이 가장 큰 순번 이하면 거부.
+  assert.throws(() => collectArrivals([P(1, 9, 1, 0), P(2, 9, 1, 1), P(1, 9, 1, 1)]), isPiece);
+  assert.throws(() => collectArrivals([P(1, 9, 1, 0), P(3, 9, 1, 1), P(2, 9, 1, 2), LA(9, 1, 2)]), isPiece);
+  assert.throws(() => completedKeys([P(1, 9, 1, 0), P(3, 9, 1, 1), P(2, 9, 1, 2)], LA(9, 1, 2)), isPiece);
+  assert.throws(() => completedKeys([P(2, 9, 1, 0), P(1, 9, 1, 1)], LA(9, 1, 1)), isPiece);
+  // 새 세션은 새 입력: WELCOME 뒤 수신만 넣으면 '9.1.0.0.0.0' 만 그린다
+  const fresh = collectArrivals([W(77, false, 1), P(1, 9, 1, 0), LA(9, 1, 1)]);
+  assert.deepEqual(fresh, { keys: ['9.1.0.0.0.0'], arrived: [{ segmentId: 9, level: 1, keys: ['9.1.0.0.0.0'] }] });
+  assert.deepEqual(selectDrawable(fresh.keys, fresh.arrived), { draw: ['9.1.0.0.0.0'], pending: [], discard: [] });
+  // 이어받기(resumed=true, 같은 sessionId): 이력을 잇는다. 재전송(같은 순번·key)은 한 조각, 새 순번은 더 크다.
+  const resumed = collectArrivals([W(77, false, 1), P(1, 9, 1, 0), P(2, 9, 1, 1), W(77, true, 3), P(2, 9, 1, 1), P(3, 9, 1, 2), LA(9, 1, 3)]);
+  assert.deepEqual(resumed.keys, ['9.1.0.0.0.0', '9.1.0.0.0.1', '9.1.0.0.0.2']);
+  assert.deepEqual(resumed.arrived, [{ segmentId: 9, level: 1, keys: ['9.1.0.0.0.0', '9.1.0.0.0.1', '9.1.0.0.0.2'] }]);
+  // 이어받기라며 sessionId 가 다르면 거부, resumed 가 boolean 이 아니면 거부
+  assert.throws(() => collectArrivals([W(77, false, 1), P(1, 9, 1, 0), W(78, true, 2), P(2, 9, 1, 1)]), isPiece);
+  assert.throws(() => collectArrivals([W(77, 0, 1)]), isPiece);
+  // 첫 PIECE 앞의 resumed=false 는 통과(여러 번이어도)
+  assert.deepEqual(collectArrivals([W(5, false, 1), W(6, false, 1), P(1, 9, 1, 0), LA(9, 1, 1)]).arrived, [{ segmentId: 9, level: 1, keys: ['9.1.0.0.0.0'] }]);
+  // 선을 거친 WELCOME 도 같다
+  const wire = [encodeMessage(P(1, 9, 1, 0)), encodeMessage(W(77, false, 1)), encodeMessage(P(1, 9, 1, 0))].map((b) => decodeMessage(b));
+  assert.equal(wire[1].resumed, false);
+  assert.throws(() => collectArrivals(wire), isPiece);
+});
+
+test('LEVEL_ARRIVED segmentId -0 은 거부(F-237 ①, selectDrawable 과 같음), 0 은 통과', () => {
+  const P0 = { type: 'PIECE', pieceSeq: 1, key: { segmentId: 0, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0 }, chunk: Uint8Array.of(1) };
+  assert.throws(() => collectArrivals([P0, { type: 'LEVEL_ARRIVED', segmentId: -0, level: 0, pieceCount: 1 }]), isPiece);
+  assert.throws(() => completedKeys([P0], { segmentId: -0, level: 0, pieceCount: 1 }), isPiece);
+  const ok = collectArrivals([P0, { type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 1 }]);
+  assert.ok(Object.is(ok.arrived[0].segmentId, 0));
+  assert.deepEqual(selectDrawable(ok.keys, ok.arrived).draw, ['0.0.0.0.0.0']);
 });

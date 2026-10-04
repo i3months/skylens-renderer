@@ -15,16 +15,25 @@
 //                            순서는 PIECE 들이 먼저이고 LEVEL_ARRIVED 가 마지막이다. 받는 쪽은 LEVEL_ARRIVED 를 "그 수준의
 //                            조각 pieceCount 개가 모두 왔다" 는 완료 표시로 쓰고, 그때 자기 수준 기계에 arrive 한다.
 //                            완료 표시 없이 조각만 온 것은 수준 도착으로 세지 않고 버린다(실패한 송출의 조각이 그런 경우).
-//     실패 뒤 재시도가 skip 이 되면(그 사이 같거나 높은 수준이 도착) 부분 송출된 key 는 onRelease(keys, {abandoned:true})
-//     로 놓고, 끝나지 않은 표시를 지우며, 쓰였을 수 있는 pieceSeq 는 태운다(결과의 abandoned 에도 key 가 담긴다).
+//                            LEVEL_ARRIVED 가 선에 쓰였으면(그 뒤 emit 이 던졌어도) 받는 쪽은 그 수준을 완료로 센다(F-235).
+//     실패 뒤 재시도가 skip 이 되면(그 사이 같거나 높은 수준이 도착) 끝나지 않은 표시를 지우고, 쓰였을 수 있는 pieceSeq 는
+//     태운다. 실패한 시도들이 LEVEL_ARRIVED emit 까지 가지 않았으면 부분 송출된 key 는 완료 표시가 없으므로
+//     onRelease(keys, {abandoned:true}) 로 놓는다(결과의 abandoned 에도 key 가 담긴다). 어느 시도든 LEVEL_ARRIVED emit 을
+//     불렀으면(F-235) 그 LEVEL_ARRIVED 가 쓰였을 수 있다 — 쓰였으면 받는 쪽은 완료로 세어 그 key 를 그리므로 어댑터는 그
+//     key 를 놓으라고 알리지 않는다: abandoned 는 [] 이고 결과에 levelArrivedMaybeSent: true 가 붙는다(onRelease 없음).
+//     쓰이지 않았다면 받는 쪽은 완료 표시 없는 조각을 스스로 버린다(pending → 수준 교체 때 discard).
 //     replace              : 기계가 released 로 내보낸 이전 수준 조각의 key 목록을 onRelease(keys, info) 로 알린다.
 //   onRelease 계약: info 는 {segmentId, level, previousLevel} 이고, skip 의 부분 송출 해제에는 abandoned:true 가 더 붙는다.
 //     받는 쪽은 같은 key 의 중복 해제를 견뎌야 한다(이미 놓은 key 를 또 놓으라는 알림은 아무 일도 하지 않아야 한다).
 //     알림이 실패해 다시 알리는 경우(아래 재통지)와 onRelease 여럿 중 일부만 던진 경우에 같은 key 가 두 번 올 수 있다.
+//   재진입(F-231 ⑥): onRelease 안에서 같은 어댑터의 handle() 을 불러도 된다. 안쪽(깊이 1 이상) handle 은 보관한 알림을
+//     재통지하지 않고(지금 알리는 중인 항목을 다시 알리면 무한 재귀가 된다) 결과에 releaseDropped 를 싣지 않는다 — 재통지와
+//     releaseDropped 는 바깥(깊이 0) handle 만 한다. 그래서 재진입 onRelease 하나의 알림 횟수는 재진입이 없을 때와 같다.
 //   재통지(F-229 ②, F-231): skip(abandoned)·replace 의 onRelease 가 던지면 그 알림을 보관하고 예외를 그대로 던진다.
-//     이후 handle() 호출마다 이벤트를 처리하기 전에 보관한 알림을 다시 알린다. 재통지의 실패는 삼키고(이벤트는 언제나 처리된다
+//     이후 바깥 handle() 호출마다 이벤트를 처리하기 전에 보관한 알림을 다시 알린다. 재통지의 실패는 삼키고(이벤트는 언제나 처리된다
 //     — 계속 던지는 onRelease 하나가 어댑터를 영구히 멈추게 하지 않도록), 재통지 횟수가 releaseRetryLimit(기본
-//     RELEASE_RETRY_LIMIT)에 닿으면 그 알림을 버리고 그다음 돌려주는 결과의 releaseDropped 에 {keys, info, error} 로 싣는다.
+//     RELEASE_RETRY_LIMIT)에 닿으면 그 알림을 버리고 그다음 돌려주는 바깥 결과의 releaseDropped 에 {keys, info, error}
+//     (사본)로 싣는다.
 //     재통지 때는 기계를 다시 보고, 기계의 현재 수준이 그 key 의 수준과 같고 그 key 를 쥐고 있으면(그 사이 같은 수준·같은
 //     key 가 확정돼 지금 그려지는 조각) 그 key 는 알리지 않는다. 남은 key 가 없으면 알림을 끝난 것으로 지운다.
 //   송출과 상태 확정 순서(F-189):
@@ -50,8 +59,9 @@
 //     일이 없으므로 아무것도 내보내지 않고, 실패한 시도에 묶였던 pieceSeq 들(firstPieceSeq..+pieceCount-1)을 소비한 것으로
 //     확정하고(nextSeq 를 그만큼 올림) 끝나지 않은 표시를 지운 뒤 action 'skip' 을 돌려준다. 순번을 다시 쓰지 않으므로
 //     한 pieceSeq 가 두 key 에 쓰이는 일은 없다. 대가: 그 순번 중 일부는 선에 나갔을 수도, 안 나갔을 수도 있고(순번에
-//     빈칸이 생길 수 있음), 그 수준의 LEVEL_ARRIVED 는 나가지 않는다 — 받는 쪽은 완료 표시 없는 조각을 수준 도착으로
-//     세지 않는다.
+//     빈칸이 생길 수 있음), 이 재시도는 LEVEL_ARRIVED 를 내보내지 않는다. 받는 쪽은 완료 표시 없는 조각을 수준 도착으로
+//     세지 않는다. 실패한 시도가 LEVEL_ARRIVED 를 이미 썼다면 받는 쪽은 그 수준을 완료로 센다 — 어댑터는 emit 을 불렀는지만
+//     알 수 있으므로 그 경우 levelArrivedMaybeSent 로 표시하고 그 key 를 놓으라고 알리지 않는다(위 skip 규칙, F-235).
 //     재시도가 영구히 실패할 때의 복구(F-219 ④): 어댑터 하나로는 풀 수 없다(같은 이벤트 재시도 말고는 모두 거부).
 //     호출자는 그 어댑터를 버리고 새로 만든다. 새 어댑터의 firstPieceSeq 는 옛 어댑터가 썼을 수 있는 모든 순번보다 커야
 //     한다: unfinishedEvent() 의 firstPieceSeq + pieceCount(또는 이어받기 저장소를 쓰면 open 이 돌려주는 nextPieceSeq 중
@@ -111,9 +121,14 @@ export class UnfinishedEventError extends Error {
  * @property {'expect'|'first'|'replace'|'skip'} action
  * @property {number} emitted        이 이벤트로 emit 한 메시지 수
  * @property {PieceKey[]} released   교체로 내보낸 이전 수준 조각 key(replace 일 때만, 아니면 [])
- * @property {PieceKey[]} [abandoned]  실패 뒤 재시도가 skip 이 되어 놓은 부분 송출 key(그 경우에만 있음, F-223 ①)
+ * @property {PieceKey[]} [abandoned]  실패 뒤 재시도가 skip 이 되어 놓은 부분 송출 key(그 경우에만 있음, F-223 ①).
+ *   levelArrivedMaybeSent 이면 [] 이다(놓지 않는다, F-235).
+ * @property {true} [levelArrivedMaybeSent]  실패 뒤 재시도가 skip 이 됐고, 실패한 시도 중 하나가 LEVEL_ARRIVED emit 을
+ *   불렀을 때만 있다(F-235). 그 LEVEL_ARRIVED 가 쓰였으면 받는 쪽은 그 수준을 완료로 센다. 그 수준의 조각은 모두 이미
+ *   emit 이 성공했다(PIECE 들이 LEVEL_ARRIVED 보다 먼저 나간다).
  * @property {{keys:PieceKey[], info:ReleaseInfo, error:unknown}[]} [releaseDropped]
  *   재통지 상한에 닿아 버린 해제 알림(지난 결과 이후 버린 것이 있을 때만 있음, F-231). 받는 쪽은 그 key 를 스스로 놓아야 한다.
+ *   바깥(깊이 0) handle 결과에만 실린다(F-231 ⑥). 사본이다.
  */
 
 function intIn(v, lo, hi, name) {
@@ -188,9 +203,13 @@ export function createCoreAdapter(options = {}) {
   }
   /**
    * 송출(③) 중 실패한 level_arrived(F-204). null 이면 없음. pieceSeq nextSeq..nextSeq+keys.length-1 은 이 key 들에 묶였다.
-   * @type {null | {segmentId:number, level:number, keys:string[], bytes:Uint8Array[]}}
+   * levelArrivedTried 는 실패한 시도 중 하나라도 LEVEL_ARRIVED 의 emit 을 불렀는가(F-235). 한 번 참이면 재시도가 더 일찍
+   * 실패해도 참으로 남는다(앞 시도의 LEVEL_ARRIVED 가 이미 쓰였을 수 있다).
+   * @type {null | {segmentId:number, level:number, keys:string[], bytes:Uint8Array[], levelArrivedTried:boolean}}
    */
   let unfinished = null;
+  /** handle() 중첩 깊이(F-231 ⑥). onRelease 가 같은 어댑터의 handle() 을 부르면 1 이상이 된다. */
+  let depth = 0;
   /**
    * onRelease 가 던져 끝나지 못한 해제 알림들(skip 의 abandoned·replace 모두, F-229 ②·F-231). 상태는 이미 정리됐으므로 이
    * 알림만 남는다. 다음 handle() 호출이 이벤트를 처리하기 전에 다시 알린다. 여러 onRelease 중 일부만 던졌어도 다시 알릴
@@ -255,7 +274,7 @@ export function createCoreAdapter(options = {}) {
     }
   }
 
-  /** 버린 알림이 있으면 결과에 releaseDropped 로 싣고 비운다(없으면 결과 모양 그대로). */
+  /** 버린 알림이 있으면 결과에 releaseDropped 로 싣고 비운다(없으면 결과 모양 그대로). 바깥 handle 만 부른다(F-231 ⑥). */
   function withDropped(result) {
     if (dropped.length === 0) return result;
     const out = { ...result, releaseDropped: dropped };
@@ -328,12 +347,20 @@ export function createCoreAdapter(options = {}) {
       if (r.action !== ACTIONS.SKIP) throw new Error(`수준 기계 결정(${r.action})이 snapshot 으로 본 결정(skip)과 다르다`);
       if (!unfinished) return { action: 'skip', emitted: 0, released: [] };
       // 실패한 시도의 재시도가 그 사이 더 높거나 같은 수준이 도착해 skip 이 된 경우(F-223 ①). 실패한 시도가 조각 일부를
-      // 이미 내보냈을 수 있다. 그 조각들은 LEVEL_ARRIVED 완료 표시가 없으므로 받는 쪽은 수준 도착으로 세지 않고 버린다
+      // 이미 내보냈을 수 있다. LEVEL_ARRIVED emit 까지 가지 않았다면 그 조각들은 완료 표시가 없으므로 받는 쪽은 수준 도착으로 세지 않고 버린다
       // (도착하지 않은 것을 메우지 않는다 — 수준은 교체될 뿐이다). 어댑터는 끝나지 않은 표시를 지우고(안 지우면 이후
       // 모든 이벤트가 UNFINISHED_EVENT 로 막힌다), 그 pieceSeq 들은 이미 그 key 로 쓰였을 수 있으므로 태워서 다른 key 에
       // 다시 쓰지 않으며, onRelease 로 그 key 들을 놓는다(info.abandoned = true).
       // 같은 수준(L == M)이면 공유 기계가 같은 key 의 조각을 이미 확정해 지금 그려지고 있을 수 있다(F-227). 기계의 현재 수준이
       // 쥔 key 는 놓지 않는다. L < M 이면 그 수준의 조각이 아니므로 그대로 모두 놓는다.
+      if (unfinished.levelArrivedTried) {
+        // 실패한 시도가 LEVEL_ARRIVED emit 을 불렀다(F-235). 그 앞의 PIECE 들은 모두 emit 이 성공했고, LEVEL_ARRIVED 가
+        // 쓰였으면 받는 쪽은 이 수준을 완료로 세어 그 key 를 그린다. 그리는 key 를 놓으라고 알리지 않는다. 쓰이지 않았으면
+        // 받는 쪽이 완료 표시 없는 조각을 스스로 버린다. 어느 쪽인지 어댑터는 모르므로 표시만 붙인다.
+        nextSeq += unfinished.keys.length;
+        unfinished = null;
+        return { action: 'skip', emitted: 0, released: [], abandoned: [], levelArrivedMaybeSent: true };
+      }
       const snap = machine.snapshot(segmentId);
       // live 판정은 key 문자열만 본다(F-229 ③). 같은 key 인데 실패한 시도가 다른 bytes·pieceSeq 로 이미 내보냈다면 받는
       // 쪽이 쥔 조각과 기계가 쥔 조각이 다를 수 있다. 규칙: 같은 key 는 같은 bytes 라는 것이 계약이고(조각 key 가 내용을
@@ -349,15 +376,20 @@ export function createCoreAdapter(options = {}) {
     }
     // ② 메시지를 모두 만들고 부호화까지 마친다. 여기서 던지면 아무것도 나가지 않는다.
     const messages = pieces.map((p, i) => ({ type: 'PIECE', pieceSeq: nextSeq + i, key: { ...p.key }, chunk: p.bytes }));
-    messages.push({ type: 'LEVEL_ARRIVED', segmentId, level, pieceCount: pieces.length });
+    messages.push({ type: 'LEVEL_ARRIVED', segmentId, level, pieceCount: pieces.length, firstPieceSeq: nextSeq });
     const outgoing = encode ? messages.map((m) => encode(m)) : messages;
     // ③ 전부 송출한다. 던지면 상태·nextSeq 를 확정하지 않고, 이 이벤트를 끝나지 않은 이벤트로 남긴 채 다시 던진다.
     if (!unfinished) {
       unfinished = {
         segmentId, level, keys: pieces.map((p) => pieceKeyString(p.key)), bytes: pieces.map((p) => new Uint8Array(p.bytes)), // 실제 사본(Buffer.slice 는 뷰, F-219 ①)
+        levelArrivedTried: false,
       };
     }
-    for (const m of outgoing) emit(m);
+    for (let i = 0; i < outgoing.length; i++) {
+      // 마지막은 LEVEL_ARRIVED 다. emit 을 부르기 전에 표시한다 — 던졌어도 선에 쓰였을 수 있다(F-235).
+      if (i === outgoing.length - 1) unfinished.levelArrivedTried = true;
+      emit(outgoing[i]);
+    }
     // ④ 송출이 끝났다. 순번을 확정하고(이 pieceSeq 들은 이제 쓰였다) 끝나지 않은 표시를 지운 뒤 상태를 확정한다.
     unfinished = null;
     nextSeq += pieces.length;
@@ -377,10 +409,20 @@ export function createCoreAdapter(options = {}) {
     /** @param {CoreEvent} event @returns {HandleResult} */
     handle(event) {
       if (!isObject(event)) throw new TypeError('event 는 객체여야 한다');
-      flushPendingReleases(); // 던지지 않는다(F-231 ①)
-      if (event.kind === 'segment_expected') return withDropped(onExpected(event));
-      if (event.kind === 'level_arrived') return withDropped(onArrived(event));
-      throw new RangeError(`모르는 이벤트 kind: ${String(event.kind)}`);
+      // 재진입한 handle(onRelease 안에서 부른 것)은 재통지하지 않고 releaseDropped 도 싣지 않는다(F-231 ⑥). 바깥 handle 이
+      // 알리는 중인 항목을 안쪽이 다시 알리면 끝없이 중첩되고, 안쪽 결과에 실린 releaseDropped 는 바깥 호출자에게 가지 않는다.
+      const outer = depth === 0;
+      depth++;
+      try {
+        if (outer) flushPendingReleases(); // 던지지 않는다(F-231 ①)
+        let result;
+        if (event.kind === 'segment_expected') result = onExpected(event);
+        else if (event.kind === 'level_arrived') result = onArrived(event);
+        else throw new RangeError(`모르는 이벤트 kind: ${String(event.kind)}`);
+        return outer ? withDropped(result) : result;
+      } finally {
+        depth--;
+      }
     },
     /** 다음에 쓸 pieceSeq. */
     nextPieceSeq() {

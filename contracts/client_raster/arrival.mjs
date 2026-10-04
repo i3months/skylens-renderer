@@ -4,8 +4,18 @@
 // {segmentId, level, keys} 는 받은 PIECE 열과 LEVEL_ARRIVED 로 여기서 만든다. 순수 함수이고 상태를 두지 않는다.
 //
 // 규칙(받은 순서대로 본 PIECE 들과 그 뒤에 온 LEVEL_ARRIVED 하나, 연결이 바뀌어도 한 세션의 수신 이력 전체):
+//   ⓪ 세션(F-234): 입력은 한 세션의 수신 이력이다. 새 세션은 pieceSeq 를 1 부터 다시 쓰므로(server/ws/resume) 앞 세션의
+//      순번과 섞으면 창이 엉뚱한 조각을 가리킨다. 그래서 collectArrivals 는 WELCOME resumed=false 를 PIECE 를 하나라도 받은
+//      뒤에 만나면 ClientRasterError('piece') 로 거부한다(첫 PIECE 앞의 WELCOME 은 통과). 새 세션의 수신은 새 입력으로
+//      넣고, 앞 세션에서 받은 key 는 ./index.mjs ④ 정리 규칙(재개 재시작 = 시도 끝)대로 호출자가 해제한다.
+//      WELCOME resumed=true 는 같은 세션의 이어받기라 이력을 그대로 잇는다(앞서 본 WELCOME 과 sessionId 가 다르면 거부).
 //   ① 중복: 같은 pieceSeq·같은 PieceKey 의 PIECE 는 한 조각이다(proto 재전송 규약). 같은 pieceSeq 에 다른 PieceKey 가
 //      오면 계약 위반(F-204)이라 거부한다. 같은 key 가 다른 pieceSeq 로 다시 오는 것은 허용한다(새 어댑터의 재송출 등).
+//      단조(F-234): 재전송이 아닌(처음 보는) pieceSeq 는 그때까지 받은 가장 큰 pieceSeq 보다 커야 한다. 아니면
+//      ClientRasterError('piece')(completedKeys 도 같다). 서버는 한 세션에서 순번을 늘리기만 하고(server/ws/resume
+//      recordSent) 선은 순서를 지키므로, 작은 새 순번은 다른 세션의 조각이거나 계약 위반이다.
+//   ②-0 (F-236) LEVEL_ARRIVED 에 firstPieceSeq 가 있으면 창은 pieceSeq firstPieceSeq..firstPieceSeq+n−1 로 명시되고(단독 재전송이
+//      멱등), 아래 ② 의 "가장 큰 pieceSeq" 추론은 firstPieceSeq 가 없을 때의 대체 규칙이다.
 //   ② 창: s = 그 LEVEL_ARRIVED 전까지 받은 가장 큰 pieceSeq, n = pieceCount. 완료 key 집합은 pieceSeq s−n+1..s 의 조각
 //      n 개의 key 다(pieceSeq 순). 그 n 개는 모두 받았어야 하고, 모두 LEVEL_ARRIVED 의 (segmentId, level) 이어야 하며,
 //      key 가 서로 달라야 한다. 어기면 ClientRasterError('piece')(조각 모자람·다른 수준 섞임·key 중복).
@@ -14,9 +24,12 @@
 //   pieceSeq 는 언제나 f+n−1 이고, 그 창 안에는 그 수준의 조각만 있다.
 //     - 송출 실패 뒤 같은 이벤트 재시도: 같은 pieceSeq·key 로 처음부터 다시 나간다 → ① 로 하나로 센다. 실패가 LEVEL_ARRIVED
 //       를 쓴 뒤였으면 LEVEL_ARRIVED 가 두 번 오고 두 번 다 같은 창이다.
-//     - 재시도가 skip(F-219 ②·F-223 ①): 실패한 시도의 조각 일부만 나갔고 LEVEL_ARRIVED 는 없다. 그 pieceSeq 는 태워져
-//       뒤 이벤트는 더 큰 pieceSeq 를 쓰므로 창에 들지 않는다. 그 key 는 어느 완료 집합에도 없고 selectDrawable 이
-//       pending(그 구간에 도착 수준이 없거나 더 높은 수준) 또는 discard(같거나 낮은 수준)로 둔다.
+//     - 재시도가 skip(F-219 ②·F-223 ①·F-235): 받는 쪽은 선만 본다. LEVEL_ARRIVED 가 쓰였으면 완료로 센다 — 실패한
+//       시도가 PIECE 전부와 LEVEL_ARRIVED 를 쓴 뒤 던졌다면 그 창은 완료 집합이고 그 수준이 가장 높으면 그린다.
+//       LEVEL_ARRIVED 가 쓰이지 않았으면(조각 일부만 나감) 그 pieceSeq 는 태워져 뒤 이벤트는 더 큰 pieceSeq 를 쓰므로 창에
+//       들지 않는다. 그 key 는 어느 완료 집합에도 없고 selectDrawable 이 pending(그 구간에 도착 수준이 없거나 더 높은
+//       수준) 또는 discard(같거나 낮은 수준)로 둔다. 서버 어댑터의 해제 알림(onRelease·결과의 abandoned)은 서버 안의
+//       콜백이고 선에 실리지 않으므로 이 규칙의 근거가 아니다.
 //     - 어댑터 교체(F-219 ④): 새 어댑터의 첫 pieceSeq 는 옛 어댑터가 쓸 수 있던 순번보다 크다. 옛 시도가 남긴 같은
 //       수준 조각은 새 LEVEL_ARRIVED 의 창 밖이라 완료가 아니다(같은 수준 abandoned → discard).
 //     - 이어받기(HELLO lastPieceSeq): 연결 전후의 수신을 이어서 넣는다. 다시 보내는 쪽은 각 LEVEL_ARRIVED 를 자기 조각
@@ -64,15 +77,20 @@ function addPiece(index, m) {
     if (prev.key !== key) throw new ClientRasterError('piece', `pieceSeq ${seq} 가 두 key 에 쓰임: ${prev.key}, ${key}`);
     return key; // 재전송: 한 조각으로 센다
   }
+  // 규칙 ① 단조: 처음 보는 pieceSeq 는 지금까지의 가장 큰 pieceSeq 보다 커야 한다(F-234).
+  if (seq <= index.maxSeq) {
+    throw new ClientRasterError('piece', `pieceSeq ${seq} 가 재전송이 아닌데 받은 가장 큰 pieceSeq ${index.maxSeq} 이하(순번은 늘기만 한다)`);
+  }
   index.bySeq.set(seq, { key, segmentId: m.key.segmentId, level: m.key.level });
-  if (seq > index.maxSeq) index.maxSeq = seq;
+  index.maxSeq = seq;
   return key;
 }
 
 function checkLevelArrived(a) {
   if (!isObject(a) || (a.type !== undefined && a.type !== 'LEVEL_ARRIVED')) throw new ClientRasterError('piece', 'LEVEL_ARRIVED 메시지가 아님');
   const { segmentId, level, pieceCount } = a;
-  if (!Number.isInteger(segmentId) || segmentId < 0 || segmentId >= SEGMENT_ID_LIMIT) {
+  // -0 은 selectDrawable 과 같이 거부한다(F-237 ①). 받아 두면 {segmentId: -0} 항목이 나가 selectDrawable 이 던진다.
+  if (!Number.isInteger(segmentId) || Object.is(segmentId, -0) || segmentId < 0 || segmentId >= SEGMENT_ID_LIMIT) {
     throw new ClientRasterError('piece', `LEVEL_ARRIVED segmentId 가 범위 밖(< ${SEGMENT_ID_LIMIT}): ${String(segmentId)}`);
   }
   if (!Number.isInteger(level) || level < 0 || level > LEVEL_MAX) throw new ClientRasterError('piece', `LEVEL_ARRIVED level 범위 밖: ${String(level)}`);
@@ -81,12 +99,22 @@ function checkLevelArrived(a) {
   }
 }
 
-/** 규칙 ②: 색인에서 창 maxSeq−n+1..maxSeq 의 key 들을 꺼낸다. */
+/**
+ * 규칙 ②: 색인에서 창의 key 들을 꺼낸다. 선의 LEVEL_ARRIVED 는 firstPieceSeq 를 싣는다(contracts/proto, F-236): 창은
+ * firstPieceSeq..firstPieceSeq+n−1 로 명시되고 그때까지의 maxSeq 와 무관하다 — 이어받기 뒤 혼자 다시 온 LEVEL_ARRIVED 도
+ * 같은 창이다(멱등). firstPieceSeq 가 없는 항목(선을 거치지 않은 입력)만 옛 규칙 maxSeq−n+1..maxSeq 를 쓴다.
+ */
 function windowKeys(index, a) {
   checkLevelArrived(a);
-  const { segmentId, level, pieceCount } = a;
-  const last = index.maxSeq;
-  const first = last - pieceCount + 1;
+  const { segmentId, level, pieceCount, firstPieceSeq } = a;
+  let first = index.maxSeq - pieceCount + 1;
+  if (firstPieceSeq !== undefined) {
+    if (!Number.isInteger(firstPieceSeq) || firstPieceSeq < 1 || firstPieceSeq + pieceCount - 1 > U32_MAX) {
+      throw new ClientRasterError('piece', `LEVEL_ARRIVED firstPieceSeq 는 1 이상이고 창 끝이 u32 안이어야 함: ${String(firstPieceSeq)}`);
+    }
+    first = firstPieceSeq;
+  }
+  const last = first + pieceCount - 1;
   if (pieceCount > index.bySeq.size || first < 1) {
     throw new ClientRasterError('piece', `LEVEL_ARRIVED(${segmentId}, ${level}) pieceCount ${pieceCount} 만큼 조각을 받지 못함(받은 조각 ${index.bySeq.size})`);
   }
@@ -121,8 +149,10 @@ export function completedKeys(pieces, levelArrived) {
 
 /**
  * 받은 메시지 열(복호 결과, 받은 순서)을 selectDrawable 입력으로 바꾼다. 순수 함수.
- * PIECE 는 색인에 넣고, LEVEL_ARRIVED 마다 그때까지의 색인으로 completedKeys 와 같은 규칙의 항목을 만든다.
- * 그 밖의 종류(WELCOME·MISSING·ERROR)는 이 규칙과 무관해 건너뛴다. type 이 문자열이 아니면 ClientRasterError('piece').
+ * 입력은 한 세션의 수신 이력이다(헤더 규칙 ⓪). PIECE 는 색인에 넣고, LEVEL_ARRIVED 마다 그때까지의 색인으로
+ * completedKeys 와 같은 규칙의 항목을 만든다. WELCOME 은 세션 경계만 본다: resumed=false 가 PIECE 뒤에 오면, 또는
+ * resumed=true 의 sessionId 가 앞 WELCOME 과 다르면 ClientRasterError('piece'). 그 밖의 종류(MISSING·ERROR)는 이 규칙과
+ * 무관해 건너뛴다. type 이 문자열이 아니면 ClientRasterError('piece').
  * @param {object[]} messages
  * @returns {{keys: string[], arrived: {segmentId: number, level: number, keys: string[]}[]}}
  *   keys: 받은 조각 key(중복 없이 처음 받은 순서), arrived: LEVEL_ARRIVED 순서의 항목
@@ -133,9 +163,19 @@ export function collectArrivals(messages) {
   const keys = [];
   const known = new Set();
   const arrived = [];
+  let sessionId; // 앞서 본 WELCOME 의 sessionId(없으면 undefined)
   for (const m of messages) {
     if (!isObject(m) || typeof m.type !== 'string') throw new ClientRasterError('piece', '메시지 type 이 없음');
-    if (m.type === 'PIECE') {
+    if (m.type === 'WELCOME') {
+      if (typeof m.resumed !== 'boolean') throw new ClientRasterError('piece', `WELCOME resumed 는 boolean 이어야 함: ${String(m.resumed)}`);
+      if (!m.resumed && index.bySeq.size > 0) {
+        throw new ClientRasterError('piece', 'WELCOME resumed=false(새 세션)가 PIECE 뒤에 옴: 새 세션의 수신은 새 입력으로 넣는다(F-234)');
+      }
+      if (m.resumed && sessionId !== undefined && m.sessionId !== sessionId) {
+        throw new ClientRasterError('piece', `WELCOME resumed=true 의 sessionId ${String(m.sessionId)} 가 앞 세션 ${sessionId} 와 다름`);
+      }
+      sessionId = m.sessionId;
+    } else if (m.type === 'PIECE') {
       const k = addPiece(index, m);
       if (!known.has(k)) { known.add(k); keys.push(k); }
     } else if (m.type === 'LEVEL_ARRIVED') {
