@@ -609,7 +609,7 @@ test('F-223 ①: 실패 뒤 재시도가 skip 이 되면 부분 송출 key 를 �
   assert.equal(out.filter((m) => m.type === 'LEVEL_ARRIVED').length, 0, '부분 송출 key 에 LEVEL_ARRIVED 없음');
   assert.equal(rel.length, 1);
   assert.deepEqual(rel[0].keys.map(pieceKeyString), ev.pieces.map((p) => pieceKeyString(p.key)));
-  assert.equal(rel[0].info.abandoned, true);
+  assert.deepEqual(rel[0].info, { segmentId: 9, level: 1, previousLevel: 3, abandoned: true });
   assert.deepEqual(r.abandoned, rel[0].keys);
   assert.equal(ad.unfinishedEvent(), null, '끝나지 않은 표시가 지워진다');
   assert.equal(ad.nextPieceSeq(), PIECE_SEQ_MIN + 2, '쓰였을 수 있는 pieceSeq 는 태운다');
@@ -672,6 +672,38 @@ test('F-227: 같은 수준이고 모든 key 를 기계가 쥐고 있으면 아�
   assert.deepEqual(rel, []);
   assert.deepEqual(r.abandoned, []);
   assert.equal(ad.unfinishedEvent(), null);
+});
+
+test('F-228 ⑥·F-229 ②: skip 의 onRelease 가 던져도 표시는 먼저 지워져 있고, 재시도 때 abandoned 통지가 다시 온다', () => {
+  const server = createServerMachine();
+  const rel = [];
+  let failAt = 0;
+  let calls = 0;
+  let throwRelease = true;
+  const ad = createCoreAdapter({
+    levelMachine: server,
+    emit: () => { calls++; if (calls === failAt) throw new Error('x'); },
+    onRelease: (keys, info) => { rel.push({ keys, info }); if (throwRelease) throw new Error('알림 실패'); },
+  });
+  const ev = levelEvent(9, 1);
+  failAt = 2;
+  assert.throws(() => ad.handle(ev), /x/);
+  server.arrive(9, 3, levelEvent(9, 3).pieces);
+  failAt = 0;
+  assert.throws(() => ad.handle(ev), /알림 실패/);
+  assert.equal(ad.unfinishedEvent(), null, '던지기 전에 표시가 지워진다(A7)');
+  assert.equal(ad.nextPieceSeq(), PIECE_SEQ_MIN + 2, '던지기 전에 순번이 확정된다(A7)');
+  assert.deepEqual(rel[0].info, { segmentId: 9, level: 1, previousLevel: 3, abandoned: true }, 'previousLevel 은 기계의 수준(A8)');
+  // 재시도: 이번엔 성공. 놓치지 않은 abandoned 가 다시 통지된다
+  throwRelease = false;
+  const r = ad.handle(ev);
+  assert.equal(r.action, 'skip');
+  assert.equal(rel.length, 2, '재시도에서 다시 통지');
+  assert.deepEqual(rel[1], rel[0]);
+  assert.deepEqual(rel[1].keys.map(pieceKeyString), ev.pieces.map((p) => pieceKeyString(p.key)));
+  // 성공한 통지는 더 반복되지 않는다
+  ad.handle({ kind: 'segment_expected', segmentId: 7 });
+  assert.equal(rel.length, 2);
 });
 
 test('F-228: replace 의 onRelease 가 던져도 끝나지 않은 표시는 이미 지워져 있다', () => {
