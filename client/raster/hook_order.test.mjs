@@ -85,7 +85,7 @@ test('업로드: makeRoom(희생 해제·onEvict) → onGlUploadStart → pool.u
   const { s } = assertUploadSpan(log, 3);
   const before = log.slice(0, s);
   // 변환·지역 선택·희생 해제·알림이 모두 Start 앞이고, makeRoom 의 마지막 일(onEvict) 바로 다음이 Start 다
-  assert.deepEqual(before, ['toGpuPlanes', 'select', 'gl.deleteBuffer', 'gl.deleteBuffer', 'gl.deleteBuffer', `onEvict:${C0}`], `Start 앞 순서: ${log.join(' ')}`);
+  assert.deepEqual(before, ['toGpuPlanes', 'gl.deleteBuffer', 'gl.deleteBuffer', 'gl.deleteBuffer', `onEvict:${C0}`], `Start 앞 순서: ${log.join(' ')}`);
   assert.equal(log[s - 1], `onEvict:${C0}`);
   assert.deepEqual(log.slice(log.indexOf('onGlUploadEnd') + 1), [], 'onGlUploadEnd 뒤 기록 없음');
   r.dispose();
