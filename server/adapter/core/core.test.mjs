@@ -395,6 +395,82 @@ for (const viaCodec of [false, true]) {
   }
 }
 
+// ── emit 안에서 resume.recordSent 를 부르는 배선(F-197) ──────────────
+// 'before': 기록 전에 던짐(기록 안 됨). 'after': 기록 뒤 소켓 쓰기에서 던짐(기록됐지만 나가지 않음).
+for (const viaCodec of [false, true]) {
+  for (const where of ['before', 'after']) {
+    test(`F-197: emit 에서 recordSent, n 번째 emit 실패 뒤 재시도 -> 전부 나가고 unacked 순번 빈칸·중복 없음 (${where}, codec=${viaCodec})`, () => {
+      const prior = levelEvent(9, 1); // 조각 2 개(seq 1, 2), 먼저 성공
+      const ev = levelEvent(9, 3); // 조각 4 개 + LEVEL_ARRIVED = 메시지 5 개 (교체)
+      for (let n = 1; n <= 5; n++) {
+        const store = createSessionStore({ maxSessions: 4, ttlMs: 1000, now: () => 0, randomId: () => 5 });
+        const { sessionId, nextPieceSeq } = store.open({ sessionId: 0, lastPieceSeq: 0 });
+        const delivered = [];
+        let calls = 0;
+        let failAt = 0;
+        const boom = new Error('송출 실패');
+        const ad = createCoreAdapter({
+          encode: viaCodec ? encode : undefined,
+          firstPieceSeq: nextPieceSeq,
+          emit: (raw) => {
+            calls++;
+            const m = viaCodec ? decode(raw) : raw;
+            if (where === 'before' && calls === failAt) throw boom;
+            if (m.type === 'PIECE') {
+              if (!store.recordSent(sessionId, m.key, m.pieceSeq, m.chunk)) throw new Error('recordSent 거부');
+            }
+            if (where === 'after' && calls === failAt) throw boom;
+            delivered.push(m);
+          },
+        });
+        assert.equal(ad.handle(prior).action, 'first');
+        failAt = n; calls = 0;
+        assert.throws(() => ad.handle(ev), (e) => e === boom, `n=${n}`);
+        failAt = 0;
+        const r = ad.handle(ev); // 재시도: 같은 pieceSeq·key 를 다시 기록해도 막히지 않는다
+        assert.deepEqual([r.action, r.emitted], ['replace', 5], `n=${n}`);
+        // 재시도 시도의 메시지 5 개가 전부 나갔다: PIECE 4 개(seq 3..6) + LEVEL_ARRIVED
+        const last = delivered.slice(-5);
+        assert.deepEqual(last.map((m) => [m.type, m.pieceSeq]),
+          [['PIECE', 3], ['PIECE', 4], ['PIECE', 5], ['PIECE', 6], ['LEVEL_ARRIVED', undefined]], `n=${n}`);
+        assert.deepEqual(last[4], { type: 'LEVEL_ARRIVED', segmentId: 9, level: 3, pieceCount: 4 });
+        assert.deepEqual(last.slice(0, 4).map((m) => pieceKeyString(m.key)), ev.pieces.map((p) => pieceKeyString(p.key)));
+        // unacked: 1..6 빈칸·중복 없음, key 도 그 순서
+        const un = store.unacked(sessionId);
+        assert.deepEqual(un.map((u) => u.seq), [1, 2, 3, 4, 5, 6], `n=${n}`);
+        assert.deepEqual(un.map((u) => pieceKeyString(u.key)),
+          [...prior.pieces, ...ev.pieces].map((p) => pieceKeyString(p.key)));
+        // 보관 바이트는 조각마다 한 번만 센다
+        const bytes = [...prior.pieces, ...ev.pieces].reduce((a, p) => a + p.bytes.length, 0);
+        assert.deepEqual(store.stats(sessionId), { entries: 6, retainedBytes: bytes, unacked: 6, groups: 6 });
+        assert.equal(ad.nextPieceSeq(), 7);
+        assert.equal(store.open({ sessionId, lastPieceSeq: 0 }).nextPieceSeq, 7, 'WELCOME 순번 = 어댑터 다음 순번');
+      }
+    });
+  }
+}
+
+test('F-203: 빈 pieces 는 거부, 이전 수준·순번 그대로이고 아무것도 나가지 않는다', () => {
+  const server = createServerMachine();
+  const out = [];
+  const rel = [];
+  const ad = createCoreAdapter({ levelMachine: server, emit: (m) => out.push(m), onRelease: (k) => rel.push(k) });
+  assert.throws(() => ad.handle({ kind: 'level_arrived', segmentId: 6, level: 0, pieces: [] }), RangeError); // 첫 도착도 빈 것은 거부
+  assert.deepEqual([out.length, server.snapshot(6).level, ad.nextPieceSeq()], [0, -1, PIECE_SEQ_MIN]);
+  ad.handle(levelEvent(6, 1)); // 조각 2 개
+  out.length = 0;
+  for (const level of [2, 3, 1, 0]) {
+    assert.throws(() => ad.handle({ kind: 'level_arrived', segmentId: 6, level, pieces: [] }), RangeError, `level ${level}`);
+  }
+  assert.deepEqual(out, [], 'pieceCount 0 LEVEL_ARRIVED 를 내보내지 않는다');
+  assert.deepEqual(rel, [], '이전 조각을 놓지 않는다');
+  assert.deepEqual(stateOf(server, 6), {
+    level: 1, missing: false, keys: levelEvent(6, 1).pieces.map((p) => pieceKeyString(p.key)),
+  });
+  assert.equal(ad.nextPieceSeq(), PIECE_SEQ_MIN + 2);
+  assert.equal(ad.handle(levelEvent(6, 2)).action, 'replace'); // 조각이 있는 높은 수준은 그대로 교체
+});
+
 test('encode 가 던지면 아무것도 나가지 않고 상태·순번 불변', () => {
   const server = createServerMachine();
   const out = [];
