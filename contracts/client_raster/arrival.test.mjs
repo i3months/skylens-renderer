@@ -186,17 +186,15 @@ test('재시도 skip(F-235): LEVEL_ARRIVED 가 쓰였으면 완료, 안 쓰였�
   }
 });
 
-test('빈 keys 항목은 허용한다: 변환 결과의 keys 를 비우면 selectDrawable 이 수용', () => {
+test('빈 keys 항목은 던진다: 변환 결과의 keys 를 비우면 selectDrawable 이 거부', () => {
   const h = harness();
   h.run(event(7, 0, [0]));
   const { keys, arrived } = collectArrivals(h.decoded());
   assert.deepEqual(selectDrawable(keys, arrived).draw, ['7.0.1.-2.0.0']);
-  // 빈 keys 배열은 허용된다 (그 수준에 도착한 조각이 없음)
-  assert.deepEqual(selectDrawable(keys, [{ ...arrived[0], keys: [] }]).draw, []);
-  // keys 가 없으면 거부한다
-  assert.throws(() => selectDrawable(keys, [{ segmentId: 7, level: 0 }]), (e) => isPiece(e) && /keys 는 배열이어야 함/.test(e.message));
+  assert.throws(() => selectDrawable(keys, [{ ...arrived[0], keys: [] }]), (e) => isPiece(e) && /keys 는 비지 않은 배열이어야 함/.test(e.message));
+  assert.throws(() => selectDrawable(keys, [{ segmentId: 7, level: 0 }]), (e) => isPiece(e) && /keys 는 비지 않은 배열이어야 함/.test(e.message));
   // 복호한 LEVEL_ARRIVED 를 그대로 넘기는 것(keys 없음)도 거부한다
-  assert.throws(() => selectDrawable(keys, [h.decoded()[1]]), (e) => isPiece(e) && /keys 는 배열이어야 함/.test(e.message));
+  assert.throws(() => selectDrawable(keys, [h.decoded()[1]]), (e) => isPiece(e) && /keys 는 비지 않은 배열이어야 함/.test(e.message));
 });
 
 test('이상 입력은 ClientRasterError(piece)', () => {

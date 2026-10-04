@@ -27,7 +27,7 @@ export function checkArrived(list, probe) {
     if (!a || !Number.isInteger(a.segmentId) || Object.is(a.segmentId, -0) || a.segmentId < 0 || a.segmentId >= SEGMENT_ID_LIMIT || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
       throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
     }
-    if (!Array.isArray(a.keys)) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 는 배열이어야 함: ${JSON.stringify(a)}`);
+    if (!Array.isArray(a.keys) || a.keys.length === 0) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 는 비지 않은 배열이어야 함: ${JSON.stringify(a)}`);
     const seg = String(a.segmentId); // 정규 key 는 앞자리 0 이 없어 문자열 일치가 수 일치다
     const lvl = String(a.level);
     for (const k of a.keys) {

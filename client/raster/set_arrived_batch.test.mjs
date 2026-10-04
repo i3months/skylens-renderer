@@ -76,12 +76,25 @@ test('반환값 경로는 그대로 즉시 계산한다', async () => {
   assert.equal(steps.select, 1);
 });
 
-test('지연 경로: 모양이 틀린 입력은 즉시 거부', () => {
+test('지연 경로: 모양이 틀린 입력은 즉시 거부(빈 keys 항목은 piece, F-258)', () => {
   const { r } = make();
-  // 빈 arrived 배열은 허용된다
-  assert.doesNotThrow(() => r.setArrived([], { deferResult: true }));
-  // 빈 keys 배열도 허용된다
-  assert.doesNotThrow(() => r.setArrived([{ segmentId: 1, level: 1, keys: [] }], { deferResult: true }));
+  const mixed = [{ segmentId: 1, level: 1, keys: [keyOf(0)] }, { segmentId: 1, level: 2, keys: [] }];
+  assert.throws(() => r.setArrived([{ segmentId: 1, level: 1, keys: [] }], { deferResult: true }), { code: 'piece' });
+  assert.throws(() => r.setArrived(mixed, { deferResult: true }), { code: 'piece' });
+  assert.throws(() => r.setArrived(mixed), { code: 'piece' });
+});
+
+test('빈 arrived 배열 []은 즉시·지연 모두 받고 이후 draw 0 조각(F-260 6)', async () => {
+  for (const defer of [false, true]) {
+    const { r } = make();
+    for (let i = 0; i < 3; i++) await r.uploadPiece(keyOf(i), bytesOf(i));
+    r.setArrived(arrivedOf(0, 1), { deferResult: true });
+    assert.equal(r.draw().drawnPieces, 2);
+    let res;
+    assert.doesNotThrow(() => { res = defer ? r.setArrived([], { deferResult: true }) : r.setArrived([]); });
+    assert.equal(defer ? res : res.draw.length, defer ? undefined : 0);
+    assert.equal(r.draw().drawnPieces, 0, defer ? 'deferred' : 'immediate');
+  }
 });
 
 test('지연 경로: key 형식·level 범위 오류는 호출 시점에 piece 로 던지고, 직전 선택은 그대로 draw·uploadPiece 가 정상(F-250 ①)', async () => {
