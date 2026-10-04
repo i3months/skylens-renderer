@@ -3,11 +3,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
-import { generateReport } from './report.mjs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { generateReport, syntheticSceneReport } from './report.mjs';
 
 test('generateReport - 기본 형식', () => {
   const data = [
-    { segmentId: 0, bytes: 1024 * 1024, phase: 'segment' },  // 1 MiB
+    { segmentId: 0, bytes: 1_000_000, phase: 'segment' },  // 1 MB
   ];
 
   const report = generateReport(data);
@@ -18,15 +20,15 @@ test('generateReport - 기본 형식', () => {
 
   // 데이터 행
   assert.match(lines[1], /^0\t/, '구간 ID 0 으로 시작');
-  assert.match(lines[1], /1048576/, '바이트 1048576');
+  assert.match(lines[1], /1000000/, '바이트 1000000');
   assert.match(lines[1], /33\.33/, '예산 약 33%');
 });
 
 test('generateReport - 여러 구간', () => {
   const data = [
-    { segmentId: 1, bytes: 2 * 1024 * 1024, phase: 'segment' },  // 2 MiB
-    { segmentId: 0, bytes: 1 * 1024 * 1024, phase: 'segment' },  // 1 MiB
-    { segmentId: 2, bytes: 512 * 1024, phase: 'segment' },       // 512 KiB
+    { segmentId: 1, bytes: 2_000_000, phase: 'segment' },
+    { segmentId: 0, bytes: 1_000_000, phase: 'segment' },
+    { segmentId: 2, bytes: 500_000, phase: 'segment' }
   ];
 
   const report = generateReport(data);
@@ -39,7 +41,7 @@ test('generateReport - 여러 구간', () => {
 });
 
 test('generateReport - 예산 비율 계산', () => {
-  const BUDGET = 3 * 1024 * 1024;
+  const BUDGET = 3_000_000;
 
   const data = [
     // 50% 사용
@@ -51,7 +53,7 @@ test('generateReport - 예산 비율 계산', () => {
 });
 
 test('generateReport - 정확히 100% 사용', () => {
-  const BUDGET = 3 * 1024 * 1024;
+  const BUDGET = 3_000_000;
 
   const data = [
     { segmentId: 0, bytes: BUDGET, phase: 'segment' },
@@ -63,39 +65,41 @@ test('generateReport - 정확히 100% 사용', () => {
 
 test('generateReport - initial 단계는 무시', () => {
   const data = [
-    { segmentId: 0, bytes: 1 * 1024 * 1024, phase: 'initial' },
-    { segmentId: 0, bytes: 2 * 1024 * 1024, phase: 'segment' },
+    { segmentId: 0, bytes: 1_000_000, phase: 'initial' },
+    { segmentId: 0, bytes: 2_000_000, phase: 'segment' },
   ];
 
   const report = generateReport(data);
   const lines = report.split('\n');
 
   // segment 만 표에 나타남
-  assert.match(lines[1], /2097152/, '2 MiB 만 표에 나타남');
+  assert.match(lines[1], /2000000/, '2,000,000 B 만 표에 나타남');
 });
 
 test('generateReport - 합성 데이터 검증', () => {
   const data = [
-    { segmentId: 0, bytes: 1024 * 1024, phase: 'segment' },       // 1 MiB = 1048576
-    { segmentId: 0, bytes: 512 * 1024, phase: 'segment' },        // 512 KiB = 524288
-    { segmentId: 1, bytes: 1536 * 1024, phase: 'segment' },       // 1.5 MiB = 1572864
-    { segmentId: 2, bytes: 2 * 1024 * 1024, phase: 'segment' },   // 2 MiB = 2097152
+    { segmentId: 0, bytes: 1_000_000, phase: 'segment' },
+    { segmentId: 0, bytes: 500_000, phase: 'segment' },
+    { segmentId: 1, bytes: 1_500_000, phase: 'segment' },
+    { segmentId: 2, bytes: 2_000_000, phase: 'segment' },
   ];
 
-  const report = generateReport(data);
-  const lines = report.split('\n');
-
+  const lines = generateReport(data).split('\n');
   assert.equal(lines.length, 4, '헤더 + 3 구간 = 4줄');
+  assert.equal(lines[1], '0\t1500000\t50.00%');
+  assert.equal(lines[2], '1\t1500000\t50.00%');
+  assert.equal(lines[3], '2\t2000000\t66.67%');
+});
 
-  const seg0 = lines[1];
-  assert.equal(seg0.split('\t')[0], '0', '구간 0');
-  assert.equal(seg0.split('\t')[1], String(1536 * 1024), '구간 0: 1.5 MiB');
+test('report.mjs - import 때 main() 이 돌지 않는다', () => {
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e',
+    `import ${JSON.stringify(new URL('./report.mjs', import.meta.url).href)}; console.log('IMPORTED');`], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'IMPORTED\n', 'import 만으로는 표가 출력되면 안 된다');
+});
 
-  const seg1 = lines[2];
-  assert.equal(seg1.split('\t')[0], '1', '구간 1');
-  assert.equal(seg1.split('\t')[1], String(1536 * 1024), '구간 1: 1.5 MiB');
-
-  const seg2 = lines[3];
-  assert.equal(seg2.split('\t')[0], '2', '구간 2');
-  assert.equal(seg2.split('\t')[1], String(2 * 1024 * 1024), '구간 2: 2 MiB');
+test('report.mjs - 직접 실행하면 합성 장면 표를 출력하고 시험과 같은 수치다', () => {
+  const r = spawnSync(process.execPath, [fileURLToPath(new URL('./report.mjs', import.meta.url))], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, syntheticSceneReport() + '\n');
 });
