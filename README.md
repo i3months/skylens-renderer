@@ -176,16 +176,6 @@ Header codec value 1 (SKLC1) compresses 27 B point chunks. Quantized values stay
 ### Level state machine (T10)
 The four delay-pattern levels (steps 250, 1,000, 3,500, 7,000) are replaced per segment. A new level releases the lower-level pieces of the same segment (no accumulation), and a lower or equal level arriving after a higher one is skipped. A segment that has not arrived is "missing" (zero render points), and state changes only on arrival events, never with time. The contract is `contracts/levels/` (`decideArrival`), the server machine is `server/levels/state/` (`createLevelMachine`), the client machine is `client/levels/`, and the missing-segment display is `client/levels/missing/`.
 
-### LOD (T07)
-
-A hierarchy that thins the source cloud (format 1) by distance. It never creates points; it only uses a subset of the input points.
-- `server/lod/hierarchy` `buildHierarchy(cloud, {edge0M, levelCount})`: level l keeps one representative per grid cell of edge `edge0M·2^l`, split at leaf boundaries (one per leaf×cell piece; level 0 is the full cloud).
-- `server/lod/distance_table`, `select`, `budget`, `progressive`: level choice by screen-space error `f·edge/d_eff ≤ τ` (f=max(fx,fy), d_eff bounded below by d·cMin² over the on-screen part of the box, off-axis correction in `select/screen_error.mjs`), a point-budget cap, and coarse-first delivery (replacement, not accumulation).
-- `server/lod/view_score`: neighbour-view scoring (shared points, ray angle, scale). `server/lod/no_fill`: hole-preservation check. `bench/lod`: per-segment size tally and materialize timing (`node bench/lod/cli.mjs`). Per-level representative positions are precomputed in leaf order (12 B per representative); materializing 1.84 M selected points peaks at 51–70 ms including the first call (shared 4-core machine, 7 runs).
-
-### Protocol (T11)
-A single binary WebSocket (TCP) framing: 8-byte header plus payload, nine message types (hello, view update, piece request, ack, welcome, piece, level arrived, missing, error). The contract is `contracts/proto/`; encode/decode lives in `server/proto/codec/` and `client/proto/` (same check order and error codes). The server skeleton is `server/ws/` (dependency-free RFC 6455; host and port come from the environment variables `SKYLENS_WS_HOST` and `SKYLENS_WS_PORT`), with backpressure in `server/ws/backpressure/`, reconnect in `server/ws/resume/`, the send scheduler in `server/scheduler/` (priority, byte budget, overtaken-level drop) and the initial bundle in `server/scheduler/initial/`, the skylens event adapter in `server/adapter/core/`, a mock client in `tools/mock_client/`, a fuzzer in `server/proto/fuzz/` and byte accounting in `bench/proto/`.
-
 ### Point input and coordinates (T04)
 Reads and writes 27 B point and 56 B Gaussian PLY files. Contracts live in `contracts/points/` and `contracts/geo/`; server modules in `server/points/` (PLY read/write/streaming, rejection of corrupt input, normal normalization, segment file identification) and `server/geo/` (GPS↔ENU, ENU↔scene axes x=east, y=up, z=−north); the client conversion in `client/geo/`; point statistics in `tools/points_stat/`. GPS↔ENU uses the same equirectangular approximation as skylens `geo.ts` (R = 6378137 m) and is tested against a transcribed reference function to within 1 mm. When longitude difference |Δλ| exceeds 180°, use 360° − |Δλ|.
 
@@ -212,11 +202,21 @@ The ENU conversion differs from skylens geo.ts in two ways. First, after wrappin
 
 **Preview generation:** Use `node tools/scene_preview/cli.mjs <scene-name> <seed> <output-directory>` to generate a preview image (PNG) of a scene with the specified seed. `<scene-name>` is one of the 8 scene keys. Output directory is created if needed.
 
+### LOD (T07)
+
+A hierarchy that thins the source cloud (format 1) by distance. It never creates points; it only uses a subset of the input points.
+- `server/lod/hierarchy` `buildHierarchy(cloud, {edge0M, levelCount})`: level l keeps one representative per grid cell of edge `edge0M·2^l`, split at leaf boundaries (one per leaf×cell piece; level 0 is the full cloud).
+- `server/lod/distance_table`, `select`, `budget`, `progressive`: level choice by screen-space error `f·edge/d_eff ≤ τ` (f=max(fx,fy), d_eff bounded below by d·cMin² over the on-screen part of the box, off-axis correction in `select/screen_error.mjs`), a point-budget cap, and coarse-first delivery (replacement, not accumulation).
+- `server/lod/view_score`: neighbour-view scoring (shared points, ray angle, scale). `server/lod/no_fill`: hole-preservation check. `bench/lod`: per-segment size tally and materialize timing (`node bench/lod/cli.mjs`). Per-level representative positions are precomputed in leaf order (12 B per representative); materializing 1.84 M selected points peaks at 51–70 ms including the first call (shared 4-core machine, 7 runs).
+
 ### Development setup
 ```
 git config core.hooksPath .githooks
 ```
 The hooks block commits and pushes whose message, added content or branch name contains generation-tool traces.
+
+### Protocol (T11)
+A single binary WebSocket (TCP) framing: 8-byte header plus payload, nine message types (hello, view update, piece request, ack, welcome, piece, level arrived, missing, error). The contract is `contracts/proto/`; encode/decode lives in `server/proto/codec/` and `client/proto/` (same check order and error codes). The server skeleton is `server/ws/` (dependency-free RFC 6455; host and port come from the environment variables `SKYLENS_WS_HOST` and `SKYLENS_WS_PORT`), with backpressure in `server/ws/backpressure/`, reconnect in `server/ws/resume/`, the send scheduler in `server/scheduler/` (priority, byte budget, overtaken-level drop) and the initial bundle in `server/scheduler/initial/`, the skylens event adapter in `server/adapter/core/`, a mock client in `tools/mock_client/`, a fuzzer in `server/proto/fuzz/` and byte accounting in `bench/proto/`.
 
 ### Culling (T08)
 - Every culling stage is conservative (never drops a leaf that should be visible). Each returns a 0/1 mask of length leafCount; signatures live in `contracts/cull`.
