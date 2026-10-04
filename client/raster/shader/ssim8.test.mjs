@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { scenePoints, sceneCameras, cameraUniforms } from './scene.mjs';
 import { emulatePointRender } from './emulate.mjs';
 import { referencePointRender } from './reference.mjs';
-import { findChromium, renderInChromium } from './gl_harness.mjs';
+import { findChromium, renderInChromium, glSkip } from './gl_harness.mjs';
 import { ssim } from '../../../server/metrics/ssim/index.mjs';
 
 const SSIM_MIN = 0.95;
@@ -58,11 +58,13 @@ test('CPU 모사(중심 클립 구현을 가정): 화면 가장자리 원판이 
   }
 });
 
+// 잘못된 SKYLENS_CHROMIUM 은 불러오는 시점에 던져 파일 전체가 실패한다. REQUIRE_GL=1 이고 Chromium 이 없으면 아래 시험이 실패한다.
 const chrome = findChromium();
 
 test('실제 WebGL2(헤드리스 Chromium SwiftShader): 8시점 모두 참조와 SSIM ≥ 0.95, 빈 칸을 메우지 않는다',
-  { skip: chrome ? false : 'Chromium 없음(SKYLENS_CHROMIUM 또는 Playwright 설치 필요): 실제 GL 검증 불가, CPU 모사만 검증됨' },
+  { skip: glSkip(chrome ? null : 'Chromium 없음(SKYLENS_CHROMIUM 또는 Playwright 설치 필요): 실제 GL 검증 불가, CPU 모사만 검증됨') },
   (t) => {
+    assert.ok(chrome, 'Chromium 없음: SKYLENS_REQUIRE_GL=1 에서는 실제 GL 검증을 건너뛸 수 없다');
     const views = cams.map(({ camera }) => cameraUniforms(camera, OPTS));
     const gl = renderInChromium(chrome, views, pts);
     assert.equal(gl.glError, 0);
@@ -76,3 +78,47 @@ test('실제 WebGL2(헤드리스 Chromium SwiftShader): 8시점 모두 참조와
     }
     t.diagnostic(`${gl.renderer}, depthBits ${gl.depthBits}, maxPointSize ${gl.maxPointSize}: ${scores.join(', ')}`);
   });
+
+// 판별력 음성 시험: 셰이더가 잘못 그리면 SSIM 이 기준 아래로 떨어져야 한다(SSIM_MIN 은 그대로).
+// 변이는 셰이더 유니폼 쪽에만 건다. 참조(refs)는 원래 설정 그대로다.
+const MUTATIONS = {
+  '셰이딩 끄기': (o) => ({ ...o, shade: false }),
+  '빛 방향 반전': (o) => ({ ...o, lightDirWorld: o.lightDirWorld.map((x) => -x) }),
+  '점 크기 1.5배': (o) => ({ ...o, pointSizeM: o.pointSizeM * 1.5 }),
+};
+
+for (const [label, mutate] of Object.entries(MUTATIONS)) {
+  test(`판별력: ${label} 변이는 8시점 중 적어도 한 시점에서 SSIM < SSIM_MIN`, (t) => {
+    const scores = [];
+    for (const [k, { camera }] of cams.entries()) {
+      const em = emulatePointRender(cameraUniforms(camera, mutate(OPTS)), pts);
+      scores.push(ssim(refs[k].color, em.color, camera.width, camera.height, 3));
+    }
+    t.diagnostic(`${label}: ${scores.map((s) => s.toFixed(3)).join(', ')}`);
+    assert.ok(scores.some((s) => s < SSIM_MIN), `변이가 SSIM 을 못 떨어뜨림: ${scores.map((s) => s.toFixed(3)).join(', ')}`);
+  });
+}
+
+// 시점별 점 반지름 진단: r = fx·pointSizeM/(2d) ≥ 1 인 점의 비율. 비율이 낮은 시점은 점 크기 공식이 중심 칸 규칙에만 기대어 검증이 약하다.
+test('진단: 시점별 점 반지름 r ≥ 1 비율 출력, 점 크기 공식이 검증되는 시점이 있다', (t) => {
+  const lines = [];
+  let anyStrong = false;
+  for (const { name, camera } of cams) {
+    const U = cameraUniforms(camera, OPTS);
+    const R = U.u_Rgl;
+    let visible = 0;
+    let big = 0;
+    for (let k = 0; k < COUNT; k += 1) {
+      const X = pts.positions[3 * k], Y = pts.positions[3 * k + 1], Z = pts.positions[3 * k + 2];
+      const d = -(R[6] * X + R[7] * Y + R[8] * Z + U.u_tgl[2]);
+      if (!(d >= U.u_near && d <= U.u_far)) continue;
+      visible += 1;
+      if ((U.u_fx * U.u_pointSizeM) / (2 * d) >= 1) big += 1;
+    }
+    const ratio = visible ? big / visible : 0;
+    if (ratio >= 0.5) anyStrong = true;
+    lines.push(`${name} ${(100 * ratio).toFixed(1)}%`);
+  }
+  t.diagnostic(`r ≥ 1 점 비율: ${lines.join(', ')}`);
+  assert.ok(anyStrong, `r ≥ 1 점이 절반 이상인 시점이 없음: ${lines.join(', ')}`);
+});
