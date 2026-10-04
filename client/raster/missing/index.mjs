@@ -7,6 +7,7 @@ const ERR = 'missing:';
 
 /** 칠해진 픽셀 마스크(Uint8Array, 1 = 칠해짐)를 RenderResult 에서 뽑는다. 빈 번호와 빈 깊이가 어긋나면 오류. */
 export function drawnMask(result) {
+  if (!result || typeof result !== 'object') throw new Error(`${ERR} 결과가 객체가 아님: ${String(result)}`);
   assertRenderResult(result);
   const n = result.width * result.height;
   const mask = new Uint8Array(n);
@@ -16,7 +17,9 @@ export function drawnMask(result) {
 
 // 입력은 {width, height, drawn: Uint8Array} 마스크이거나 RenderResult 다.
 function toMask(x) {
-  if (x && x.drawn instanceof Uint8Array) {
+  // null·원시값 입력은 TypeError 가 아니라 'missing:' 오류로 알린다
+  if (!x || typeof x !== 'object') throw new Error(`${ERR} 입력이 객체가 아님: ${String(x)}`);
+  if (x.drawn instanceof Uint8Array) {
     if (!Number.isInteger(x.width) || !Number.isInteger(x.height) || x.drawn.length !== x.width * x.height) {
       throw new Error(`${ERR} 마스크 모양이 틀림`);
     }
@@ -65,6 +68,7 @@ export function compareWithReference(candidate, reference) {
 
 /** 빈 픽셀이 빈 값 그대로인지(색 0,0,0·깊이 0·번호 −1) 검사한다. 어긋난 픽셀 번호 목록을 돌려준다. */
 export function nonEmptyValuesInEmpty(result, emptyPixels) {
+  if (!result || typeof result !== 'object') throw new Error(`${ERR} 결과가 객체가 아님: ${String(result)}`);
   const bad = [];
   for (const p of emptyPixels) {
     if (result.index[p] !== EMPTY_INDEX || result.depth[p] !== EMPTY_DEPTH

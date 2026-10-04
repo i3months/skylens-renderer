@@ -8,9 +8,9 @@ import { emptyResult } from '../../../contracts/raster/index.mjs';
 import { generate } from '../../../fixtures/scenes/holes/index.mjs';
 import { encodeOctNormal } from '../../../server/asset/pack/index.mjs';
 import { cameraUniforms } from '../shader/scene.mjs';
-import { emulatePointRender } from '../shader/emulate.mjs';
+import { emulatePointRender, DEPTH_BITS } from '../shader/emulate.mjs';
 import { referencePointRender } from '../shader/reference.mjs';
-import { findChromium, renderInChromium } from '../shader/gl_harness.mjs';
+import { findChromium, renderInChromium, glSkip } from '../shader/gl_harness.mjs';
 
 // 아래를 내려다보는 카메라(높이 60 m). 참조·셰이더 모두 같은 카메라와 점 지름을 쓴다.
 const CAM = { width: 320, height: 240, K: { fx: 400, fy: 400, cx: 160, cy: 120 }, R: [1, 0, 0, 0, 0, 1, 0, -1, 0], t: [0, 0, 60] };
@@ -45,7 +45,17 @@ const CASES = [['전부 도착', null], ['무작위 절반 도착', half], ['앞
 });
 const U = cameraUniforms(CAM, OPTS);
 
-// 셰이더는 빈 칸을 (0,0,0) 으로 둔다. 색이 하나라도 0 이 아니면 칠해진 것(장면 색·앰비언트로 0 이 되지 않음).
+// 깊이 기준 마스크: CPU 모사는 빈 칸의 양자화 깊이를 DEPTH_MAX + 1 로 둔다. 깊이가 그 값이 아니면 칠해진 칸이다.
+// 색 (0,0,0) 으로 판정하면 색이 0 인 점이 메워져도 놓친다.
+const EMPTY_DEPTH_Q = 2 ** DEPTH_BITS;
+function depthMask(em) {
+  const drawn = new Uint8Array(em.width * em.height);
+  for (let p = 0; p < drawn.length; p += 1) drawn[p] = em.depth[p] !== EMPTY_DEPTH_Q ? 1 : 0;
+  return { width: em.width, height: em.height, drawn };
+}
+
+// 실제 GL 하네스(읽기 전용)는 색만 돌려주고 깊이 버퍼를 읽지 않는다. 그래서 GL 쪽만 색 마스크를 쓰되,
+// 이 장면에서 색 마스크가 깊이 마스크와 칸마다 같다는 것을 CPU 모사로 먼저 확인한다(칠한 칸의 색이 0 이 되지 않음).
 function rgbMask(rgb) {
   const drawn = new Uint8Array(CAM.width * CAM.height);
   for (let p = 0; p < drawn.length; p += 1) drawn[p] = (rgb[3 * p] | rgb[3 * p + 1] | rgb[3 * p + 2]) !== 0 ? 1 : 0;
@@ -58,8 +68,10 @@ function check(name, cand, ref) {
   const rd = computeCoverage(ref).drawn;
   const cd = computeCoverage(cand).drawn;
   assert.ok(rd > 0, `${name}: 참조가 아무것도 그리지 않음`);
-  // 빈 후보로 통과하는 것을 막는다: 후보도 참조 칠한 수의 90% 이상은 칠해야 한다.
-  assert.ok(cd >= 0.9 * rd, `${name}: 후보가 ${cd} 칠함, 참조 ${rd}`);
+  // 빈 후보로 통과하는 것을 막는다. 측정값: 세 도착 상황 모두(CPU 모사·실제 GL) 후보 칠한 수 = 참조 칠한 수
+  // (6500, 3190, 2255)이고 lost 0 이다. 점 크기 식이 참조와 같아 정확히 같아야 하므로 허용치 없이 같음을 단언한다.
+  assert.deepEqual(cmp.lost, [], `${name}: 참조가 칠한 픽셀 ${cmp.lost.length} 개를 후보가 못 칠함`);
+  assert.equal(cd, rd, `${name}: 후보가 ${cd} 칠함, 참조 ${rd}`);
 }
 
 test('holes 장면은 빈자리가 실제로 있다(시험 전제)', () => {
@@ -71,15 +83,19 @@ test('holes 장면은 빈자리가 실제로 있다(시험 전제)', () => {
 for (const { name, pts, ref } of CASES) {
   test(`CPU 모사: holes ${name} → 참조의 빈 픽셀을 메우지 않는다`, () => {
     const em = emulatePointRender(U, pts);
-    check(name, { width: CAM.width, height: CAM.height, drawn: em.drawn }, ref);
+    // 색 마스크와 깊이 마스크가 칸마다 같아야 GL 쪽 색 마스크 판정이 깊이 판정을 대신할 수 있다
+    assert.deepEqual(rgbMask(em.color).drawn, depthMask(em).drawn, `${name}: 색 마스크와 깊이 마스크가 다름`);
+    check(name, depthMask(em), ref);
   });
 }
 
 const chrome = findChromium();
 for (const { name, pts, ref } of CASES) {
   test(`실제 WebGL2: holes ${name} → 참조의 빈 픽셀을 메우지 않는다`,
-    { skip: chrome ? false : 'Chromium 없음(SKYLENS_CHROMIUM 또는 Playwright 설치 필요): 실제 GL 검증 불가' },
+    { skip: glSkip(chrome ? null : 'Chromium 없음(SKYLENS_CHROMIUM 또는 Playwright 설치 필요): 실제 GL 검증 불가') },
     () => {
+      // SKYLENS_REQUIRE_GL=1 이면 glSkip 이 false 를 돌려 여기까지 오고, Chromium 이 없으면 실패한다
+      assert.ok(chrome, 'Chromium 없음: SKYLENS_REQUIRE_GL=1 에서는 실제 GL 검증을 건너뛸 수 없다');
       const gl = renderInChromium(chrome, [U], pts);
       assert.equal(gl.glError, 0);
       check(name, rgbMask(gl.views[0]), ref);
