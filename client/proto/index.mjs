@@ -157,8 +157,9 @@ export function encodeMessage(message) {
       const seg = int(message.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId');
       const level = int(message.level, 0, 3, 'level');
       const cnt = int(message.pieceCount, 1, U32_MAX, 'pieceCount');
-      payload = 9;
-      write = (dv, b) => { dv.setUint32(b, seg, true); dv.setUint8(b + 4, level); dv.setUint32(b + 5, cnt, true); };
+      const first = int(message.firstPieceSeq, 1, U32_MAX - cnt + 1, 'firstPieceSeq'); // 창 끝 ≤ u32 (F-236)
+      payload = 13;
+      write = (dv, b) => { dv.setUint32(b, seg, true); dv.setUint8(b + 4, level); dv.setUint32(b + 5, cnt, true); dv.setUint32(b + 9, first, true); };
       break;
     }
     case MSG.MISSING: {
@@ -234,7 +235,8 @@ export function decodeMessage(bytes) {
       int(segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId');
       int(level, 0, 3, 'level');
       const pieceCount = int(dv.getUint32(b + 5, true), 1, U32_MAX, 'pieceCount');
-      return { type: 'LEVEL_ARRIVED', segmentId, level, pieceCount };
+      const firstPieceSeq = int(dv.getUint32(b + 9, true), 1, U32_MAX - pieceCount + 1, 'firstPieceSeq');
+      return { type: 'LEVEL_ARRIVED', segmentId, level, pieceCount, firstPieceSeq };
     }
     case MSG.MISSING: {
       const segmentId = dv.getUint32(b, true);

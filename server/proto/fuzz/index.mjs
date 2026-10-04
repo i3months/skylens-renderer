@@ -52,7 +52,13 @@ export function randomMessage(rng, type) {
     case 'ACK': return { type, upToPieceSeq: u32() };
     case 'WELCOME': return { type, sessionId: u32(), resumed: rng.int(2) === 1, nextPieceSeq: Math.max(1, u32()) };
     case 'PIECE': return { type, pieceSeq: Math.max(1, u32()), key: key(), chunk: randBytes(rng, 1 + rng.int(rng.next() < 0.1 ? 3000 : 200)) };
-    case 'LEVEL_ARRIVED': return { type, segmentId: rng.int(1 << 20), level: rng.int(4), pieceCount: 1 + rng.int(0xffffffff) };
+    case 'LEVEL_ARRIVED': {
+      // 창 끝 firstPieceSeq + pieceCount − 1 ≤ u32 (F-236). 경계(창 끝 = 0xFFFFFFFF)도 가끔 만든다.
+      const pieceCount = 1 + rng.int(rng.next() < 0.5 ? 64 : 0xffffffff);
+      const maxFirst = 0xffffffff - pieceCount + 1;
+      const firstPieceSeq = rng.next() < 0.2 ? pick(rng, [1, maxFirst]) : 1 + rng.int(maxFirst);
+      return { type, segmentId: rng.int(1 << 20), level: rng.int(4), pieceCount, firstPieceSeq };
+    }
     case 'MISSING': return { type, segmentId: rng.int(1 << 20) };
     case 'ERROR': return { type, code: 1 + rng.int(5), text: 'e'.repeat(rng.int(40)) + (rng.int(2) ? '오류' : '') };
   }

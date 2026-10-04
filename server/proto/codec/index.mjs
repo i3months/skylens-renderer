@@ -143,9 +143,13 @@ export function encodeMessage(m) {
       return out;
     }
     case 'LEVEL_ARRIVED': {
-      uint(m.segmentId, SEGMENT_ID_LIMIT - 1, 'segmentId'); uint(m.level, 3, 'level'); if (typeof m.pieceCount !== 'number' || !Number.isInteger(m.pieceCount) || m.pieceCount < 1 || m.pieceCount > U32_MAX) fail('field', `pieceCount 범위 밖(1..${U32_MAX}): ${m.pieceCount}`);
-      const { out, dv, o } = frame(type, 9);
+      uint(m.segmentId, SEGMENT_ID_LIMIT - 1, 'segmentId'); uint(m.level, 3, 'level'); seq1(m.pieceCount, 'pieceCount');
+      // 창 firstPieceSeq..firstPieceSeq+pieceCount−1 은 pieceSeq 범위(1..u32) 안이어야 한다(F-236).
+      seq1(m.firstPieceSeq, 'firstPieceSeq');
+      if (m.firstPieceSeq + m.pieceCount - 1 > U32_MAX) fail('field', `창 끝 ${m.firstPieceSeq}+${m.pieceCount}−1 이 u32 밖`);
+      const { out, dv, o } = frame(type, 13);
       dv.setUint32(o, m.segmentId, true); dv.setUint8(o + 4, m.level); dv.setUint32(o + 5, m.pieceCount, true);
+      dv.setUint32(o + 9, m.firstPieceSeq, true);
       return out;
     }
     case 'MISSING': {

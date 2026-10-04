@@ -196,12 +196,27 @@ for (const [name, mod, dir, seedBase] of [
 }
 
 test('기준 코덱: LEVEL_ARRIVED pieceCount 0 은 부호화·복호 모두 field, 1 은 왕복', () => {
-  const m = (pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount });
+  const m = (pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount, firstPieceSeq: 1 });
   const kind = (fn) => { try { fn(); } catch (e) { assert.ok(e instanceof ProtoError); return e.code; } return null; };
   const dec = makeDecoder('s2c');
   assert.equal(kind(() => refEncode(m(0))), 'field');
   const f = refEncode(m(1));
   assert.deepEqual(dec(f), m(1));
-  const z = Uint8Array.from(f); z.set([0, 0, 0, 0], z.length - 4);
+  const z = Uint8Array.from(f); z.set([0, 0, 0, 0], 8 + 5); // pieceCount 자리
   assert.equal(kind(() => dec(z)), 'field');
+});
+
+test('기준 코덱: LEVEL_ARRIVED firstPieceSeq 0·창 끝 u32 초과는 field, 경계는 왕복(F-236)', () => {
+  const m = (pieceCount, firstPieceSeq) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount, firstPieceSeq });
+  const kind = (fn) => { try { fn(); } catch (e) { assert.ok(e instanceof ProtoError); return e.code; } return null; };
+  const dec = makeDecoder('s2c');
+  assert.equal(kind(() => refEncode(m(1, 0))), 'field');
+  assert.equal(kind(() => refEncode(m(2, 0xffffffff))), 'field');
+  const f = refEncode(m(2, 0xfffffffe));
+  assert.equal(f.length, 8 + 13);
+  assert.deepEqual(dec(f), m(2, 0xfffffffe));
+  const zero = Uint8Array.from(f); zero.set([0, 0, 0, 0], 8 + 9);
+  assert.equal(kind(() => dec(zero)), 'field');
+  const over = Uint8Array.from(f); over.set([0xff, 0xff, 0xff, 0xff], 8 + 9);
+  assert.equal(kind(() => dec(over)), 'field');
 });

@@ -20,7 +20,7 @@ test('DIRECTION 리터럴(ACK 는 c2s, WELCOME·PIECE·LEVEL_ARRIVED·MISSING·E
   assert.ok(Object.isFrozen(P.DIRECTION));
 });
 test('FIXED_PAYLOAD_BYTES 리터럴', () => {
-  assert.deepEqual({ ...P.FIXED_PAYLOAD_BYTES }, { 1: 9, 2: 40, 4: 4, 5: 9, 7: 9, 8: 4 });
+  assert.deepEqual({ ...P.FIXED_PAYLOAD_BYTES }, { 1: 9, 2: 40, 4: 4, 5: 9, 7: 13, 8: 4 });
   assert.ok(Object.isFrozen(P.FIXED_PAYLOAD_BYTES));
 });
 test('ERR_CODES 리터럴', () => {

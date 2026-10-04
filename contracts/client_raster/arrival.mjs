@@ -97,12 +97,22 @@ function checkLevelArrived(a) {
   }
 }
 
-/** 규칙 ②: 색인에서 창 maxSeq−n+1..maxSeq 의 key 들을 꺼낸다. */
+/**
+ * 규칙 ②: 색인에서 창의 key 들을 꺼낸다. 선의 LEVEL_ARRIVED 는 firstPieceSeq 를 싣는다(contracts/proto, F-236): 창은
+ * firstPieceSeq..firstPieceSeq+n−1 로 명시되고 그때까지의 maxSeq 와 무관하다 — 이어받기 뒤 혼자 다시 온 LEVEL_ARRIVED 도
+ * 같은 창이다(멱등). firstPieceSeq 가 없는 항목(선을 거치지 않은 입력)만 옛 규칙 maxSeq−n+1..maxSeq 를 쓴다.
+ */
 function windowKeys(index, a) {
   checkLevelArrived(a);
-  const { segmentId, level, pieceCount } = a;
-  const last = index.maxSeq;
-  const first = last - pieceCount + 1;
+  const { segmentId, level, pieceCount, firstPieceSeq } = a;
+  let first = index.maxSeq - pieceCount + 1;
+  if (firstPieceSeq !== undefined) {
+    if (!Number.isInteger(firstPieceSeq) || firstPieceSeq < 1 || firstPieceSeq + pieceCount - 1 > U32_MAX) {
+      throw new ClientRasterError('piece', `LEVEL_ARRIVED firstPieceSeq 는 1 이상이고 창 끝이 u32 안이어야 함: ${String(firstPieceSeq)}`);
+    }
+    first = firstPieceSeq;
+  }
+  const last = first + pieceCount - 1;
   if (pieceCount > index.bySeq.size || first < 1) {
     throw new ClientRasterError('piece', `LEVEL_ARRIVED(${segmentId}, ${level}) pieceCount ${pieceCount} 만큼 조각을 받지 못함(받은 조각 ${index.bySeq.size})`);
   }
