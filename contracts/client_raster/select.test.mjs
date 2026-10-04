@@ -38,13 +38,13 @@ describe('selectDrawable: 중복 key·-0·입력 형', () => {
     const b = '1.1.1.0.0.0';
     const lo = '2.0.0.0.0.0'; // 구간 2 는 수준 1 이 도착해 level 0 은 discard
     const hi = '3.2.0.0.0.0'; // 구간 3 은 도착 없음 → pending
-    const out = selectDrawable([a, b, a, lo, hi, lo, hi, b], [{ segmentId: 1, level: 1, keys: [a, b] }, { segmentId: 2, level: 1 }]);
+    const out = selectDrawable([a, b, a, lo, hi, lo, hi, b], [{ segmentId: 1, level: 1, keys: [a, b] }, { segmentId: 2, level: 1, keys: ['2.1.0.0.0.0'] }]);
     assert.deepEqual(out, { draw: [a, b], pending: [hi], discard: [lo] });
   });
 
   test('segmentId -0 은 거부한다(0 은 통과)', () => {
-    assert.throws(() => selectDrawable([], [{ segmentId: -0, level: 0 }]), isPieceError);
-    assert.doesNotThrow(() => selectDrawable([], [{ segmentId: 0, level: 0 }]));
+    assert.throws(() => selectDrawable([], [{ segmentId: -0, level: 0, keys: ['0.0.0.0.0.0'] }]), isPieceError);
+    assert.doesNotThrow(() => selectDrawable([], [{ segmentId: 0, level: 0, keys: ['0.0.0.0.0.0'] }]));
   });
 
   test('keys 가 배열이 아니면 piece 오류', () => {
