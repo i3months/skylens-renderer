@@ -346,3 +346,22 @@ test('실제 모듈 조립: MISSING n 건은 구간당 O(1) 도착 질의 — �
     assert.equal(used.pieceIndex, n, `n=${n}: pieceIndex 는 구간당 한 번`);
   }
 });
+
+test('F-303 ④ MISSING 처리는 Map·Set 을 복사하거나 훑지 않는다(구조 단언: 순회 0 회, F-296 ② 의 세 스캔 계수가 못 보는 변이)', async () => {
+  const modules = await loadDefaultModules();
+  const view = createStatusView({ modules, countOf: countOfTestChunk, pieceIndex: (seg) => [pieceKeyOf(seg, 0, 0)] });
+  feed(view, createMockRenderServer().welcome(false));
+  const mapIter = Map.prototype[Symbol.iterator];
+  const setIter = Set.prototype[Symbol.iterator];
+  let iterations = 0;
+  Map.prototype[Symbol.iterator] = function () { iterations += 1; return mapIter.call(this); };
+  Set.prototype[Symbol.iterator] = function () { iterations += 1; return setIter.call(this); };
+  try {
+    for (let s = 0; s < 500; s += 1) view.handle({ type: 'MISSING', segmentId: s });
+  } finally {
+    Map.prototype[Symbol.iterator] = mapIter;
+    Set.prototype[Symbol.iterator] = setIter;
+  }
+  assert.equal(iterations, 0, `MISSING 500 건 동안 Map/Set 순회·복사 ${iterations} 회`);
+  assert.equal(view.requests().reduce((a, r) => a + r.items.length, 0), 500);
+});

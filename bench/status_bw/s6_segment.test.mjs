@@ -19,6 +19,7 @@ test('구간당 250만 점 합성(SPEC 규모): 구간당 프레임 바이트 �
   assert.ok(large.initialBytes <= 15_000_000, `초기 ${large.initialBytes}`);
   for (const r of large.rows) {
     console.log(`# 구간 ${r.segmentId}: ${r.frameBytes} B (S6 문턱의 ${(r.frameBytes / 3_000_000 * 100).toFixed(1)}%), 송출 점 ${r.points} / 원본 ${r.sourcePoints}, 수준별 ${r.levels.map((l) => l.points).join('/')}`);
+    assert.ok(r.frameBytes >= 0.95 * 3_000_000, `구간 ${r.segmentId} 하한 ${r.frameBytes} < ${0.95 * 3_000_000}`);
     assert.ok(r.frameBytes <= 3_000_000, `구간 ${r.segmentId} ${r.frameBytes}`);
     assert.equal(r.frameBytes, r.levels.reduce((s, l) => s + l.frameBytes, 0));
   }
@@ -34,5 +35,15 @@ test('구간당 250만 점 합성: 4수준 모두 송출되고 원본 이하·�
       assert.equal(l.arrivedBytes, 23);
     }
     for (let k = 1; k < 4; k++) assert.ok(r.levels[k].points > r.levels[k - 1].points);
+  }
+});
+
+test('다른 seed(42): 구간당 250만 점에서 S6 제약 만족', () => {
+  const other = measureStatusBandwidth({ segments: 3, pointsPerSegment: 2500000, seed: 42, ...S6_SEND_CONFIG });
+  assert.equal(other.rows.length, 3);
+  assert.ok(other.initialBytes <= 15_000_000, `초기 ${other.initialBytes}`);
+  for (const r of other.rows) {
+    assert.ok(r.frameBytes >= 0.95 * 3_000_000, `구간 ${r.segmentId} 하한 ${r.frameBytes} < ${0.95 * 3_000_000}`);
+    assert.ok(r.frameBytes <= 3_000_000, `구간 ${r.segmentId} ${r.frameBytes}`);
   }
 });
