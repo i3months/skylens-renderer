@@ -6,6 +6,7 @@
 export const LONG_TASK_MS = 50;
 /** 기본 프레임 간격(ms): 60 Hz. */
 export const DEFAULT_FRAME_MS = 1000 / 60;
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 /**
  * @param {{draw: () => any, requestFrame: (cb: () => void) => any, now: () => number,
@@ -99,16 +100,20 @@ export function createFrameLoop({ draw, requestFrame, now, onFrame, onError, fra
  * timeoutMs(선택, 기본 없음)는 Worker 가 요청을 하나씩 순서대로 처리한다고 보고 맨 앞 요청의 처리 시작부터 잰다.
  * 맨 앞 요청이 timeoutMs 안에 응답하지 않으면 그 요청은 'timeout' 으로 reject 하고, Worker 가 그 요청을 아직 처리 중이라
  * 막힌 것으로 보아 그 시점에 대기 중이던 나머지 요청도 전부 reject 한다(failAll, 뒤 요청의 연쇄 오탐 방지). 버려진 id 의
- * 늦은 응답은 무시한다. 막힌 Worker 를 되살리는 것(terminate 후 새로 만들기)은 호출자 몫이며, 그 전에 들어온 새 요청은
- * 아직 처리 중인 Worker 뒤에 줄 서므로 같은 시한을 다시 받을 수 있다.
- * setTimeoutFn 이 던지면 그 요청만 던진 오류로 reject 하고 대기열·pending 에는 남기지 않는다.
+ * 늦은 응답은 무시한다. 시한이 지나면 Worker 를 terminate 하고 terminated 상태가 되어 이후 decode 는 즉시 'terminated' 로
+ * reject 한다(거짓 timeout 방지). 새 Worker 를 만드는 것은 호출자 몫이다.
+ * setTimeoutFn 이 던지면 아직 보내지 않은 요청만 던진 오류로 reject 하고 대기열·pending 에는 남기지 않는다.
+ * 이미 보낸 요청(앞 요청 응답 뒤 맨 앞이 된 것)의 타이머 설정이 던지면 거부하지 않고 시한 없이 처리 중으로 두며, 뒤 요청은 그 응답 뒤
+ * 처리 시작 기준으로 시한을 받는다. clearTimeoutFn 이 던져도 settle 이 먼저이고 정리는 계속된다.
+ * timeoutMs 는 2^31-1 이하여야 한다(넘으면 RangeError). 모든 reject 는 stats().errors 에 세어 requests = responses + errors + pending 이다.
  * (setTimeoutFn·clearTimeoutFn 주입으로 가짜 타이머 시험)
  * @param {{spawn: () => any, now?: () => number, timeoutMs?: number,
  *          setTimeoutFn?: Function, clearTimeoutFn?: Function}} opts
  */
 export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setTimeoutFn = globalThis.setTimeout, clearTimeoutFn = globalThis.clearTimeout }) {
-  if (timeoutMs !== undefined && (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-    throw new RangeError('timeoutMs 는 0 보다 큰 유한한 수여야 한다');
+  // setTimeout 은 2^31-1 ms 를 넘으면 1 ms 로 잘라 즉시 timeout 이 되므로 만들 때 거부한다.
+  if (timeoutMs !== undefined && (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS)) {
+    throw new RangeError('timeoutMs 는 0 보다 크고 2^31-1 이하인 유한한 수여야 한다');
   }
   const worker = spawn();
   const pending = new Map();
@@ -125,18 +130,16 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
       // 시한을 넘긴 Worker 는 그 요청을 아직 처리 중이므로 막힌 것으로 보고 뒤 요청까지 모두 거부한다.
       pending.delete(entry.id); st.errors++;
       entry.reject(new Error('timeout'));
+      // 막힌 Worker 는 죽이고 'terminated' 로 세운다: 살려 두면 새 요청이 처리 중 요청 뒤에 줄 서서 거짓 timeout 을 받는다.
+      terminated = true;
+      try { if (worker.terminate) worker.terminate(); } catch { /* 종료 실패는 무시 */ }
       failAll(new Error('timeout: worker blocked'));
     }, timeoutMs);
   }
-  // 맨 앞 요청에 타이머를 건다. setTimeoutFn 이 던지면 그 요청을 거부하고 다음 요청으로 넘어간다.
+  // 이미 보낸 맨 앞 요청의 타이머 설정이 던지면 그 요청은 시한 없이 그대로 처리 중으로 둔다(거부하지 않는다).
+  // Worker 가 아직 그 요청을 처리 중이므로 뒤 요청은 그 응답이 온 뒤 처리 시작 기준으로 시한을 받는다.
   function armHead() {
-    while (order.length > 0) {
-      const e = order[0];
-      try { arm(e); return; } catch (err) {
-        order.shift(); pending.delete(e.id); e.timer = undefined; st.errors++;
-        e.reject(err);
-      }
-    }
+    if (order.length > 0) { try { arm(order[0]); } catch { /* 이 요청만 시한 없음 */ } }
   }
   function release(entry) {
     const i = order.indexOf(entry);
@@ -165,11 +168,13 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
       }
     }
   }
+  // clearTimeoutFn 이 던져도 settle·정리가 끊기지 않게 한다.
+  function safeClear(timer) { try { clearTimeoutFn(timer); } catch { /* 해제 실패는 무시 */ } }
   function failAll(err) {
     const all = [...pending.values()];
     pending.clear();
     order.length = 0;
-    for (const p of all) { if (p.timer !== undefined) clearTimeoutFn(p.timer); p.reject(err); }
+    for (const p of all) { st.errors++; if (p.timer !== undefined) { safeClear(p.timer); p.timer = undefined; } p.reject(err); }
   }
   // message 없는 객체가 '[object Object]' 가 되지 않게 오류 값을 Error 로 바꾼다.
   function toError(e) {
@@ -187,11 +192,12 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
     const p = pending.get(m.id);
     if (!p) return; // 알 수 없는 응답은 버린다
     pending.delete(m.id);
-    if (p.timer !== undefined) clearTimeoutFn(p.timer);
+    const timer = p.timer;
     p.timer = undefined;
-    // 먼저 settle 하고 그 뒤에 다음 요청 타이머를 건다(타이머 쪽 오류가 이 요청을 미결로 두지 않게).
+    // 먼저 settle 하고 그 뒤에 타이머를 해제하고 다음 요청 타이머를 건다(타이머 쪽 오류가 이 요청을 미결로 두지 않게).
     if ('error' in m && m.error !== undefined) { st.errors++; p.reject(toError(m.error)); }
     else { st.responses++; p.resolve(m.result); }
+    if (timer !== undefined) safeClear(timer);
     release(p);
   });
   worker.onerror = (e) => measure(() => {
@@ -211,8 +217,13 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
         order.push(entry);
         pending.set(id, entry);
         st.requests++;
-        if (order.length === 1) armHead();
-        if (!pending.has(id)) return; // 타이머 설정이 던져 이미 reject 됨
+        if (order.length === 1) {
+          // 아직 보내지 않은 요청이므로 타이머 설정이 던지면 그 요청만 던진 오류로 거부한다.
+          try { arm(entry); } catch (err) {
+            order.length = 0; pending.delete(id); entry.timer = undefined; st.errors++;
+            reject(err); return;
+          }
+        }
         try {
           measure(() => {
             let payload = bytes;
@@ -226,12 +237,13 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
             worker.postMessage({ id, bytes: payload }, transfer);
           });
         } catch (e) {
-          pending.delete(id);
-          if (entry.timer !== undefined) clearTimeoutFn(entry.timer);
+          // postMessage 실패 시 대기 항목이 새지 않게 한다(먼저 settle)
+          const timer = entry.timer;
           entry.timer = undefined;
-          release(entry);
-          // postMessage 실패 시 대기 항목이 새지 않게 한다
+          if (pending.delete(id)) st.errors++;
           reject(e);
+          if (timer !== undefined) safeClear(timer);
+          release(entry);
         }
       });
     },
