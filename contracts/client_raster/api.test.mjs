@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CLIENT_RASTER_API } from './index.mjs';
 import { createRenderer } from '../../client/raster/index.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 test('CONTRACT: CLIENT_RASTER_API 메서드 목록이 계약 표 고정', (t) => {
   // 계약에 정의된 메서드 목록
@@ -168,19 +174,28 @@ test('IMPL: onContextLost 구독 해제가 호출을 끊는다', () => {
 });
 
 test('CONTRACT: createRenderer 옵션이 계약 또는 시험 전용 확장에만 속함', () => {
+  // 계약에 정의된 옵션 키
   const contractOptionKeys = new Set([
     'canvas', 'maxPieceBytes', 'maxResidentBytes', 'decode', 'onEvict',
     'shading', 'now', 'contextAttributes',
   ]);
+  // 시험 전용 확장
   const testOnlyExtensions = new Set(['testHooks']);
   const allowedKeys = new Set([...contractOptionKeys, ...testOnlyExtensions]);
 
-  const { renderer: _r, canvas } = makeRenderer();
+  // 구현 소스에서 추출한 옵션 키
+  const implPath = resolve(__dirname, '../../client/raster/index.mjs');
+  const implSource = readFileSync(implPath, 'utf8');
+  // options.<이름> 패턴으로 접근하는 모든 키를 추출 (구조분해 및 .연산자 포함)
+  const optionsPattern = /options\.([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
+  const implOptionKeysFound = new Set();
+  let match;
+  while ((match = optionsPattern.exec(implSource)) !== null) {
+    implOptionKeysFound.add(match[1]);
+  }
 
-  const implOptionKeys = new Set([
-    'canvas', 'maxPieceBytes', 'maxResidentBytes', 'decode', 'onEvict',
-    'shading', 'now', 'contextAttributes', 'testHooks',
-  ]);
+  // 구현이 실제로 읽는 옵션 키들
+  const implOptionKeys = implOptionKeysFound;
 
   for (const key of implOptionKeys) {
     assert.ok(allowedKeys.has(key), `구현 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함`);
