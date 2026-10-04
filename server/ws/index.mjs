@@ -7,7 +7,7 @@
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { FrameParser, encodeFrame, encodeClosePayload, OPCODES } from './frame/index.mjs';
+import { FrameParser, encodeFrame, encodeClosePayload, isValidCloseCode, MAX_CLOSE_REASON_BYTES, OPCODES } from './frame/index.mjs';
 
 export const ENV_HOST = 'SKYLENS_WS_HOST';
 export const ENV_PORT = 'SKYLENS_WS_PORT';
@@ -18,6 +18,8 @@ const CLOSE_WAIT_MS = 2000;
 export const DEFAULT_MAX_WRITE_BUFFER = 1 << 20;
 // close 프레임을 상한 안에서 보낼 수 있게 pong 판단에서 남겨 두는 여유(close 본문은 최대 125 B + 머리 2 B).
 const CLOSE_RESERVE = 256;
+// pong 한 개의 최대 크기(머리 2 B + 본문 125 B). maxWriteBuffer 하한이 이 값을 감당해야 첫 ping 에 1008 이 나지 않는다.
+const MAX_PONG_FRAME_BYTES = 127;
 // ping 속도 제한: 1 초 창마다 허용하는 ping 수. 넘으면 1008.
 export const DEFAULT_MAX_PINGS_PER_SECOND = 50;
 const PING_WINDOW_MS = 1000;
@@ -26,6 +28,18 @@ const PING_WINDOW_MS = 1000;
 export const DEFAULT_MAX_SEND_BUFFER = 32 << 20;
 // 처리 중(약속이 아직 끝나지 않은) onMessage 상한. 가득 차면 소켓 읽기를 멈추고(pause) 끝나는 대로 이어서 처리한다.
 export const DEFAULT_MAX_PENDING_MESSAGES = 64;
+
+// close() 인자 정리: 선로에 실을 수 없는 코드는 1005 면 1000, 그 밖에는 1011 로 바꾸고 사유는 123 B 로 UTF-8 경계에서 자른다.
+function sanitizeClose(code, reason) {
+  const c = isValidCloseCode(code) ? code : (code === 1005 ? 1000 : 1011);
+  let r = Buffer.from(typeof reason === 'string' ? reason : '', 'utf8');
+  if (r.length > MAX_CLOSE_REASON_BYTES) {
+    let n = MAX_CLOSE_REASON_BYTES;
+    while (n > 0 && (r[n] & 0xc0) === 0x80) n--; // 문자 중간이면 앞으로 물린다
+    r = r.subarray(0, n);
+  }
+  return { code: c, reason: r.toString('utf8') };
+}
 
 function checkInt(name, v, min) {
   if (!Number.isInteger(v) || v < min) throw new RangeError(`${name} 는 ${min} 이상의 정수여야 한다: ${String(v)}`);
@@ -98,9 +112,13 @@ function createConnection(socket, head, onError, limits) {
   const onPing = (data) => {
     if (closeSent) return;
     const now = limits.now();
-    const elapsed = now - pingWindowStart;
-    // elapsed < 0: 주입 시계가 되감겼다. 새 창으로 취급한다(오탐 1008 방지).
-    if (elapsed < 0 || elapsed >= PING_WINDOW_MS) { pingWindowStart = now; pingCount = 0; }
+    // 시계가 유한하지 않으면 창을 건드리지 않고 세기만 한다. 되감기면 창 시작만 지금으로 옮기고 횟수는 유지한다
+    // (되감기를 번갈아 해도 한도를 우회하지 못한다). 앞으로 간 시간이 한 창 이상일 때만 횟수를 지운다.
+    if (Number.isFinite(now)) {
+      const elapsed = now - pingWindowStart;
+      if (elapsed < 0) pingWindowStart = now;
+      else if (elapsed >= PING_WINDOW_MS) { pingWindowStart = now; pingCount = 0; }
+    }
     if (++pingCount > limits.maxPingsPerSecond) return violate(1008, 'ping rate');
     const frame = encodeFrame(OPCODES.PONG, data);
     if (pongBytes + frame.length > limits.maxWriteBuffer - CLOSE_RESERVE) return violate(1008, 'write buffer');
@@ -115,14 +133,18 @@ function createConnection(socket, head, onError, limits) {
     socket.destroy();
     try { closeCb(result); } catch (err) { report(err, 'onClose'); }
   };
+  const armTimer = () => {
+    if (!timer) { timer = setTimeout(finish, CLOSE_WAIT_MS); timer.unref?.(); }
+  };
   const sendClose = (code, reason = '') => {
     if (closeSent || socket.destroyed) return;
     closeSent = true;
-    socket.write(encodeFrame(OPCODES.CLOSE, encodeClosePayload(code, reason)));
+    try {
+      socket.write(encodeFrame(OPCODES.CLOSE, encodeClosePayload(code, reason)));
+    } catch (err) { report(err, 'close'); }
   };
   const startClose = (code, reason) => {
-    sendClose(code, reason);
-    if (!timer) { timer = setTimeout(finish, CLOSE_WAIT_MS); timer.unref?.(); }
+    try { sendClose(code, reason); } finally { armTimer(); }
   };
 
   // 이벤트를 쌓아 두고 drain 이 차례로 처리한다. 처리 중 메시지가 상한에 닿으면 읽기를 멈추고 남은 이벤트는 backlog 에 둔다
@@ -146,6 +168,8 @@ function createConnection(socket, head, onError, limits) {
           result = { code: ev.code, reason: ev.reason };
           if (!closeSent) sendClose(ev.code === 1005 ? 1000 : ev.code);
           // close 에코가 소켓으로 나간 뒤(end 의 완료 콜백)에 끝낸다. 바로 destroy 하면 에코가 유실될 수 있다.
+          // 상대가 읽지 않아 end 가 끝나지 않을 때를 위해 시한도 건다.
+          armTimer();
           socket.end(finish);
           return;
         } else if (ev.type === 'error') {
@@ -170,7 +194,13 @@ function createConnection(socket, head, onError, limits) {
   socket.on('data', feed);
   socket.on('error', () => {});
   // 상대가 close 프레임 없이 FIN 만 보내면 끝낸다(result 기본값 1006, 이미 정해진 코드는 유지).
-  socket.on('end', finish);
+  // 이미 닫는 중이면 아무것도 하지 않는다: 쌓인 데이터와 close 에코를 socket.end(finish) 가 내보낸 뒤 끝낸다.
+  socket.on('end', () => {
+    if (closeSent || failed || finished) return;
+    closeSent = true; // 더 쓰지 않는다
+    armTimer();
+    socket.end(finish);
+  });
   socket.on('close', finish);
   if (head && head.length) queueMicrotask(() => feed(head));
 
@@ -184,7 +214,11 @@ function createConnection(socket, head, onError, limits) {
     },
     onMessage(cb) { msgCb = cb; },
     onClose(cb) { closeCb = cb; },
-    close(code = 1000, reason = '') { result = { code, reason }; startClose(code, reason); },
+    close(code = 1000, reason = '') {
+      const c = sanitizeClose(code, reason);
+      result = c;
+      startClose(c.code, c.reason);
+    },
     bufferedAmount() { return socket.writableLength; },
   };
 }
@@ -195,7 +229,7 @@ function createConnection(socket, head, onError, limits) {
  */
 export function createWsServer({ host, port, onConnection, onError, maxWriteBuffer = DEFAULT_MAX_WRITE_BUFFER, maxPingsPerSecond = DEFAULT_MAX_PINGS_PER_SECOND, maxSendBuffer = DEFAULT_MAX_SEND_BUFFER, maxPendingMessages = DEFAULT_MAX_PENDING_MESSAGES, now = () => performance.now() }) {
   if (typeof onConnection !== 'function') throw new TypeError('onConnection 필요');
-  checkInt('maxWriteBuffer', maxWriteBuffer, CLOSE_RESERVE + 1);
+  checkInt('maxWriteBuffer', maxWriteBuffer, CLOSE_RESERVE + MAX_PONG_FRAME_BYTES + 1);
   checkInt('maxPingsPerSecond', maxPingsPerSecond, 1);
   checkInt('maxSendBuffer', maxSendBuffer, 1);
   checkInt('maxPendingMessages', maxPendingMessages, 1);
@@ -208,7 +242,8 @@ export function createWsServer({ host, port, onConnection, onError, maxWriteBuff
   const sockets = new Set();
   server.on('upgrade', (req, socket, head) => {
     // 거절 경로(400)에서도 상대의 RST 가 uncaughtException 이 되지 않게 가장 먼저 단다.
-    socket.on('error', (err) => { try { onError?.(err, 'handshake'); } catch { /* 보고 실패는 삼킨다 */ } });
+    const onHandshakeError = (err) => { try { onError?.(err, 'handshake'); } catch { /* 보고 실패는 삼킨다 */ } };
+    socket.on('error', onHandshakeError);
     const key = req.headers['sec-websocket-key'];
     const ok = req.method === 'GET'
       && String(req.headers.upgrade ?? '').toLowerCase() === 'websocket'
@@ -221,6 +256,9 @@ export function createWsServer({ host, port, onConnection, onError, maxWriteBuff
     }
     socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
       + `Sec-WebSocket-Accept: ${acceptKey(key)}\r\n\r\n`);
+    // 핸드셰이크 오류 처리기는 101 뒤에 떼고, 이후 오류는 연결 쪽 처리기가 삼킨다('handshake' 로 오보하지 않는다).
+    socket.removeListener('error', onHandshakeError);
+    socket.on('error', () => {});
     socket.setNoDelay(true);
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
