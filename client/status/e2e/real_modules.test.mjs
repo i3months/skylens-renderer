@@ -309,24 +309,40 @@ test('실제 모듈 조립: MISSING → 조각 도착 → requests() 에 받은 
   assert.deepEqual(req[0].items, index(1));
 });
 
-function timeMissing(modules, n) {
-  const view = createStatusView({ modules, countOf: countOfTestChunk, pieceIndex: (seg) => [pieceKeyOf(seg, 0, 0)] });
+// 벽시계 대신 호출 계수로 본다: 실제 levels 를 감싸 MISSING 처리 중 snapshots()/drawKeys()/renderPointCount() 전체 스캔이
+// 몇 번 불렸는지 센다. 구간당 O(1) 이면 스캔 0 회, 구간마다 전체 재스캔(O(n))이면 n 회 이상이 된다.
+async function countMissing(n) {
+  const modules = await loadDefaultModules();
+  const calls = { snapshots: 0, drawKeys: 0, renderPointCount: 0, expect: 0, pieceIndex: 0 };
+  const levels = {
+    createStatusLevels: () => {
+      const l = modules.levels.createStatusLevels();
+      return {
+        ...l,
+        snapshots: () => { calls.snapshots += 1; return l.snapshots(); },
+        drawKeys: () => { calls.drawKeys += 1; return l.drawKeys(); },
+        renderPointCount: () => { calls.renderPointCount += 1; return l.renderPointCount(); },
+        expect: (id) => { calls.expect += 1; return l.expect(id); },
+      };
+    },
+  };
+  const pieceIndex = (seg) => { calls.pieceIndex += 1; return [pieceKeyOf(seg, 0, 0)]; };
+  const view = createStatusView({ modules: { ...modules, levels }, countOf: countOfTestChunk, pieceIndex });
   feed(view, createMockRenderServer().welcome(false));
-  const msgs = [];
-  for (let s = 0; s < n; s += 1) msgs.push({ type: 'MISSING', segmentId: s });
-  const t0 = performance.now();
-  for (const m of msgs) view.handle(m);
-  const ms = performance.now() - t0;
+  const base = { ...calls };
+  for (let s = 0; s < n; s += 1) view.handle({ type: 'MISSING', segmentId: s });
+  const used = Object.fromEntries(Object.keys(calls).map((k) => [k, calls[k] - base[k]]));
   assert.equal(view.requests().reduce((a, r) => a + r.items.length, 0), n);
-  return ms;
+  return used;
 }
 
-test('실제 모듈 조립: 4000 구간 MISSING 4000 건이 100 ms 안(구간당 O(1) 도착 질의, F-296 ②)', async () => {
-  const modules = await loadDefaultModules();
-  timeMissing(modules, 1000); // 데우기
-  const t1000 = Math.min(timeMissing(modules, 1000), timeMissing(modules, 1000));
-  const t4000 = Math.min(timeMissing(modules, 4000), timeMissing(modules, 4000));
-  assert.ok(t4000 < 100, `4000 건 ${t4000.toFixed(1)} ms`);
-  // 선형이면 ≈ 4, 구간마다 전체 복사(제곱)면 ≈ 16. 잡음을 감안해 8 미만
-  assert.ok(t4000 / Math.max(t1000, 1) < 8, `시간비 ${(t4000 / t1000).toFixed(2)} (1000 건 ${t1000.toFixed(1)} ms, 4000 건 ${t4000.toFixed(1)} ms)`);
+test('실제 모듈 조립: MISSING n 건은 구간당 O(1) 도착 질의 — 전체 스캔 0 회, 호출 수는 n 에 비례(F-296 ②, 계수 단언)', async () => {
+  for (const n of [1000, 4000]) {
+    const used = await countMissing(n);
+    assert.equal(used.snapshots, 0, `n=${n}: MISSING 처리 중 levels.snapshots() 전체 스캔 ${used.snapshots} 회`);
+    assert.equal(used.drawKeys, 0, `n=${n}: levels.drawKeys() ${used.drawKeys} 회`);
+    assert.equal(used.renderPointCount, 0, `n=${n}: levels.renderPointCount() ${used.renderPointCount} 회`);
+    assert.equal(used.expect, n, `n=${n}: levels.expect 는 구간당 한 번`);
+    assert.equal(used.pieceIndex, n, `n=${n}: pieceIndex 는 구간당 한 번`);
+  }
 });
