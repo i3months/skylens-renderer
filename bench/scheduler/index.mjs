@@ -1,6 +1,9 @@
 // Scheduler absolute-time bench (F-208). Not part of `npm test`: absolute times depend on the machine.
 // Usage: node bench/scheduler/index.mjs
 // Prints the best-of-N CPU time (user+system) against the targets and reports met/missed as measured.
+// The targets (0.3 s for 100k ascending enqueue, 50 ms for 20k one-group enqueue) are report-only; the test suite
+// asserts deterministic counts observed from the test side instead (server/scheduler/scheduler.test.mjs, F-221).
+import os from 'node:os';
 import { createScheduler } from '../../server/scheduler/index.mjs';
 
 const cpuNow = () => {
@@ -23,6 +26,21 @@ function oneGroup(n) {
   return cpuNow() - t0;
 }
 
+// F-213: per-replacement cost must not grow with maxSentGroups (report-only; was a timing assertion in the tests).
+function replacements(cap, n) {
+  const s = createScheduler({ budgetBytesPerTick: 1e9, maxSentGroups: cap });
+  const t0 = cpuNow();
+  for (let i = 0; i < n; i++) {
+    s.enqueue({ key: perfKey(i), bytes: 1, priority: 0, level: 0 });
+    s.nextBatch();
+  }
+  return cpuNow() - t0;
+}
+
+const cpus = os.cpus();
+const load = os.loadavg();
+console.log(`node ${process.version}, ${os.platform()}/${os.arch()}, ${cpus.length} CPU cores (${cpus[0]?.model ?? 'unknown'}), load average ${load.map((x) => x.toFixed(2)).join(' / ')} (1/5/15 min)`);
+
 const cases = [
   { name: '100k ascending enqueue', targetMs: 300, runs: 5, fn: () => ascending(100000) },
   { name: '20k one-group enqueue', targetMs: 50, runs: 5, fn: () => oneGroup(20000) },
@@ -35,4 +53,9 @@ for (const c of cases) {
   if (!met) missed++;
   console.log(`${c.name}: ${ms.toFixed(1)} ms CPU (best of ${c.runs}), target ${c.targetMs} ms -> ${met ? 'MET' : 'MISSED'}`);
 }
+const N = 250000;
+const small = best(3, () => replacements(1000, N));
+const big = best(3, () => replacements(65536, N));
+console.log(`${N} replacements: maxSentGroups 1000 ${(small / N * 1000).toFixed(2)} us/op, 65536 ${(big / N * 1000).toFixed(2)} us/op (x${(big / small).toFixed(2)}, info only)`);
 console.log(missed === 0 ? 'all targets met' : `${missed} target(s) missed`);
+console.log(`load average after run ${os.loadavg().map((x) => x.toFixed(2)).join(' / ')}`);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createScheduler } from './index.mjs';
+import { createScheduler, before } from './index.mjs';
 
 const K = (segmentId, level, lod = 0, chunkIndex = 0, tileX = 0, tileY = 0) => ({ segmentId, level, lod, chunkIndex, tileX, tileY });
 const I = (key, bytes, priority) => ({ key, bytes, priority, level: key.level });
@@ -288,111 +288,211 @@ test('F-220 ③: chunkIndex 범위 밖(65536, -1)은 enqueue 가 거부한다, �
   assert.throws(() => s.cancel(K(1, 0, 0, 65536)), RangeError);
 });
 
-// ---- F-208·F-213·F-217 ② 성능 ----
-// 목표: 100000 오름차순 priority enqueue 0.3 s 이하, 한 묶음 20000 개 enqueue 50 ms 이하.
-// 1차 판정은 결정적 연산 수(힙 비교 + 힙 밖 순회 칸 수)가 n log2 n 의 상수배 이하인 것, 2차는 같은 프로세스의 선형 기준선과의 비 이다.
-// 절대 시간 목표는 npm test 가 아니라 bench/scheduler/index.mjs 에서 CPU 시간(user+system)으로 잰다.
-const cpuNow = () => {
-  const u = process.cpuUsage();
-  return (u.user + u.system) / 1000;
-};
+// ---- F-208·F-213·F-217 ② 성능(F-221: 시험 쪽 관측) ----
+// 판정은 시간이 아니라 시험 쪽에서 센 결정적 수다. 구현이 스스로 세는 계수는 쓰지 않는다.
+//   - compares: createScheduler({ compare }) 로 넣은 비교 함수(규칙 1 의 before 를 감싼 것)가 불린 횟수. 시험 쪽 클로저가 센다.
+//   - moved: 측정 구간 동안 Array.prototype 의 splice/shift/unshift/copyWithin 이 자리를 옮긴 원소 수(앞쪽 삽입·삭제 비용).
+//   - touched: moved + 그 밖의 배열 메서드(push/slice/filter/map/forEach/indexOf/sort 등)가 다룬 원소 수
+//              + 배열·Map·Set 반복자(for-of, 펼침, keys/values/entries)와 forEach 가 내준 원소 수.
+// 측정 구간이 끝나면 패치한 프로토타입은 finally 에서 원래대로 되돌린다. 절대 시간은 bench/scheduler/index.mjs 가 보고만 한다.
+// 상한을 넘는 순간 그 자리에서 실패하므로(시간 가드 없이) O(n^2) 변이도 오래 돌지 않는다.
 const perfKey = (i, extra = {}) => ({ segmentId: i, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0, ...extra });
-// 변이·회귀로 느려져도 파일이 멈추지 않게, 반복 안에서 경과가 한도를 넘으면 바로 던진다(F-217 ①과 같은 방식).
-const GUARD_MS = 4000;
-function guard(t0, i) {
-  if ((i & 1023) === 0 && cpuNow() - t0 > GUARD_MS) throw new Error(`enqueue 가 ${GUARD_MS} ms 를 넘겨 중단(i=${i})`);
-}
-const best = (n, fn) => Math.min(...Array.from({ length: n }, fn));
+const log2 = Math.log2;
 
-function ascending(n) {
-  const s = createScheduler({ budgetBytesPerTick: 1e9, maxPending: Math.max(n, 100000) });
-  const t0 = cpuNow();
-  for (let i = 0; i < n; i++) {
-    guard(t0, i);
-    if (!s.enqueue({ key: perfKey(i), bytes: 1, priority: i, level: 0 })) throw new Error('rejected');
-  }
-  return [cpuNow() - t0, s];
-}
-function oneGroup(n) {
-  const s = createScheduler({ budgetBytesPerTick: 1e9 });
-  const t0 = cpuNow();
-  for (let i = 0; i < n; i++) {
-    guard(t0, i);
-    if (!s.enqueue({ key: perfKey(1, { chunkIndex: i }), bytes: 1, priority: i % 7, level: 0 })) throw new Error('rejected');
-  }
-  return [cpuNow() - t0, s];
-}
-const ops = (s) => { const c = s.counters(); return c.compares + c.steps; };
-const nlogn = (n) => n * Math.log2(n);
-
-test('F-208 결정적: 100k 오름차순 enqueue 연산 수 <= 2 n log2 n, 2배 크기에서 증가율 <= 2.3', () => {
-  const [, s1] = ascending(50000);
-  const [, s2] = ascending(100000);
-  console.log(`# ops asc 50k=${ops(s1)} 100k=${ops(s2)} (n log2 n = ${nlogn(100000) | 0})`);
-  assert.ok(ops(s2) <= 2 * nlogn(100000), `ops ${ops(s2)}`);
-  assert.ok(ops(s2) / ops(s1) <= 2.3, `ratio ${ops(s2) / ops(s1)}`);
-});
-
-test('F-208 결정적: 한 묶음 20000 개 enqueue 연산 수 <= 2 n log2 n, 2배 크기에서 증가율 <= 2.3', () => {
-  const [, s1] = oneGroup(10000);
-  const [, s2] = oneGroup(20000);
-  console.log(`# ops group 10k=${ops(s1)} 20k=${ops(s2)}`);
-  assert.ok(ops(s2) <= 2 * nlogn(20000), `ops ${ops(s2)}`);
-  assert.ok(ops(s2) / ops(s1) <= 2.3, `ratio ${ops(s2) / ops(s1)}`);
-});
-
-// 보조 시험이다. 판정은 위의 결정적 연산 수 시험이 한다. 아래 상한(12 * base + 20)은 위로 열린 상대 조건이라 판정 근거가 아니라 참고용이다.
-test('F-208 선형 기준선(보조): 같은 프로세스의 Map 100k 삽입(키 문자열·객체 포함)의 k 배 이내이고 n 4배에서 시간비 <= 8', () => {
-  const baseline = (n) => best(3, () => {
-    const m = new Map();
-    const t0 = cpuNow();
-    for (let i = 0; i < n; i++) { const k = `${i}:0:0:0:0:0`; m.set(k, { id: k, a: i, b: 1, c: 0, d: i, e: null }); m.get(`${i}:0:0:0`); }
-    return cpuNow() - t0;
+function observe() {
+  const c = { moved: 0, touched: 0 };
+  const restore = [];
+  const patch = (proto, name, wrap) => {
+    const desc = Object.getOwnPropertyDescriptor(proto, name);
+    restore.push(() => Object.defineProperty(proto, name, desc));
+    Object.defineProperty(proto, name, { ...desc, value: wrap(desc.value) });
+  };
+  const countIter = (it) => ({
+    next() { const r = it.next(); if (!r.done) c.touched++; return r; },
+    return(v) { return typeof it.return === 'function' ? it.return(v) : { done: true, value: v }; },
+    [Symbol.iterator]() { return this; },
   });
-  const base = baseline(100000);
-  const t100 = best(3, () => ascending(100000)[0]);
-  const t25 = best(3, () => ascending(25000)[0]);
-  console.log(`# asc 100k ${t100.toFixed(1)} ms, baseline ${base.toFixed(1)} ms (x${(t100 / base).toFixed(1)}), 25k ${t25.toFixed(1)} ms (x${(t100 / t25).toFixed(1)})`);
-  assert.ok(t100 <= 12 * base + 20, `asc ${t100} vs baseline ${base}`);
-  assert.ok(t100 / t25 <= 8, `growth ${t100 / t25}`);
+  try {
+    const A = Array.prototype;
+    const idx = (v, len) => { const x = Math.trunc(Number(v) || 0); return x < 0 ? Math.max(len + x, 0) : Math.min(x, len); };
+    patch(A, 'splice', (f) => function (start, del, ...ins) {
+      const len = this.length;
+      const st = idx(start, len);
+      const d = arguments.length < 2 ? len - st : Math.min(Math.max(Math.trunc(Number(del) || 0), 0), len - st);
+      const n = (len - st - d) + d + ins.length; // 뒤쪽이 밀리거나 당겨지는 칸 + 지운 칸 + 넣은 칸
+      c.moved += n; c.touched += n;
+      return f.apply(this, arguments);
+    });
+    patch(A, 'shift', (f) => function () { const n = this.length; c.moved += n; c.touched += n; return f.apply(this, arguments); });
+    patch(A, 'unshift', (f) => function () { const n = this.length + arguments.length; c.moved += n; c.touched += n; return f.apply(this, arguments); });
+    patch(A, 'copyWithin', (f) => function () { const n = this.length; c.moved += n; c.touched += n; return f.apply(this, arguments); });
+    patch(A, 'push', (f) => function () { c.touched += arguments.length; return f.apply(this, arguments); });
+    patch(A, 'slice', (f) => function () { const r = f.apply(this, arguments); c.touched += r.length; return r; });
+    patch(A, 'concat', (f) => function () { const r = f.apply(this, arguments); c.touched += r.length; return r; });
+    for (const name of ['filter', 'map', 'forEach', 'some', 'every', 'find', 'findIndex', 'findLast', 'findLastIndex', 'indexOf', 'lastIndexOf', 'includes', 'reduce', 'reduceRight', 'sort', 'reverse', 'fill', 'join', 'flat', 'flatMap']) {
+      patch(A, name, (f) => function () { c.touched += this.length; return f.apply(this, arguments); });
+    }
+    for (const name of ['values', 'keys', 'entries']) patch(A, name, (f) => function () { return countIter(f.apply(this, arguments)); });
+    patch(A, Symbol.iterator, (f) => function () { return countIter(f.apply(this, arguments)); });
+    for (const P of [Map.prototype, Set.prototype]) {
+      for (const name of ['values', 'keys', 'entries']) if (Object.hasOwn(P, name)) patch(P, name, (f) => function () { return countIter(f.apply(this, arguments)); });
+      patch(P, Symbol.iterator, (f) => function () { return countIter(f.apply(this, arguments)); });
+      patch(P, 'forEach', (f) => function (cb, thisArg) { return f.call(this, function (...a) { c.touched++; return cb.apply(thisArg, a); }); });
+    }
+  } catch (e) {
+    for (const r of restore.reverse()) r();
+    throw e;
+  }
+  c.restore = () => { for (const r of restore.reverse()) r(); restore.length = 0; };
+  return c;
+}
+
+// 처음 몇 연산의 고정 비용(첫 호출 준비 등)을 위한 여유. 상한은 누계 <= ops * 연산당 상한 + SLACK 이다.
+const SLACK = 1024;
+// 측정 구간: 시험 쪽 비교 계수기를 넣은 스케줄러를 만들고 body(s, check) 를 관측 아래에서 돌린다.
+// check(i, perOp) 는 지금까지의 누계가 (i+1) * perOp 를 넘으면 바로 실패한다(상한 = 연산당 상수 * log2 n).
+function measured(opts, body, bounds) {
+  const cmp = { n: 0 };
+  const s = createScheduler({ ...opts, compare: (a, b) => { cmp.n++; return before(a, b); } });
+  const c = observe();
+  let out;
+  try {
+    out = body(s, (ops) => {
+      if (c.moved > ops * bounds.moved + SLACK || c.touched > ops * bounds.touched + SLACK || cmp.n > ops * bounds.compares + SLACK) {
+        const snap = { moved: c.moved, touched: c.touched, compares: cmp.n };
+        c.restore();
+        assert.fail(`ops=${ops}: moved ${snap.moved} (<= ${ops} * ${bounds.moved} + ${SLACK}), touched ${snap.touched} (<= ${ops} * ${bounds.touched} + ${SLACK}), compares ${snap.compares} (<= ${ops} * ${bounds.compares.toFixed(1)} + ${SLACK})`);
+      }
+    });
+  } finally {
+    c.restore();
+  }
+  return { s, out, moved: c.moved, touched: c.touched, compares: cmp.n };
+}
+
+// 연산당 상한. 힙은 연산당 비교 <= 2 log2 n(siftDown 은 층당 2번), 옮김은 0 이어야 한다(앞쪽 삽입·삭제 없음).
+// touched 는 keyId 의 KEY_FIELDS 6 칸 + push 몇 칸 + 일괄 정리(amortized) 같은 상수다. log2 n 의 상수배로 둔다.
+const boundsFor = (n) => ({ compares: 2 * log2(n), moved: 2, touched: 2 * log2(n) });
+const ASC_N = 100000;
+const GROUP_N = 20000;
+
+function ascendingObserved(n) {
+  return measured({ budgetBytesPerTick: 1e9, maxPending: Math.max(n, 100000) }, (s, check) => {
+    for (let i = 0; i < n; i++) {
+      if (!s.enqueue({ key: perfKey(i), bytes: 1, priority: i, level: 0 })) throw new Error('rejected');
+      check(i + 1);
+    }
+  }, boundsFor(n));
+}
+function oneGroupObserved(n) {
+  return measured({ budgetBytesPerTick: 1e9 }, (s, check) => {
+    for (let i = 0; i < n; i++) {
+      if (!s.enqueue({ key: perfKey(1, { chunkIndex: i }), bytes: 1, priority: i % 7, level: 0 })) throw new Error('rejected');
+      check(i + 1);
+    }
+  }, boundsFor(n));
+}
+
+test('F-221 시험 쪽 관측: 100k 오름차순 enqueue 에서 splice/shift/unshift/copyWithin 로 옮긴 원소 수 연산당 <= 2, 배열·Map·Set 이 다룬 원소 수와 주입 비교 횟수 연산당 <= 2 log2 n', () => {
+  const r = ascendingObserved(ASC_N);
+  console.log(`# asc ${ASC_N}: moved=${r.moved} touched=${r.touched} (${(r.touched / ASC_N).toFixed(2)}/op) compares=${r.compares} (${(r.compares / ASC_N).toFixed(2)}/op, log2 n=${log2(ASC_N).toFixed(1)})`);
+  const b = boundsFor(ASC_N);
+  assert.ok(r.moved <= b.moved * ASC_N, `moved ${r.moved}`);
+  assert.ok(r.touched <= b.touched * ASC_N, `touched ${r.touched}`);
+  assert.ok(r.compares <= b.compares * ASC_N, `compares ${r.compares}`);
+  assert.equal(r.s.pending().length, ASC_N);
 });
 
-// 절대 시간 목표(0.3 s / 50 ms)는 기계 속도에 좌우되므로 npm test 의 문턱으로 두지 않는다. bench/scheduler/index.mjs 가 측정값을 목표와 견주어 달성/미달을 그대로 보고한다.
-// 여기서는 대량 enqueue 뒤 nextBatch 가 모두 올바른 순서로 나오는지만 확인한다.
-test('F-208 정확성: 100k 오름차순 enqueue 후 nextBatch 는 100000 개를 priority 내림차순으로 비운다', () => {
-  const [, s] = ascending(100000);
-  const batch = s.nextBatch();
-  assert.equal(batch.length, 100000);
-  assert.equal(batch[0].priority, 99999);
-  assert.equal(batch[99999].priority, 0);
+test('F-221 시험 쪽 관측: 100k 오름차순 enqueue 뒤 nextBatch 한 번으로 비우기 - enqueue+pop 2n 연산에 옮긴 원소 수 연산당 <= 2, 다룬 원소·주입 비교 연산당 <= 2 log2 n, 순서는 priority 내림차순', () => {
+  const b = boundsFor(ASC_N);
+  const r = measured({ budgetBytesPerTick: 1e9, maxPending: ASC_N }, (s, check) => {
+    for (let i = 0; i < ASC_N; i++) {
+      if (!s.enqueue({ key: perfKey(i), bytes: 1, priority: i, level: 0 })) throw new Error('rejected');
+      check(i + 1);
+    }
+    const batch = s.nextBatch();
+    check(2 * ASC_N);
+    return batch;
+  }, b);
+  console.log(`# asc+drain ${ASC_N}: moved=${r.moved} touched=${r.touched} compares=${r.compares} (${(r.compares / (2 * ASC_N)).toFixed(2)}/op)`);
+  const batch = r.out;
+  assert.equal(batch.length, ASC_N);
+  assert.equal(batch[0].priority, ASC_N - 1);
+  assert.equal(batch[ASC_N - 1].priority, 0);
   for (let i = 1; i < batch.length; i++) assert.ok(batch[i - 1].priority > batch[i].priority);
-  assert.equal(oneGroup(20000)[1].pending().length, 20000);
+});
+
+test('F-221 시험 쪽 관측: 한 묶음 20000 개 enqueue 와 nextBatch 비우기 - 옮긴 원소 수 연산당 <= 2, 배열·Map·Set 이 다룬 원소 수와 주입 비교 횟수 연산당 <= 2 log2 n', () => {
+  const b = boundsFor(GROUP_N);
+  const r = measured({ budgetBytesPerTick: 1e9 }, (s, check) => {
+    for (let i = 0; i < GROUP_N; i++) {
+      if (!s.enqueue({ key: perfKey(1, { chunkIndex: i }), bytes: 1, priority: i % 7, level: 0 })) throw new Error('rejected');
+      check(i + 1);
+    }
+    const batch = s.nextBatch();
+    check(2 * GROUP_N);
+    return batch;
+  }, b);
+  console.log(`# group ${GROUP_N}: moved=${r.moved} touched=${r.touched} (${(r.touched / GROUP_N).toFixed(2)}/enqueue) compares=${r.compares} (${(r.compares / GROUP_N).toFixed(2)}/enqueue)`);
+  assert.equal(r.out.length, GROUP_N);
+  // 순서: priority 내림, 같은 priority 안에서는 들어온 순서(chunkIndex 오름)
+  for (let i = 1; i < r.out.length; i++) {
+    const a = r.out[i - 1], c = r.out[i];
+    assert.ok(a.priority > c.priority || (a.priority === c.priority && a.key.chunkIndex < c.key.chunkIndex), `order at ${i}`);
+  }
+});
+
+test('F-221 주입 비교가 순서를 정한다: compare 를 seq 내림(LIFO)으로 주면 nextBatch·pending 이 그 순서를 따른다(비교 계수가 우회되지 않음)', () => {
+  let calls = 0;
+  const s = createScheduler({ budgetBytesPerTick: 1e9, compare: (a, b) => { calls++; return b.seq - a.seq; } });
+  for (let i = 0; i < 64; i++) s.enqueue(I(K(i, 0), 1, i % 5));
+  const expected = Array.from({ length: 64 }, (_, i) => 63 - i);
+  assert.deepEqual(s.pending().map((p) => p.key.segmentId), expected);
+  assert.deepEqual(s.nextBatch().map((p) => p.key.segmentId), expected);
+  assert.ok(calls > 0);
+  assert.throws(() => createScheduler({ budgetBytesPerTick: 1, compare: 1 }), TypeError);
+});
+
+test('F-221 관측기 자체 검사: splice 앞쪽 삽입·shift 는 옮긴 칸으로, Map 반복은 다룬 칸으로 세고 끝나면 프로토타입을 되돌린다', () => {
+  const origSplice = Array.prototype.splice;
+  const origMapIter = Map.prototype[Symbol.iterator];
+  const c = observe();
+  try {
+    const a = [1, 2, 3, 4];
+    a.splice(0, 0, 0); // 4 칸 밀림 + 1 칸 넣음
+    a.shift(); // 5 칸
+    const m = new Map([[1, 1], [2, 2], [3, 3]]);
+    for (const _ of m) void _; // 3 칸
+  } finally {
+    c.restore();
+  }
+  assert.equal(c.moved, 10);
+  assert.ok(c.touched >= 13);
+  assert.equal(Array.prototype.splice, origSplice);
+  assert.equal(Map.prototype[Symbol.iterator], origMapIter);
+});
+
+test('F-208 2배 크기 증가율(시험 쪽 관측): 다룬 원소 수와 주입 비교 횟수가 n 2배에서 2.3배 이하', () => {
+  const a1 = ascendingObserved(ASC_N / 2), a2 = ascendingObserved(ASC_N);
+  const g1 = oneGroupObserved(GROUP_N / 2), g2 = oneGroupObserved(GROUP_N);
+  const w = (r) => r.touched + r.compares;
+  console.log(`# growth asc ${(w(a2) / w(a1)).toFixed(3)} group ${(w(g2) / w(g1)).toFixed(3)}`);
+  assert.ok(w(a2) / w(a1) <= 2.3, `asc ratio ${w(a2) / w(a1)}`);
+  assert.ok(w(g2) / w(g1) <= 2.3, `group ratio ${w(g2) / w(g1)}`);
 });
 
 // F-213: 상한에 닿은 뒤 교체가 계속돼도 한 번당 비용이 상한 크기에 비례하지 않아야 한다.
-function replacements(cap, n) {
-  const s = createScheduler({ budgetBytesPerTick: 1e9, maxSentGroups: cap });
-  const t0 = cpuNow();
-  for (let i = 0; i < n; i++) {
-    guard(t0, i);
-    s.enqueue({ key: perfKey(i), bytes: 1, priority: 0, level: 0 });
-    s.nextBatch();
-  }
-  return [cpuNow() - t0, s];
-}
-
-test('F-213: maxSentGroups 65536 에서 25만 회 교체의 회당 시간이 상한 1000 일 때의 2배 이내(같은 프로세스)', () => {
+test('F-213 시험 쪽 관측: maxSentGroups 65536 에서 교체 25만 회의 옮긴 원소 수 0·다룬 원소 수 회당 <= 24(상수), 주입 비교 회당 <= 4', () => {
   const N = 250000;
-  const small = best(3, () => replacements(1000, N)[0]);
-  const big = best(3, () => replacements(65536, N)[0]);
-  console.log(`# replacements: cap1000 ${(small / N * 1000).toFixed(2)} us/op, cap65536 ${(big / N * 1000).toFixed(2)} us/op (x${(big / small).toFixed(2)})`);
-  assert.ok(big <= 2 * small, `cap65536 ${big} ms vs cap1000 ${small} ms`);
-});
-
-test('F-213 결정적: 교체 25만 회의 힙 밖 순회 칸 수가 회당 상수(<= 4)이고 상한 이후 기억 묶음 수는 상한', () => {
-  const [, s] = replacements(65536, 250000);
-  assert.ok(s.counters().steps <= 4 * 250000, `steps ${s.counters().steps}`);
-  // 기억 묶음 수가 상한을 넘지 않는다: 가장 오래된 65536 개 이전 묶음은 낮은 level 이 다시 들어올 수 있다
+  const r = measured({ budgetBytesPerTick: 1e9, maxSentGroups: 65536 }, (s, check) => {
+    for (let i = 0; i < N; i++) {
+      s.enqueue({ key: perfKey(i), bytes: 1, priority: 0, level: 0 });
+      s.nextBatch();
+      check(i + 1);
+    }
+  }, { moved: 0, touched: 24, compares: 4 });
+  console.log(`# replacements ${N}: moved=${r.moved} touched=${r.touched} (${(r.touched / N).toFixed(2)}/op) compares=${r.compares}`);
+  // 기억 묶음 수가 상한을 넘지 않는다: 가장 오래된 묶음부터 버려져 낮은 level 이 다시 들어올 수 있다
   const t = createScheduler({ budgetBytesPerTick: 1e9, maxSentGroups: 4 });
   for (let i = 0; i < 10; i++) { t.enqueue(I(K(i, 3), 1, 0)); t.nextBatch(); }
   const accepted = [];
