@@ -95,6 +95,8 @@ class Queue {
     return x;
   }
   *[Symbol.iterator]() { for (let i = this.h; i < this.a.length; i++) yield this.a[i]; }
+  // keep(x) 가 참인 항목만 남기고 순서를 유지한 채 다시 채운다.
+  compact(keep) { this.a = this.a.slice(this.h).filter(keep); this.h = 0; }
 }
 
 export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntriesPerSession, maxBytesPerSession } = {}) {
@@ -134,7 +136,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     // groupRefs: 묶음 -> sent 에 남은 그 묶음 항목 수(0 이 되면 groupMax 도 지운다).
     const s = {
       last: t, nextSeq: PIECE_SEQ_MIN, ackedUpTo: 0, sent: new Map(), groupMax: new Map(), groupRefs: new Map(),
-      pendingQ: new Queue(), ackedQ: new Map(), retained: 0,
+      pendingQ: new Queue(), ackedQ: new Map(), retained: 0, deadQ: 0,
     };
     sessions.set(id, s);
     return id;
@@ -143,7 +145,8 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   function release(s) {
     while (s.pendingQ.length > 0 && s.pendingQ.peek().seq <= s.ackedUpTo) {
       const e = s.pendingQ.shift();
-      if (e.dead) continue;
+      e.queued = false;
+      if (e.dead) { s.deadQ--; continue; }
       s.retained -= e.size;
       e.bytes = null;
       e.size = 0;
@@ -155,6 +158,15 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   // ackedQ 에서는 O(1) 로 바로 지운다.
   function drop(s, e) {
     e.dead = true;
+    if (e.queued) {
+      s.deadQ++;
+      // 죽은 항목이 살아 있는 항목보다 많아지면 큐를 압축한다(큐 길이 <= 2 × 살아 있는 항목 <= 2 × maxEntries, 상각 O(1)).
+      if (s.deadQ * 2 > s.pendingQ.length) {
+        s.pendingQ.compact((x) => !x.dead);
+        s.deadQ = 0;
+        e.queued = false;
+      }
+    }
     if (s.ackedQ.get(e.ks) === e) s.ackedQ.delete(e.ks);
     s.retained -= e.size;
     e.bytes = null;
@@ -229,7 +241,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       const g = overtakeGroup(key);
       if (old) drop(s, old); // 같은 key 대체: 묶음 항목 수는 그대로
       else s.groupRefs.set(g, (s.groupRefs.get(g) ?? 0) + 1);
-      const e = { seq, ks, key: { ...key }, bytes: bytes ?? null, size, pending: false, dead: false };
+      const e = { seq, ks, key: { ...key }, bytes: bytes ?? null, size, pending: false, dead: false, queued: true };
       s.sent.set(ks, e);
       s.pendingQ.push(e);
       s.retained += size;
@@ -285,6 +297,11 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     ackedQueueLength(sessionId) {
       const s = live(sessionId);
       return s ? s.ackedQ.size : -1;
+    },
+    /** 진단용(테스트): 세션의 pendingQ 물리 길이(죽은 항목 포함). 없는 세션은 -1. */
+    pendingQueueLength(sessionId) {
+      const s = live(sessionId);
+      return s ? s.pendingQ.length : -1;
     },
     retainedBytes() {
       let sum = 0;

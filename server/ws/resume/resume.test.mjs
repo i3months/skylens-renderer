@@ -505,3 +505,112 @@ test('F-209 ⑦: ack 후 같은 key 재기록 100만 번 뒤에도 ackedQ <= max
   assert.equal(st.recordSent(sessionId, key(10), seq++, 1), true);
   assert.equal(st.stats(sessionId).entries, 4);
 });
+
+// ---- F-212 ①: 음성 테스트(변이를 잡는다) ----
+test('F-212: 모르는·닫힌 세션은 shouldSend/recordSent/ack/unacked 가 모두 거부', () => {
+  const { st } = mk();
+  assert.equal(st.shouldSend(4242, key(1)), false); // 모르는 세션: true 를 돌려주면 안 된다
+  assert.equal(st.recordSent(4242, key(1), 1, 1), false);
+  assert.deepEqual(st.unacked(4242), []);
+  assert.equal(st.stats(4242), null);
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  assert.equal(st.shouldSend(sessionId, key(1)), true);
+  st.close(sessionId);
+  assert.equal(st.shouldSend(sessionId, key(1)), false);
+  assert.equal(st.recordSent(sessionId, key(1), 1, 1), false);
+  assert.equal(st.stats(sessionId), null);
+  assert.equal(st.size(), 0);
+});
+
+test('F-212: TTL 경계 — 경과 ttl-1 은 살아 있고 ttl 은 만료(shouldSend·recordSent·ack·stats 모두)', () => {
+  const ttl = 1000;
+  const probes = {
+    shouldSend: (st, id) => st.shouldSend(id, key(9)),
+    recordSent: (st, id) => st.recordSent(id, key(9), 2, 1),
+    stats: (st, id) => st.stats(id) !== null,
+    unacked: (st, id) => st.unacked(id).length === 1,
+  };
+  for (const [name, probe] of Object.entries(probes)) {
+    for (const [dt, alive] of [[ttl - 1, true], [ttl, false], [ttl + 1, false]]) {
+      const { c, st } = mk({ ttlMs: ttl });
+      const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+      st.recordSent(sessionId, key(1), 1, 1);
+      c.t += dt;
+      assert.equal(probe(st, sessionId), alive, `${name} dt=${dt}`);
+    }
+  }
+  // 만료된 세션은 ack 해도 되살아나지 않는다
+  const { c, st } = mk({ ttlMs: ttl });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  c.t += ttl;
+  st.ack(sessionId, 0);
+  assert.equal(st.stats(sessionId), null);
+  assert.equal(st.open({ sessionId, lastPieceSeq: 0 }).resumed, false);
+});
+
+test('F-212: TTL 갱신은 open 뿐 아니라 recordSent(새 기록·멱등 재기록)·ack 로도 된다', () => {
+  const ttl = 1000;
+  const steps = {
+    recordNew: (st, id, n) => st.recordSent(id, key(100 + n), 2 + n, 1),
+    recordIdempotent: (st, id) => st.recordSent(id, key(1), 1, 1),
+    ack: (st, id) => st.ack(id, 0),
+  };
+  for (const [name, step] of Object.entries(steps)) {
+    const { c, st } = mk({ ttlMs: ttl });
+    const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+    st.recordSent(sessionId, key(1), 1, 1);
+    for (let n = 0; n < 5; n++) { // 매번 ttl-1 만 흘려도 활동 때문에 계속 산다
+      c.t += ttl - 1;
+      assert.notEqual(st.stats(sessionId), null, `${name} #${n} 만료됨`);
+      step(st, sessionId, n);
+    }
+    c.t += ttl - 1;
+    assert.equal(st.shouldSend(sessionId, key(77)), true, name);
+    c.t += 1; // 마지막 활동(shouldSend 는 갱신하지 않는다)이 아니라 step 이후 경과 2*(ttl-1)+1 → 만료
+    assert.equal(st.stats(sessionId), null, name);
+  }
+  // 활동이 없으면 갱신도 없다: shouldSend/stats 는 TTL 을 늘리지 않는다
+  const { c, st } = mk({ ttlMs: ttl });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  c.t += ttl - 1;
+  st.shouldSend(sessionId, key(1));
+  st.stats(sessionId);
+  c.t += 1;
+  assert.equal(st.stats(sessionId), null);
+});
+
+// ---- F-212 ⑥: 같은 key 대체가 pendingQ 에 죽은 항목을 쌓지 않는다 ----
+test('F-212 ⑥: ack 없이 같은 key 100만 번 재기록해도 pendingQ <= 2×maxEntries 이고 빠르다', () => {
+  const maxEntries = 8;
+  const { st } = mk({ maxEntriesPerSession: maxEntries });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  const c0 = process.cpuUsage();
+  let peak = 0;
+  for (let seq = 1; seq <= 1_000_000; seq++) {
+    assert.equal(st.recordSent(sessionId, key(1), seq, 1), true);
+    if ((seq & 1023) === 0) peak = Math.max(peak, st.pendingQueueLength(sessionId));
+  }
+  const c1 = process.cpuUsage(c0);
+  const ms = (c1.user + c1.system) / 1000;
+  peak = Math.max(peak, st.pendingQueueLength(sessionId));
+  assert.ok(peak <= 2 * maxEntries, `pendingQ=${peak}`);
+  assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 1, unacked: 1, groups: 1 });
+  assert.deepEqual(st.unacked(sessionId), [{ seq: 1_000_000, key: key(1) }]);
+  assert.ok(ms < 3000, `${ms} ms`);
+  // 압축 뒤에도 ack·재접속 동작은 그대로
+  st.ack(sessionId, 1_000_000);
+  assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 0, unacked: 0, groups: 1 });
+  assert.equal(st.pendingQueueLength(sessionId), 0);
+});
+
+test('F-212 ⑥: 여러 key 가 섞여 대체돼도 순서·재전송 후보가 유지된다', () => {
+  const { st } = mk({ maxEntriesPerSession: 8 });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  let seq = 1;
+  for (let n = 0; n < 5000; n++) st.recordSent(sessionId, key(1 + (n % 3)), seq++, 1);
+  assert.ok(st.pendingQueueLength(sessionId) <= 16);
+  st.open({ sessionId, lastPieceSeq: 0 });
+  assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [4998, 4999, 5000]);
+  st.ack(sessionId, 4999);
+  assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [5000]);
+});
