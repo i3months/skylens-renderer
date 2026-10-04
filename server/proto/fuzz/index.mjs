@@ -7,12 +7,17 @@
 //      본문 길이·count 를 믿고 도는 이차·지수 시간 복호를 잡는다.
 //   4. 할당이 입력 크기에 비례하는 선을 넘지 않는다. (a) 결과 구조 한계: items ≤ 입력/16, chunk ≤ 입력 길이, text ≤ 입력 길이.
 //      (b) 복호 중 힙 증가 ≤ HEAP_BASE_BYTES + HEAP_PER_INPUT_BYTE × 입력 길이. count 가 거대해도 본문 길이로 먼저 거부해야 한다.
+//      (c) 복호 중 ArrayBuffer 증가(process.memoryUsage().arrayBuffers) ≤ AB_BASE_BYTES + AB_PER_INPUT_BYTE × 입력 길이.
+//          typed array·Buffer 는 힙(used_heap_size) 밖에 잡히므로 (b) 만으로는 count 를 믿고 선할당하는 복호기를 못 본다.
+//   6. 기준 코덱(codec.reference.decode)이 주어지면 (성공/실패, code, 값)이 제품 복호와 같아야 한다(차등 비교).
 //   5. 복호가 입력 바이트를 바꾸지 않는다.
 // 이 모듈은 코덱을 import 하지 않는다. 복호·부호화 함수를 주입받는다.
 
 export const TIME_LIMIT_MS = 200;
 export const HEAP_BASE_BYTES = 8 * 1024 * 1024;
 export const HEAP_PER_INPUT_BYTE = 64;
+export const AB_BASE_BYTES = 1024 * 1024;
+export const AB_PER_INPUT_BYTE = 16;
 import { getHeapStatistics } from 'node:v8';
 import { ProtoError, MSG, MAX_PAYLOAD_BYTES } from '../../../contracts/proto/index.mjs';
 
@@ -49,7 +54,7 @@ export function randomMessage(rng, type) {
     case 'PIECE': return { type, pieceSeq: u32(), key: key(), chunk: randBytes(rng, 1 + rng.int(rng.next() < 0.1 ? 3000 : 200)) };
     case 'LEVEL_ARRIVED': return { type, segmentId: rng.int(1 << 20), level: rng.int(4), pieceCount: u32() };
     case 'MISSING': return { type, segmentId: rng.int(1 << 20) };
-    case 'ERROR': return { type, code: rng.int(6), text: 'e'.repeat(rng.int(40)) + (rng.int(2) ? '오류' : '') };
+    case 'ERROR': return { type, code: 1 + rng.int(5), text: 'e'.repeat(rng.int(40)) + (rng.int(2) ? '오류' : '') };
   }
   throw new Error(`unknown type ${type}`);
 }
@@ -103,21 +108,31 @@ function norm(v) {
 
 /**
  * 입력 하나를 검사한다. 위반이면 {kind, detail} 를, 아니면 null 을 돌려준다.
- * @param {{decode:Function, encode:Function}} codec
+ * @param {{decode:Function, encode:Function, reference?:{decode:Function}}} codec
  */
 export function checkOne(codec, input, opts = {}) {
   const timeLimit = opts.timeLimitMs ?? TIME_LIMIT_MS;
   const before = input.slice();
   const heap0 = getHeapStatistics().used_heap_size;
+  const ab0 = process.memoryUsage().arrayBuffers;
   const t0 = performance.now();
   let msg, err;
   try { msg = codec.decode(input); } catch (e) { err = e; }
   const dt = performance.now() - t0;
   const heapGrow = getHeapStatistics().used_heap_size - heap0;
+  const abGrow = process.memoryUsage().arrayBuffers - ab0;
   if (err !== undefined && !(err instanceof ProtoError)) return { kind: 'panic', detail: `${err?.name}: ${err?.message}` };
   if (dt > timeLimit) return { kind: 'time', detail: `${dt.toFixed(1)} ms > ${timeLimit}` };
   if (heapGrow > HEAP_BASE_BYTES + HEAP_PER_INPUT_BYTE * input.length) return { kind: 'alloc', detail: `heap +${heapGrow} B for input ${input.length} B` };
+  if (abGrow > AB_BASE_BYTES + AB_PER_INPUT_BYTE * input.length) return { kind: 'alloc', detail: `arrayBuffers +${abGrow} B for input ${input.length} B` };
   if (input.length !== before.length || input.some((v, i) => v !== before[i])) return { kind: 'mutated-input', detail: 'decode changed input bytes' };
+  if (codec.reference) { // 차등 비교: 기준 코덱과 (성공/실패, code, 값)이 같아야 한다.
+    let rmsg, rerr;
+    try { rmsg = codec.reference.decode(input.slice()); } catch (e) { rerr = e; }
+    const sig = (m, e) => (e === undefined ? 'ok' : e instanceof ProtoError ? e.code : `panic:${e?.name}`);
+    if (sig(msg, err) !== sig(rmsg, rerr)) return { kind: 'diff', detail: `product ${sig(msg, err)} vs reference ${sig(rmsg, rerr)}` };
+    if (err === undefined && !sameMessage(msg, rmsg)) return { kind: 'diff', detail: `${msg.type} value differs from reference` };
+  }
   if (err !== undefined) return null;
   // 결과 구조의 크기 한계(입력에 비례).
   if (msg.type === 'PIECE_REQUEST' && (msg.items.length > input.length / 16 || msg.items.length > 256)) return { kind: 'alloc', detail: `items ${msg.items.length} for input ${input.length}` };
