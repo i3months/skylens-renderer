@@ -94,3 +94,26 @@ export function projectWithUniforms(U, Xw) {
   if (!Number.isFinite(u) || !Number.isFinite(v)) return null;
   return { u, v, ndc: pixelToNdc(u, v, U.bw, U.bh), d };
 }
+
+/**
+ * 조각 원점 기준 상대 좌표(RTE)의 조각별 평행이동. f64 로 계산한다(F-243 ③).
+ *   조각 점은 X_w = o + X_rel 로 올린다(o: 조각 원점 f64, X_rel: f32 상대 좌표).
+ *   X_c = R·X_w + t = R·X_rel + (R·o + t) 이므로 t' = R·o + t 를 f64 로 미리 계산해 uniform 으로 넘기면
+ *   셰이더의 f32 연산은 앵커에서 먼 큰 수(수 km)를 다루지 않고 카메라 근처 크기의 값만 더한다.
+ *   GL 규약에서도 같다: t'_gl = R_gl·o + t_gl = diag(1,−1,−1)·(R·o + t).
+ * @param {number[]} Rgl 3×3 행 우선(cvToGlExtrinsics 결과 또는 R 그대로)
+ * @param {number[]} tgl 3-벡터
+ * @param {number[]} origin 조각 원점 [e, n, u] m(유한 f64)
+ * @returns {number[]} t' 3-벡터(f64)
+ */
+export function pieceTranslation(Rgl, tgl, origin) {
+  if (!Array.isArray(origin) || origin.length !== 3 || !origin.every((x) => typeof x === 'number' && Number.isFinite(x))) {
+    throw new ClientRasterError('piece', '조각 원점은 유한 3-벡터여야 함');
+  }
+  const [ox, oy, oz] = origin;
+  return [
+    Rgl[0] * ox + Rgl[1] * oy + Rgl[2] * oz + tgl[0],
+    Rgl[3] * ox + Rgl[4] * oy + Rgl[5] * oz + tgl[1],
+    Rgl[6] * ox + Rgl[7] * oy + Rgl[8] * oz + tgl[2],
+  ];
+}

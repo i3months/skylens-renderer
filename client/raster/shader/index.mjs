@@ -19,11 +19,17 @@
 //   - gl_PointSize 상한(ALIASED_POINT_SIZE_RANGE)보다 큰 원판은 잘린다.
 //   - 깊이 버퍼 정밀도(보통 24 비트)가 참조의 f32 깊이보다 거칠어 거의 같은 깊이의 승부가 달라질 수 있다.
 // 빈 칸은 메우지 않는다: 지우기 색 (0,0,0) 그대로 둔다(도착하지 않은 것을 그리거나 메우지 않는다).
+// 조각 원점 기준 상대 좌표(RTE, F-243 ③): a_position 은 조각 원점 o(f64) 를 뺀 상대 ENU(m)이고 u_tgl 은 조각마다
+//   t'_gl = R_gl·o + t_gl 을 f64 로 계산해 올린다(applyPieceOrigin). 셰이더 식 X_gl = R_gl·X_rel + t'_gl 은 위와 같은 값이다.
+//   앵커에서 수 km 떨어진 장면을 절대 ENU f32 로 올리면 위치·R·X 합의 f32 반올림(5 km 에서 ulp ≈ 0.5 mm)이 깊이 1 m 점에서
+//   약 1 CSS px(기준 0.5 px 초과, client/raster/rte.test.mjs)가 된다. 상대 좌표는 조각 크기(타일 64 m) 안이고 t' 는 카메라에서 조각 원점까지 거리라 f32 오차가 작다.
+//   원점 o = 0 이면 예전 절대 좌표 방식과 같다(pointUniformValues 의 u_tgl 은 o = 0 의 값).
 import { cvToGlExtrinsics } from '../../../contracts/client_raster/index.mjs';
+import { pieceTranslation } from '../camera/index.mjs';
 
 /** 정점 속성 위치(layout(location)). 보폭·패딩 같은 GPU 배치는 T12.3 몫이다. */
 export const ATTRIB = Object.freeze({
-  position: 0, // vec3 f32 세계 ENU(m)
+  position: 0, // vec3 f32 조각 원점 기준 상대 ENU(m). 원점은 u_tgl 로 넘긴다(RTE)
   color: 1, // u8×3, normalized = false 로 올린다(0..255 값 그대로)
   normalOct: 2, // i8×2 팔면체 snorm8, normalized = false 로 올린다(−127..127 값 그대로)
 });
@@ -231,6 +237,30 @@ export function pointUniformValues(p) {
     u_lightDir: [l[0], l[1], l[2]], u_ambient: ambient, u_shade: p.shade === undefined ? true : !!p.shade,
     u_pointSizeM: p.pointSizeM, u_near: p.near, u_far: p.far, u_maxPointSize: p.maxPointSize,
   };
+}
+
+/**
+ * 조각 원점 o 에 맞춘 u_tgl 값 t'_gl = R_gl·o + t_gl 을 f64 로 계산한다(순수 함수).
+ * @param {Record<string, any>} values pointUniformValues 결과
+ * @param {number[]} origin 조각 원점 [e, n, u] m
+ * @returns {number[]}
+ */
+export function pieceTglValue(values, origin) {
+  return pieceTranslation(values.u_Rgl, values.u_tgl, origin);
+}
+
+/**
+ * 조각을 그리기 직전에 그 조각 원점의 u_tgl 을 올린다(applyPointUniforms 뒤, 조각마다). 올린 값(f64)을 돌려준다.
+ * @param {WebGL2RenderingContext} gl
+ * @param {Record<string, WebGLUniformLocation|null>} uniforms
+ * @param {Record<string, any>} values pointUniformValues 결과
+ * @param {number[]} origin 조각 원점 [e, n, u] m
+ */
+export function applyPieceOrigin(gl, uniforms, values, origin) {
+  const t = pieceTglValue(values, origin);
+  const loc = uniforms.u_tgl;
+  if (loc !== null && loc !== undefined) gl.uniform3f(loc, t[0], t[1], t[2]);
+  return t;
 }
 
 /**

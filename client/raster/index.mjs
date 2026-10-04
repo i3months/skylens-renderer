@@ -5,7 +5,9 @@
 //
 // 조각 흐름: uploadPiece(key, bytes) → key 검사(parsePieceKey) → decode(bytes)(기본 client/codec decodeChunkClient)
 //   → 헤더의 (segmentId, level, tileX, tileY, lod, chunkIndex) 가 key 와 같은지 검사 → GPU 평면으로 바꿈 → 버퍼 풀에 올림.
-//   GPU 평면(구현 몫, 계약 ①): position f32×3(세계 ENU m = bboxMin + q·2^−quantExp), color u8×3, normalOct i8×2(형식 1 만).
+//   GPU 평면(구현 몫, 계약 ①): position f32×3(조각 원점 o = bboxMin(f64) 기준 상대 ENU m = q·2^−quantExp), color u8×3,
+//   normalOct i8×2(형식 1 만). 원점 o 는 meta 에 f64 로 두고 그릴 때 조각마다 u_tgl = R_gl·o + t_gl(f64)을 올린다
+//   (RTE, F-243 ③: 앵커에서 수 km 먼 장면의 f32 정밀도. shader/index.mjs applyPieceOrigin).
 //   형식 2 는 법선이 없어 셰이딩하지 않는다(u_shade = false, 법선 속성은 상수 (0,0)).
 // 그리기 규칙(계약 ④): 올린 조각은 받는 것만으로 그리지 않는다. 호출자가 setArrived(arrived) 로 LEVEL_ARRIVED 완료 집합을
 //   넘기면 상주 key 를 selectDrawable 로 나눠 draw 에 든 조각만 그린다. setArrived 를 한 번도 부르지 않으면 아무것도 그리지 않는다.
@@ -23,7 +25,9 @@ import {
 } from '../../contracts/client_raster/index.mjs';
 import { decodeChunkClient } from '../codec/index.mjs';
 import { createContext } from './context/index.mjs';
-import { createPointProgram, pointUniformValues, applyPointUniforms, ATTRIB, DEFAULT_AMBIENT } from './shader/index.mjs';
+import {
+  createPointProgram, pointUniformValues, applyPointUniforms, applyPieceOrigin, ATTRIB, DEFAULT_AMBIENT,
+} from './shader/index.mjs';
 import { createBufferPool } from './buffers/index.mjs';
 import { buildCameraUniforms } from './camera/index.mjs';
 import { createMemoryMeter } from './memory/index.mjs';
@@ -44,9 +48,13 @@ const KEY_FIELDS = ['segmentId', 'level', 'tileX', 'tileY', 'lod', 'chunkIndex']
 
 /**
  * 복호 결과({header, planes})를 GPU 평면으로 바꾼다. 평면 길이가 pointCount 와 다르면 ClientRasterError('piece').
- * @returns {{format: number, count: number, planes: Record<string, ArrayBufferView>}}
+ * position 은 origin 기준 상대 좌표 (bboxMin − origin) + q·2^−quantExp 를 f64 로 계산한 뒤 f32 로 담는다.
+ * 렌더러는 origin = bboxMin 을 넘긴다(상대 좌표 = q·2^−quantExp, f32 로 정확). 생략하면 [0,0,0](절대 ENU, 예전 방식).
+ * @param {any} decoded
+ * @param {number[]} [origin] 조각 원점 [e, n, u] m(f64)
+ * @returns {{format: number, count: number, planes: Record<string, ArrayBufferView>, origin: number[]}}
  */
-export function toGpuPlanes(decoded) {
+export function toGpuPlanes(decoded, origin = [0, 0, 0]) {
   const h = decoded && decoded.header;
   const p = decoded && decoded.planes;
   if (!h || !p || typeof p !== 'object') throw new ClientRasterError('piece', '복호 결과에 header·planes 가 없음');
@@ -62,11 +70,14 @@ export function toGpuPlanes(decoded) {
   if (!Array.isArray(h.bboxMin) || h.bboxMin.length !== 3 || !Number.isInteger(h.quantExp)) {
     throw new ClientRasterError('piece', '헤더 bboxMin·quantExp 가 틀림');
   }
+  if (!Array.isArray(origin) || origin.length !== 3 || !origin.every(Number.isFinite)) {
+    throw new ClientRasterError('piece', '조각 원점이 유한 3-벡터가 아님');
+  }
   const step = 2 ** -h.quantExp;
   const position = new Float32Array(3 * n);
   const axes = [p.pos_e, p.pos_n, p.pos_u];
   for (let a = 0; a < 3; a += 1) {
-    const min = h.bboxMin[a];
+    const min = h.bboxMin[a] - origin[a];
     const q = axes[a];
     for (let i = 0; i < n; i += 1) position[3 * i + a] = min + q[i] * step;
   }
@@ -88,7 +99,7 @@ export function toGpuPlanes(decoded) {
     }
     planes.normalOct = normalOct;
   }
-  return { format, count: n, planes };
+  return { format, count: n, planes, origin: [origin[0], origin[1], origin[2]] };
 }
 
 /**
@@ -129,7 +140,7 @@ export function createRenderer(options) {
     throw e;
   }
   const meter = createMemoryMeter(); // key → GPU 바이트(풀과 같은 값). 해제 순서(오래된 것부터)도 이 표의 삽입 순서로 정한다
-  /** @type {Map<string, {format: number, count: number}>} */
+  /** @type {Map<string, {format: number, count: number, origin: number[]}>} */
   const meta = new Map();
   /** @type {Map<string, number>} 올리는 중인 key → 토큰(해제·소실 뒤 늦게 끝난 업로드를 버린다) */
   const inflight = new Map();
@@ -263,7 +274,7 @@ export function createRenderer(options) {
         if (e instanceof ClientRasterError) throw e;
         throw new ClientRasterError('piece', `복호 실패(${key}): ${e && e.message ? e.message : String(e)}`);
       }
-      gpuPiece = toGpuPlanes(decoded);
+      gpuPiece = toGpuPlanes(decoded, decoded && decoded.header ? decoded.header.bboxMin : undefined);
       for (const f of KEY_FIELDS) {
         if (decoded.header[f] !== pk[f]) throw new ClientRasterError('piece', `헤더 ${f}=${decoded.header[f]} 가 key ${key} 와 다름`);
       }
@@ -282,7 +293,7 @@ export function createRenderer(options) {
     meter.remove(key); // 삽입 순서를 최신으로
     meter.add(key, bytesTotal);
     meta.delete(key);
-    meta.set(key, { format: gpuPiece.format, count: gpuPiece.count });
+    meta.set(key, { format: gpuPiece.format, count: gpuPiece.count, origin: gpuPiece.origin });
     invalidate();
   }
 
@@ -363,6 +374,7 @@ export function createRenderer(options) {
       const info = meta.get(key);
       if (!info) continue;
       bindPiece(key, info);
+      applyPieceOrigin(gl, gpu.uniforms, values, info.origin); // 조각 원점 기준 u_tgl(f64 계산)
       const shade = info.format === FORMAT_POINT27;
       if (gpu.uniforms.u_shade !== null && gpu.uniforms.u_shade !== undefined) gl.uniform1i(gpu.uniforms.u_shade, shade && values.u_shade ? 1 : 0);
       gl.drawArrays(gl.POINTS, 0, info.count);
