@@ -189,7 +189,8 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
     out.glCallCount = glCalls.length;
     out.glSpans = gl.map((g) => ({ kind: g.kind, s: g.s - t0, e: g.e - t0 }));
     out.marksOk = up.length === 1 && dr.length === 1 && gl.every((g) => Number.isFinite(g.s) && Number.isFinite(g.e) && g.s <= g.e)
-      && glCalls.length > 0 && Number.isFinite(marks.called) && Number.isFinite(marks.decoded);
+      && glCalls.some((c) => c.s >= t0 && c.name === 'bufferData') && glCalls.some((c) => c.s >= t0 && c.name === 'drawArrays') // t0 이후 기록만(t0 앞 셰이더 호출로는 참이 되지 않게)
+      && Number.isFinite(marks.called) && Number.isFinite(marks.decoded);
     out.uploadMs = t1 - t0;
     out.drawMs = t2 - t1;
     out.drawnPoints = stats.drawnPoints;
