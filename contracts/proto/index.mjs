@@ -21,6 +21,7 @@
 //     한 pieceSeq 는 절대 서로 다른 두 PieceKey 에 쓰이지 않는다(F-204). 송출이 실패한 수준 도착의 pieceSeq 는 그 key 들에
 //     묶이고, 서버(server/adapter/core)는 그 수준 도착을 같은 pieceSeq·key 로 다시 보내 끝내기 전에는 다른 이벤트를 보내지
 //     않는다(다른 이벤트는 UNFINISHED_EVENT 로 거부).
+//   현재 미배선: 어댑터 emit 뒤 recordLevelArrived 호출과 이어받기 때 resendPlan 사용은 T12 ws 배선에서 한다(F-238 ④).
 //   마지막 pieceSeq 가 0xFFFFFFFF 인 세션은 재개할 수 없고 서버는 새 세션(resumed=0)으로 답한다.
 //   MISSING(8, s→c)       4 B   segmentId u32  (도착하지 않은 구간. 메우거나 꾸미지 않는다)
 //   ERROR(9, s→c)         4 + n B  code u16 (ERR_CODES), msgLen u16, utf8 메시지(msgLen ≤ MAX_ERROR_TEXT)
@@ -33,6 +34,7 @@
 //   → payloadLength > MAX_PAYLOAD_BYTES 'limit' → 프레임 길이 불일치 'length' → 본문 값 범위 'field'.
 // 방향 검사는 프레임 길이 검사 다음, 고정 크기 검사 앞이다. 서버 복호는 c→s 종류만, 클라이언트 복호는 s→c 종류만 받는다. 반대 방향 type 은 'direction'.
 
+/** Decision 0032: Increase when external clients appear. */
 export const PROTO_VERSION = 1;
 export const FRAME_HEADER_BYTES = 8;
 export const PIECE_KEY_BYTES = 16;
