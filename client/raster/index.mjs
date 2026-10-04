@@ -202,11 +202,13 @@ export function createRenderer(options) {
   }
   const meter = createMemoryMeter(); // key → GPU 바이트(풀과 같은 값). 해제 순서(오래된 것부터)도 이 표의 삽입 순서로 정한다
   /** @type {Map<string, {format: number, count: number, origin: number[]}>} */
-  // 변경 세대: meta 가 바뀔 때마다 올라간다(makeRoom 의 지역 선택 재사용 판정용, 선택 상태가 아니다)
+  // 변경 세대: meta 가 바뀔 때마다 올라간다(roomCache 의 (metaGen, key) 는 직전 거부/판정을 다시 쓸 수 있는지 보는 키일 뿐, 선택 상태가 아니다.
+  // resident·base 는 처음 한 번만 만들고 이후 meta 의 set(새 key)/delete 마다 roomResidentChange 가 그 타일만 증분 갱신한다)
   let metaGen = 0;
   const meta = new (class extends Map {
     set(k, v) {
       metaGen += 1;
+      // had 가드: 유일한 호출부(uploadPiece 끝, meta.delete(key) 직후 meta.set)에서는 항상 false 다. 덮어쓰기에 대비한 방어일 뿐이다
       const had = super.has(k);
       super.set(k, v);
       if (!had) roomResidentChange(k, true); // 같은 key 를 덮어쓰면 상주 목록은 그대로다
@@ -330,7 +332,8 @@ export function createRenderer(options) {
 
   // --- makeRoom 의 보호 집합(F-259 ②) ---
   // key 하나를 더해도 바뀌는 것은 그 key 의 타일뿐이다(selectDrawable 의 LOD 고르기는 타일마다). 도착 입력에서 타일 표(타일 → 후보 여부·LOD 별 완료 chunk 수)를
-  // 한 번 만들고, 상주 key 에서 타일별 상주 수·고른 LOD 를 metaGen 마다 한 번 만든 뒤, 새 key 마다 그 타일 하나만 본다.
+  // 한 번 만들고, 상주 key 에서 타일별 상주 수·고른 LOD 를 처음 한 번 만든다. 이후 meta set(새 key)/delete 마다 roomResidentChange 가 그 타일만
+  // 증분 갱신하고, 새 key 마다 그 타일 하나만 본다.
   // select 호출은 없고 key 당 비용은 그 타일의 상주 chunk 수다. 규칙은 selectDrawable 과 같다(시험이 맞대어 본다).
   const keyTile = (k) => k.slice(0, k.lastIndexOf('.', k.lastIndexOf('.') - 1));
   const keyLod = (k) => Number(k.slice(k.lastIndexOf('.', k.lastIndexOf('.') - 1) + 1, k.lastIndexOf('.')));
@@ -368,18 +371,17 @@ export function createRenderer(options) {
     let rc = roomCache;
     if (rc === null) rc = { tiles: buildRoomTiles(), gen: -1, resident: null, base: null, key: null, drawing: null };
     if (rc.resident === null) { // 처음 한 번만 meta 전체를 돈다. 이후 상주 변경은 roomResidentChange 가 그 key 의 타일만 고친다
-      const resident = new Map(); // 타일 → {have, ks: [[key, lod]], set, chosen}
+      const resident = new Map(); // 타일 → {have, ks: Map(key → lod), chosen}
       for (const k of meta.keys()) {
         if (!arrivedKeys.has(k)) continue;
         const id = keyTile(k);
         const t = rc.tiles.get(id);
         if (t === undefined || !t.cand) continue;
         let e = resident.get(id);
-        if (e === undefined) { e = { have: new Int32Array(8), ks: [], set: new Set(), chosen: -1 }; resident.set(id, e); }
+        if (e === undefined) { e = { have: new Int32Array(8), ks: new Map(), chosen: -1 }; resident.set(id, e); }
         const lod = keyLod(k);
         e.have[lod]++;
-        e.ks.push([k, lod]);
-        e.set.add(k);
+        e.ks.set(k, lod);
       }
       const base = new Set();
       for (const [id, e] of resident) {
@@ -402,7 +404,7 @@ export function createRenderer(options) {
         const own = new Set();
         for (const [k, lod] of e.ks) if (lod === chosen) own.add(k);
         const base = rc.base;
-        drawing = { has: (k) => (e.set.has(k) ? own.has(k) : base.has(k)) };
+        drawing = { has: (k) => (e.ks.has(k) ? own.has(k) : base.has(k)) };
       }
     }
     // resident·base 는 증분 갱신되는 같은 객체를 쓴다. gen·key·drawing 만 이번 판정의 것으로 바꾼다
@@ -411,7 +413,8 @@ export function createRenderer(options) {
     rc.drawing = drawing;
     return rc;
   }
-  // meta 에 key 가 들어오거나 나갈 때 그 key 의 타일 하나만 resident·base 를 고친다(O(그 타일의 상주 chunk 수)).
+  // meta 에 key 가 들어오거나 나갈 때 그 key 의 타일 하나만 resident·base 를 고친다. 고른 LOD 가 그대로면 O(1)이고,
+  // 바뀔 때만 그 타일의 base 항목을 다시 만든다(O(그 타일의 상주 chunk 수)). ks 는 Map 이라 삭제도 O(1)이다.
   // roomCache 가 없거나 resident 를 아직 안 만들었으면 할 일이 없다(만들 때 meta 를 돈다).
   function roomResidentChange(k, added) {
     const rc = roomCache;
@@ -420,23 +423,29 @@ export function createRenderer(options) {
     const t = rc.tiles.get(id);
     if (t === undefined || !t.cand) return;
     let e = rc.resident.get(id);
-    if (e !== undefined) for (const [bk, lod] of e.ks) if (lod === e.chosen) rc.base.delete(bk);
     const lod = keyLod(k);
     if (added) {
-      if (e === undefined) { e = { have: new Int32Array(8), ks: [], set: new Set(), chosen: -1 }; rc.resident.set(id, e); }
+      if (e === undefined) { e = { have: new Int32Array(8), ks: new Map(), chosen: -1 }; rc.resident.set(id, e); }
       e.have[lod]++;
-      e.ks.push([k, lod]);
-      e.set.add(k);
+      e.ks.set(k, lod);
     } else {
-      if (e === undefined || !e.set.has(k)) return;
+      // 이 타일의 상주로 기록되지 않은 key 면 아무것도 건드리지 않는다(base 도 그대로)
+      if (e === undefined || !e.ks.delete(k)) return;
       e.have[lod]--;
-      e.set.delete(k);
-      const at = e.ks.findIndex((x) => x[0] === k);
-      e.ks.splice(at, 1);
-      if (e.ks.length === 0) { rc.resident.delete(id); return; }
+      rc.base.delete(k);
+      if (e.ks.size === 0) { rc.resident.delete(id); return; }
     }
-    e.chosen = chooseLod(e.have, t.need);
-    for (const [bk, l] of e.ks) if (l === e.chosen) rc.base.add(bk);
+    const old = e.chosen;
+    const chosen = chooseLod(e.have, t.need);
+    e.chosen = chosen;
+    if (chosen !== old) {
+      for (const [bk, l] of e.ks) {
+        if (l === old) rc.base.delete(bk);
+        else if (l === chosen) rc.base.add(bk);
+      }
+    } else if (added && lod === chosen) {
+      rc.base.add(k);
+    }
   }
 
   // 그리지 않는 상주 조각을 오래된 것부터 해제해 need 바이트를 만든다. 모자라면 'memory'.
@@ -605,23 +614,29 @@ export function createRenderer(options) {
       gl.bindVertexArray(e.vao);
       return;
     }
-    if (e) deletePieceVao(e); // 같은 key 를 다시 올려 버퍼가 바뀐 경우
+    if (e) { deletePieceVao(e); pieceVaos.delete(key); } // 같은 key 를 다시 올려 버퍼가 바뀐 경우
     e = { bufs, format: info.format, vao: gl.createVertexArray() };
-    pieceVaos.set(key, e);
-    gl.bindVertexArray(e.vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, bufs.position);
-    gl.enableVertexAttribArray(ATTRIB.position);
-    gl.vertexAttribPointer(ATTRIB.position, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, bufs.color);
-    gl.enableVertexAttribArray(ATTRIB.color);
-    gl.vertexAttribPointer(ATTRIB.color, 3, gl.UNSIGNED_BYTE, false, 0, 0);
-    if (info.format === FORMAT_POINT27) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, bufs.normalOct);
-      gl.enableVertexAttribArray(ATTRIB.normalOct);
-      gl.vertexAttribPointer(ATTRIB.normalOct, 2, gl.BYTE, false, 0, 0);
-    } else {
-      gl.disableVertexAttribArray(ATTRIB.normalOct);
+    try {
+      gl.bindVertexArray(e.vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, bufs.position);
+      gl.enableVertexAttribArray(ATTRIB.position);
+      gl.vertexAttribPointer(ATTRIB.position, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, bufs.color);
+      gl.enableVertexAttribArray(ATTRIB.color);
+      gl.vertexAttribPointer(ATTRIB.color, 3, gl.UNSIGNED_BYTE, false, 0, 0);
+      if (info.format === FORMAT_POINT27) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, bufs.normalOct);
+        gl.enableVertexAttribArray(ATTRIB.normalOct);
+        gl.vertexAttribPointer(ATTRIB.normalOct, 2, gl.BYTE, false, 0, 0);
+      } else {
+        gl.disableVertexAttribArray(ATTRIB.normalOct);
+      }
+    } catch (err) {
+      try { deletePieceVao(e); } catch { /* 원래 배선 오류 우선 */ }
+      throw err;
     }
+    // 배선이 끝난 뒤에만 캐시에 넣는다(배선 중 예외면 반쯤 배선된 VAO 를 다음 draw 가 그대로 쓰지 않게 한다)
+    pieceVaos.set(key, e);
   }
 
   function draw() {
@@ -666,8 +681,9 @@ export function createRenderer(options) {
         drawnPoints += info.count;
         drawnPieces += 1;
       }
-      gl.bindVertexArray(null);
     } finally {
+      // 예외가 나도 묶인 VAO 를 풀어 둔다(다음 GL 호출이 조각 VAO 상태를 건드리지 않게). 이 정리의 예외는 원래 오류를 덮지 않는다
+      try { gl.bindVertexArray(null); } catch { /* 문맥 소실 등: 원래 오류 우선 */ }
       try { onDrawEnd(); } catch { /* 같은 이유: 상태 반영·원래 오류를 덮지 않는다 */ }
     }
     return { drawnPoints, drawnPieces, droppedFrames, drawMs: Math.max(0, now() - t0) };
