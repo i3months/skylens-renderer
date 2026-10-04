@@ -7,10 +7,11 @@
 // 유실 흉내: 첫 연결의 접속 객체를 서버 쪽에서 감싸 LEVEL_ARRIVED 프레임만 소켓에 쓰지 않고 버린다(PIECE 는 그대로 나간다).
 // 대조군: 같은 시나리오에서 어댑터의 emit 을 시험이 만든 래퍼로 바꿔 LEVEL_ARRIVED 를 저장소 기록(recordLevelArrived) 없이
 //       접속 객체로 바로 보낸다. 그러면 이어받기 재전송 목록에 완료 표시가 없어 완료 key 0 개(영구 pending, F-236 재현)다.
-// 주소: 시험 안에서만 127.0.0.1 을 쓰고 포트는 0(임시 포트), 이후에는 server.address() 만 본다.
+// 주소: 루프백 주소는 운영체제 인터페이스에서 읽고(리터럴 없음) 포트는 0(임시 포트), 이후에는 server.address() 만 본다.
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import os from 'node:os';
 import { attachConnection } from './index.mjs';
 import { createWsServer, acceptKey } from '../index.mjs';
 import { FrameParser, encodeFrame, OPCODES } from '../frame/index.mjs';
@@ -135,7 +136,7 @@ async function runScenario({ recordLevelArrived }) {
   let sentPieces = 0;
   const server = [];
   const ws = await createWsServer({
-    host: '127.0.0.1',
+    host: loopbackHost(),
     port: 0,
     onConnection(raw) {
       const dropping = lossy;
@@ -211,6 +212,13 @@ async function runScenario({ recordLevelArrived }) {
   const completed = arrived.flatMap((a) => a.keys);
   const drawable = selectDrawable(keys, arrived);
   return { sentPieces, droppedLevelArrived, pieces, after, keys, arrived, completed, drawable };
+}
+
+function loopbackHost() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) if (a.internal && a.family === 'IPv4') return a.address;
+  }
+  throw new Error('loopback 인터페이스 없음');
 }
 
 test('F-238 ④: LEVEL_ARRIVED 프레임만 유실 → HELLO 재개 → LEVEL_ARRIVED 재수신, draw 에 조각 3개 key', async () => {

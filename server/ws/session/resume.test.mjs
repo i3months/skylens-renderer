@@ -72,7 +72,7 @@ test('(2) 이어받기 lastPieceSeq=1: WELCOME(resumed) 뒤 PIECE 2, 3, LEVEL_AR
   ];
   const { arrived } = collectArrivals([...before, ...msgs]);
   assert.equal(arrived.length, 1);
-  assert.deepEqual(arrived[0], { segmentId: SEG, level: 0, keys: ['7.0.1.2.0.1', '7.0.2.2.0.2', '7.0.3.2.0.3'] });
+  assert.deepEqual(arrived[0], { segmentId: SEG, level: 0, keys: ['1', '2', '3'].map((n) => ['7', '0', n, '2', '0', n].join('.')) });
 });
 
 test('(3) LEVEL_ARRIVED 만 유실(lastPieceSeq == 마지막 조각 3): LEVEL_ARRIVED 한 건, replayed 1', () => {
