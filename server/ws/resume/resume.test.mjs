@@ -449,3 +449,59 @@ test('F-203: recordSent(0xFFFFFFFF) 뒤 재접속은 nextPieceSeq 2^32 를 내�
   assert.deepEqual(welcome(r2), { type: 'WELCOME', sessionId: r2.sessionId, resumed: false, nextPieceSeq: 1 });
   assert.equal(st.open({ sessionId, lastPieceSeq: 0 }).resumed, false); // 다 쓴 세션은 지워졌다
 });
+
+// ---- F-207 / F-209 ⑦ ----
+test('F-207a: 같은 key 를 새 seq 로 대체한 뒤 축출해도 groups 는 항목 상한을 넘지 않는다', () => {
+  const { st } = mk({ maxEntriesPerSession: 2 });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  st.recordSent(sessionId, key(1), 1, 1);
+  st.recordSent(sessionId, key(1), 2, 1); // 대체: 묶음 항목 수는 그대로 1
+  st.recordSent(sessionId, key(2), 3, 1);
+  st.ack(sessionId, 3);
+  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 0, unacked: 0, groups: 2 });
+  assert.equal(st.recordSent(sessionId, key(3), 4, 1), true); // key(1)(seq 2) 축출 -> 그 묶음도 사라져야 한다
+  const stt = st.stats(sessionId);
+  assert.ok(stt.groups <= 2, `groups=${stt.groups}`);
+  assert.deepEqual(stt, { entries: 2, retainedBytes: 1, unacked: 1, groups: 2 });
+});
+
+test('F-207b: 같은 seq 를 다른 크기로 다시 기록하면 retainedBytes 가 손으로 센 값이고 ack 후 0', () => {
+  const { st } = mk();
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  st.recordSent(sessionId, key(1), 1, 10);
+  st.recordSent(sessionId, key(2), 2, 5);
+  assert.equal(st.stats(sessionId).retainedBytes, 15);
+  assert.equal(st.recordSent(sessionId, key(1), 1, 30), true); // 10 -> 30
+  assert.equal(st.stats(sessionId).retainedBytes, 35);
+  assert.equal(st.recordSent(sessionId, key(1), 1, 4), true); // 30 -> 4
+  assert.equal(st.stats(sessionId).retainedBytes, 9);
+  assert.equal(st.retainedBytes(), 9);
+  st.ack(sessionId, 1);
+  assert.equal(st.stats(sessionId).retainedBytes, 5);
+  st.ack(sessionId, 2);
+  assert.equal(st.stats(sessionId).retainedBytes, 0);
+  assert.equal(st.retainedBytes(), 0);
+});
+
+test('F-209 ⑦: ack 후 같은 key 재기록 100만 번 뒤에도 ackedQ <= maxEntries 이고 빠르다', () => {
+  const maxEntries = 4;
+  const { st } = mk({ maxEntriesPerSession: maxEntries });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  for (let i = 1; i <= 3; i++) { st.recordSent(sessionId, key(i), i, 1); st.ack(sessionId, i); }
+  const c0 = process.cpuUsage(); // 벽시계는 병렬 부하에 흔들리므로 CPU 시간으로 잰다
+  let seq = 4;
+  for (let n = 0; n < 1_000_000; n++) {
+    st.recordSent(sessionId, key(1), seq, 1);
+    st.ack(sessionId, seq++);
+  }
+  const c1 = process.cpuUsage(c0);
+  const ms = (c1.user + c1.system) / 1000;
+  assert.ok(st.ackedQueueLength(sessionId) <= maxEntries, `ackedQ=${st.ackedQueueLength(sessionId)}`);
+  assert.equal(st.ackedQueueLength(sessionId), 3);
+  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 0, unacked: 0, groups: 3 });
+  assert.ok(ms < 3000, `${ms} ms`);
+  // 가득 찬 뒤에도 가장 오래 확인된 항목부터 축출된다
+  st.recordSent(sessionId, key(9), seq++, 1);
+  assert.equal(st.recordSent(sessionId, key(10), seq++, 1), true);
+  assert.equal(st.stats(sessionId).entries, 4);
+});
