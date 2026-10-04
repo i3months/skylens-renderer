@@ -185,7 +185,7 @@ test('복호: timeoutMs 안에 응답이 없으면 그 요청만 reject, 응답�
   const w = { postMessage() {}, terminate() {} };
   const c = createDecodeWorkerClient({ spawn: () => w, timeoutMs: 500, setTimeoutFn, clearTimeoutFn });
   const a = c.decode(new Uint8Array(1)), b = c.decode(new Uint8Array(1));
-  assert.equal(timers.size, 2); assert.equal([...timers.values()][0].ms, 500);
+  assert.equal(timers.size, 1); assert.equal([...timers.values()][0].ms, 500);
   w.onmessage({ data: { id: 2, result: 'ok' } }); assert.equal(await b, 'ok'); assert.equal(timers.size, 1);
   [...timers.values()][0].f();
   await assert.rejects(a, /timeout/); assert.equal(c.stats().pending, 0);

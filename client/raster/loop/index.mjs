@@ -107,6 +107,24 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
   const pending = new Map();
   let nextId = 1;
   let terminated = false;
+  // 워커는 요청을 순서대로 하나씩 처리하므로 타임아웃은 '처리 시작'부터 잰다.
+  // order 의 맨 앞 요청만 타이머를 가지고, 앞 요청이 끝나면 다음 요청의 타이머를 시작한다.
+  const order = [];
+  function arm(entry) {
+    if (timeoutMs === undefined || entry.timer !== undefined) return;
+    entry.timer = setTimeoutFn(() => {
+      entry.timer = undefined;
+      if (pending.get(entry.id) === entry) {
+        pending.delete(entry.id); st.errors++; release(entry); entry.reject(new Error('timeout'));
+      }
+    }, timeoutMs);
+  }
+  function release(entry) {
+    const i = order.indexOf(entry);
+    if (i < 0) return;
+    order.splice(i, 1);
+    if (i === 0 && order.length > 0) arm(order[0]);
+  }
   const st = { requests: 0, responses: 0, errors: 0, mainThreadEvents: 0, longTasks: 0, maxMainMs: 0 };
 
   function measure(fn) {
@@ -121,6 +139,7 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
   function failAll(err) {
     const all = [...pending.values()];
     pending.clear();
+    order.length = 0;
     for (const p of all) { if (p.timer !== undefined) clearTimeoutFn(p.timer); p.reject(err); }
   }
   // message 없는 객체가 '[object Object]' 가 되지 않게 오류 값을 Error 로 바꾼다.
@@ -140,6 +159,8 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
     if (!p) return; // 알 수 없는 응답은 버린다
     pending.delete(m.id);
     if (p.timer !== undefined) clearTimeoutFn(p.timer);
+    p.timer = undefined;
+    release(p);
     if ('error' in m && m.error !== undefined) { st.errors++; p.reject(toError(m.error)); }
     else { st.responses++; p.resolve(m.result); }
   });
@@ -153,12 +174,9 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
         // terminate 뒤에는 응답이 올 수 없으니 영원히 미결로 두지 않고 즉시 거부한다.
         if (terminated) { reject(new Error('terminated')); return; }
         const id = nextId++;
-        const entry = { resolve, reject, timer: undefined };
-        if (timeoutMs !== undefined) {
-          entry.timer = setTimeoutFn(() => {
-            if (pending.get(id) === entry) { pending.delete(id); st.errors++; reject(new Error('timeout')); }
-          }, timeoutMs);
-        }
+        const entry = { id, resolve, reject, timer: undefined };
+        order.push(entry);
+        if (order.length === 1) arm(entry);
         pending.set(id, entry);
         st.requests++;
         try {
@@ -176,6 +194,8 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
         } catch (e) {
           pending.delete(id);
           if (entry.timer !== undefined) clearTimeoutFn(entry.timer);
+          entry.timer = undefined;
+          release(entry);
           // postMessage 실패 시 대기 항목이 새지 않게 한다
           reject(e);
         }
