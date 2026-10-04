@@ -11,7 +11,9 @@
 //   ACK(4, c→s)           4 B   upToPieceSeq u32 (여기까지 받았음)
 //   WELCOME(5, s→c)       9 B   sessionId u32, resumed u8 (0|1), nextPieceSeq u32
 //   PIECE(6, s→c)         4 + 16 + chunkLen B  pieceSeq u32, PieceKey 16 B, 조각 바이트(contracts/asset 의 .skla 조각 그대로, 1 B 이상)
-//   LEVEL_ARRIVED(7, s→c) 9 B   segmentId u32, level u8 (0..3), pieceCount u32
+//   LEVEL_ARRIVED(7, s→c) 9 B   segmentId u32, level u8 (0..3), pieceCount u32 (>= 1: 조각 0 개 도착은 보내지 않는다)
+//   재전송 규약: 송출 실패 뒤 같은 pieceSeq·같은 PieceKey 로 다시 보낸 PIECE 는 같은 조각이다(수신측은 하나로 센다).
+//   마지막 pieceSeq 가 0xFFFFFFFF 인 세션은 재개할 수 없고 서버는 새 세션(resumed=0)으로 답한다.
 //   MISSING(8, s→c)       4 B   segmentId u32  (도착하지 않은 구간. 메우거나 꾸미지 않는다)
 //   ERROR(9, s→c)         4 + n B  code u16 (ERR_CODES), msgLen u16, utf8 메시지(msgLen ≤ MAX_ERROR_TEXT)
 // pieceSeq 는 1 부터 매긴다(PIECE_SEQ_MIN). 0 은 'ACK·HELLO 에서 받은 것 없음' 전용이라 조각 순번으로 쓰지 않는다. nextPieceSeq 도 1 이상이다.
