@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildBlackBuilding, EDGE_ANGLE_THRESHOLD_DEG } from './index.mjs';
+import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 
 const H = 30;
 
@@ -91,4 +92,46 @@ test('정점을 공유하는 프리즘(지붕·벽 공용 정점)도 선 수 = 3
   const pos = new Float32Array([0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 10, 0, 0, 0, H, 10, 0, H, 10, 10, H, 0, 10, H]);
   const ind = new Uint32Array([4, 5, 6, 4, 6, 7, 0, 3, 2, 0, 2, 1, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7]);
   assert.equal(buildBlackBuilding({ positions: pos, indices: ind }).edgeLines.length / 6, 12);
+});
+
+// 공유 변(x축 위 (0,0,0)-(1,0,0))에서 theta 도로 접힌 두 삼각형. 두 법선 사이 각 = theta.
+function folded(deg) {
+  const t = (deg * Math.PI) / 180;
+  const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -Math.cos(t), Math.sin(t)]);
+  const indices = new Uint32Array([0, 1, 2, 1, 0, 3]);
+  return { positions, indices };
+}
+// 공유 변을 그린 선의 수
+function sharedLines(mesh) {
+  const { edgeLines: e } = buildBlackBuilding(mesh);
+  let c = 0;
+  for (let i = 0; i < e.length; i += 6) {
+    if (e[i + 1] === 0 && e[i + 2] === 0 && e[i + 4] === 0 && e[i + 5] === 0 && Math.abs(e[i] - e[i + 3]) === 1) c++;
+  }
+  return c;
+}
+
+test('4도로 접힌 공유 변은 선 0, 6도는 선 1 (임계 5도 양쪽)', () => {
+  assert.equal(sharedLines(folded(4)), 0);
+  assert.equal(sharedLines(folded(6)), 1);
+  assert.equal(buildBlackBuilding(folded(4)).edgeLines.length / 6, 4); // 바깥 변 4개
+  assert.equal(buildBlackBuilding(folded(6)).edgeLines.length / 6, 5);
+});
+
+test('삼각형 1개는 열린 변 3개 모두 선 3', () => {
+  const m = { positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), indices: new Uint32Array([0, 1, 2]) };
+  assert.equal(buildBlackBuilding(m).edgeLines.length / 6, 3);
+});
+
+test('잘못된 입력은 TowerAssetError', () => {
+  const ok = () => ({ positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), indices: new Uint32Array([0, 1, 2]) });
+  const bad = [];
+  let m = ok(); m.positions[4] = NaN; bad.push(m);
+  m = ok(); m.positions[0] = Infinity; bad.push(m);
+  m = ok(); m.indices[2] = 3; bad.push(m);
+  m = ok(); m.indices = new Uint32Array([0, 1]); bad.push(m);
+  m = ok(); m.positions = new Float32Array([0, 0, 0, 1]); bad.push(m);
+  m = ok(); m.indices = [0, 1, -1]; bad.push(m);
+  bad.push(null, undefined, {}, { positions: null, indices: null });
+  for (const b of bad) assert.throws(() => buildBlackBuilding(b), TowerAssetError);
 });

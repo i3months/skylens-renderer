@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extrudeBuilding, extrudeAll } from './index.mjs';
+import { extrudeBuilding, extrudeAll, MAX_RING_VERTICES } from './index.mjs';
 import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 
 // 메시 통계: 지붕(z=높이)·벽·전체 부피(발산 정리), 삼각형 법선 방향 검사.
@@ -102,4 +102,39 @@ test('100동 합성: 동 수·순서 보존, 넓이 합', () => {
   out.forEach((o, i) => { roof += stats(o.mesh, fps[i].floors ? fps[i].floors * 3 : 6).roof; });
   close(roof, 50 * 7 + 50 * 11);
   assert.deepEqual(extrudeAll([]), []);
+});
+
+test('꼭짓점이 다른 변 위에 놓인 링은 TowerAssetError (일직선 접촉)', () => {
+  const bad = [
+    [[0, 0], [4, 0], [4, 4], [2, 0], [0, 4]], // (2,0) 이 변 (0,0)-(4,0) 위
+    [[0, 0], [4, 0], [4, 4], [0, 2], [0, 4]], // (0,2) 가 변 (0,4)-(0,0) 위
+  ];
+  for (const ring of bad) {
+    assert.throws(() => extrudeBuilding({ id: 5, ring }), (e) => e instanceof TowerAssetError && e.message.includes('id=5'));
+  }
+});
+
+test('변이 겹치는 링은 TowerAssetError (공선 겹침)', () => {
+  // 변 (0,0)-(4,0) 과 변 (3,0)-(1,0) 이 같은 직선 위에서 겹침
+  const ring = [[0, 0], [4, 0], [4, 3], [3, 3], [3, 0], [1, 0], [1, 3], [0, 3]];
+  assert.throws(() => extrudeBuilding({ id: 6, ring }), TowerAssetError);
+  // 일직선 접촉 분기로만 잡히는 링(다른 변 쌍은 어느 것도 엇갈리지 않음): 되돌아가는 가시 모양
+  for (const r of [[[0, 3], [3, 3], [1, 3], [4, 3], [4, 1]], [[1, 3], [0, 0], [0, 2], [0, 1], [0, 3]], [[0, 2], [2, 0], [2, 2], [2, 1], [2, 3]]]) {
+    assert.throws(() => extrudeBuilding({ id: 6, ring: r }), (e) => e instanceof TowerAssetError && e.message.includes('자기 교차'));
+  }
+});
+
+test('floors=1e308 은 높이가 Infinity 가 되므로 TowerAssetError', () => {
+  assert.throws(() => extrudeBuilding({ id: 8, ring: sq, floors: 1e308 }), TowerAssetError);
+});
+
+test('extrudeAll([null]) 은 TypeError 가 아니라 TowerAssetError', () => {
+  assert.throws(() => extrudeAll([null]), TowerAssetError);
+  assert.throws(() => extrudeAll([undefined]), TowerAssetError);
+});
+
+test('정점 수 상한 초과는 TowerAssetError, 상한 이하는 통과', () => {
+  const ring = (n) => Array.from({ length: n }, (_, i) => [1000 * Math.cos((2 * Math.PI * i) / n), 1000 * Math.sin((2 * Math.PI * i) / n)]);
+  assert.throws(() => extrudeBuilding({ id: 10, ring: ring(MAX_RING_VERTICES + 1) }), TowerAssetError);
+  assert.ok(extrudeBuilding({ id: 10, ring: ring(200) }).positions.length > 0);
 });
