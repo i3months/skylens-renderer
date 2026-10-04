@@ -1,5 +1,6 @@
 // 건물 LOD 시드 일괄 검사: 밀집 합성 장면(denseCity) 시드 범위 × 8시점에서 원본과 LOD 를 렌더해
-// 건물 영역 블록 SSIM 과 면 수 감소율을 잰다. 하나라도 SSIM < BUILDING_LOD_MIN_SSIM 이거나 감소율 ≤ 0 이면 종료 코드 1.
+// 건물 영역 블록 SSIM 과 면 수 감소율을 잰다. 하나라도 SSIM < BUILDING_LOD_MIN_SSIM 이거나(건물 블록 0 포함) 면 수가 늘면 종료 코드 1.
+// 감소율 0(합칠 수 있는 이웃이 없는 시점, 주로 S-near)은 실패가 아니라 개수만 알린다.
 //
 // 사용: node tools/lod_seed_sweep.mjs [첫시드-끝시드 | 끝시드 | 시드,시드,...]
 //   인자가 없으면 환경 변수 LOD_SWEEP_SEEDS(같은 형식), 그것도 없으면 1-300.
@@ -40,6 +41,7 @@ function main() {
   const verbose = process.env.LOD_SWEEP_VERBOSE === '1';
   const perView = new Map(views.map((v) => [v.name, { min: Infinity, seed: 0, redMin: Infinity, redMax: -Infinity }]));
   const failures = [];
+  const noReduction = [];
   let worst = { ssim: Infinity };
   const t0 = Date.now();
   for (const seed of seeds) {
@@ -51,7 +53,8 @@ function main() {
       pv.redMin = Math.min(pv.redMin, r.reduction); pv.redMax = Math.max(pv.redMax, r.reduction);
       seedMin = Math.min(seedMin, r.ssim);
       if (r.ssim < worst.ssim) worst = { ...r, seed };
-      if (!(r.ssim >= BUILDING_LOD_MIN_SSIM) || !(r.reduction > 0) || r.blocks === 0) failures.push({ seed, ...r });
+      if (!(r.ssim >= BUILDING_LOD_MIN_SSIM) || r.reduction < 0 || r.blocks === 0) failures.push({ seed, ...r });
+      else if (r.reduction === 0) noReduction.push(`${seed} ${r.view}`);
     }
     if (verbose) {
       const w = rows.reduce((a, b) => (b.ssim < a.ssim ? b : a));
@@ -63,6 +66,7 @@ function main() {
     console.log(`${name.padEnd(11)} min SSIM ${pv.min.toFixed(4)} (seed ${pv.seed}), reduction ${(pv.redMin * 100).toFixed(1)}..${(pv.redMax * 100).toFixed(1)}%`);
   }
   console.log(`overall min SSIM ${worst.ssim.toFixed(4)} (seed ${worst.seed} ${worst.view}, tris ${worst.origTris} -> ${worst.lodTris})`);
+  if (noReduction.length) console.log(`no reduction (not a failure) in ${noReduction.length} seed-views: ${noReduction.join(', ')}`);
   for (const f of failures) {
     console.log(`FAIL seed ${f.seed} ${f.view}: SSIM ${f.ssim.toFixed(4)}, reduction ${(f.reduction * 100).toFixed(1)}%, blocks ${f.blocks}`);
   }
