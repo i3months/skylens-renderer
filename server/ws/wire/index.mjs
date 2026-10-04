@@ -1,5 +1,5 @@
 // ws 서버 진입점 배선(결정 0040 '다시 볼 조건' ①④; 계측·보고 규칙은 decisions 0042 §1). attachConnection 을 접속마다 실제로 연결한다.
-// 설계 선택(0040 선택지 C): 접속 계층(이 파일)이 onStopped(재전송 정지 알림) 처리 중 store.close(sid) 를 직접 부른다.
+// 설계 선택(0040 선택지 C = 0042 §1 채택 B): 접속 계층(이 파일)이 onStopped(재전송 정지 알림) 처리 중 store.close(sid) 를 직접 부른다.
 //   호출자의 onStopped 는 알림·점검용이고 store.close 를 빠뜨려도 세션은 지워진다.
 //   대가: 호출자 onStopped 가 비동기여도 기다리지 않는다. onStopped 의 반환 약속은 거부만 감시하고(삼키고 보고),
 //   끝나기를 기다리지 않은 채 곧바로 store.close 를 부른다. 즉 비동기 onStopped 가 저장소의 빠진 조각을 점검하는 중에도
