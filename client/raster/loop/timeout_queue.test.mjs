@@ -57,17 +57,18 @@ test('맨 앞 요청이 시한을 넘기면 Worker 가 막힌 것으로 보고 �
   assert.equal(c.stats().responses, 0);
 });
 
-test('시한 뒤 새 요청도 다시 맨 앞이 되어 자기 시한을 받는다(order 에 유령이 남지 않는다)', async () => {
-  const { c, clock } = rig(100);
+test('시한 뒤 Worker 를 terminate 하고 새 요청은 거짓 timeout 대신 즉시 terminated 로 거부한다', async () => {
+  let killed = 0; const clock = fakeClock();
+  const w = { postMessage() {}, terminate() { killed++; } };
+  const c = createDecodeWorkerClient({ spawn: () => w, timeoutMs: 100, setTimeoutFn: clock.setTimeoutFn, clearTimeoutFn: clock.clearTimeoutFn });
   const a = c.decode(new Uint8Array(1)).then(() => 'ok', (e) => e.message);
   clock.advance(100);
   assert.equal(await a, 'timeout');
-  const b = c.decode(new Uint8Array(1)).then(() => 'ok', (e) => e.message);
-  clock.advance(99);
-  assert.equal(c.stats().pending, 1);
-  clock.advance(1);
-  assert.equal(await b, 'timeout');
-  assert.equal(c.stats().pending, 0);
+  assert.equal(killed, 1);
+  await assert.rejects(c.decode(new Uint8Array(1)), /terminated/);
+  const s = c.stats();
+  assert.equal(s.pending, 0);
+  assert.equal(s.requests, s.responses + s.errors + s.pending);
 });
 
 test('앞 요청이 응답하면 뒤 요청은 그 시점부터 시한을 잰다', async () => {
@@ -98,22 +99,63 @@ test('setTimeoutFn 이 던지면 그 요청은 던진 오류로 settle 하고 pe
   assert.equal(c.stats().pending, 0);
 });
 
-test('다음 요청 타이머 설정이 던져도 앞 요청은 이미 resolve 되고 던진 요청은 reject, 그 뒤 요청이 시한을 받는다', async () => {
+test('이미 보낸 요청의 타이머 설정이 던지면 그 요청은 거부되지 않고 시한 없이 처리되며, 뒤 요청은 그 응답 뒤 시작 기준으로 시한을 받는다', async () => {
   const clock = fakeClock(); let calls = 0; const q = [];
   const w = { postMessage(m) { q.push(m.id); }, terminate() {} };
   const c = createDecodeWorkerClient({ spawn: () => w, timeoutMs: 100,
     setTimeoutFn: (f, ms) => { if (++calls === 2) throw new Error('timer2'); return clock.setTimeoutFn(f, ms); },
     clearTimeoutFn: clock.clearTimeoutFn });
   const a = c.decode(new Uint8Array(1)); // 타이머 1
-  const b = c.decode(new Uint8Array(1)).then(() => 'ok', (e) => e.message);
+  const b = c.decode(new Uint8Array(1)).then((v) => v, (e) => e.message);
   const d = c.decode(new Uint8Array(1)).then(() => 'ok', (e) => e.message);
-  w.onmessage({ data: { id: q[0], result: 'A' } }); // b 의 타이머(2번째 호출)가 던진다 -> d 가 맨 앞이 되어 타이머 3
+  w.onmessage({ data: { id: q[0], result: 'A' } }); // b 가 맨 앞이 되나 타이머 설정이 던진다 -> b 는 시한 없이 처리 중
   assert.equal(await a, 'A');
-  assert.equal(await b, 'timer2');
-  assert.equal(c.stats().pending, 1);
-  clock.advance(100);
+  assert.equal(c.stats().pending, 2);
+  clock.advance(1000); // b 에도 d 에도 시한이 없으므로 거짓 timeout 이 없다
+  assert.equal(c.stats().pending, 2);
+  w.onmessage({ data: { id: q[1], result: 'B' } }); // b 응답 -> d 가 이 시점부터 시한(타이머 3)
+  assert.equal(await b, 'B');
+  clock.advance(99); assert.equal(c.stats().pending, 1);
+  clock.advance(1);
   assert.equal(await d, 'timeout');
   assert.equal(c.stats().pending, 0);
+});
+
+test('timeoutMs 가 2^31-1 을 넘으면 RangeError, 2^31-1 은 허용', () => {
+  const w = { postMessage() {}, terminate() {} };
+  assert.throws(() => createDecodeWorkerClient({ spawn: () => w, timeoutMs: 2 ** 31 }), RangeError);
+  assert.doesNotThrow(() => createDecodeWorkerClient({ spawn: () => w, timeoutMs: 2 ** 31 - 1 }));
+});
+
+test('clearTimeoutFn 이 던져도 응답·onerror·onmessageerror·terminate·timeout 모두 settle 하고 항등식이 성립한다', async () => {
+  const mk = () => {
+    const clock = fakeClock(); const q = []; let killed = 0;
+    const w = { postMessage(m) { q.push(m.id); }, terminate() { killed++; } };
+    const c = createDecodeWorkerClient({ spawn: () => w, timeoutMs: 100, setTimeoutFn: clock.setTimeoutFn,
+      clearTimeoutFn: () => { throw new Error('clear'); } });
+    return { c, clock, q, w };
+  };
+  const ident = (c) => { const s = c.stats(); assert.equal(s.pending, 0); assert.equal(s.requests, s.responses + s.errors + s.pending); };
+  const settle = (p) => p.then((v) => 'ok:' + v, (e) => e.message);
+  { // 응답: 앞 요청 resolve 뒤에도 뒤 요청이 시한을 받는다
+    const { c, clock, q, w } = mk();
+    const a = settle(c.decode(new Uint8Array(1))), b = settle(c.decode(new Uint8Array(1)));
+    w.onmessage({ data: { id: q[0], result: 1 } });
+    assert.equal(await a, 'ok:1');
+    clock.advance(100); assert.equal(await b, 'timeout'); ident(c);
+  }
+  { const { c, w } = mk(); const a = settle(c.decode(new Uint8Array(1))); w.onerror(new Error('boom')); assert.equal(await a, 'boom'); ident(c); }
+  { const { c, w } = mk(); const a = settle(c.decode(new Uint8Array(1))); w.onmessageerror({}); assert.equal(await a, 'messageerror'); ident(c); }
+  { const { c } = mk(); const a = settle(c.decode(new Uint8Array(1))); c.terminate(); assert.equal(await a, 'terminated'); ident(c); }
+  { const { c, clock } = mk(); const a = settle(c.decode(new Uint8Array(1))); clock.advance(100); assert.equal(await a, 'timeout'); ident(c); }
+});
+
+test('failAll 이 errors 를 센다(requests = responses + errors + pending)', async () => {
+  const { c, w } = rig(100);
+  const a = c.decode(new Uint8Array(1)).catch(() => {}), b = c.decode(new Uint8Array(1)).catch(() => {});
+  w.onmessageerror({}); await a; await b;
+  const s = c.stats();
+  assert.equal(s.errors, 2); assert.equal(s.requests, s.responses + s.errors + s.pending);
 });
 
 test('postMessage 가 던지면 맨 앞 항목을 대기열에서도 빼서 다음 요청이 시한을 받는다', async () => {
