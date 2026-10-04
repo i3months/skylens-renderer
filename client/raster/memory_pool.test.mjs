@@ -153,7 +153,7 @@ test('렌더러(해제 뒤 표 정리): 해제한 큰 조각을 다시 올릴 �
   r.dispose();
 });
 
-test('meter·pool·gl 대조: 렌더러와 같은 순서(올리기·교체·해제·퇴출)로 세 값이 늘 같다', () => {
+test('pool·meter 단위 대조', () => {
   const gl = fakeGl();
   const pool = createBufferPool({ gl, maxPieceBytes: 1 << 20, maxResidentBytes: 1 << 20 });
   const meter = createMemoryMeter();
