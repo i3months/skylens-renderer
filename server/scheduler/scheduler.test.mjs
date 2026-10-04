@@ -314,10 +314,10 @@ const YIELD_EVERY = 4096;
 const isIndexKey = (k) => typeof k === 'string' && k !== '' && String(k >>> 0) === k && (k >>> 0) !== 4294967295;
 
 function observe() {
-  const c = { moved: 0, touched: 0, stored: 0, reads: 0, on: true, cap: { moved: Infinity, touched: Infinity, stored: Infinity } };
+  const c = { moved: 0, touched: 0, stored: 0, reads: 0, on: true, cap: { moved: Infinity, touched: Infinity, stored: Infinity, reads: Infinity } };
   const over = () => {
-    if (c.moved > c.cap.moved || c.touched > c.cap.touched || c.stored > c.cap.stored) {
-      throw new Error(`관측 상한 초과: moved ${c.moved}/${c.cap.moved}, touched ${c.touched}/${c.cap.touched}, stored ${c.stored}/${c.cap.stored}`);
+    if (c.moved > c.cap.moved || c.touched > c.cap.touched || c.stored > c.cap.stored || c.reads > c.cap.reads) {
+      throw new Error(`관측 상한 초과: moved ${c.moved}/${c.cap.moved}, touched ${c.touched}/${c.cap.touched}, stored ${c.stored}/${c.cap.stored}, reads ${c.reads}/${c.cap.reads}`);
     }
   };
   const mv = (n) => { if (c.on) { c.moved += n; c.touched += n; over(); } };
@@ -336,7 +336,7 @@ function observe() {
       // 읽기 횟수(F-240 ⑪): 인덱스·length 읽기를 센다. 감싼 힙을 읽어 지역 배열로 복사하는 O(n) 삽입 변이는 push 마다 n 번 읽으므로
       // 이 계수가 연산당 상한을 바로 넘는다(시간 단언 아님, 결정적 횟수).
       get(t, k, r) {
-        if (c.on && (k === 'length' || isIndexKey(k))) c.reads++;
+        if (c.on && (k === 'length' || isIndexKey(k))) { c.reads++; over(); }
         return Reflect.get(t, k, r);
       },
     });
@@ -404,7 +404,7 @@ async function measured(opts, body, bounds, maxOps, signal) {
   const cap = (k) => maxOps * bounds[k] + SLACK;
   const cmp = { n: 0 };
   const c = observe();
-  c.cap = { moved: cap('moved'), touched: cap('touched'), stored: cap('stored') };
+  c.cap = { moved: cap('moved'), touched: cap('touched'), stored: cap('stored'), reads: bounds.reads === undefined ? Infinity : cap('reads') };
   const cmpCap = cap('compares');
   const s = createScheduler({
     ...opts,
@@ -500,7 +500,7 @@ test('F-221 시험 쪽 관측: 100k 오름차순 enqueue 뒤 nextBatch 한 번�
     await check(2 * ASC_N);
     return batch;
   }, b, 2 * ASC_N, t.signal);
-  console.log(`# asc+drain ${ASC_N}: moved=${r.moved} touched=${r.touched} stored=${r.stored} compares=${r.compares} (${(r.compares / (2 * ASC_N)).toFixed(2)}/op)`);
+  console.log(`# asc+drain ${ASC_N}: moved=${r.moved} touched=${r.touched} stored=${r.stored} reads=${r.reads} (${(r.reads / (2 * ASC_N)).toFixed(2)}/op) compares=${r.compares} (${(r.compares / (2 * ASC_N)).toFixed(2)}/op)`);
   const batch = r.out;
   assert.equal(batch.length, ASC_N);
   assert.equal(batch[0].priority, ASC_N - 1);
@@ -590,6 +590,22 @@ test('F-221 관측기 자체 검사: splice 앞쪽 삽입·shift 는 옮긴 칸�
   }
   assert.match(String(err?.message), /관측 상한 초과/);
   assert.equal(i, 10);
+  // 읽기도 같다(F-241 ⑦): 감싼 배열의 인덱스·length 읽기가 reads 전체 상한을 넘는 순간 get 트랩에서 던진다
+  const rd = observe();
+  let j = 0;
+  let rerr = null;
+  try {
+    rd.cap.reads = 10;
+    const g = rd.wrap([1, 2, 3]);
+    for (; j < 1e9; j++) void g[j % 3];
+  } catch (e) {
+    rerr = e;
+  } finally {
+    rd.restore();
+  }
+  assert.match(String(rerr?.message), /관측 상한 초과.*reads 11\/10/);
+  assert.equal(j, 10);
+  assert.equal(rd.reads, 11);
   assert.equal(Array.prototype.splice, origSplice);
   assert.equal(Map.prototype[Symbol.iterator], origMapIter);
 });
@@ -606,6 +622,8 @@ test('F-208 2배 크기 증가율(시험 쪽 관측): 다룬 원소 수·저장�
 // F-213: 상한에 닿은 뒤 교체가 계속돼도 한 번당 비용이 상한 크기에 비례하지 않아야 한다.
 // 교체 한 번 = 힙 push 1 + 루트 비우기 + LRU 큐 push 2 + 축출 머리 지우기 1 + 일괄 잘라 내기(amortized) 정도의 상수 대입이다.
 const STORED_PER_REPLACEMENT = 12;
+// 읽기(Proxy get 트랩이 센 인덱스·length 읽기)도 회당 상수다. 실측 약 20 이므로 여유를 둔 28 (F-241 ⑦).
+const READS_PER_REPLACEMENT = 28;
 test('F-213 시험 쪽 관측: maxSentGroups 65536 에서 교체 25만 회의 옮긴 원소 수 0·다룬 원소 수 회당 <= 24(상수), 주입 비교 회당 <= 4, 저장소 인덱스 대입 회당 <= STORED_PER_REPLACEMENT(상수)', { timeout: PERF_TIMEOUT_MS }, async (ctx) => {
   const N = 250000;
   const r = await measured({ budgetBytesPerTick: 1e9, maxSentGroups: 65536 }, async (s, check) => {
@@ -614,8 +632,8 @@ test('F-213 시험 쪽 관측: maxSentGroups 65536 에서 교체 25만 회의 �
       s.nextBatch();
       await check(i + 1);
     }
-  }, { moved: 0, touched: 24, compares: 4, stored: STORED_PER_REPLACEMENT }, N, ctx.signal);
-  console.log(`# replacements ${N}: moved=${r.moved} touched=${r.touched} (${(r.touched / N).toFixed(2)}/op) stored=${r.stored} (${(r.stored / N).toFixed(2)}/op) compares=${r.compares}`);
+  }, { moved: 0, touched: 24, compares: 4, stored: STORED_PER_REPLACEMENT, reads: READS_PER_REPLACEMENT }, N, ctx.signal);
+  console.log(`# replacements ${N}: moved=${r.moved} touched=${r.touched} (${(r.touched / N).toFixed(2)}/op) stored=${r.stored} (${(r.stored / N).toFixed(2)}/op) reads=${r.reads} (${(r.reads / N).toFixed(2)}/op) compares=${r.compares}`);
   // 기억 묶음 수가 상한을 넘지 않는다: 가장 오래된 묶음부터 버려져 낮은 level 이 다시 들어올 수 있다
   const t = createScheduler({ budgetBytesPerTick: 1e9, maxSentGroups: 4 });
   for (let i = 0; i < 10; i++) { t.enqueue(I(K(i, 3), 1, 0)); t.nextBatch(); }
