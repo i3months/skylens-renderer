@@ -25,34 +25,51 @@ function maskedWire(size, fill) {
   return { body, wire: encodeFrame(OPCODES.BINARY, body, { maskKey: KEY }) };
 }
 
-// push 중 복사된 바이트 수를 센다(copy, TypedArray.set, Buffer.concat). 벽시계와 달리 CPU 부하에 영향받지 않는다.
+// push 중 복사된 바이트 수(copy, TypedArray.set, Buffer.concat, Buffer.from(typed array))와 새로 할당한 Buffer 바이트 수를 센다.
+// 벽시계와 달리 CPU 부하에 영향받지 않는다. 할당 총량은 JS 바이트 루프로 복사하는 이차 구현(복사 계수에 안 잡힘)을 잡는다:
+// 그런 구현도 조각마다 더 큰 버퍼를 새로 잡아야 하므로 할당 총량이 이차로 는다.
 function countCopiedBytes(fn) {
-  let bytes = 0;
+  const c = { copied: 0, allocated: 0 };
   const origCopy = Buffer.prototype.copy;
   const origSet = Uint8Array.prototype.set;
   const origConcat = Buffer.concat;
+  const origFrom = Buffer.from;
+  const origAlloc = { alloc: Buffer.alloc, allocUnsafe: Buffer.allocUnsafe, allocUnsafeSlow: Buffer.allocUnsafeSlow };
   Buffer.prototype.copy = function (target, ts, ss = 0, se = this.length) {
     const r = origCopy.call(this, target, ts, ss, se);
-    bytes += r;
+    c.copied += r;
     return r;
   };
   Uint8Array.prototype.set = function (src, off) {
-    bytes += src.length;
+    c.copied += src.length;
     return origSet.call(this, src, off);
   };
   Buffer.concat = function (list, total) {
     const r = origConcat.call(Buffer, list, total);
-    bytes += r.length;
+    c.copied += r.length;
     return r;
   };
+  Buffer.from = function (v, ...rest) {
+    const r = origFrom.call(Buffer, v, ...rest);
+    if (ArrayBuffer.isView(v)) c.copied += r.length;
+    return r;
+  };
+  for (const k of Object.keys(origAlloc)) {
+    Buffer[k] = function (n, ...rest) {
+      c.allocated += n;
+      return origAlloc[k].call(Buffer, n, ...rest);
+    };
+  }
   try {
     fn();
   } finally {
     Buffer.prototype.copy = origCopy;
     Uint8Array.prototype.set = origSet;
     Buffer.concat = origConcat;
+    Buffer.from = origFrom;
+    Object.assign(Buffer, origAlloc);
   }
-  return bytes;
+  return c;
 }
 
 test('1400 B 조각 push 복사량은 프레임 크기에 선형이고(4 배 크기 -> 복사량비 < 6) 내용이 보존된다', () => {
@@ -62,19 +79,22 @@ test('1400 B 조각 push 복사량은 프레임 크기에 선형이고(4 배 크
   const measure = ({ wire, body }) => {
     const events = [];
     // 퇴행 구현이 시험 전체를 멈추지 않도록 시간 예산은 안전장치로만 둔다(판정에는 쓰지 않는다)
-    const copied = countCopiedBytes(() => {
+    // 시간 예산은 이차 구현이 멈추지 않게 하는 안전장치이면서, JS 바이트 루프 이차 복사(M3)를 잡는 넉넉한 상한이다(정상은 0.1 s 안팎).
+    const c = countCopiedBytes(() => {
       pushAll(new FrameParser({ maxPayload: body.length }), wire, 1400, 20000, events);
     });
     assert.equal(events.length, 1);
     assert.equal(events[0].type, 'message');
     assert.ok(Buffer.from(events[0].data).equals(body));
-    return copied;
+    return c;
   };
   const cSmall = measure(small);
   const cBig = measure(big);
-  const ratio = cBig / Math.max(cSmall, 1);
-  console.log(`# 1400 B chunks: 1 MiB copied ${cSmall} B, 4 MiB copied ${cBig} B, ratio ${ratio.toFixed(2)}`);
+  const ratio = cBig.copied / Math.max(cSmall.copied, 1);
+  const aRatio = cBig.allocated / Math.max(cSmall.allocated, 1);
+  console.log(`# 1400 B chunks: 1 MiB copied ${cSmall.copied} B alloc ${cSmall.allocated} B, 4 MiB copied ${cBig.copied} B alloc ${cBig.allocated} B, ratio ${ratio.toFixed(2)}/${aRatio.toFixed(2)}`);
   assert.ok(ratio < 6, `복사량비 ${ratio.toFixed(2)} (선형 ~4, 이차 ~16)`);
+  assert.ok(aRatio < 6, `할당량비 ${aRatio.toFixed(2)} (선형 ~4, 이차 ~16)`);
 });
 
 test('조각 크기에 선형: 1 B 단위 push 가 64 KiB 에서도 끝난다', () => {
@@ -199,7 +219,8 @@ function usedBytes() {
   return m.heapUsed + m.external;
 }
 
-test('F-208: 마스킹된 4 MiB 프레임을 1 B 조각으로 넣어도 2 s 미만, 메모리 증가 <= 프레임 + 8 MB', () => {
+test('F-208: 마스킹된 4 MiB 프레임을 1 B 조각으로 넣어도 복사량 <= 3 x 프레임 + 1 MiB, 메모리 증가 <= 프레임 + 8 MB', () => {
+  // 시간 단정 대신 복사·할당 바이트 수로 판정한다(부하에 영향받지 않음). 선형이면 복사는 take 한 번(= SIZE) 안팎이다.
   const SIZE = 4 * 1024 * 1024;
   const payload = Buffer.alloc(SIZE);
   for (let i = 0; i < SIZE; i += 4093) payload[i] = (i >> 8) & 0xff;
@@ -209,20 +230,24 @@ test('F-208: 마스킹된 4 MiB 프레임을 1 B 조각으로 넣어도 2 s 미�
   let peak = before;
   const t0 = performance.now();
   const ev = [];
-  for (let o = 0; o < frame.length; o++) {
-    ev.push(...p.push(frame.subarray(o, o + 1)));
-    if ((o & 0x3ff) === 0 && performance.now() - t0 > 2000) throw new Error(`2 s 초과(오프셋 ${o}/${frame.length})`);
-    if ((o & 0xffff) === 0) peak = Math.max(peak, process.memoryUsage().heapUsed + process.memoryUsage().external);
-  }
+  const c = countCopiedBytes(() => {
+    for (let o = 0; o < frame.length; o++) {
+      ev.push(...p.push(frame.subarray(o, o + 1)));
+      // 시간은 판정이 아니라 이차 구현이 시험을 멈추지 않게 하는 안전장치(정상은 0.5 s 안팎, 부하 시 수 s)
+      if ((o & 0x3ff) === 0 && performance.now() - t0 > 30000) throw new Error(`30 s 초과(오프셋 ${o}/${frame.length})`);
+      if ((o & 0xffff) === 0) peak = Math.max(peak, process.memoryUsage().heapUsed + process.memoryUsage().external);
+    }
+  });
   const ms = performance.now() - t0;
   const after = process.memoryUsage();
   peak = Math.max(peak, after.heapUsed + after.external);
   const growth = peak - before;
-  console.log(`# 1 B chunks: ${ms.toFixed(0)} ms, growth ${(growth / 1048576).toFixed(1)} MiB`);
+  console.log(`# 1 B chunks: ${ms.toFixed(0)} ms, copied ${c.copied} B, alloc ${c.allocated} B, growth ${(growth / 1048576).toFixed(1)} MiB`);
   assert.equal(ev.length, 1);
   assert.equal(ev[0].type, 'message');
   assert.ok(Buffer.from(ev[0].data).equals(payload), '내용 보존');
-  assert.ok(ms < 2000, `${ms} ms`);
+  assert.ok(c.copied <= 3 * SIZE + 1048576, `복사 ${c.copied} B`);
+  assert.ok(c.allocated <= 3 * SIZE + 1048576, `할당 ${c.allocated} B`);
   assert.ok(growth <= SIZE + 8 * 1048576, `growth ${growth}`);
 });
 
@@ -247,14 +272,16 @@ test('큰 조각(>= 16384 B)도 복사되어 호출자 버퍼를 나중에 바�
   assert.ok(Buffer.from(ev[0].data).equals(body));
 });
 
-test('F-208: 1400 B 조각도 빠르고 내용이 보존된다', () => {
+test('F-208: 1400 B 조각도 복사량 <= 3 x 프레임 + 1 MiB 이고 내용이 보존된다', () => {
   const SIZE = 4 * 1024 * 1024;
   const payload = Buffer.alloc(SIZE, 0x5a);
   const frame = encodeFrame(OPCODES.BINARY, payload, { maskKey: KEY });
   const p = new FrameParser({ maxPayload: SIZE + 1024 });
   const ev = [];
-  const ms = pushAll(p, frame, 1400, 500, ev);
+  // 시간은 판정에 쓰지 않고 안전장치(20 s)로만 둔다
+  const c = countCopiedBytes(() => { pushAll(p, frame, 1400, 20000, ev); });
   assert.equal(ev.length, 1);
   assert.ok(Buffer.from(ev[0].data).equals(payload));
-  assert.ok(ms < 500, `${ms} ms`);
+  assert.ok(c.copied <= 3 * SIZE + 1048576, `복사 ${c.copied} B`);
+  assert.ok(c.allocated <= 3 * SIZE + 1048576, `할당 ${c.allocated} B`);
 });
