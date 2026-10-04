@@ -238,6 +238,13 @@ export function createRenderer(options) {
     return selection;
   }
 
+  // 선택 객체별 draw 크기 Set 캐시(F-249 ⑨): 한도 초과 업로드마다 Set 을 새로 만들지 않고 선택이 바뀔 때만 만든다
+  let drawingCache = null; // {sel, set}
+  function drawingSet(sel) {
+    if (drawingCache === null || drawingCache.sel !== sel) drawingCache = { sel, set: new Set(sel.draw) };
+    return drawingCache.set;
+  }
+
   function dropPiece(key) {
     pool.release(key);
     meter.remove(key);
@@ -301,7 +308,7 @@ export function createRenderer(options) {
     if (resident + bytes <= maxResidentBytes) return;
     // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 지금 올리는 key 도 목록에 넣어
     // 그 key 가 완성할 LOD 의 상주 조각이 draw 에 들어 보호된다. 낡지 않았으면 직전 선택을 그대로 쓴다
-    const drawing = new Set(currentSelection(key).draw);
+    const drawing = drawingSet(currentSelection(key));
     const victims = [];
     let free = 0;
     for (const [k, info] of meta) {
