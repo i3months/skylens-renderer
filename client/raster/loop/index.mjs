@@ -96,7 +96,7 @@ export function createFrameLoop({ draw, requestFrame, now, onFrame, onError, fra
  * detach 된다(길이 0). 일부만 덮는 뷰(subarray)는 그 범위만 복사해 넘기므로 원본은 그대로다. 복사를 피하려는 쪽은
  * 전체 버퍼를 넘기고 이후 쓰지 않는다. 응답 result 는 가공 없이 그대로 돌려준다(그 안의 ArrayBuffer 는 Worker 가 transfer).
  * 오류 경로: onerror·onmessageerror(역직렬화 실패)는 대기 중 전부를 reject 한다. onerror 는 Worker 가 죽은 것으로 보고
- * terminated 도 세우므로 이후 decode 는 즉시 reject 한다(onmessageerror 는 세우지 않는다).
+ * terminated 도 세우므로 이후 decode 는 즉시 reject 한다. onmessageerror 도 terminated 를 세우고 Worker 를 terminate 한다.
  * timeoutMs(선택, 기본 없음)는 Worker 가 요청을 하나씩 순서대로 처리한다고 보고 맨 앞 요청의 처리 시작부터 잰다.
  * 맨 앞 요청이 timeoutMs 안에 응답하지 않으면 그 요청은 'timeout' 으로 reject 하고, Worker 가 그 요청을 아직 처리 중이라
  * 막힌 것으로 보아 그 시점에 대기 중이던 나머지 요청도 전부 reject 한다(failAll, 뒤 요청의 연쇄 오탐 방지). 버려진 id 의
@@ -205,7 +205,12 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
     failAll(toError(e));
   });
   // 응답 역직렬화 실패는 어느 요청의 것인지 알 수 없으므로 대기 중 전부를 거부한다.
-  worker.onmessageerror = () => measure(() => failAll(new Error('messageerror')));
+  // 버려진 요청을 Worker 가 계속 처리하므로 살려 두면 새 decode 가 거짓 timeout 을 받는다: terminated 로 세우고 terminate 한다.
+  worker.onmessageerror = () => measure(() => {
+    terminated = true;
+    try { if (worker.terminate) worker.terminate(); } catch { /* 종료 실패는 무시 */ }
+    failAll(new Error('messageerror'));
+  });
 
   return {
     decode(bytes) {
