@@ -196,8 +196,8 @@ test('det = +1 전단 행렬(직교 아님)은 직교 검사로 거부', () => {
   const v = { ...identityView(), R: S };
   assert.throws(() => projectMarkers(v, [{ id: 'a', enu: [0, 0, 1] }]), { name: 'RangeError', message: /직교/ });
   assert.throws(() => unprojectToEnu(v, 320, 240, 1), { name: 'RangeError', message: /직교/ });
-  // 허용치(1e-6) 밖의 작은 전단도 거부: 0.002 → S·Sᵀ 의 (0,0) 이 1.002 > 1 + 1e-6 이라 대각 분기에서 걸린다
-  // ((0,0) 은 1 + 4e-6 으로 대각 분기도 넘지만, 이 입력만으로는 대각 분기를 따로 확인하지 못한다. 아래 시험 참조).
+  // 허용치(1e-6) 밖의 작은 전단도 거부: 0.002 → (0,0)=1+4e-6 > 1+1e-6 이라 대각 분기에서 먼저 걸린다
+  // ((0,0)=1+4e-6 은 대각 분기 기준을 넘지만, 이 입력만으로는 대각 분기를 따로 확인하지 못한다. 아래 시험 참조).
   const small = { ...identityView(), R: [1, 0.002, 0, 0, 1, 0, 0, 0, 1] };
   assert.throws(() => projectMarkers(small, []), { name: 'RangeError', message: /직교/ });
 });
