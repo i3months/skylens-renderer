@@ -622,7 +622,11 @@ test('F-208 2배 크기 증가율(시험 쪽 관측): 다룬 원소 수·저장�
 // F-213: 상한에 닿은 뒤 교체가 계속돼도 한 번당 비용이 상한 크기에 비례하지 않아야 한다.
 // 교체 한 번 = 힙 push 1 + 루트 비우기 + LRU 큐 push 2 + 축출 머리 지우기 1 + 일괄 잘라 내기(amortized) 정도의 상수 대입이다.
 const STORED_PER_REPLACEMENT = 12;
-// 읽기(Proxy get 트랩이 센 인덱스·length 읽기)도 회당 상수다. 실측 약 20 이므로 여유를 둔 28 (F-241 ⑦).
+// 읽기: 힙 연산 구조에서 계산. heapPush siftUp + heapPop siftDown 각각 ~log(heap_size) 레벨 순회.
+// heapPush: heap.push(1) + siftUp(1+log n) = 3+log(n) 읽기 (각 레벨마다 부모 비교 1번)
+// heapPop: heap[0](1) + heap.pop(1) + length check(1) + siftDown(1+2*log n) = 5+2*log(n) 읽기 (각 레벨마다 자식 2개 비교)
+// nextBatch 루프: dropDeadTop + length/index 검사 ~2-3 읽기
+// 총합: ~10-12 + 3*log(heap_size). heap_size=32(실제 측정값), log(32)=5 -> 10+15=25, 여유 포함 28
 const READS_PER_REPLACEMENT = 28;
 test('F-213 시험 쪽 관측: maxSentGroups 65536 에서 교체 25만 회의 옮긴 원소 수 0·다룬 원소 수 회당 <= 24(상수), 주입 비교 회당 <= 4, 저장소 인덱스 대입 회당 <= STORED_PER_REPLACEMENT(상수)', { timeout: PERF_TIMEOUT_MS }, async (ctx) => {
   const N = 250000;
