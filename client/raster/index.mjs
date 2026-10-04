@@ -205,13 +205,24 @@ export function createRenderer(options) {
   // 변경 세대: meta 가 바뀔 때마다 올라간다(makeRoom 의 지역 선택 재사용 판정용, 선택 상태가 아니다)
   let metaGen = 0;
   const meta = new (class extends Map {
-    set(k, v) { metaGen += 1; return super.set(k, v); }
-    delete(k) { metaGen += 1; return super.delete(k); }
-    clear() { metaGen += 1; super.clear(); }
+    set(k, v) {
+      metaGen += 1;
+      const had = super.has(k);
+      super.set(k, v);
+      if (!had) roomResidentChange(k, true); // 같은 key 를 덮어쓰면 상주 목록은 그대로다
+      return this;
+    }
+    delete(k) {
+      metaGen += 1;
+      const had = super.delete(k);
+      if (had) roomResidentChange(k, false);
+      return had;
+    }
+    clear() { metaGen += 1; super.clear(); roomCache = null; }
   })();
   // makeRoom 전용 캐시(selection 계열 상태와 무관). setArrived 두 경로·dispose 에서 null 로 돌려 도착 입력 사본을 붙잡지 않는다.
-  // {tiles: 도착 입력의 타일 표, gen: resident·base 를 만든 metaGen, resident: 타일 → 상주 도착 key, base: 새 key 를 넣지 않은 보호 Set,
-  //  key·drawing: 직전 거부/판정의 올리는 key 와 보호 집합}
+  // {tiles: 도착 입력의 타일 표, gen: key·drawing 을 만든 metaGen, resident: 타일 → 상주 도착 key(meta 변경마다 그 key 의 타일 하나만 증분 갱신),
+  //  base: 새 key 를 넣지 않은 보호 Set(같이 증분 갱신), key·drawing: 직전 거부/판정의 올리는 key 와 보호 집합}
   let roomCache = null;
   /** @type {Map<string, number>} 올리는 중인 key → 토큰(해제·소실 뒤 늦게 끝난 업로드를 버린다) */
   const inflight = new Map();
@@ -356,7 +367,7 @@ export function createRenderer(options) {
   function roomProtection(key) {
     let rc = roomCache;
     if (rc === null) rc = { tiles: buildRoomTiles(), gen: -1, resident: null, base: null, key: null, drawing: null };
-    if (rc.gen !== metaGen) { // 상주 목록이 바뀌었다: 타일별 상주 수와 새 key 없는 보호 집합을 다시 만든다
+    if (rc.resident === null) { // 처음 한 번만 meta 전체를 돈다. 이후 상주 변경은 roomResidentChange 가 그 key 의 타일만 고친다
       const resident = new Map(); // 타일 → {have, ks: [[key, lod]], set, chosen}
       for (const k of meta.keys()) {
         if (!arrivedKeys.has(k)) continue;
@@ -376,6 +387,7 @@ export function createRenderer(options) {
         for (const [k, lod] of e.ks) if (lod === e.chosen) base.add(k);
       }
       rc = { tiles: rc.tiles, gen: metaGen, resident, base, key: null, drawing: null };
+      roomCache = rc; // 증분 갱신이 이 객체를 본다
     }
     // key 를 더했을 때 같은 타일의 보호 집합이 달라지는가
     let drawing = rc.base;
@@ -393,7 +405,38 @@ export function createRenderer(options) {
         drawing = { has: (k) => (e.set.has(k) ? own.has(k) : base.has(k)) };
       }
     }
-    return { tiles: rc.tiles, gen: rc.gen, resident: rc.resident, base: rc.base, key, drawing };
+    // resident·base 는 증분 갱신되는 같은 객체를 쓴다. gen·key·drawing 만 이번 판정의 것으로 바꾼다
+    rc.gen = metaGen;
+    rc.key = key;
+    rc.drawing = drawing;
+    return rc;
+  }
+  // meta 에 key 가 들어오거나 나갈 때 그 key 의 타일 하나만 resident·base 를 고친다(O(그 타일의 상주 chunk 수)).
+  // roomCache 가 없거나 resident 를 아직 안 만들었으면 할 일이 없다(만들 때 meta 를 돈다).
+  function roomResidentChange(k, added) {
+    const rc = roomCache;
+    if (rc === null || rc.resident === null || !arrivedKeys.has(k)) return;
+    const id = keyTile(k);
+    const t = rc.tiles.get(id);
+    if (t === undefined || !t.cand) return;
+    let e = rc.resident.get(id);
+    if (e !== undefined) for (const [bk, lod] of e.ks) if (lod === e.chosen) rc.base.delete(bk);
+    const lod = keyLod(k);
+    if (added) {
+      if (e === undefined) { e = { have: new Int32Array(8), ks: [], set: new Set(), chosen: -1 }; rc.resident.set(id, e); }
+      e.have[lod]++;
+      e.ks.push([k, lod]);
+      e.set.add(k);
+    } else {
+      if (e === undefined || !e.set.has(k)) return;
+      e.have[lod]--;
+      e.set.delete(k);
+      const at = e.ks.findIndex((x) => x[0] === k);
+      e.ks.splice(at, 1);
+      if (e.ks.length === 0) { rc.resident.delete(id); return; }
+    }
+    e.chosen = chooseLod(e.have, t.need);
+    for (const [bk, l] of e.ks) if (l === e.chosen) rc.base.add(bk);
   }
 
   // 그리지 않는 상주 조각을 오래된 것부터 해제해 need 바이트를 만든다. 모자라면 'memory'.
