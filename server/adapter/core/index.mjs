@@ -234,11 +234,16 @@ export function createCoreAdapter(options = {}) {
       // (도착하지 않은 것을 메우지 않는다 — 수준은 교체될 뿐이다). 어댑터는 끝나지 않은 표시를 지우고(안 지우면 이후
       // 모든 이벤트가 UNFINISHED_EVENT 로 막힌다), 그 pieceSeq 들은 이미 그 key 로 쓰였을 수 있으므로 태워서 다른 key 에
       // 다시 쓰지 않으며, onRelease 로 그 key 들을 놓는다(info.abandoned = true).
-      const abandonedInfo = { segmentId, level, previousLevel: machine.snapshot(segmentId).level, abandoned: true };
-      const abandoned = pieces.map((p) => ({ ...p.key }));
+      // 같은 수준(L == M)이면 공유 기계가 같은 key 의 조각을 이미 확정해 지금 그려지고 있을 수 있다(F-227). 기계의 현재 수준이
+      // 쥔 key 는 놓지 않는다. L < M 이면 그 수준의 조각이 아니므로 그대로 모두 놓는다.
+      const snap = machine.snapshot(segmentId);
+      const live = new Set();
+      if (snap.level === level) for (const p of snap.pieces) live.add(pieceKeyString(p.key));
+      const abandonedInfo = { segmentId, level, previousLevel: snap.level, abandoned: true };
+      const abandoned = pieces.filter((p) => !live.has(pieceKeyString(p.key))).map((p) => ({ ...p.key }));
       nextSeq += unfinished.keys.length;
       unfinished = null;
-      notifyRelease(abandoned, abandonedInfo);
+      if (abandoned.length > 0) notifyRelease(abandoned, abandonedInfo);
       return { action: 'skip', emitted: 0, released: [], abandoned };
     }
     // ② 메시지를 모두 만들고 부호화까지 마친다. 여기서 던지면 아무것도 나가지 않는다.

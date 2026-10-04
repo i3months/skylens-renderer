@@ -626,6 +626,79 @@ test('F-223 ①: 실패 뒤 재시도가 skip 이 되면 부분 송출 key 를 �
   assert.equal(rel.length, before);
 });
 
+test('F-227: 같은 수준(L == M)에서 skip 이 되면 기계가 이미 쥔 key 는 놓지 않고, 나머지만 놓는다', () => {
+  const server = createServerMachine();
+  const out = [];
+  const rel = [];
+  let failAt = 0;
+  let calls = 0;
+  const ad = createCoreAdapter({
+    levelMachine: server,
+    emit: (m) => { calls++; if (calls === failAt) throw new Error('x'); out.push(m); },
+    onRelease: (keys, info) => rel.push({ keys, info }),
+  });
+  const ev = levelEvent(9, 1); // 수준 1 조각 2 개
+  failAt = 2;
+  assert.throws(() => ad.handle(ev), /x/);
+  // 다른 경로가 같은 수준 1 을 첫 조각의 같은 key 로만 확정했다(둘째 key 는 기계에 없다)
+  server.arrive(9, 1, [ev.pieces[0]]);
+  assert.equal(server.snapshot(9).level, 1);
+  failAt = 0; calls = 0;
+  const r = ad.handle(ev);
+  assert.equal(r.action, 'skip');
+  assert.equal(rel.length, 1);
+  assert.deepEqual(rel[0].info, { segmentId: 9, level: 1, previousLevel: 1, abandoned: true });
+  assert.deepEqual(rel[0].keys, [ev.pieces[1].key], '기계가 쥔 key 는 빠지고 없는 key 만 놓는다');
+  assert.deepEqual(r.abandoned, rel[0].keys);
+  assert.equal(ad.unfinishedEvent(), null);
+  assert.equal(ad.nextPieceSeq(), PIECE_SEQ_MIN + 2);
+});
+
+test('F-227: 같은 수준이고 모든 key 를 기계가 쥐고 있으면 아무것도 놓지 않는다', () => {
+  const server = createServerMachine();
+  const rel = [];
+  let fail = true;
+  const ad = createCoreAdapter({
+    levelMachine: server,
+    emit: (m) => { if (fail && m.type === 'LEVEL_ARRIVED') throw new Error('x'); },
+    onRelease: (keys, info) => rel.push({ keys, info }),
+  });
+  const ev = levelEvent(9, 1);
+  assert.throws(() => ad.handle(ev), /x/);
+  server.arrive(9, 1, ev.pieces);
+  fail = false;
+  const r = ad.handle(ev);
+  assert.equal(r.action, 'skip');
+  assert.deepEqual(rel, []);
+  assert.deepEqual(r.abandoned, []);
+  assert.equal(ad.unfinishedEvent(), null);
+});
+
+test('F-228: replace 의 onRelease 가 던져도 끝나지 않은 표시는 이미 지워져 있다', () => {
+  const server = createServerMachine();
+  const ad = createCoreAdapter({
+    levelMachine: server, emit: () => {},
+    onRelease: () => { throw new Error('알림 실패'); },
+  });
+  ad.handle(levelEvent(6, 0));
+  assert.throws(() => ad.handle(levelEvent(6, 2)), /알림 실패/);
+  assert.equal(ad.unfinishedEvent(), null);
+  assert.equal(ad.handle({ kind: 'segment_expected', segmentId: 7 }).emitted, 1, '이후 이벤트가 막히지 않는다');
+});
+
+test('F-228: onRelease info 전체(previousLevel 은 실제 이전 수준)', () => {
+  const server = createServerMachine();
+  const rel = [];
+  const ad = createCoreAdapter({ levelMachine: server, emit: () => {}, onRelease: (keys, info) => rel.push(info) });
+  ad.handle(levelEvent(6, 0));
+  ad.handle(levelEvent(6, 2)); // 0 -> 2
+  ad.handle(levelEvent(6, 3)); // 2 -> 3
+  assert.deepEqual(rel, [
+    { segmentId: 6, level: 2, previousLevel: 0 },
+    { segmentId: 6, level: 3, previousLevel: 2 },
+  ]);
+});
+
 test('F-203: 빈 pieces 는 거부, 이전 수준·순번 그대로이고 아무것도 나가지 않는다', () => {
   const server = createServerMachine();
   const out = [];
