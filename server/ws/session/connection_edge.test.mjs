@@ -57,3 +57,25 @@ test('conn 닫힘 콜백이 두 번 불려도 onClose 는 한 번', () => {
   conn.closeCb({ code: 1000, reason: 'x' });
   assert.deepEqual(infos, [{ code: 1006, reason: '' }]);
 });
+
+// replay 대기 중 접속이 닫힌 뒤의 stoppedAt 처리(Number.isInteger 검사가 닫힘 경로에서도 필요하다).
+for (const [label, stoppedAt, expected] of [['NaN', NaN, 0], ['정수', 2, 1]]) {
+  test(`replay 대기 중 closeCb 뒤 stoppedAt ${label} 이면 onStopped ${expected}회`, async () => {
+    const conn = fakeConn();
+    const stops = [];
+    let release;
+    attachConnection({
+      conn, store: {}, loadPiece: () => null,
+      replay: () => new Promise((r) => { release = () => r({ sessionId: 7, resumed: true, nextPieceSeq: 1, stoppedAt }); }),
+      onStopped: (id, info) => stops.push([id, info]),
+    });
+    const pending = conn.msgCb(HELLO());
+    await new Promise((r) => setImmediate(r));
+    conn.closeCb({ code: 1006, reason: '' });
+    release();
+    await pending;
+    await new Promise((r) => setImmediate(r));
+    assert.equal(stops.length, expected);
+    if (expected) assert.deepEqual(stops, [[7, { stoppedAt: 2 }]]);
+  });
+}

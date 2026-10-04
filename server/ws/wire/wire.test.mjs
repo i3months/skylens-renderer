@@ -219,3 +219,27 @@ test('createWsServer 는 wire 를 접속 경로에 배선하고 server.stats() �
     assert.throws(() => createWsServer({ host: loopbackHost(), port: 0 }), TypeError);
   } finally { await srv.close(); }
 });
+
+test('async 로 던지는 onError 여도 unhandledRejection 이 없다(onStopped 거부·동기 close 던짐 모두 보고)', () => withUnhandled(async (unhandled) => {
+  const calls = [];
+  const env = await setup({
+    onStopped: () => Promise.reject(new Error('알림 실패')),
+    onError: async (e, where) => { calls.push(where); throw new Error('보고 실패'); },
+  });
+  env.store.close = () => { throw new Error('동기 close 실패'); };
+  await reconnect(env);
+  await tick(); await tick(); await tick();
+  assert.deepEqual([...calls].sort(), ['onStopped', 'store.close']); // 동기 던짐은 즉시, 거부는 한 틱 뒤에 보고된다
+  assert.equal(env.wire.stats().onStoppedErrors, 1);
+  assert.equal(env.wire.stats().storeCloseFailed, 1);
+  assert.deepEqual(unhandled, []);
+}));
+
+test('onError 가 거부 Promise 를 돌려줘도(async 아닌 함수) unhandledRejection 이 없다', () => withUnhandled(async (unhandled) => {
+  const env = await setup({ onError: () => Promise.reject(new Error('보고 거부')) });
+  env.store.close = () => Promise.reject(new Error('비동기 close 실패'));
+  await reconnect(env);
+  await tick(); await tick(); await tick();
+  assert.equal(env.wire.stats().storeCloseFailed, 1);
+  assert.deepEqual(unhandled, []);
+}));
