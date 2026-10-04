@@ -1,4 +1,4 @@
-// 현황판 경로 대역폭 측정(T13.9). SPEC §4 S6: 초기 ≤ 15 MB + 구간당 ≤ 3 MB, 웹소켓 프레임 바이트 합.
+// 현황판 경로 대역폭 측정(T13.9). SPEC §4 S6: 초기 ≤ 15 MB + 구간당 ≤ 3 MB (MB = 10^6 B), 웹소켓 프레임 바이트 합.
 //   초기 = 접속부터 첫 프레임까지 = WELCOME + 구간 0 의 수준 0 PIECE 들 + 그 LEVEL_ARRIVED (server/scheduler/initial 의 정의와 같다).
 //   구간당 = 한 구간의 수준 0..3 PIECE 전체 + 수준마다 LEVEL_ARRIVED 1 개.
 // 합성 장면 → packChunk(.skla) → PIECE/LEVEL_ARRIVED(encodeMessage) → encodeFrame 의 실제 길이를 센다. 손으로 적은 숫자는 없다.
@@ -8,6 +8,10 @@ import { generate as generateLevels, levelCloud } from '../../fixtures/scenes/le
 import { encodeMessage } from '../../server/proto/codec/index.mjs';
 import { encodeFrame, OPCODES } from '../../server/ws/frame/index.mjs';
 import { packCloudPieces } from '../proto/measure.mjs';
+import { INITIAL_BUDGET_BYTES, SEGMENT_BUDGET_BYTES } from '../proto/index.mjs';
+
+// S6 문턱(10^6 B 기준). bench/proto 의 고정 상수를 그대로 쓴다.
+export const STATUS_BW_LIMITS = Object.freeze({ initialBytes: INITIAL_BUDGET_BYTES, perSegmentBytes: SEGMENT_BUDGET_BYTES });
 
 const frameLen = (msg) => encodeFrame(OPCODES.BINARY, encodeMessage(msg)).length;
 
