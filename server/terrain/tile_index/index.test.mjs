@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTileIndex } from './index.mjs';
+import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 
 // 시드 고정 PRNG(mulberry32)
 function prng(seed) {
@@ -90,4 +91,30 @@ test('결정적: 같은 입력은 같은 출력', () => {
   assert.deepEqual(a.query(60, 60), [1, 2]);
   assert.deepEqual(a.query(60, 60), b.query(60, 60));
   assert.deepEqual(a.tilesIn(ROOT), b.tilesIn(ROOT));
+});
+
+test('넓이 0 항목과 색인 범위 끝(ROOT.maxX·maxY)에 닿는 항목도 조회된다', () => {
+  const items = [
+    { id: 1, bounds: { minX: 100, minY: 100, maxX: 100, maxY: 100 } }, // 점 항목
+    { id: 2, bounds: { minX: 200, minY: 10, maxX: 200, maxY: 50 } }, // 폭 0 선분
+    { id: 3, bounds: { minX: ROOT.maxX, minY: 0, maxX: ROOT.maxX + 50, maxY: 10 } }, // ROOT.maxX 에 닿음
+    { id: 4, bounds: { minX: 0, minY: ROOT.maxY, maxX: 10, maxY: ROOT.maxY + 50 } }, // ROOT.maxY 에 닿음
+    { id: 5, bounds: { minX: ROOT.minX - 50, minY: 0, maxX: ROOT.minX, maxY: 10 } }, // ROOT.minX 에 닿음
+  ];
+  const idx = buildTileIndex(ROOT, items);
+  assert.deepEqual(idx.query(100, 100), [1]);
+  assert.deepEqual(idx.query(200, 30), [2]);
+  assert.deepEqual(idx.query(ROOT.maxX, 5), [3]);
+  assert.deepEqual(idx.query(5, ROOT.maxY), [4]);
+  assert.deepEqual(idx.query(ROOT.minX, 5), [5]);
+});
+
+test('입력 검증: id 중복·누락·null 항목·items 아님', () => {
+  const b = { minX: 0, minY: 0, maxX: 1, maxY: 1 };
+  assert.throws(() => buildTileIndex(ROOT, [{ id: 1, bounds: b }, { id: 1, bounds: b }]), TowerAssetError);
+  assert.throws(() => buildTileIndex(ROOT, [{ bounds: b }]), TowerAssetError);
+  assert.throws(() => buildTileIndex(ROOT, [{ id: null, bounds: b }]), TowerAssetError);
+  assert.throws(() => buildTileIndex(ROOT, [null]), TowerAssetError);
+  assert.throws(() => buildTileIndex(ROOT, [{ id: 1, bounds: null }]), TowerAssetError);
+  assert.throws(() => buildTileIndex(ROOT, null), TowerAssetError);
 });

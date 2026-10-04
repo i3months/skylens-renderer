@@ -5,10 +5,10 @@ import {
 } from './index.mjs';
 
 // 시험용 프리즘: 직사각형(w×d) 바닥 z=0, 지붕 z=h, 위에서 볼 때 반시계. 원점 (x0,y0).
-function prism(x0, y0, w, d, h) {
+function prism(x0, y0, w, d, h, z0 = 0) {
   const positions = new Float32Array([
-    x0, y0, 0, x0 + w, y0, 0, x0 + w, y0 + d, 0, x0, y0 + d, 0,
-    x0, y0, h, x0 + w, y0, h, x0 + w, y0 + d, h, x0, y0 + d, h,
+    x0, y0, z0, x0 + w, y0, z0, x0 + w, y0 + d, z0, x0, y0 + d, z0,
+    x0, y0, z0 + h, x0 + w, y0, z0 + h, x0 + w, y0 + d, z0 + h, x0, y0 + d, z0 + h,
   ]);
   const indices = new Uint32Array([
     4, 5, 6, 4, 6, 7, // 지붕
@@ -71,14 +71,60 @@ test('같은 id 같은 입력 → 같은 바이트, 다른 id → 다른 표본'
 });
 
 test('삼각형 넓이 비례: 지붕 표본 비율', () => {
-  // 10×10×10: 전체 600 m², 지붕 100 → 약 1/6. 표본 5000 개로 ±0.03
+  // 10×10×10: 바닥 덮개(아래 향)는 표본에서 빠지므로 보이는 면 500 m², 지붕 100 → 약 1/5. 표본 5000 개로 ±0.03
   const pts = sampleBuildingPoints(prism(0, 0, 10, 10, 10), 3, { density: 100, min: 1, max: 5000 });
   let roof = 0;
   for (let i = 2; i < pts.length; i += 3) if (Math.abs(pts[i] - 10) < 1e-4) roof++;
-  assert.ok(Math.abs(roof / 5000 - 1 / 6) < 0.03, `지붕 비율 ${roof / 5000}`);
+  assert.ok(Math.abs(roof / 5000 - 1 / 5) < 0.03, `지붕 비율 ${roof / 5000}`);
 });
 
 test('잘못된 입력은 오류', () => {
   assert.throws(() => sampleBuildingPoints(null, 1));
   assert.throws(() => sampleBuildingPoints({ positions: new Float32Array(9), indices: new Uint32Array(0) }, 1));
+});
+
+test('바닥 덮개(아래 향 삼각형)에는 표본이 0 개', () => {
+  const pts = sampleBuildingPoints(prism(0, 0, 10, 10, 10), 3, { density: 100, min: 1, max: 5000 });
+  let floor = 0;
+  for (let i = 2; i < pts.length; i += 3) if (Math.abs(pts[i]) < 1e-4) floor++;
+  // 벽 아래 가장자리(z=0 선)는 확률 0 이라 사실상 0. 바닥 덮개가 살아 있으면 약 1/6 = 800 개 이상.
+  assert.ok(floor <= 5, `바닥 표본 ${floor}`);
+  // 바닥 덮개만 있는 메시는 보이는 면이 없다
+  assert.throws(() => sampleBuildingPoints({ positions: new Float32Array([0, 0, 0, 1, 0, 0, 1, 1, 0]), indices: new Uint32Array([0, 2, 1]) }, 1));
+});
+
+test('지붕 면 4분할 칸별 표본 수 균등(삼각형 안 균일, 꼭짓점 쏠림 없음)', () => {
+  const N = 20000;
+  const pts = sampleBuildingPoints(prism(0, 0, 10, 10, 10), 9, { density: 1e9, min: N, max: N });
+  assert.equal(pts.length / 3, N);
+  const q = [0, 0, 0, 0];
+  let roof = 0;
+  for (let i = 0; i < pts.length; i += 3) {
+    if (Math.abs(pts[i + 2] - 10) > 1e-4) continue;
+    roof++;
+    q[(pts[i] >= 5 ? 1 : 0) + (pts[i + 1] >= 5 ? 2 : 0)]++;
+  }
+  assert.ok(roof > 3000);
+  for (let k = 0; k < 4; k++) assert.ok(Math.abs(q[k] / roof - 0.25) < 0.03, `칸 ${k}: ${q[k] / roof}`);
+});
+
+test('바닥 높이(zMin)와 무관: z0=100 프리즘 표본 수 = z0=0, 표본 z 는 [100,106]', () => {
+  const a = sampleBuildingPoints(prism(0, 0, 10, 10, 6, 0), 1);
+  const b = sampleBuildingPoints(prism(0, 0, 10, 10, 6, 100), 1);
+  assert.equal(a.length, 17 * 3);
+  assert.equal(b.length, a.length);
+  for (let i = 2; i < b.length; i += 3) assert.ok(b[i] >= 100 - 1e-4 && b[i] <= 106 + 1e-4);
+});
+
+test('규칙·입력 검증: rule {}·NaN density·min>max·Infinity 위치는 throw', () => {
+  const m = prism(0, 0, 10, 10, 6);
+  assert.throws(() => sampleBuildingPoints(m, 1, {}));
+  assert.throws(() => sampleBuildingPoints(m, 1, { density: NaN, min: 1, max: 5 }));
+  assert.throws(() => sampleBuildingPoints(m, 1, { density: 1, min: 10, max: 5 }));
+  assert.throws(() => samplesFor(100, 6, {}));
+  assert.throws(() => samplesFor(100, 6, { density: 1, min: 10, max: 5 }));
+  const inf = prism(0, 0, 10, 10, 6);
+  inf.positions[3] = Infinity;
+  assert.throws(() => sampleBuildingPoints(inf, 1));
+  assert.throws(() => sampleBuildingPoints({ positions: m.positions, indices: new Uint32Array([0, 1, 99]) }, 1));
 });

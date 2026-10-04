@@ -28,7 +28,13 @@ export function buildTileIndex(bounds, items) {
   const root = { minX: bounds.minX, minY: bounds.minY, maxX: bounds.maxX, maxY: bounds.maxY };
   const cells = new Map(); // `${tx},${ty}` → 항목 배열
   const rec = [];
+  if (!Array.isArray(items)) throw new TowerAssetError('buildTileIndex: items 는 배열이어야 한다');
+  const seen = new Set();
   for (const it of items) {
+    if (!it || typeof it !== 'object') throw new TowerAssetError('buildTileIndex: 항목이 null 이거나 객체가 아니다');
+    if (!Number.isInteger(it.id)) throw new TowerAssetError(`buildTileIndex: 항목 id 가 정수가 아니다 (${it.id})`);
+    if (seen.has(it.id)) throw new TowerAssetError(`buildTileIndex: id 가 중복됐다 (${it.id})`);
+    seen.add(it.id);
     checkBounds(it.bounds, `항목 ${it.id}`);
     const r = { id: it.id, minX: it.bounds.minX, minY: it.bounds.minY, maxX: it.bounds.maxX, maxY: it.bounds.maxY };
     rec.push(r);
