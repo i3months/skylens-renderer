@@ -13,11 +13,11 @@ async function checkEsbuild() {
   try {
     const nodeModulesPath = resolve('./node_modules/.bin/esbuild');
     try {
-      execSync(`${nodeModulesPath} --version`, { stdio: 'ignore' });
+      execSync(`${nodeModulesPath} --version`, { stdio: 'ignore', timeout: 20000 });
       return { available: true, command: nodeModulesPath };
     } catch {
       try {
-        execSync('npx esbuild --version', { stdio: 'ignore' });
+        execSync('npx esbuild --version', { stdio: 'ignore', timeout: 20000 });
         return { available: true, command: 'npx esbuild' };
       } catch {
         return { available: false };
@@ -35,7 +35,7 @@ async function bundleWithEsbuild(modulePath, esbuildCmd) {
 
   try {
     const cmd = `${esbuildCmd} ${entryPath} --bundle --minify --format=esm --outfile=${outputPath}`;
-    execSync(cmd, { stdio: 'ignore' });
+    execSync(cmd, { stdio: 'ignore', timeout: 20000 });
     const content = readFileSync(outputPath, 'utf8');
     rmSync(tempDir, { recursive: true, force: true });
     return content;
