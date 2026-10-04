@@ -10,8 +10,8 @@
 //   구현 몫이며 계약으로 고정하지 않는다(memoryBytes 가 실제 사용량을 센다). 그래서 예전 28 B 패딩 상수는 근거
 //   (renderer_basis §7-4·contracts/points·ASSET_FORMAT 어디에도 없음)가 없어 지웠다.
 //   법선(형식 1 만): 위치와 같은 ENU 축의 세계 좌표 벡터다. 합치기(fusion) 단계의 값이다: 사진마다 카메라 법선 n 을
-//     Rᵀn 으로 세계 좌표에 올리고(renderer_basis §7-1), 같은 점으로 판정된 사진들(최소 3장 — renderer_basis §7-3 의
-//     -number-views-fuse 설정 값이 근거다)의 값을 평균해 한 점의 법선으로
+//     Rᵀn 으로 세계 좌표에 올리고(renderer_basis §7-1), 같은 점으로 판정된 사진들(최소 3장 — renderer_basis §10 의
+//     '--number-views-fuse' 기본값 3 이 근거다)의 값을 평균해 한 점의 법선으로
 //     저장한다(§7-2, 색도 같은 평균). 팔면체 사상 snorm8 로 저장된다(ASSET_FORMAT §5.3). 평균이라 길이 1 이 보장되지 않으므로
 //     셰이더가 정규화한다. 셰이딩(T12.2)은 contracts/raster shade 의 lambert(normalWorld, lightDirWorld, rgb) 와 같은 식이고
 //     빛 방향도 세계 좌표다. 형식 2 에는 법선이 없어 셰이딩하지 않는다.
@@ -65,11 +65,19 @@
 //
 // ④ 그리기 규칙(수준 도착, contracts/proto LEVEL_ARRIVED): 조각(PIECE)은 받는 것만으로 그리지 않는다.
 //   - 조각은 그 (segmentId, level) 의 LEVEL_ARRIVED 를 받은 뒤에만 그린다. 뒤따르는 LEVEL_ARRIVED 가 없는 조각은 절대 그리지 않는다.
+//   - LEVEL_ARRIVED 항목은 {segmentId, level, keys} 이고 keys 는 그 수준에서 완료된 조각 key 집합(ASSET_FORMAT §11 정규 문자열,
+//     모두 같은 segmentId·level)이다. 가장 높은 수준 M 의 조각 중 그 집합에 든 key 만 그린다. 집합 밖의 M 수준 key 는 시도가
+//     중간에 버린(abandoned) 조각이라 그리지 않고 discard 로 돌려준다. 곧 abandoned key 는 그리기 전에 해제된다(호출자가
+//     releasePiece). keys 가 없는 항목은 빈 집합으로 본다(완료가 확인되지 않은 조각은 그리지 않는다).
 //   - 수준은 쌓이지 않고 바뀐다: 한 구간에서 도착한 가장 높은 수준 M 의 조각만 그린다. 더 높은 수준이 도착하면 낮은 수준의
 //     조각은(도착했든 아직 LEVEL_ARRIVED 를 기다리든) 버린다(releasePiece). M 보다 높은 수준의 조각은 자기 LEVEL_ARRIVED 를
 //     기다리며 그리지 않는다.
-//   - 자기 LEVEL_ARRIVED 가 끝내 오지 않는 pending 조각: 계속 그리지 않는다. 그 구간의 시도(attempt)가 새 시도로 대체되거나
-//     끝나면 포기(abandoned)로 보고 releasePiece 로 해제한다(selectDrawable 은 순수 함수라 해제는 호출자 몫이고 pending 은 그대로 돌려준다).
+//   - 자기 LEVEL_ARRIVED 가 끝내 오지 않는 pending 조각: 계속 그리지 않는다. 정리 규칙: 그 구간의 시도(attempt)가 새 시도로
+//     대체되거나 끝나면(종료·연결 끊김·재개 재시작 포함) 그 구간에 남은 pending key 전부를 포기(abandoned)로 보고 호출자가
+//     releasePiece 로 해제한다. selectDrawable 은 순수 함수라 해제하지 않고 pending 을 그대로 돌려준다. 해제 전까지 pending 조각도
+//     maxResidentBytes 에 들어가며, 한도를 넘으면 그리는 조각보다 pending 조각을 먼저 해제한다.
+//   - key 의 segmentId 는 SEGMENT_ID_LIMIT(2^30) 미만, tileX·tileY 는 i32, chunkIndex 는 65536 미만이어야 하고 어기면
+//     ClientRasterError('piece')다(arrived 항목의 segmentId 도 같다).
 //   - 도착하지 않은 것을 그리거나 채우지 않는다(skylens 원칙). 순수 함수 selectDrawable 이 이 규칙의 기준이다.
 // 프레임 루프는 조각 도착과 분리되어 있다(async uploadPiece, 다음 draw 에 반영).
 // 메모리: maxResidentBytes 이내로 GPU 램을 쓴다(GPU 만, 시스템 메모리 아님).
@@ -128,8 +136,8 @@ export const FORMAT_GAUSS56 = 2;
 export const RECORD_BYTES = Object.freeze({ [FORMAT_POINT27]: 27, [FORMAT_GAUSS56]: 56 });
 
 /**
- * uploadPiece·releasePiece 의 key 형식(ASSET_FORMAT §11 정규 문자열의 모양). 범위(segmentId < 2^30, tile i32,
- * chunkIndex < 65536)까지의 엄격 검사는 server/asset/ids decodeChunkKey 의 몫이다.
+ * uploadPiece·releasePiece 의 key 형식(ASSET_FORMAT §11 정규 문자열의 모양). 이 정규식은 모양만 본다.
+ * 범위(segmentId < 2^30, tile i32, chunkIndex < 65536)는 parsePieceKey 가 server/asset/ids decodeChunkKey 와 같게 검사한다.
  */
 export const PIECE_KEY_PATTERN = /^(0|[1-9][0-9]*)\.[0-3]\.(0|-?[1-9][0-9]*)\.(0|-?[1-9][0-9]*)\.[0-7]\.(0|[1-9][0-9]*)$/;
 
@@ -153,7 +161,7 @@ export const CLIENT_RASTER_API = Object.freeze({
   cvToGlExtrinsics: { fn: 'cvToGlExtrinsics(R, t) -> {R, t}  diag(1,-1,-1)·R, diag(1,-1,-1)·t' },
   cameraPointToGl: { fn: 'cameraPointToGl(xc) -> [x, -y, -z] | null  null when d = xc[2] <= 0 or not finite' },
   pixelToNdc: { fn: 'pixelToNdc(u, v, bw, bh) -> [2u/bw - 1, 1 - 2v/bh]' },
-  selectDrawable: { fn: 'selectDrawable(keys, arrived) -> {draw, pending, discard}  arrived: [{segmentId, level}] from LEVEL_ARRIVED' },
+  selectDrawable: { fn: 'selectDrawable(keys, arrived) -> {draw, pending, discard}  arrived: [{segmentId, level, keys}] from LEVEL_ARRIVED (keys = completed key set)' },
 });
 
 function posFinite(n, x) {
@@ -170,21 +178,34 @@ export const MAX_BUFFER_DIMENSION = 16384;
 /** segmentId 상한(배타). server/asset/ids 의 segmentId < 2^30 과 같다. */
 export const SEGMENT_ID_LIMIT = 2 ** 30;
 
+/** maxDimension 으로 주입할 수 있는 값의 상한(장치 픽셀). 이보다 큰 한도는 거부한다. */
+export const MAX_BUFFER_DIMENSION_LIMIT = 32768;
+
+/** 배율 sx·sy 허용 범위 [1/SCALE_LIMIT, SCALE_LIMIT]. 밖이면 K 가 터무니없는 값이 되므로 거부한다. */
+export const SCALE_LIMIT = 4096;
+
+const I32_MIN = -(2 ** 31);
+const I32_MAX = 2 ** 31 - 1;
+const CHUNK_INDEX_LIMIT = 65536;
+
 /**
  * CSS 픽셀 크기와 dpr 로 그리기 버퍼(장치 픽셀) 크기를 정한다. 반올림 결과가 0 이거나 유한 안전 정수가 아니거나
- * maxDimension(기본 16384, options 로 주입)을 넘으면 ClientRasterError('view') 로 거부한다(곱셈 뒤에 검사한다).
+ * maxDimension(기본 16384, options 로 주입, 주입값은 MAX_BUFFER_DIMENSION_LIMIT = 32768 이하)을 넘으면
+ * ClientRasterError('view') 로 거부한다(곱셈 뒤에 검사한다). options 가 null·undefined 이면 기본값을 쓴다.
  * @param {number} width CSS 픽셀(양의 정수)
  * @param {number} height CSS 픽셀(양의 정수)
  * @param {number} dpr devicePixelRatio(양의 유한 수)
  * @param {{maxDimension?: number}} [options]
  * @returns {{width: number, height: number}}
  */
-export function drawingBufferSize(width, height, dpr, options = {}) {
+export function drawingBufferSize(width, height, dpr, options) {
   posInt('width', width);
   posInt('height', height);
   posFinite('devicePixelRatio', dpr);
-  const maxDimension = options.maxDimension ?? MAX_BUFFER_DIMENSION;
+  if (options != null && typeof options !== 'object') throw new ClientRasterError('view', `options 는 객체여야 함: ${String(options)}`);
+  const maxDimension = options?.maxDimension ?? MAX_BUFFER_DIMENSION;
   posInt('maxDimension', maxDimension);
+  if (maxDimension > MAX_BUFFER_DIMENSION_LIMIT) throw new ClientRasterError('view', `maxDimension 이 상한 ${MAX_BUFFER_DIMENSION_LIMIT} 을 넘음: ${maxDimension}`);
   const out = { width: Math.round(width * dpr), height: Math.round(height * dpr) };
   for (const n of ['width', 'height']) {
     if (!Number.isFinite(out[n]) || !Number.isSafeInteger(out[n]) || out[n] > maxDimension) {
@@ -212,6 +233,8 @@ export function scaleIntrinsics(K, refW, refH, W, H, dpr) {
   const buf = checkScaleInputs(K, refW, refH, W, H, dpr);
   const sx = buf.width / refW;
   const sy = buf.height / refH;
+  checkScale('sx', sx);
+  checkScale('sy', sy);
   return checkScaled({ fx: K.fx * sx, fy: K.fy * sy, cx: K.cx * sx, cy: K.cy * sy });
 }
 
@@ -225,6 +248,10 @@ function checkScaleInputs(K, refW, refH, W, H, dpr) {
   posFinite('refW', refW);
   posFinite('refH', refH);
   return drawingBufferSize(W, H, dpr);
+}
+
+function checkScale(n, x) {
+  if (!(x >= 1 / SCALE_LIMIT && x <= SCALE_LIMIT)) throw new ClientRasterError('view', `배율 ${n} 가 범위 [1/${SCALE_LIMIT}, ${SCALE_LIMIT}] 밖: ${x}`);
 }
 
 function checkScaled(out) {
@@ -255,6 +282,8 @@ export function fitIntrinsics(K, refW, refH, W, H, dpr, mode = 'contain') {
   const buf = checkScaleInputs(K, refW, refH, W, H, dpr);
   const sx = buf.width / refW;
   const sy = buf.height / refH;
+  checkScale('sx', sx);
+  checkScale('sy', sy);
   const s = mode === 'contain' ? Math.min(sx, sy) : Math.max(sx, sy);
   return checkScaled({
     fx: K.fx * s,
@@ -319,33 +348,60 @@ export function pixelToNdc(u, v, bw, bh) {
 }
 
 /**
+ * key 문자열을 ASSET_FORMAT §11 규칙으로 해석한다. 모양이 틀리거나 범위(segmentId < SEGMENT_ID_LIMIT, tileX·tileY i32,
+ * chunkIndex < 65536)를 벗어나면 ClientRasterError('piece').
+ * @param {string} key
+ * @returns {{segmentId: number, level: number, tileX: number, tileY: number, lod: number, chunkIndex: number}}
+ */
+export function parsePieceKey(key) {
+  if (typeof key !== 'string' || !PIECE_KEY_PATTERN.test(key)) throw new ClientRasterError('piece', `key 형식이 틀림: ${String(key)}`);
+  const [segmentId, level, tileX, tileY, lod, chunkIndex] = key.split('.').map(Number);
+  if (!(segmentId < SEGMENT_ID_LIMIT)) throw new ClientRasterError('piece', `key 의 segmentId 가 상한 ${SEGMENT_ID_LIMIT} 이상: ${key}`);
+  for (const [n, v] of [['tileX', tileX], ['tileY', tileY]]) {
+    if (!(v >= I32_MIN && v <= I32_MAX)) throw new ClientRasterError('piece', `key 의 ${n} 가 i32 밖: ${key}`);
+  }
+  if (!(chunkIndex < CHUNK_INDEX_LIMIT)) throw new ClientRasterError('piece', `key 의 chunkIndex 가 상한 ${CHUNK_INDEX_LIMIT} 이상: ${key}`);
+  return { segmentId, level, tileX, tileY, lod, chunkIndex };
+}
+
+/**
  * 그리기 규칙(헤더 ④)의 기준 함수. 순수 함수.
  * 구간마다 LEVEL_ARRIVED 로 도착한 가장 높은 수준 M 을 구하고 조각 key 를 셋으로 나눈다.
- *   draw:    level = M 인 조각(그 수준의 LEVEL_ARRIVED 를 받았다)
- *   discard: level < M 인 조각(더 높은 수준이 도착해 바뀌었다. 도착했든 기다리든 버린다)
+ *   draw:    level = M 이고 M 의 완료 key 집합(LEVEL_ARRIVED.keys)에 든 조각
+ *   discard: level < M 인 조각(더 높은 수준이 도착해 바뀌었다. 도착했든 기다리든 버린다),
+ *            또는 level = M 이지만 완료 집합 밖인 조각(시도가 중간에 버린 abandoned 조각. 그리기 전에 해제된다)
  *   pending: 도착한 수준이 없는 구간의 조각 또는 level > M 인 조각(자기 LEVEL_ARRIVED 를 기다린다. 그리지 않는다)
- * 결과 배열 순서는 입력 순서를 따른다.
+ * 같은 구간·같은 수준의 항목이 여럿이면 완료 집합은 합집합이다. 결과 배열 순서는 입력 순서를 따른다.
  * @param {string[]} keys ASSET_FORMAT §11 정규 문자열
- * @param {{segmentId: number, level: number}[]} arrived 받은 LEVEL_ARRIVED 들(segmentId < SEGMENT_ID_LIMIT = 2^30)
+ * @param {{segmentId: number, level: number, keys?: string[]}[]} arrived 받은 LEVEL_ARRIVED 들(segmentId < SEGMENT_ID_LIMIT = 2^30).
+ *   keys 는 그 수준의 완료 key 집합이고 모두 (segmentId, level) 의 key 여야 한다. 없으면 빈 집합.
  * @returns {{draw: string[], pending: string[], discard: string[]}}
  */
 export function selectDrawable(keys, arrived) {
   if (!Array.isArray(keys)) throw new ClientRasterError('piece', 'keys 는 배열이어야 함');
   if (!Array.isArray(arrived)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
-  const top = new Map();
+  const top = new Map(); // segmentId -> {level, done: Set<string>}
   for (const a of arrived) {
     if (!a || !Number.isInteger(a.segmentId) || a.segmentId < 0 || a.segmentId >= SEGMENT_ID_LIMIT || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
       throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
     }
-    if (!(top.get(a.segmentId) >= a.level)) top.set(a.segmentId, a.level);
+    if (a.keys !== undefined && !Array.isArray(a.keys)) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 는 배열이어야 함: ${JSON.stringify(a)}`);
+    const done = [];
+    for (const k of a.keys ?? []) {
+      const p = parsePieceKey(k);
+      if (p.segmentId !== a.segmentId || p.level !== a.level) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 의 key 가 항목의 (segmentId, level) 과 다름: ${k}`);
+      done.push(k);
+    }
+    const cur = top.get(a.segmentId);
+    if (cur === undefined || a.level > cur.level) top.set(a.segmentId, { level: a.level, done: new Set(done) });
+    else if (a.level === cur.level) for (const k of done) cur.done.add(k);
   }
   const out = { draw: [], pending: [], discard: [] };
   for (const key of keys) {
-    if (typeof key !== 'string' || !PIECE_KEY_PATTERN.test(key)) throw new ClientRasterError('piece', `key 형식이 틀림: ${String(key)}`);
-    const [seg, level] = key.split('.').map(Number);
-    const m = top.get(seg);
-    if (m === undefined || level > m) out.pending.push(key);
-    else if (level === m) out.draw.push(key);
+    const { segmentId, level } = parsePieceKey(key);
+    const m = top.get(segmentId);
+    if (m === undefined || level > m.level) out.pending.push(key);
+    else if (level === m.level && m.done.has(key)) out.draw.push(key);
     else out.discard.push(key);
   }
   return out;
