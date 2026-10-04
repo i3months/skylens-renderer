@@ -294,9 +294,9 @@ export function createRenderer(options) {
     // 한도 여유가 있으면 크기 표·선택을 만들지 않고 돌아간다(F-246 ⑦). key 별 크기는 meta 에 둔다
     const resident = pool.residentBytes() - (meta.get(key)?.bytes ?? 0);
     if (resident + bytes <= maxResidentBytes) return;
-    // 선택을 다시 돌지 않는다: 직전 선택의 draw 와, 그 뒤 올라온 도착 집합 key(fresh)를 그리는 조각으로 보호한다
-    const drawing = new Set(arrived === null ? [] : selection.draw);
-    for (const k of fresh) drawing.add(k);
+    // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 직전 선택에서 pending 이던 LOD 가
+    // 방금 완전해졌다면 그 조각이 새 draw 에 들어 보호된다. 낡지 않았으면 직전 선택을 그대로 쓴다
+    const drawing = new Set(currentSelection().draw);
     const victims = [];
     let free = 0;
     for (const [k, info] of meta) {
