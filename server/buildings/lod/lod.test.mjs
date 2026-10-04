@@ -404,7 +404,7 @@ test('잘못된 입력은 TowerAssetError', () => {
 });
 
 // 8시점마다 원본과 LOD 를 렌더해 건물 영역 SSIM 과 면 수 감소율을 잰다.
-function viewRows(city, t) {
+function viewRows(city, t, tag = '') {
   const origMeshes = city.map((b) => b.mesh);
   const origTris = triCount(origMeshes);
   const rows = [];
@@ -422,20 +422,29 @@ function viewRows(city, t) {
     t.diagnostic(`${view.name}: SSIM ${s.mean.toFixed(4)} (건물 블록 ${s.buildingBlocks}개만 ${s.buildingMean.toFixed(4)}), 삼각형 ${origTris} → ${lodTris}, 감소율 ${(reduction * 100).toFixed(1)}%, 건물 화소 비율 ${(coverage * 100).toFixed(1)}%`);
   }
   for (const r of rows) {
-    assert.ok(r.buildingBlocks > 0, `${r.view}: 건물 블록이 없다(건물 영역 SSIM 이 아무것도 재지 않는다)`);
-    assert.ok(r.ssimBuildingBlocks >= BUILDING_LOD_MIN_SSIM, `${r.view}: 건물 영역 SSIM ${r.ssimBuildingBlocks} < ${BUILDING_LOD_MIN_SSIM}`);
+    assert.ok(r.buildingBlocks > 0, `${tag}${r.view}: 건물 블록이 없다(건물 영역 SSIM 이 아무것도 재지 않는다)`);
+    assert.ok(r.ssimBuildingBlocks >= BUILDING_LOD_MIN_SSIM, `${tag}${r.view}: 건물 영역 SSIM ${r.ssimBuildingBlocks} < ${BUILDING_LOD_MIN_SSIM}`);
   }
   return rows;
 }
 
-test(`8시점 렌더 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM} (원본 vs LOD), 면 수 감소율 기록 — 40 m 필지 혼합 도시`, (t) => {
+// 40 m 필지 장면은 이 시점 거리(≤ 약 3 km)에서 합칠 이웃이 없어 감소율이 0 이다. 감소율은 진단 기록만 하고,
+// 단언은 SSIM 퇴행 없음뿐이다. 감소율 단언은 아래 20 m 필지 다중 시드 장면에서 한다.
+test(`진단: 40 m 필지 혼합 도시 8시점 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM} (감소율은 기록만)`, (t) => {
   viewRows(CITY, t);
 });
 
-test(`8시점 실제 병합 장면(20 m 필지 밀집, 회전 0~3° 섞음): 시점마다 감소율 > 0 이고 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}`, (t) => {
-  for (const r of viewRows(DENSE, t)) {
-    assert.ok(r.lodTris < r.origTris, `${r.view}: 면 수 감소 없음 (${r.origTris} → ${r.lodTris})`);
-    assert.ok(r.reduction > 0);
+// 한 시드에 맞춘 상수가 되지 않도록 여러 시드의 밀집 장면 전부에서 8시점을 모두 본다.
+const DENSE_SEEDS = [1, 2, 3, 42, 99, 307, 1234, 2026];
+
+test(`8시점 실제 병합 장면(20 m 필지 밀집, 회전 0~3° 섞음), 시드 ${DENSE_SEEDS.join('·')}: 시점마다 감소율 > 0 이고 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}`, (t) => {
+  for (const seed of DENSE_SEEDS) {
+    t.diagnostic(`시드 ${seed}`);
+    const city = seed === 307 ? DENSE : denseCity(seed);
+    for (const r of viewRows(city, t, `시드 ${seed} `)) {
+      assert.ok(r.lodTris < r.origTris, `시드 ${seed} ${r.view}: 면 수 감소 없음 (${r.origTris} → ${r.lodTris})`);
+      assert.ok(r.reduction > 0);
+    }
   }
 });
 
@@ -551,6 +560,62 @@ test('엇갈린 맞붙은 두 상자: 합친 상자의 바깥 모서리 오차(8
   const need = 8 / BUILDING_LOD_MAX_ANGLE_RAD; // ≈ 8251 m
   for (const d of [3000, need * 0.99]) assert.equal(boxes(d), 2, `${d} m 에서 합쳐짐`);
   assert.equal(boxes(need * 1.6), 1);
+});
+
+test('높이 계단: 한 층(3 m) 차이 맞벽 이웃은 계단이 1/4 px 를 넘는 거리에서는 합치지 않는다(2 px tol 안이어도)', () => {
+  // [0,20]×[0,20] 과 [20,40]×[0,20] 맞벽. 3 m 계단이 1/4 px 가 되는 거리 ≈ 12.4 km. 3 km 의 tol(≈ 5.8 m)은 계단보다 크다.
+  const a = { id: 1, mesh: rectPrism(0, 0, 20, 20, 4) }, b = { id: 2, mesh: rectPrism(20, 0, 40, 20, 5) };
+  const boxes = (d) => buildBuildingLod([a, b], d)[0].mesh.indices.length / 3 / 10;
+  const stepPxDist = 3 / (BUILDING_LOD_REF_PIXEL_RAD * BUILDING_LOD_MAX_GAP_PX);
+  for (const d of [3000, 6000, stepPxDist * 0.99]) {
+    assert.ok(d * BUILDING_LOD_MAX_ANGLE_RAD > 3 || d === stepPxDist * 0.99);
+    assert.equal(boxes(d), 2, `${d} m 에서 계단이 지워짐`);
+  }
+  assert.equal(boxes(stepPxDist * 1.01), 1);
+  // 같은 높이면 3 km 에서 합쳐진다(위 결과가 높이 차 때문임을 확인).
+  assert.equal(buildBuildingLod([a, { id: 2, mesh: rectPrism(20, 0, 40, 20, 4) }], 3000)[0].mesh.indices.length / 3, 10);
+});
+
+// 기단 40 × 40 × 10 m 위에 10 × 10 × 100 m 탑을 한 메시로(같은 건물). 상자로 바꾸면 기단 지붕이 90 m 올라간다.
+function towerOnBase() {
+  const base = prism([[0, 0], [40, 0], [40, 40], [0, 40]], 10 / 3);
+  const tower = prism([[15, 15], [25, 15], [25, 25], [15, 25]], 100 / 3);
+  const nb = base.positions.length / 3;
+  const positions = new Float32Array(base.positions.length + tower.positions.length);
+  positions.set(base.positions); positions.set(tower.positions, base.positions.length);
+  const indices = new Uint32Array(base.indices.length + tower.indices.length);
+  indices.set(base.indices); indices.set(tower.indices.map((v) => v + nb), base.indices.length);
+  return { id: 11, mesh: { positions, indices } };
+}
+
+test('한 메시 안 높이 차(기단 위 탑)는 수직 오차로 잡혀 tol < 90 m 인 거리에서 원본 유지', () => {
+  const b = towerOnBase();
+  assert.ok(Math.abs(meshBounds(b.mesh).maxZ - 100) < 1e-3);
+  // tol = 90 m 가 되는 거리 ≈ 92.8 km. 그보다 가까운 모든 먼 거리에서 원본 그대로(100 m 상자 하나로 바뀌지 않는다).
+  for (const d of [BUILDING_LOD_FAR_DIST_M, 3000, 20000, (90 / BUILDING_LOD_MAX_ANGLE_RAD) * 0.99]) {
+    const out = buildBuildingLod([b], d);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].mesh, b.mesh, `${d} m 에서 기단+탑이 상자로 바뀜`);
+  }
+  // 이웃 같은 높이 건물과 붙어 있어도 원본 유지, 이웃만 상자.
+  const n = { id: 12, mesh: rectPrism(40, 0, 60, 40, 10 / 3) };
+  const out = buildBuildingLod([b, n], 5000);
+  assert.deepEqual(out.map((g) => g.ids), [[11], [12]]);
+  assert.equal(out[0].mesh, b.mesh);
+});
+
+test('퇴화 입력: 넓이 0 인 외곽(벽 한 장)은 오차 0 이지만 상자(삼각형 10개)로 부풀리지 않고 원본 유지', () => {
+  const mesh = { positions: Float32Array.from([0, 0, 0, 20, 0, 0, 20, 0, 10, 0, 0, 10]), indices: Uint32Array.of(0, 1, 2, 0, 2, 3) };
+  for (const d of [BUILDING_LOD_FAR_DIST_M, 5000, 50000]) {
+    const out = buildBuildingLod([{ id: 1, mesh }], d);
+    assert.deepEqual(out.map((g) => g.ids), [[1]]);
+    assert.equal(out[0].mesh, mesh);
+  }
+  // 넓이 있는 이웃과 같은 칸에 있어도 동 보존, 면 수는 늘지 않는다.
+  const set = [{ id: 1, mesh }, { id: 2, mesh: rectPrism(0, 5, 20, 25, 4) }];
+  const out = buildBuildingLod(set, 5000);
+  assert.deepEqual(allIds(out).sort(), [1, 2]);
+  assert.ok(triCount(out.map((g) => g.mesh)) <= triCount(set.map((b) => b.mesh)));
 });
 
 // (cx, cy) 둘레로 deg 돌린 프리즘. 기본 중심 (32, 32) 은 64 m 칸 [0,64]² 의 가운데라 돌려도 같은 칸에 남는다.

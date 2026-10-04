@@ -11,7 +11,7 @@
 //       방향 묶음(묶음 안 모든 θ 가 묶음 기준 방향 φ 와 허용각 이내)을 만든다. 상자는 φ 방향 좌표계의 AABB 다.
 //       따라서 상자의 벽 법선은 원래 벽 법선과 허용각 넘게 다르지 않다(음영 오차 상한).
 //     - 건물마다 "φ 좌표계의 자기 상자로 바꿨을 때의 기하 오차"가 tol 이하인 것만 실제 상자 후보로 남는다(넘으면 원본 유지).
-//     - 같은 방향 묶음 안에서, 두 상자 사이 틈이 BUILDING_LOD_MAX_GAP_PX 이하이고 합친 상자의 오차가 tol 이하인 이웃 쌍을
+//     - 같은 방향 묶음 안에서, 두 상자 사이 틈과 높이 차가 모두 BUILDING_LOD_MAX_GAP_PX 이하이고 합친 상자의 오차가 tol 이하인 이웃 쌍을
 //       오차 하한이 작은 순으로 탐욕적으로 합친다(응집 군집). 우선순위 큐에 인접 후보 쌍만 넣고, 꺼낸 쌍만 오차를 재며,
 //       합칠 때마다 새 군집과 남은 군집 사이 쌍만 새로 넣는다.
 //     - 다 합친 군집은 구성 건물 θ 범위의 가운데 방향으로 같은 병합 순서를 다시 재어 tol 안이면 그 방향 상자를 쓴다
@@ -24,9 +24,11 @@
 //   거리 함수가 1-립시츠라는 성질로 "표본 최댓값 + 가장 큰 격자 칸의 반대각선"을 쓴다(과소평가하지 않는다).
 //   두 군집 A, B 를 합친 상자의 오차는 max(오차(A), 오차(B), 남는 영역 오차) 로 잰다. 합친 상자 중 A 상자 안의 점은
 //   A 까지 거리가 오차(A) 이하이고 B 도 같으므로, 두 상자 밖 영역(틈)만 새로 표본하면 된다(같은 φ 좌표계라 성립).
-// 오차 정의(수직): 군집 안 건물 꼭대기 높이의 최대 − 최소(상자는 최대 높이를 쓴다).
+// 오차 정의(수직): 상자 지붕 높이(군집 최대 높이) − 군집 안 윗면(위를 향한 삼각형) 최저 높이. 건물 사이 높이 차뿐 아니라
+//   한 메시 안의 높이 차(기단 위 탑, 경사 지붕)도 포함한다.
 // 음영 오차: 상자 벽 법선과 원래 벽 법선의 각 차 ≤ BUILDING_LOD_MAX_WALL_ANGLE_RAD.
-// 틈: 떨어진 두 군집 사이 틈(상자 사이 거리)은 BUILDING_LOD_MAX_GAP_PX 이하일 때만 메운다(틈으로 보이던 선이 사라지는 효과).
+// 지워지는 세부: 틈(상자 사이 거리)과 높이 계단(수직 오차)은 화면에서 옮겨지는 테두리가 아니라 통째로 사라지는 선·면이다.
+//   그래서 2 px 테두리 허용(tol)이 아니라 BUILDING_LOD_MAX_GAP_PX(hideTol = 거리 × 픽셀 각 × px) 이하일 때만 지운다.
 // 계산량: 한 칸 k 동에 대해 쌍 선검사 O(k²)(값싼 상자 비교), 오차 평가는 꺼낸 쌍만, 틈 칸만 표본한다.
 import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 
@@ -44,11 +46,14 @@ export const BUILDING_LOD_MAX_ANGLE_RAD = BUILDING_LOD_REF_PIXEL_RAD * BUILDING_
  */
 export const BUILDING_LOD_MAX_WALL_ANGLE_RAD = (3 * Math.PI) / 180;
 /**
- * 서로 떨어진 두 군집을 하나로 합쳐도 되는 틈 상한(px, 기준 화면). tolGap(m) = 거리 × 기준 픽셀 각 × 이 값.
- * 근거: 틈을 메우면 모서리가 옮겨지는 것이 아니라 틈으로 보이던 지면·옆벽 선이 통째로 사라진다. 8×8 블록 SSIM 은
- * 균일한 지붕 위 가는 선의 유무에 민감하다. 20 m 필지 밀집 장면(틈 0.4~1.6 m, lod.test.mjs DENSE)의 8시점 건물 영역 SSIM 최솟값은
- * 틈 상한 2 × tol(틈 중점 오차 ≤ tol) 0.810, 1 px 0.812, 1/2 px 0.896, 1/4 px 0.961 이었다(문턱 0.95).
- * 1/4 px 는 5 km 에서 약 1.2 m 라 그 거리의 1 m 틈 쌍은 합쳐진다. 맞붙은 건물(맞벽)은 틈 0 이라 언제나 후보다.
+ * 상자로 바꾸며 통째로 지워도 되는 세부(이웃 사이 틈, 지붕 높이 계단)의 화면 크기 상한(px, 기준 화면).
+ * hideTol(m) = 거리 × 기준 픽셀 각 × 이 값. 크기 s 인 세부의 화면 각은 시점 고도와 무관하게 s / 거리 이하다.
+ * 근거: 테두리를 옮기는 오차(2 px)는 앞쪽 경계가 앞뒤로 움직일 뿐이지만, 틈을 메우거나 높이 계단을 지우면 그 틈의 지면 선,
+ * 계단의 벽 띠(지붕과 음영이 다른 면)가 군집 폭 전체에서 사라진다. 8×8 블록 SSIM 은 균일한 지붕 위의 선·띠 유무에 민감하므로
+ * 이런 세부는 한 픽셀을 덮는 비율이 1/4 이하(점 표본에서 네 화소 중 하나 꼴로만 보이는 크기)일 때만 지운다.
+ * 이전에는 높이 계단을 2 px(tol)까지 지웠다. 그 결과 S-far-high(3 km, 고도각 11°)에서 한 층(3 m) 차이 연립 줄들이 한 상자로
+ * 합쳐져 계단 벽 띠가 사라졌고, 시드 2·3·42·1234·2026 의 건물 영역 SSIM 이 0.914~0.946 으로 떨어졌다(lod.test.mjs DENSE 다중 시드).
+ * 1/4 px 는 5 km 에서 약 1.2 m 라 그 거리의 1 m 틈 쌍은 합쳐진다. 맞붙은 같은 높이 건물(맞벽)은 틈·계단 0 이라 언제나 후보다.
  */
 export const BUILDING_LOD_MAX_GAP_PX = 0.25;
 /**
@@ -124,10 +129,22 @@ function summarize(b, index) {
     sc += len * Math.cos(4 * a); ss += len * Math.sin(4 * a);
   }
   const theta = wallAngles.length ? fold90(Math.atan2(ss, sc) / 4) : 0;
+  // 윗면 최저 높이: 위를 향한(xy 투영이 반시계, 넓이 있는) 삼각형 꼭짓점 z 의 최솟값. 상자 지붕은 maxZ 이므로
+  // 한 메시 안의 높이 차(낮은 기단 위 탑, 경사 지붕)도 수직 오차 maxZ − roofMin 으로 잡힌다.
+  // 위를 향한 삼각형이 없으면(벽만 있는 퇴화 입력) 지붕이 낮아지는 곳이 없으므로 maxZ 로 둔다.
+  // 감김이 계약과 반대면 바닥이 위를 향한 것으로 보여 오차가 커지고 원본이 유지된다(보수적).
+  let roofMin = Infinity;
+  for (let t = 0; t < idx.length / 3; t++) {
+    const o = t * 6;
+    const area = (tris[o + 2] - tris[o]) * (tris[o + 5] - tris[o + 1]) - (tris[o + 4] - tris[o]) * (tris[o + 3] - tris[o + 1]);
+    if (area <= 1e-6) continue;
+    for (let k = 0; k < 3; k++) roofMin = Math.min(roofMin, p[idx[t * 3 + k] * 3 + 2]);
+  }
+  if (roofMin === Infinity) roofMin = maxZ;
   let wallDev = 0;
   for (const a of wallAngles) wallDev = Math.max(wallDev, Math.abs(fold90(a - theta)));
   return {
-    order: index, id, mesh, empty: idx.length === 0, minX, minY, minZ, maxX, maxY, maxZ, tris, theta,
+    order: index, id, mesh, empty: idx.length === 0, minX, minY, minZ, maxX, maxY, maxZ, roofMin, tris, theta,
     dirOk: wallDev <= BUILDING_LOD_MAX_WALL_ANGLE_RAD,
   };
 }
@@ -175,7 +192,7 @@ function toFrame(it, phi) {
     }
   }
   return {
-    it, order: it.order, minX, minY, maxX, maxY, minZ: it.minZ, maxZ: it.maxZ, err: 0,
+    it, order: it.order, minX, minY, maxX, maxY, minZ: it.minZ, maxZ: it.maxZ, roofMin: it.roofMin, err: 0,
     fill: Float64Array.from(fill), segs: Float64Array.from(segs),
   };
 }
@@ -271,22 +288,27 @@ function rectError(x0, y0, x1, y1, members, limit, tol, floor = 0, minSamples = 
 
 // 군집을 다른 방향 φ2 좌표계로 다시 잰다. 같은 병합 순서(이진 트리)를 φ2 에서 다시 밟아 mergeError 로 오차를 구하므로
 // 비용은 병합 한 번과 같은 수준이다. 어느 단계든 tol 을 넘으면 null.
-function reframe(c, phi2, tol) {
+function reframe(c, phi2, tol, stepTol) {
   if (!c.left) {
     const m = toFrame(c.members[0].it, phi2);
-    m.err = singleError(m, tol);
+    m.err = singleError(m, tol, stepTol);
     return m.err <= tol ? makeCluster([m], m.err) : null;
   }
-  const L = reframe(c.left, phi2, tol);
+  const L = reframe(c.left, phi2, tol, stepTol);
   if (!L) return null;
-  const R = reframe(c.right, phi2, tol);
+  const R = reframe(c.right, phi2, tol, stepTol);
   if (!R) return null;
-  const err = mergeError(L, R, tol);
+  const err = mergeError(L, R, tol, stepTol);
   return err <= tol ? makeCluster(L.members.concat(R.members), err, L, R) : null;
 }
 
-// 건물 하나를 자기 φ 좌표계 상자로 바꿀 때의 오차.
-const singleError = (m, tol) => rectError(m.minX, m.minY, m.maxX, m.maxY, [m], tol, tol);
+// 건물 하나를 자기 φ 좌표계 상자로 바꿀 때의 오차. 메시 안 높이 차(maxZ − roofMin)가 stepTol 을 넘으면 Infinity(원본 유지):
+// 지붕을 maxZ 로 평평하게 하면 그 높이 차의 벽(계단)이 통째로 사라진다. 수평 오차는 그 수직 오차에서 시작한다.
+function singleError(m, tol, stepTol) {
+  const step = m.maxZ - m.roofMin;
+  if (step > stepTol) return Infinity;
+  return rectError(m.minX, m.minY, m.maxX, m.maxY, [m], tol, tol, step);
+}
 
 function makeCluster(members, err, left = null, right = null) {
   let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity, minTop = Infinity, first = Infinity;
@@ -294,22 +316,25 @@ function makeCluster(members, err, left = null, right = null) {
     if (m.minX < minX) minX = m.minX; if (m.maxX > maxX) maxX = m.maxX;
     if (m.minY < minY) minY = m.minY; if (m.maxY > maxY) maxY = m.maxY;
     if (m.minZ < minZ) minZ = m.minZ; if (m.maxZ > maxZ) maxZ = m.maxZ;
-    if (m.maxZ < minTop) minTop = m.maxZ;
+    if (m.roofMin < minTop) minTop = m.roofMin;
     if (m.order < first) first = m.order;
   }
   return { members, minX, minY, minZ, maxX, maxY, maxZ, minTop, first, err, alive: true, left, right };
 }
 
-// 두 군집을 합칠 후보인지(값싼 조건): 두 상자 사이 틈 ≤ gapTol 이고 수직 오차 ≤ tol.
-function mayMerge(A, B, tol, gapTol) {
+// 두 군집을 합칠 후보인지(값싼 조건): 두 상자 사이 틈 ≤ hideTol 이고 높이 차(계단) ≤ hideTol.
+function mayMerge(A, B, hideTol) {
   const gx = Math.max(0, A.minX - B.maxX, B.minX - A.maxX), gy = Math.max(0, A.minY - B.maxY, B.minY - A.maxY);
-  if (gx * gx + gy * gy > gapTol * gapTol) return false;
-  return Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop) <= tol;
+  if (gx * gx + gy * gy > hideTol * hideTol) return false;
+  return Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop) <= hideTol;
 }
 
 // 같은 φ 좌표계의 두 군집 A, B 를 상자 하나로 합칠 때의 오차 상한(m). tol 초과면 tol 초과라는 뜻만 있다.
-function mergeError(A, B, tol) {
-  let err = Math.max(A.err, B.err, Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop));
+// 높이 차(계단)가 stepTol 을 넘으면 Infinity.
+function mergeError(A, B, tol, stepTol) {
+  const step = Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop);
+  if (step > stepTol) return Infinity;
+  let err = Math.max(A.err, B.err, step);
   if (err > tol) return err;
   // 합친 상자를 A·B 상자 경계 좌표로 나눈 칸 중 A·B 어느 상자에도 들지 않는 칸(틈)만 새로 잰다.
   const uniq = (a) => a.sort((p, q) => p - q).filter((x, i) => i === 0 || x !== a[i - 1]);
@@ -376,15 +401,15 @@ function pairKey(A, B) {
 // 응집 군집: 오차 하한(pairKey)이 가장 작은 쌍부터(동률이면 앞선 쌍) 꺼내, 합친 상자 오차(mergeError)가 tol 이하면 합친다.
 // 인접 후보 쌍(mayMerge)만 큐에 넣고, 합칠 때마다 새 군집과 남은 군집 사이 쌍만 넣는다(죽은 군집의 쌍은 꺼낼 때 버린다).
 // 오차는 꺼낸 쌍만 잰다. 넘는 쌍은 버리고, 그 군집이 다른 군집과 합쳐지면 새 쌍으로 다시 들어온다.
-function agglomerate(singles, tol, gapTol) {
+function agglomerate(singles, tol, hideTol) {
   let list = singles.map((m) => makeCluster([m], m.err));
   const heap = [];
-  const push = (A, B) => { if (mayMerge(A, B, tol, gapTol)) heapPush(heap, pairEntry(A, B, pairKey(A, B))); };
+  const push = (A, B) => { if (mayMerge(A, B, hideTol)) heapPush(heap, pairEntry(A, B, pairKey(A, B))); };
   for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) push(list[i], list[j]);
   while (heap.length) {
     const top = heapPop(heap);
     if (!top.a.alive || !top.b.alive) continue;
-    const err = mergeError(top.a, top.b, tol);
+    const err = mergeError(top.a, top.b, tol, hideTol);
     if (err > tol) continue;
     top.a.alive = false; top.b.alive = false;
     const C = makeCluster(top.a.members.concat(top.b.members), err, top.a, top.b);
@@ -464,7 +489,8 @@ export function buildBuildingLod(buildings, cameraDistM) {
   if (cameraDistM < BUILDING_LOD_FAR_DIST_M) return items.map((it) => ({ ids: [it.id], mesh: it.mesh }));
 
   const tol = cameraDistM * BUILDING_LOD_MAX_ANGLE_RAD;
-  const gapTol = cameraDistM * BUILDING_LOD_REF_PIXEL_RAD * BUILDING_LOD_MAX_GAP_PX;
+  // 지워지는 세부(틈, 높이 계단)의 크기 상한(m). 화면 크기는 크기/거리 이하(시선과 수직일 때 최대)라 거리 × 픽셀 각 × px.
+  const hideTol = cameraDistM * BUILDING_LOD_REF_PIXEL_RAD * BUILDING_LOD_MAX_GAP_PX;
   const groups = []; // { order, ids, mesh }
   const keepOriginal = (it) => groups.push({ order: it.order, ids: [it.id], mesh: it.mesh });
   const cells = new Map(); // 칸 키 → 벽 방향 후보 목록(입력 순서)
@@ -485,10 +511,16 @@ export function buildBuildingLod(buildings, cameraDistM) {
       const singles = [];
       for (const it of binItems) {
         const m = toFrame(it, phi);
-        m.err = singleError(m, tol);
+        m.err = singleError(m, tol, hideTol);
         if (m.err > tol) keepOriginal(it); else singles.push(m);
       }
-      for (const c of agglomerate(singles, tol, gapTol)) {
+      for (const c of agglomerate(singles, tol, hideTol)) {
+        // 혼자 남은 건물의 원본이 상자(삼각형 10개)보다 작으면(벽만 있는 퇴화 입력 등) 바꿔도 줄지 않으므로 원본 유지.
+        if (c.members.length === 1 && c.members[0].it.mesh.indices.length / 3 < 10) {
+          keepOriginal(c.members[0].it);
+          c.members[0].kept = true;
+          continue;
+        }
         // 군집은 구성 건물 θ 범위의 가운데 방향 상자가 허용 오차 안이면 그것을 쓴다(묶음 기준 방향보다 원래 벽에 가깝다).
         // 혼자 남은 건물이면 자기 지배 방향이 된다. 넘으면 합칠 때 검사한 묶음 기준 방향 상자를 쓴다.
         let lo = Infinity, hi = -Infinity;
@@ -497,11 +529,11 @@ export function buildBuildingLod(buildings, cameraDistM) {
           if (t < lo) lo = t; if (t > hi) hi = t;
         }
         const own = (lo + hi) / 2;
-        const oc = own !== phi ? reframe(c, own, tol) : null;
+        const oc = own !== phi ? reframe(c, own, tol, hideTol) : null;
         if (oc) boxes.push({ ...oc, phi: own });
         else boxes.push({ ...c, phi });
       }
-      members.push(...singles);
+      members.push(...singles.filter((m) => !m.kept));
     }
     if (!boxes.length) continue;
     boxes.sort((a, b) => a.first - b.first);
