@@ -146,8 +146,10 @@ export const TILE_M = 64;
 // 있다. 하한 근거 = 시드 1..300 스윕(2026-10-04, 원 코드, `node tools/lod_seed_sweep.mjs 1-300`)에서 시드 한 개짜리 시점별 최저 감소율의
 // 절반(어떤 시드 부분집합의 합계도 시드별 최저 이상이므로 정상 코드는 항상 통과한다):
 //   N-far 7.6%→3.8%, E-far 9.1%→4.5%, S-far-high 11.6%→5.8%, W-far-low 3.9%→1.9%, top-high 3.6%→1.8%.
+// 측정 시드별 최저 감소율(N-far·E-far·S-far-high·W-far-low·top-high 순): 하한 근거 커밋 0266bba 시점 7.6·9.1·11.6·3.9·3.6 %,
+// 현재 코드 8.8·9.7·11.9·5.5·5.6 % (모두 하한의 2배 이상이라 여유가 있다).
 // 이 값은 측정 당시 정한 것이며 이후 측정에 맞춰 낮추지 않는다(낮추려면 LOD 알고리즘 회귀를 먼저 의심한다).
-// 칸 90% LOD 끔 변이는 합계가 N-far 0.9%·S-far-high 1.5% 로 떨어져 이 하한에서 실패한다. S-near·NE-mid·SW-mid 는 감소 0 이 정상이라 진단만 한다.
+// 칸 90% LOD 끔 변이는 합계가 N-far 0.9%·S-far-high 1.5% 로 떨어져 이 하한에서 실패한다. S-near·NE-mid·SW-mid 는 하한 없이 시드 합계 감소 > 0 만 단언한다(고정 시드 조합 합계: NE-mid 5.0%, SW-mid 4.0%, S-near 0.5%).
 export const FAR_VIEW_MIN_REDUCTION = {
   'N-far': 0.038, 'E-far': 0.045, 'S-far-high': 0.058, 'W-far-low': 0.019, 'top-high': 0.018,
 };
