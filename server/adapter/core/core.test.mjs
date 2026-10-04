@@ -442,7 +442,7 @@ for (const viaCodec of [false, true]) {
           [...prior.pieces, ...ev.pieces].map((p) => pieceKeyString(p.key)));
         // 보관 바이트는 조각마다 한 번만 센다
         const bytes = [...prior.pieces, ...ev.pieces].reduce((a, p) => a + p.bytes.length, 0);
-        assert.deepEqual(store.stats(sessionId), { entries: 6, retainedBytes: bytes, unacked: 6, groups: 6 });
+        assert.deepEqual(store.stats(sessionId), { entries: 6, retainedBytes: bytes, unacked: 6, groups: 6, levels: 0 });
         assert.equal(ad.nextPieceSeq(), 7);
         assert.equal(store.open({ sessionId, lastPieceSeq: 0 }).nextPieceSeq, 7, 'WELCOME 순번 = 어댑터 다음 순번');
       }
