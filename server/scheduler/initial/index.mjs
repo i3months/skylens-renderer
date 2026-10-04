@@ -11,11 +11,12 @@ export const INITIAL_BUDGET_BYTES = 15_000_000;
 export const PIECE_HEADER_BYTES = 28;
 export const WS_HEADER_MAX_BYTES = 10;
 export const PIECE_FRAME_OVERHEAD_BYTES = PIECE_HEADER_BYTES + WS_HEADER_MAX_BYTES;
-import { FRAME_HEADER_BYTES } from '../../../contracts/proto/index.mjs';
+import { FRAME_HEADER_BYTES, FIXED_PAYLOAD_BYTES, MSG } from '../../../contracts/proto/index.mjs';
 // F-209: SPEC §4 의 '연결 → 첫 프레임' 은 WELCOME 과 LEVEL_ARRIVED 도 포함하므로 예산에서 먼저 떼어 둔다.
-//   WELCOME 은 항상 1개, LEVEL_ARRIVED 는 담긴 (segmentId, level) 마다 1개. 둘 다 본문 9 B + 프레임 머리 FRAME_HEADER_BYTES(contracts/proto, 8 B) + ws 머리 상한.
-export const WELCOME_FRAME_BYTES = FRAME_HEADER_BYTES + 9 + WS_HEADER_MAX_BYTES;
-export const LEVEL_ARRIVED_FRAME_BYTES = FRAME_HEADER_BYTES + 9 + WS_HEADER_MAX_BYTES;
+//   WELCOME 은 항상 1개, LEVEL_ARRIVED 는 담긴 (segmentId, level) 마다 1개. 각각 계약 고정 본문(WELCOME 9 B, LEVEL_ARRIVED 13 B —
+//   firstPieceSeq 포함, F-236) + 프레임 머리 FRAME_HEADER_BYTES(contracts/proto, 8 B) + ws 머리 상한.
+export const WELCOME_FRAME_BYTES = FRAME_HEADER_BYTES + FIXED_PAYLOAD_BYTES[MSG.WELCOME] + WS_HEADER_MAX_BYTES;
+export const LEVEL_ARRIVED_FRAME_BYTES = FRAME_HEADER_BYTES + FIXED_PAYLOAD_BYTES[MSG.LEVEL_ARRIVED] + WS_HEADER_MAX_BYTES;
 // 프레임 하나도 못 담는 예산(< WELCOME 프레임)은 거부한다: 그러면 frameBytes > budgetBytes 가 된다.
 export const MIN_BUDGET_BYTES = WELCOME_FRAME_BYTES;
 const ASPECT_GUARD = 2;

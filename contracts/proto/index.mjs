@@ -11,7 +11,12 @@
 //   ACK(4, c→s)           4 B   upToPieceSeq u32 (여기까지 받았음)
 //   WELCOME(5, s→c)       9 B   sessionId u32, resumed u8 (0|1), nextPieceSeq u32
 //   PIECE(6, s→c)         4 + 16 + chunkLen B  pieceSeq u32, PieceKey 16 B, 조각 바이트(contracts/asset 의 .skla 조각 그대로, 1 B 이상)
-//   LEVEL_ARRIVED(7, s→c) 9 B   segmentId u32, level u8 (0..3), pieceCount u32 (>= 1: 조각 0 개 도착은 보내지 않는다)
+//   LEVEL_ARRIVED(7, s→c) 13 B  segmentId u32, level u8 (0..3), pieceCount u32 (>= 1: 조각 0 개 도착은 보내지 않는다),
+//                               firstPieceSeq u32 (>= 1, 그 수준 첫 조각의 pieceSeq. firstPieceSeq + pieceCount − 1 ≤ 0xFFFFFFFF)
+//     완료 창은 pieceSeq firstPieceSeq..firstPieceSeq+pieceCount−1 이다(선에 명시, F-236·decisions 0032). 받는 쪽은 창을
+//     '그때까지 받은 가장 큰 pieceSeq' 로 추정하지 않는다 — 그래서 같은 LEVEL_ARRIVED 를 뒤늦게 혼자 다시 받아도 같은 창이다(멱등).
+//     LEVEL_ARRIVED 는 pieceSeq 를 쓰지 않는다. 이어받기 때 서버는 창 끝이 클라이언트 lastPieceSeq 이상인 LEVEL_ARRIVED 를
+//     자기 조각들 뒤에 다시 보낸다(server/ws/resume resendPlan).
 //   재전송 규약: 송출 실패 뒤 같은 pieceSeq·같은 PieceKey 로 다시 보낸 PIECE 는 같은 조각이다(수신측은 하나로 센다).
 //     한 pieceSeq 는 절대 서로 다른 두 PieceKey 에 쓰이지 않는다(F-204). 송출이 실패한 수준 도착의 pieceSeq 는 그 key 들에
 //     묶이고, 서버(server/adapter/core)는 그 수준 도착을 같은 pieceSeq·key 로 다시 보내 끝내기 전에는 다른 이벤트를 보내지
@@ -60,7 +65,7 @@ export const DIRECTION = Object.freeze({
 });
 /** 고정 크기 본문(바이트). 가변 종류(PIECE_REQUEST·PIECE·ERROR)는 없다. */
 export const FIXED_PAYLOAD_BYTES = Object.freeze({
-  [MSG.HELLO]: 9, [MSG.VIEW_UPDATE]: 40, [MSG.ACK]: 4, [MSG.WELCOME]: 9, [MSG.LEVEL_ARRIVED]: 9, [MSG.MISSING]: 4,
+  [MSG.HELLO]: 9, [MSG.VIEW_UPDATE]: 40, [MSG.ACK]: 4, [MSG.WELCOME]: 9, [MSG.LEVEL_ARRIVED]: 13, [MSG.MISSING]: 4,
 });
 export const ERR_CODES = Object.freeze({ BAD_MESSAGE: 1, UNKNOWN_SESSION: 2, TOO_SLOW: 3, OVER_LIMIT: 4, UNAVAILABLE: 5 });
 
@@ -82,7 +87,7 @@ export class ProtoError extends Error {
  *  | {type:'ACK', upToPieceSeq:number}
  *  | {type:'WELCOME', sessionId:number, resumed:boolean, nextPieceSeq:number}
  *  | {type:'PIECE', pieceSeq:number, key:PieceKey, chunk:Uint8Array}
- *  | {type:'LEVEL_ARRIVED', segmentId:number, level:number, pieceCount:number}
+ *  | {type:'LEVEL_ARRIVED', segmentId:number, level:number, pieceCount:number, firstPieceSeq:number}
  *  | {type:'MISSING', segmentId:number}
  *  | {type:'ERROR', code:number, text:string}} Message
  * @typedef {{segmentId:number, level:number, lod:number, chunkIndex:number, tileX:number, tileY:number}} PieceKey

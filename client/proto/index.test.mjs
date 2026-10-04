@@ -19,7 +19,7 @@ const CASES = [
   ['WELCOME', { type: 'WELCOME', sessionId: 1, resumed: true, nextPieceSeq: 0x100 }, '05 01 0000 09000000 01000000 01 00010000'],
   ['PIECE', { type: 'PIECE', pieceSeq: 3, key: { segmentId: 1, level: 2, lod: 3, chunkIndex: 0x0405, tileX: -1, tileY: 16 }, chunk: Uint8Array.of(0xaa, 0xbb) },
     '06 01 0000 16000000 03000000 01000000 02 03 0504 ffffffff 10000000 aabb'],
-  ['LEVEL_ARRIVED', { type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount: 7 }, '07 01 0000 09000000 05000000 02 07000000'],
+  ['LEVEL_ARRIVED', { type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount: 7, firstPieceSeq: 0x0102 }, '07 01 0000 0d000000 05000000 02 07000000 02010000'],
   ['MISSING', { type: 'MISSING', segmentId: 0x01020304 }, '08 01 0000 04000000 04030201'],
   ['ERROR', { type: 'ERROR', code: 4, text: '초' }, '09 01 0000 07000000 0400 0300 ecb488'],
 ];
@@ -88,8 +88,8 @@ test('오류 length', () => {
 });
 test('오류 field(복호)', () => {
   assert.equal(code(() => decodeMessage(hex('05 01 0000 09000000 01000000 02 00010000'))), 'field'); // resumed 2
-  assert.equal(code(() => decodeMessage(hex('07 01 0000 09000000 05000000 04 07000000'))), 'field'); // level 4
-  assert.equal(code(() => decodeMessage(hex('07 01 0000 09000000 000000c0 00 00000000'))), 'field'); // segmentId >= 2^30
+  assert.equal(code(() => decodeMessage(hex('07 01 0000 0d000000 05000000 04 07000000 01000000'))), 'field'); // level 4
+  assert.equal(code(() => decodeMessage(hex('07 01 0000 0d000000 000000c0 00 00000000 01000000'))), 'field'); // segmentId >= 2^30
   assert.equal(code(() => decodeMessage(hex('08 01 0000 04000000 00000040'))), 'field');
   assert.equal(code(() => decodeMessage(hex('06 01 0000 15000000 03000000 01000000 04 03 0504 ffffffff 10000000 aa'))), 'field'); // key.level 4
   assert.equal(code(() => decodeMessage(hex('06 01 0000 15000000 03000000 01000000 02 08 0504 ffffffff 10000000 aa'))), 'field'); // lod 8
@@ -114,7 +114,9 @@ test('오류 field(부호화)', () => {
     { type: 'PIECE_REQUEST', reqId: 0, items: [{ ...CASES[2][1].items[0], chunkIndex: 65536 }] },
     { type: 'WELCOME', sessionId: 0, resumed: 1, nextPieceSeq: 1 },
     { ...CASES[5][1], chunk: new Uint8Array(0) }, { ...CASES[5][1], chunk: [1] }, { ...CASES[5][1], key: { ...CASES[5][1].key, level: 4 } },
-    { type: 'LEVEL_ARRIVED', segmentId: 0, level: 4, pieceCount: 0 }, { type: 'MISSING', segmentId: 2 ** 30 },
+    { type: 'LEVEL_ARRIVED', segmentId: 0, level: 4, pieceCount: 0, firstPieceSeq: 1 }, { type: 'MISSING', segmentId: 2 ** 30 },
+    { type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 1 }, { type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 1, firstPieceSeq: 0 },
+    { type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 2, firstPieceSeq: 0xffffffff },
     { type: 'ERROR', code: 99, text: '' }, { type: 'ERROR', code: 1, text: 'a'.repeat(MAX_ERROR_TEXT + 1) }, { type: 'ERROR', code: 1, text: 5 },
   ];
   bad.forEach((m, i) => assert.equal(code(() => encodeMessage(m)), 'field', `사례 ${i}`));
@@ -183,9 +185,22 @@ test('pieceSeq·nextPieceSeq 0 은 field, 1 은 왕복(부호화·복호)', () =
 });
 
 test('LEVEL_ARRIVED pieceCount 0 은 부호화·복호 모두 field, 1 은 왕복(계약 >= 1)', () => {
-  const m = (pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount });
+  const m = (pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount, firstPieceSeq: 1 });
   assert.equal(code(() => encodeMessage(m(0))), 'field');
-  assert.equal(code(() => decodeMessage(hex('07 01 0000 09000000 05000000 02 00000000'))), 'field');
+  assert.equal(code(() => decodeMessage(hex('07 01 0000 0d000000 05000000 02 00000000 01000000'))), 'field');
   assert.deepEqual(decodeMessage(encodeMessage(m(1))), m(1));
-  assert.deepEqual(decodeMessage(hex('07 01 0000 09000000 05000000 02 ffffffff')), m(0xffffffff));
+  assert.deepEqual(decodeMessage(hex('07 01 0000 0d000000 05000000 02 ffffffff 01000000')), m(0xffffffff));
+});
+
+test('LEVEL_ARRIVED firstPieceSeq: 0 과 창 끝 u32 초과는 부호화·복호 모두 field, 경계는 왕복(F-236)', () => {
+  const m = (pieceCount, firstPieceSeq) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount, firstPieceSeq });
+  assert.equal(code(() => encodeMessage(m(1, 0))), 'field');
+  assert.equal(code(() => encodeMessage(m(2, 0xffffffff))), 'field');
+  assert.equal(code(() => decodeMessage(hex('07 01 0000 0d000000 05000000 02 01000000 00000000'))), 'field');
+  assert.equal(code(() => decodeMessage(hex('07 01 0000 0d000000 05000000 02 02000000 ffffffff'))), 'field');
+  // 창 끝 = 0xFFFFFFFF 는 받는다
+  assert.deepEqual(decodeMessage(hex('07 01 0000 0d000000 05000000 02 02000000 feffffff')), m(2, 0xfffffffe));
+  assert.deepEqual(decodeMessage(encodeMessage(m(1, 0xffffffff))), m(1, 0xffffffff));
+  // 옛 9 B 본문은 고정 크기 불일치
+  assert.equal(code(() => decodeMessage(hex('07 01 0000 09000000 05000000 02 01000000'))), 'length');
 });

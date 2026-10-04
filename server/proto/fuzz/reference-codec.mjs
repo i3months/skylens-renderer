@@ -53,7 +53,7 @@ export function encodeMessage(m) {
     case 'ACK': dv.setUint32(o, u32(m.upToPieceSeq, 'seq'), true); break;
     case 'WELCOME': dv.setUint32(o, u32(m.sessionId, 'sessionId'), true); dv.setUint8(o + 4, m.resumed ? 1 : 0); dv.setUint32(o + 5, seq1(m.nextPieceSeq, 'nextPieceSeq'), true); break;
     case 'PIECE': dv.setUint32(o, seq1(m.pieceSeq, 'pieceSeq'), true); writeKey(dv, o + 4, m.key); out.set(m.chunk, o + 20); break;
-    case 'LEVEL_ARRIVED': dv.setUint32(o, inr(m.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId'), true); dv.setUint8(o + 4, inr(m.level, 0, 3, 'level')); dv.setUint32(o + 5, inr(m.pieceCount, 1, 0xffffffff, 'pieceCount'), true); break;
+    case 'LEVEL_ARRIVED': dv.setUint32(o, inr(m.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId'), true); dv.setUint8(o + 4, inr(m.level, 0, 3, 'level')); dv.setUint32(o + 5, inr(m.pieceCount, 1, 0xffffffff, 'pieceCount'), true); dv.setUint32(o + 9, inr(m.firstPieceSeq, 1, 0xffffffff - m.pieceCount + 1, 'firstPieceSeq'), true); break;
     case 'MISSING': dv.setUint32(o, inr(m.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId'), true); break;
     case 'ERROR': if (!ERR_CODE_SET.has(m.code)) fail('field', 'code'); dv.setUint16(o, m.code, true); dv.setUint16(o + 2, m._b.length, true); out.set(m._b, o + 4); break;
   }
@@ -113,7 +113,9 @@ export function makeDecoder(direction) {
         if (segmentId >= SEGMENT_ID_LIMIT || level > 3) fail('field', 'level');
         const pieceCount = dv.getUint32(o + 5, true);
         if (pieceCount < 1) fail('field', 'pieceCount');
-        return { type: 'LEVEL_ARRIVED', segmentId, level, pieceCount };
+        const firstPieceSeq = dv.getUint32(o + 9, true);
+        if (firstPieceSeq < 1 || firstPieceSeq + pieceCount - 1 > 0xffffffff) fail('field', 'firstPieceSeq');
+        return { type: 'LEVEL_ARRIVED', segmentId, level, pieceCount, firstPieceSeq };
       }
       case 'MISSING': { const s = dv.getUint32(o, true); if (s >= SEGMENT_ID_LIMIT) fail('field', 'segmentId'); return { type: 'MISSING', segmentId: s }; }
       case 'ERROR': {
