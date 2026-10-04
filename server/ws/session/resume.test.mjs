@@ -42,7 +42,7 @@ test('(1) 새 세션 HELLO: WELCOME 한 건만, replayed 0', () => {
   const store = mkStore();
   const out = sink();
   const r = replayAfterHello({ store, hello: { sessionId: 0, lastPieceSeq: 0 }, send: out.send, loadPiece: loadAll });
-  assert.deepEqual(r, { sessionId: 100, resumed: false, nextPieceSeq: 1, reason: null, replayed: 0 });
+  assert.deepEqual(r, { sessionId: 100, resumed: false, nextPieceSeq: 1, reason: null, replayed: 0, replayedBytes: 0, stoppedAt: null });
   assert.equal(out.sent.length, 1);
   assert.deepEqual(out.decoded(), [{ type: 'WELCOME', sessionId: 100, resumed: false, nextPieceSeq: 1 }]);
 });
@@ -55,7 +55,9 @@ test('(2) 이어받기 lastPieceSeq=1: WELCOME(resumed) 뒤 PIECE 2, 3, LEVEL_AR
     store, hello: { sessionId, lastPieceSeq: 1 }, send: out.send,
     loadPiece: (k) => { loaded.push(k.chunkIndex); return bytesOf(k.chunkIndex); },
   });
-  assert.deepEqual(r, { sessionId: 100, resumed: true, nextPieceSeq: 4, reason: null, replayed: 3 });
+  const sentBytes = out.sent.slice(1).reduce((n, b) => n + b.length, 0);
+  assert.deepEqual(r, { sessionId: 100, resumed: true, nextPieceSeq: 4, reason: null, replayed: 3, replayedBytes: sentBytes, stoppedAt: null });
+  assert.ok(sentBytes > 0);
   assert.deepEqual(loaded, [2, 3]);
   assert.equal(out.sent.length, 4);
   const msgs = out.decoded();
@@ -87,17 +89,18 @@ test('(3) LEVEL_ARRIVED 만 유실(lastPieceSeq == 마지막 조각 3): LEVEL_AR
   ]);
 });
 
-test('(4) loadPiece 가 null 이면 그 PIECE 와 그 창의 LEVEL_ARRIVED 를 보내지 않는다', () => {
-  // 창 하나: seq 2 바이트 없음 → PIECE 3 은 나가고 LEVEL_ARRIVED 는 안 나간다, replayed 1.
+test('(4) loadPiece 가 null 이면 그 순번에서 멈춘다: 뒤 PIECE·LEVEL_ARRIVED 는 보내지 않고 stoppedAt 에 순번', () => {
+  // 창 하나: seq 2 바이트 없음 → PIECE 3 도 LEVEL_ARRIVED 도 안 나간다, replayed 0.
   {
     const { store, sessionId } = seeded();
     const out = sink();
-    const r = replayAfterHello({ store, hello: { sessionId, lastPieceSeq: 1 }, send: out.send, loadPiece: (k) => (k.chunkIndex === 2 ? null : bytesOf(k.chunkIndex)) });
-    assert.equal(r.replayed, 1);
-    assert.deepEqual(out.decoded(), [
-      { type: 'WELCOME', sessionId: 100, resumed: true, nextPieceSeq: 4 },
-      { type: 'PIECE', pieceSeq: 3, key: key(3), chunk: bytesOf(3) },
-    ]);
+    const loaded = [];
+    const r = replayAfterHello({ store, hello: { sessionId, lastPieceSeq: 1 }, send: out.send, loadPiece: (k) => { loaded.push(k.chunkIndex); return k.chunkIndex === 2 ? null : bytesOf(k.chunkIndex); } });
+    assert.equal(r.replayed, 0);
+    assert.equal(r.replayedBytes, 0);
+    assert.equal(r.stoppedAt, 2);
+    assert.deepEqual(loaded, [2]);
+    assert.deepEqual(out.decoded(), [{ type: 'WELCOME', sessionId: 100, resumed: true, nextPieceSeq: 4 }]);
   }
   // 창 하나: seq 3 바이트 없음 → PIECE 2 만, LEVEL_ARRIVED 없음.
   {
@@ -105,28 +108,66 @@ test('(4) loadPiece 가 null 이면 그 PIECE 와 그 창의 LEVEL_ARRIVED 를 �
     const out = sink();
     const r = replayAfterHello({ store, hello: { sessionId, lastPieceSeq: 1 }, send: out.send, loadPiece: (k) => (k.chunkIndex === 3 ? null : bytesOf(k.chunkIndex)) });
     assert.equal(r.replayed, 1);
+    assert.equal(r.stoppedAt, 3);
     assert.deepEqual(out.decoded().map((m) => [m.type, m.pieceSeq]), [['WELCOME', undefined], ['PIECE', 2]]);
   }
-  // 창 두 개(1..3, 4..5): seq 2 바이트 없음 → 첫 창의 LEVEL_ARRIVED 만 빠지고 둘째 창은 그대로 나간다.
+  // 창 두 개(1..3, 4..5): seq 2 바이트 없음 → 둘째 창의 PIECE·LEVEL_ARRIVED 도 보내지 않는다.
   {
     const { store, sessionId } = seeded(5, [[1, 3], [4, 5]]);
     const out = sink();
     const r = replayAfterHello({ store, hello: { sessionId, lastPieceSeq: 1 }, send: out.send, loadPiece: (k) => (k.chunkIndex === 2 ? null : bytesOf(k.chunkIndex)) });
-    assert.equal(r.replayed, 4);
-    assert.deepEqual(out.decoded().slice(1), [
-      { type: 'PIECE', pieceSeq: 3, key: key(3), chunk: bytesOf(3) },
-      { type: 'PIECE', pieceSeq: 4, key: key(4), chunk: bytesOf(4) },
-      { type: 'PIECE', pieceSeq: 5, key: key(5), chunk: bytesOf(5) },
-      { type: 'LEVEL_ARRIVED', segmentId: SEG, level: 0, pieceCount: 2, firstPieceSeq: 4 },
-    ]);
+    assert.equal(r.replayed, 0);
+    assert.equal(r.stoppedAt, 2);
+    assert.equal(out.sent.length, 1);
   }
+});
+
+test('(4b) 감독 재현: 구간1 seq1·2·LA(1..2), 구간2 seq3·LA(3..3), seq2 없음 → ACK(3) 뒤에도 seq2 가 후보로 남는다', () => {
+  const store = mkStore();
+  const { sessionId } = store.open({ sessionId: 0, lastPieceSeq: 0 });
+  const k = (seg, i) => ({ segmentId: seg, level: 1, lod: 0, chunkIndex: i, tileX: i, tileY: 0 });
+  store.recordSent(sessionId, k(1, 1), 1, bytesOf(1));
+  store.recordSent(sessionId, k(1, 2), 2, bytesOf(2));
+  store.recordLevelArrived(sessionId, { segmentId: 1, level: 1, firstPieceSeq: 1, pieceCount: 2 });
+  store.recordSent(sessionId, k(2, 3), 3, bytesOf(3));
+  store.recordLevelArrived(sessionId, { segmentId: 2, level: 1, firstPieceSeq: 3, pieceCount: 1 });
+  const out = sink();
+  const r = replayAfterHello({ store, hello: { sessionId, lastPieceSeq: 0 }, send: out.send, loadPiece: (key) => (key.chunkIndex === 2 ? null : bytesOf(key.chunkIndex)) });
+  // 멈추기 전에 P1 만 나간다. P3·LEVEL_ARRIVED(seg2) 는 나가지 않는다.
+  assert.deepEqual(out.decoded().map((m) => [m.type, m.pieceSeq]), [['WELCOME', undefined], ['PIECE', 1]]);
+  assert.equal(r.stoppedAt, 2);
+  assert.equal(r.replayed, 1);
+  // 클라이언트는 받은 것까지(seq 1)만 확인한다. seq2·LEVEL_ARRIVED(seg1) 는 다시 후보다.
+  const out2 = sink();
+  const r2 = replayAfterHello({ store, hello: { sessionId, lastPieceSeq: 1 }, send: out2.send, loadPiece: loadAll });
+  assert.equal(r2.stoppedAt, null);
+  assert.deepEqual(out2.decoded().map((m) => [m.type, m.pieceSeq ?? m.firstPieceSeq]), [['WELCOME', undefined], ['PIECE', 2], ['LEVEL_ARRIVED', 1], ['PIECE', 3], ['LEVEL_ARRIVED', 3]]);
+});
+
+test('(4c) loadPiece 가 undefined 를 돌려줘도 null 과 같게 멈춘다', () => {
+  const { store, sessionId } = seeded();
+  const out = sink();
+  const r = replayAfterHello({ store, hello: { sessionId, lastPieceSeq: 0 }, send: out.send, loadPiece: (k) => (k.chunkIndex === 2 ? undefined : bytesOf(k.chunkIndex)) });
+  assert.equal(r.stoppedAt, 2);
+  assert.equal(r.replayed, 1);
+  assert.deepEqual(out.decoded().map((m) => [m.type, m.pieceSeq]), [['WELCOME', undefined], ['PIECE', 1]]);
+});
+
+test('(4d) resendPlan 이 모르는 종류를 주면 TypeError', () => {
+  const store = {
+    open: () => ({ sessionId: 1, resumed: true, nextPieceSeq: 1, reason: null }),
+    resendPlan: () => [{ type: 'MYSTERY' }],
+  };
+  const out = sink();
+  assert.throws(() => replayAfterHello({ store, hello: { sessionId: 1, lastPieceSeq: 0 }, send: out.send, loadPiece: loadAll }), TypeError);
+  assert.equal(out.sent.length, 1); // WELCOME 만 나갔다
 });
 
 test('(5) 모르는 세션 이어받기: WELCOME resumed=0, reason UNKNOWN_SESSION, 재전송 0', () => {
   const { store } = seeded();
   const out = sink();
   const r = replayAfterHello({ store, hello: { sessionId: 999, lastPieceSeq: 1 }, send: out.send, loadPiece: () => assert.fail('조각을 읽으면 안 된다') });
-  assert.deepEqual(r, { sessionId: 101, resumed: false, nextPieceSeq: 1, reason: 'UNKNOWN_SESSION', replayed: 0 });
+  assert.deepEqual(r, { sessionId: 101, resumed: false, nextPieceSeq: 1, reason: 'UNKNOWN_SESSION', replayed: 0, replayedBytes: 0, stoppedAt: null });
   assert.equal(out.sent.length, 1);
   assert.deepEqual(out.decoded(), [{ type: 'WELCOME', sessionId: 101, resumed: false, nextPieceSeq: 1 }]);
 });
