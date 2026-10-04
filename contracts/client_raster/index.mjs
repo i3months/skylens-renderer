@@ -172,7 +172,9 @@
  * @property {Object} [contextAttributes]  canvas.getContext('webgl2', …) 속성. 구현 기본값 위에 덮어쓴다
  *
  * 시험 전용 확장(계약 밖이지만 시험·관측용으로 허용):
- * @property {Object} [testHooks]  시험 전용: 호출 횟수 계측용 대체 함수({selectDrawable?, toGpuPlanes?})
+ * @property {Object} [testHooks]  시험 전용: 호출 횟수 계측용 대체 함수와 GL 구간 경계 알림({selectDrawable?, toGpuPlanes?, checkArrivedKey?, onGlUploadStart?, onGlUploadEnd?, onDrawStart?, onDrawEnd?}).
+ *   selectDrawable, toGpuPlanes 는 selectDrawable·toGpuPlanes 함수를 대체한다. checkArrivedKey 는 checkArrived 에서 각 key 처리 때마다 부른다.
+ *   onGlUploadStart/End 는 pool.upload 호출 직전·직후, onDrawStart/End 는 draw 의 GL 호출 구간 직전·직후에 인자 없이 부른다(시각은 시험이 찍는다)
  */
 
 /** 클라이언트 래스터라이저 오류. code: 'context' | 'memory' | 'piece' | 'view' | 'unimplemented'. */
