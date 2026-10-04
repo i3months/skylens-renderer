@@ -9,6 +9,7 @@ const estimated = CASES.filter((c) => c.source === ESTIMATED);
 
 function run(c) {
   const m = createLevelMachine();
+  for (const id of c.registered || []) m.expect(id);
   for (const [seg, level] of c.arrivals) m.arrive(seg, level);
   for (const [key, want] of Object.entries(c.expect)) {
     const s = m.snapshot(Number(key));
@@ -21,9 +22,12 @@ function run(c) {
 }
 
 describe('대조표 모양', () => {
-  test('사례는 12건 이상이고 출처 있는 사례가 12건 이상이다', () => {
-    assert.ok(CASES.length >= 12, `전체 ${CASES.length}`);
-    assert.ok(sourced.length >= 12, `출처 있음 ${sourced.length}`);
+  test('사례는 손으로 센 개수와 같다: 전체 20건, 출처 있음 16건, 추정 4건', () => {
+    // 같은 수준 중복 2→2 는 출처 문서가 대조하지 않은 가정이라 추정으로 옮겼다(F-180 ⑥).
+    // expect 등록 사례 1건 추가. 개수를 바꾸려면 이 숫자와 cases.mjs 를 함께 고친다.
+    assert.equal(CASES.length, 20);
+    assert.equal(sourced.length, 16);
+    assert.equal(estimated.length, 4);
   });
 
   test('모든 사례에 이름·출처·도착·기대가 있고 이름이 겹치지 않는다', () => {
@@ -51,7 +55,7 @@ describe('대조표 모양', () => {
     assert.ok(has((c) => one(c, [[0, 0], [0, 1], [0, 2], [0, 3]])), '순서 도착');
     assert.ok(has((c) => one(c, [[0, 0], [0, 3]])), '건너뛰기 0→3');
     assert.ok(has((c) => one(c, [[0, 3], [0, 1]])), '추월 3→1');
-    assert.ok(has((c) => one(c, [[0, 2], [0, 2]])), '같은 수준 중복');
+    assert.ok(CASES.some((c) => one(c, [[0, 2], [0, 2]])), '같은 수준 중복(추정 사례)');
     assert.ok(has((c) => new Set(c.arrivals.map((a) => a[0])).size > 1), '구간 독립');
     assert.ok(has((c) => c.arrivals.length === 0 && Object.values(c.expect).every((e) => e.missing)), '도착 전 없음');
   });
