@@ -14,9 +14,11 @@
 //   setArrived 는 계약 Renderer 에 올라 있는 도착 입력 메서드다(결정 0034). 결과의 discard 는
 //   호출자가 releasePiece 로 해제한다(해제 근거). 렌더러는 discard 를 스스로 해제하지 않는다.
 //   setArrived(list, {deferResult: true}) 는 반환값이 필요 없는 호출자용 지연 경로다(선택은 다음 draw 에서 1회).
-//   재계산 주기(F-246 ⑦, 계약 '프레임마다 부르지 않는다'): selectDrawable 은 setArrived 때만 돈다. 업로드가 끝난 key 가 직전
+//   재계산 주기(F-246 ⑦, 계약 '프레임마다 부르지 않는다'): selectDrawable 은 setArrived(즉시 경로)와, 선택이 낡았을 때(지연 경로
+//   입력 직후·도착 집합 key 가 올라온 뒤) 다음 draw 또는 한도 초과 업로드의 자리 만들기에서 한 번 돈다. 업로드가 끝난 key 가 직전
 //   선택에 없으면(도착 집합에 없는 새 key) 직전 선택에서 pending 으로 보고 다시 돌지 않는다. 도착 집합에 든 key 가 올라오면
-//   다음 draw 에서 프레임당 최대 1회 다시 돈다. 해제·퇴출은 선택을 건드리지 않는다(draw 가 상주하지 않는 key 를 건너뛴다).
+//   다음 draw 에서 프레임당 최대 1회 다시 돈다. 자리 만들기의 재계산은 지금 올리는 key 를 상주 목록에 넣어 돈다(그 key 가
+//   완성할 LOD 를 불완전으로 보고 상주 조각을 퇴출하지 않게). 해제·퇴출은 선택을 건드리지 않는다(draw 가 상주하지 않는 key 를 건너뛴다).
 // 메모리(계약 ④·머리 주석 끝): maxResidentBytes 를 넘게 될 업로드는 그리지 않는 상주 조각(pending·discard)을 오래된 것부터
 //   해제해 자리를 만든다(onEvict 로 알린다). 그려도 모자라면 그리는 조각은 건드리지 않고 ClientRasterError('memory').
 // GPU 평면: 복호 결과에 Worker 가 만든 gpu({format,count,planes,origin})가 있으면 toGpuPlanes 를 다시 돌리지 않고 가벼운 검증만
@@ -31,6 +33,7 @@ import {
 } from '../../contracts/client_raster/index.mjs';
 import { decodeChunkClient } from '../codec/index.mjs';
 import { createContext } from './context/index.mjs';
+import { checkArrived } from './arrived_check/index.mjs';
 import {
   createPointProgram, pointUniformValues, applyPointUniforms, applyPieceOrigin, ATTRIB, DEFAULT_AMBIENT,
 } from './shader/index.mjs';
@@ -160,7 +163,9 @@ export function checkGpuPlanes(decoded) {
  * @param {() => number} [options.now]  draw 의 drawMs 용 시계(기본 performance.now)
  * @param {(keys: string[]) => void} [options.onEvict]  메모리 한도 때문에 해제한 그리지 않는 조각 key 알림
  * @param {object} [options.contextAttributes]  getContext 속성(createContext 기본값 위에 덮어씀)
- * @param {{selectDrawable?: Function, toGpuPlanes?: Function}} [options.testHooks]  시험 전용: 호출 횟수 계측용 대체 함수(운영 코드는 쓰지 않는다)
+ * @param {{selectDrawable?: Function, toGpuPlanes?: Function, checkArrivedKey?: () => void, onGlUploadStart?: () => void, onGlUploadEnd?: () => void, onDrawStart?: () => void, onDrawEnd?: () => void}} [options.testHooks]
+ *   시험 전용: 호출 횟수 계측용 대체 함수와 GL 구간 경계 알림(운영 코드는 쓰지 않는다). onGlUploadStart/End 는 pool.upload 호출 직전·직후,
+ *   onDrawStart/End 는 draw 의 GL 호출 구간 직전·직후에 인자 없이 부른다(시각은 시험이 찍는다)
  */
 export function createRenderer(options) {
   if (options === null || typeof options !== 'object') throw new ClientRasterError('context', 'options 가 객체가 아님');
@@ -171,6 +176,12 @@ export function createRenderer(options) {
   const onEvict = options.onEvict;
   const select = options.testHooks?.selectDrawable ?? selectDrawable;
   const toPlanes = options.testHooks?.toGpuPlanes ?? toGpuPlanes;
+  const checkProbe = options.testHooks?.checkArrivedKey ? { onKey: options.testHooks.checkArrivedKey } : undefined;
+  const noop = () => {};
+  const onGlUploadStart = options.testHooks?.onGlUploadStart ?? noop;
+  const onGlUploadEnd = options.testHooks?.onGlUploadEnd ?? noop;
+  const onDrawStart = options.testHooks?.onDrawStart ?? noop;
+  const onDrawEnd = options.testHooks?.onDrawEnd ?? noop;
   const shading = { ...DEFAULT_SHADING, ...(options.shading ?? {}) };
   // 셰이딩 옵션은 만들 때 한 번 검사한다(PointShaderError 를 'view' 로 바꾼다)
   try {
@@ -191,7 +202,17 @@ export function createRenderer(options) {
   }
   const meter = createMemoryMeter(); // key → GPU 바이트(풀과 같은 값). 해제 순서(오래된 것부터)도 이 표의 삽입 순서로 정한다
   /** @type {Map<string, {format: number, count: number, origin: number[]}>} */
-  const meta = new Map();
+  // 변경 세대: meta 가 바뀔 때마다 올라간다(makeRoom 의 지역 선택 재사용 판정용, 선택 상태가 아니다)
+  let metaGen = 0;
+  const meta = new (class extends Map {
+    set(k, v) { metaGen += 1; return super.set(k, v); }
+    delete(k) { metaGen += 1; return super.delete(k); }
+    clear() { metaGen += 1; super.clear(); }
+  })();
+  // makeRoom 전용 캐시(selection 계열 상태와 무관). setArrived 두 경로·dispose 에서 null 로 돌려 도착 입력 사본을 붙잡지 않는다.
+  // {tiles: 도착 입력의 타일 표, gen: resident·base 를 만든 metaGen, resident: 타일 → 상주 도착 key, base: 새 key 를 넣지 않은 보호 Set,
+  //  key·drawing: 직전 거부/판정의 올리는 key 와 보호 집합}
+  let roomCache = null;
   /** @type {Map<string, number>} 올리는 중인 key → 토큰(해제·소실 뒤 늦게 끝난 업로드를 버린다) */
   const inflight = new Map();
   let nextToken = 1;
@@ -205,7 +226,6 @@ export function createRenderer(options) {
   let selection = null; // 마지막 selectDrawable 결과(setArrived 가 채운다)
   let arrivedKeys = new Set(); // 마지막 setArrived 의 도착 key 전체(새로 올라온 key 가 재계산을 요하는지 가린다)
   let selectionStale = false; // 도착 집합에 든 key 가 선택 뒤에 올라옴 → 다음 draw 에서 한 번 다시 돈다
-  const fresh = new Set(); // 선택 뒤에 올라온 도착 집합 key(다시 돌기 전까지 퇴출에서 보호)
   let droppedFrames = 0;
   let lostKeys = new Set();
   const lostCbs = new Set();
@@ -230,9 +250,15 @@ export function createRenderer(options) {
     if (selectionStale) {
       selection = select([...meta.keys()], arrived);
       selectionStale = false;
-      fresh.clear();
     }
     return selection;
+  }
+
+  // 선택 객체별 draw 크기 Set 캐시(F-249 ⑨): 한도 초과 업로드마다 Set 을 새로 만들지 않고 선택이 바뀔 때만 만든다
+  let drawingCache = null; // {sel, set}
+  function drawingSet(sel) {
+    if (drawingCache === null || drawingCache.sel !== sel) drawingCache = { sel, set: new Set(sel.draw) };
+    return drawingCache.set;
   }
 
   function dropPiece(key) {
@@ -259,7 +285,6 @@ export function createRenderer(options) {
     meter.reset();
     meta.clear();
     gpu = null;
-    fresh.clear(); // 선택은 그대로 둔다: 복구 뒤 다시 올라온 key 가 같은 도착 집합으로 바로 그려진다
     fire(lostCbs);
   });
   ctx.onRestored(() => {
@@ -292,14 +317,103 @@ export function createRenderer(options) {
     return { input, cam, values };
   }
 
+  // --- makeRoom 의 보호 집합(F-259 ②) ---
+  // key 하나를 더해도 바뀌는 것은 그 key 의 타일뿐이다(selectDrawable 의 LOD 고르기는 타일마다). 도착 입력에서 타일 표(타일 → 후보 여부·LOD 별 완료 chunk 수)를
+  // 한 번 만들고, 상주 key 에서 타일별 상주 수·고른 LOD 를 metaGen 마다 한 번 만든 뒤, 새 key 마다 그 타일 하나만 본다.
+  // select 호출은 없고 key 당 비용은 그 타일의 상주 chunk 수다. 규칙은 selectDrawable 과 같다(시험이 맞대어 본다).
+  const keyTile = (k) => k.slice(0, k.lastIndexOf('.', k.lastIndexOf('.') - 1));
+  const keyLod = (k) => Number(k.slice(k.lastIndexOf('.', k.lastIndexOf('.') - 1) + 1, k.lastIndexOf('.')));
+  function chooseLod(have, need) { // 완전한 LOD 중 가장 세밀한 것, 없으면 상주 chunk 가 있는 LOD 중 가장 세밀한 것(-1 = 없음)
+    let best = -1;
+    let bestComplete = -1;
+    for (let lod = 7; lod >= 0; lod--) {
+      if (have[lod] === 0) continue;
+      best = lod;
+      if (have[lod] === need[lod]) bestComplete = lod;
+    }
+    return bestComplete !== -1 ? bestComplete : best;
+  }
+  function buildRoomTiles() {
+    const top = new Map();
+    for (const a of arrived) {
+      const cur = top.get(a.segmentId);
+      if (cur === undefined || a.level > cur) top.set(a.segmentId, a.level);
+    }
+    const tiles = new Map(); // 타일 → {cand: 그 구간의 가장 높은 수준이면 true, need: LOD 별 완료 chunk 수}
+    const seen = new Set();
+    for (const a of arrived) {
+      for (const k of a.keys) {
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const id = keyTile(k);
+        let t = tiles.get(id);
+        if (t === undefined) { t = { cand: a.level === top.get(a.segmentId), need: new Int32Array(8) }; tiles.set(id, t); }
+        t.need[keyLod(k)]++;
+      }
+    }
+    return tiles;
+  }
+  function roomProtection(key) {
+    let rc = roomCache;
+    if (rc === null) rc = { tiles: buildRoomTiles(), gen: -1, resident: null, base: null, key: null, drawing: null };
+    if (rc.gen !== metaGen) { // 상주 목록이 바뀌었다: 타일별 상주 수와 새 key 없는 보호 집합을 다시 만든다
+      const resident = new Map(); // 타일 → {have, ks: [[key, lod]], set, chosen}
+      for (const k of meta.keys()) {
+        if (!arrivedKeys.has(k)) continue;
+        const id = keyTile(k);
+        const t = rc.tiles.get(id);
+        if (t === undefined || !t.cand) continue;
+        let e = resident.get(id);
+        if (e === undefined) { e = { have: new Int32Array(8), ks: [], set: new Set(), chosen: -1 }; resident.set(id, e); }
+        const lod = keyLod(k);
+        e.have[lod]++;
+        e.ks.push([k, lod]);
+        e.set.add(k);
+      }
+      const base = new Set();
+      for (const [id, e] of resident) {
+        e.chosen = chooseLod(e.have, rc.tiles.get(id).need);
+        for (const [k, lod] of e.ks) if (lod === e.chosen) base.add(k);
+      }
+      rc = { tiles: rc.tiles, gen: metaGen, resident, base, key: null, drawing: null };
+    }
+    // key 를 더했을 때 같은 타일의 보호 집합이 달라지는가
+    let drawing = rc.base;
+    const id = keyTile(key);
+    const t = rc.tiles.get(id);
+    const e = rc.resident.get(id);
+    if (t !== undefined && t.cand && e !== undefined) {
+      const have = Int32Array.from(e.have);
+      have[keyLod(key)]++;
+      const chosen = chooseLod(have, t.need);
+      if (chosen !== e.chosen) {
+        const own = new Set();
+        for (const [k, lod] of e.ks) if (lod === chosen) own.add(k);
+        const base = rc.base;
+        drawing = { has: (k) => (e.set.has(k) ? own.has(k) : base.has(k)) };
+      }
+    }
+    return { tiles: rc.tiles, gen: rc.gen, resident: rc.resident, base: rc.base, key, drawing };
+  }
+
   // 그리지 않는 상주 조각을 오래된 것부터 해제해 need 바이트를 만든다. 모자라면 'memory'.
   function makeRoom(key, bytes) {
     // 한도 여유가 있으면 크기 표·선택을 만들지 않고 돌아간다(F-246 ⑦). key 별 크기는 meta 에 둔다
     const resident = pool.residentBytes() - (meta.get(key)?.bytes ?? 0);
     if (resident + bytes <= maxResidentBytes) return;
-    // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 직전 선택에서 pending 이던 LOD 가
-    // 방금 완전해졌다면 그 조각이 새 draw 에 들어 보호된다. 낡지 않았으면 직전 선택을 그대로 쓴다
-    const drawing = new Set(currentSelection().draw);
+    // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 낡지 않았으면 직전 선택을 그대로 쓴다.
+    // 지금 올리는 key 가 도착 집합에 들고 meta 에 없으면 낡음 여부와 관계없이 그 key 를 넣은 보호 집합으로 고른다.
+    // 이 보호 집합은 select 를 부르지 않고 그 key 의 타일 하나만 다시 계산한다(roomProtection). 결과는 roomCache 에 저장하고,
+    // 같은 (meta 세대, key) 로 이어진 거부는 그대로 다시 쓴다(도착 입력이 바뀌면 setArrived 가 roomCache 를 비운다)
+    let drawing;
+    if (arrived !== null && !meta.has(key) && arrivedKeys.has(key)) {
+      if (!(roomCache && roomCache.gen === metaGen && roomCache.key === key)) {
+        roomCache = roomProtection(key);
+      }
+      drawing = roomCache.drawing;
+    } else {
+      drawing = drawingSet(currentSelection());
+    }
     const victims = [];
     let free = 0;
     for (const [k, info] of meta) {
@@ -316,6 +430,7 @@ export function createRenderer(options) {
       // 알림 콜백의 예외가 업로드를 막지 않게 한다(희생 조각은 이미 해제됨)
       try { onEvict(victims); } catch { /* 호출자 콜백 오류는 렌더러 상태와 무관 */ }
     }
+    return victims.length > 0;
   }
 
   async function uploadPiece(key, bytes) {
@@ -362,8 +477,17 @@ export function createRenderer(options) {
     let bytesTotal = 0;
     for (const v of Object.values(gpuPiece.planes)) bytesTotal += v.byteLength;
     if (bytesTotal > maxPieceBytes) throw new ClientRasterError('piece', `조각 ${bytesTotal} B 가 maxPieceBytes ${maxPieceBytes} 초과`);
-    makeRoom(key, bytesTotal);
-    pool.upload(key, gpuPiece); // 풀이 한도를 다시 검사한다
+    const evicted = makeRoom(key, bytesTotal);
+    try { onGlUploadStart(); } catch { /* 시험 hook 예외가 업로드 상태를 깨지 않게 삼킨다 */ }
+    try {
+      pool.upload(key, gpuPiece); // 풀이 한도를 다시 검사한다
+    } catch (e) {
+      // 희생은 이미 해제됐는데 새 조각이 없다: 선택이 해제된 key 를 가리키지 않게 다음 draw 에서 한 번 다시 돈다
+      if (evicted) selectionStale = true;
+      throw e;
+    } finally {
+      try { onGlUploadEnd(); } catch { /* 같은 이유: 상태 반영·원래 오류를 덮지 않는다 */ }
+    }
     meter.remove(key); // 삽입 순서를 최신으로
     meter.add(key, bytesTotal);
     meta.delete(key);
@@ -371,7 +495,6 @@ export function createRenderer(options) {
     // 도착 집합에 없는 새 key 는 직전 선택에서 pending 이라 다시 돌지 않는다. 도착 집합에 든 key 만 다음 draw 에서 1회 다시 돈다
     if (arrived !== null && arrivedKeys.has(key)) {
       selectionStale = true;
-      fresh.add(key);
     }
   }
 
@@ -392,28 +515,21 @@ export function createRenderer(options) {
     inflight.delete(key);
     lostKeys.delete(key);
     if (meta.has(key)) dropPiece(key); // 선택은 그대로 둔다: draw 가 상주하지 않는 key 를 건너뛴다
-    fresh.delete(key);
   }
 
   function setArrived(list, opts) {
     assertAlive();
     if (opts !== undefined && opts !== null && opts.deferResult === true) {
       // 지연 경로: 반환값이 필요 없는 호출자용. 선택은 다음 draw 에서 프레임당 1회만 돈다(연속 호출은 마지막 입력으로 합쳐진다).
-      // 항목 모양(segmentId·level·keys 배열)만 지금 검사하고 key 해석 오류는 draw 에서 ClientRasterError('piece') 로 난다.
+      // 항목·key 검사(key 형식·level 0..3·(segmentId, level) 일치, O(key 수))는 상태를 바꾸기 전에 지금 하고 던지면 직전 상태 그대로다.
       if (!Array.isArray(list)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
-      if (list.length === 0) throw new ClientRasterError('piece', 'arrived 는 비지 않은 배열이어야 함');
-      for (const a of list) {
-        if (!a || !Number.isInteger(a.segmentId) || !Number.isInteger(a.level) || !Array.isArray(a.keys) || a.keys.length === 0) {
-          throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
-        }
-      }
+      checkArrived(list, checkProbe); // 항목·key 검사만(타일 표 없는 가벼운 검사기, 거부 기준은 selectDrawable 과 같다. F-253 ②)
       arrived = list.map((a) => ({ segmentId: a.segmentId, level: a.level, keys: [...a.keys] }));
       arrivedKeys = new Set();
       for (const a of arrived) for (const k of a.keys) arrivedKeys.add(k);
       if (selection === null) selection = { draw: [], pending: [], discard: [] };
       selectionStale = true;
-      fresh.clear(); // 새 도착 집합에 든 상주 key 는 다시 고르기 전까지 그리는 조각으로 보호한다
-      for (const k of arrivedKeys) if (meta.has(k)) fresh.add(k);
+      roomCache = null;
       return undefined;
     }
     const res = select([...meta.keys()], list); // 입력 검사 겸 결과(도착 이벤트마다 한 번)
@@ -422,7 +538,7 @@ export function createRenderer(options) {
     for (const a of arrived) for (const k of a.keys) arrivedKeys.add(k);
     selection = res;
     selectionStale = false;
-    fresh.clear();
+    roomCache = null;
     return { draw: [...res.draw], pending: [...res.pending], discard: [...res.discard] };
   }
 
@@ -473,6 +589,8 @@ export function createRenderer(options) {
       return { drawnPoints: 0, drawnPieces: 0, droppedFrames, drawMs: 0 };
     }
     const { cam, values } = view;
+    const drawKeys = currentSelection().draw; // 선택 재계산(CPU)은 GL 구간 밖에서 한다
+    try { onDrawStart(); } catch { /* 시험 hook 예외가 draw 를 깨지 않게 삼킨다 */ }
     if (canvas.width !== cam.bw) canvas.width = cam.bw;
     if (canvas.height !== cam.bh) canvas.height = cam.bh;
     gl.viewport(0, 0, cam.bw, cam.bh);
@@ -493,7 +611,7 @@ export function createRenderer(options) {
     // u_shade 는 프레임 시작(applyPointUniforms)에서 올린 값에서 바뀔 때만 다시 올린다
     const hasShade = gpu.uniforms.u_shade !== null && gpu.uniforms.u_shade !== undefined;
     let shadeNow = values.u_shade ? 1 : 0;
-    for (const key of currentSelection().draw) {
+    for (const key of drawKeys) {
       const info = meta.get(key);
       if (!info) continue;
       bindPiece(key, info);
@@ -505,6 +623,7 @@ export function createRenderer(options) {
       drawnPieces += 1;
     }
     gl.bindVertexArray(null);
+    try { onDrawEnd(); } catch { /* 같은 이유 */ }
     return { drawnPoints, drawnPieces, droppedFrames, drawMs: Math.max(0, now() - t0) };
   }
 
@@ -529,6 +648,7 @@ export function createRenderer(options) {
     pieceVaos.clear();
     meta.clear();
     meter.reset();
+    roomCache = null;
     lostKeys = new Set();
     lostCbs.clear();
     restoredCbs.clear();

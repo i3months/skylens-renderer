@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CLIENT_RASTER_API } from './index.mjs';
 import { createRenderer } from '../../client/raster/index.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 test('CONTRACT: CLIENT_RASTER_API 메서드 목록이 계약 표 고정', (t) => {
   // 계약에 정의된 메서드 목록
@@ -168,6 +174,73 @@ test('IMPL: onContextLost 구독 해제가 호출을 끊는다', () => {
 });
 
 test('CONTRACT: createRenderer 옵션이 계약 또는 시험 전용 확장에만 속함', () => {
+  // 계약에 정의된 옵션 키
+  const contractOptionKeys = new Set([
+    'canvas', 'maxPieceBytes', 'maxResidentBytes', 'decode', 'onEvict',
+    'shading', 'now', 'contextAttributes',
+  ]);
+  // 시험 전용 확장
+  const testOnlyExtensions = new Set(['testHooks']);
+  const allowedKeys = new Set([...contractOptionKeys, ...testOnlyExtensions]);
+
+  // Proxy 로 createRenderer 가 읽는 옵션 키를 추적한다
+  const accessLog = { get: new Set(), has: new Set(), ownKeys: [] };
+  const canvas = fakeCanvas();
+  const baseOptions = {
+    canvas,
+    maxPieceBytes: 1 << 20,
+    maxResidentBytes: 1 << 20,
+    decode: (bytes) => ({ header: { format: 3, pointCount: 1, bboxMin: [0, 0, 0], quantExp: 0 }, planes: { pos_e: new Float32Array(1), pos_n: new Float32Array(1), pos_u: new Float32Array(1), color_r: new Uint8Array(1), color_g: new Uint8Array(1), color_b: new Uint8Array(1), normal_oct_x: new Int8Array(1), normal_oct_y: new Int8Array(1) } }),
+    shading: { lightDirWorld: [0, 0, 1] },
+    contextAttributes: {},
+    onEvict: () => {},
+    now: () => 0,
+    testHooks: {},
+  };
+
+  const proxiedOptions = new Proxy(baseOptions, {
+    get(target, key) {
+      if (typeof key === 'string' && key !== 'toJSON' && key !== 'constructor') {
+        accessLog.get.add(key);
+      }
+      return target[key];
+    },
+    has(target, key) {
+      if (typeof key === 'string') {
+        accessLog.has.add(key);
+      }
+      return key in target;
+    },
+    ownKeys(target) {
+      accessLog.ownKeys.push(Object.getOwnPropertyNames(target));
+      return Object.getOwnPropertyNames(target);
+    },
+  });
+
+  // createRenderer 호출해 읽힌 옵션 추적
+  const renderer = createRenderer(proxiedOptions);
+  if (renderer) renderer.dispose?.();
+
+  // 읽힌 옵션이 모두 허용된 것인지 확인
+  for (const key of accessLog.get) {
+    assert.ok(allowedKeys.has(key), `createRenderer 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함`);
+  }
+  for (const key of accessLog.has) {
+    assert.ok(allowedKeys.has(key), `has 로 확인한 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함`);
+  }
+  for (const keyList of accessLog.ownKeys) {
+    for (const key of keyList) {
+      assert.ok(allowedKeys.has(key), `ownKeys 에 포함된 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함`);
+    }
+  }
+
+  // 계약 옵션이 모두 읽혀야 함
+  for (const key of contractOptionKeys) {
+    assert.ok(accessLog.get.has(key), `계약 옵션 '${key}' 가 createRenderer 에서 읽혀야 함`);
+  }
+});
+
+test('CONTRACT: draw 중 options deferred 접근 추적', () => {
   const contractOptionKeys = new Set([
     'canvas', 'maxPieceBytes', 'maxResidentBytes', 'decode', 'onEvict',
     'shading', 'now', 'contextAttributes',
@@ -175,18 +248,151 @@ test('CONTRACT: createRenderer 옵션이 계약 또는 시험 전용 확장에�
   const testOnlyExtensions = new Set(['testHooks']);
   const allowedKeys = new Set([...contractOptionKeys, ...testOnlyExtensions]);
 
-  const { renderer: _r, canvas } = makeRenderer();
+  const accessLog = { get: new Set(), has: new Set(), ownKeys: [] };
+  const canvas = fakeCanvas();
+  const baseOptions = {
+    canvas,
+    maxPieceBytes: 1 << 20,
+    maxResidentBytes: 1 << 20,
+    decode: (bytes) => ({
+      header: {
+        format: 1, pointCount: 1, bboxMin: [0, 0, 0], quantExp: 0,
+        segmentId: 1, level: 0, tileX: 0, tileY: 0, lod: 0, chunkIndex: 0,
+      },
+      planes: {
+        pos_e: new Float32Array(1), pos_n: new Float32Array(1), pos_u: new Float32Array(1),
+        color_r: new Uint8Array(1), color_g: new Uint8Array(1), color_b: new Uint8Array(1),
+        normal_oct_x: new Int8Array(1), normal_oct_y: new Int8Array(1),
+      },
+    }),
+    shading: { lightDirWorld: [0, 0, 1] },
+    contextAttributes: {},
+    onEvict: () => {},
+    now: () => 0,
+    testHooks: {},
+  };
 
-  const implOptionKeys = new Set([
+  const proxiedOptions = new Proxy(baseOptions, {
+    get(target, key) {
+      if (typeof key === 'string' && key !== 'toJSON' && key !== 'constructor') {
+        accessLog.get.add(key);
+      }
+      return target[key];
+    },
+    has(target, key) {
+      if (typeof key === 'string') {
+        accessLog.has.add(key);
+      }
+      return key in target;
+    },
+    ownKeys(target) {
+      accessLog.ownKeys.push(Object.getOwnPropertyNames(target));
+      return Object.getOwnPropertyNames(target);
+    },
+  });
+
+  const renderer = createRenderer(proxiedOptions);
+  renderer.draw();
+  renderer.dispose();
+
+  const getList = [...accessLog.get];
+  for (const key of getList) {
+    assert.ok(
+      allowedKeys.has(key),
+      `get 으로 접근한 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함 (추적: ${getList})`,
+    );
+  }
+  for (const key of accessLog.has) {
+    assert.ok(
+      allowedKeys.has(key),
+      `has 로 확인한 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함`,
+    );
+  }
+});
+
+test('CONTRACT: setView-uploadPiece-setArrived-draw-dispose 시퀀스 중 options 지연 접근 추적', async () => {
+  const contractOptionKeys = new Set([
     'canvas', 'maxPieceBytes', 'maxResidentBytes', 'decode', 'onEvict',
-    'shading', 'now', 'contextAttributes', 'testHooks',
+    'shading', 'now', 'contextAttributes',
   ]);
+  const testOnlyExtensions = new Set(['testHooks']);
+  const allowedKeys = new Set([...contractOptionKeys, ...testOnlyExtensions]);
 
-  for (const key of implOptionKeys) {
-    assert.ok(allowedKeys.has(key), `구현 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함`);
-  }
+  const accessLog = { get: new Set(), has: new Set(), ownKeys: [] };
+  const canvas = fakeCanvas();
+  const baseOptions = {
+    canvas,
+    maxPieceBytes: 1 << 20,
+    maxResidentBytes: 1 << 20,
+    decode: (bytes) => ({
+      header: {
+        format: 1, pointCount: 1, bboxMin: [0, 0, 0], quantExp: 0,
+        segmentId: 1, level: 0, tileX: 0, tileY: 0, lod: 0, chunkIndex: 0,
+      },
+      planes: {
+        pos_e: new Float32Array(1), pos_n: new Float32Array(1), pos_u: new Float32Array(1),
+        color_r: new Uint8Array(1), color_g: new Uint8Array(1), color_b: new Uint8Array(1),
+        normal_oct_x: new Int8Array(1), normal_oct_y: new Int8Array(1),
+      },
+    }),
+    shading: { lightDirWorld: [0, 0, 1] },
+    contextAttributes: {},
+    onEvict: () => {},
+    now: () => 0,
+    testHooks: {},
+  };
 
-  for (const key of allowedKeys) {
-    assert.ok(implOptionKeys.has(key), `계약 옵션 '${key}' 가 구현에 지원되어야 함 (또는 선택 사항)` );
-  }
+  const proxiedOptions = new Proxy(baseOptions, {
+    get(target, key) {
+      if (typeof key === 'string' && key !== 'toJSON' && key !== 'constructor') {
+        accessLog.get.add(key);
+      }
+      return target[key];
+    },
+    has(target, key) {
+      if (typeof key === 'string') {
+        accessLog.has.add(key);
+      }
+      return key in target;
+    },
+    ownKeys(target) {
+      accessLog.ownKeys.push(Object.getOwnPropertyNames(target));
+      return Object.getOwnPropertyNames(target);
+    },
+  });
+
+  // createRenderer 호출 (생성 중 options 읽기는 정상)
+  const renderer = createRenderer(proxiedOptions);
+
+  // 생성 후 accesses 초기화 (지연 접근 추적용)
+  const creationGetCount = accessLog.get.size;
+  const creationHasCount = accessLog.has.size;
+  const creationOwnKeysCount = accessLog.ownKeys.length;
+
+  // 생성 후에는 options 에 접근하지 않아야 함을 확인하기 위해 초기화
+  accessLog.get.clear();
+  accessLog.has.clear();
+  accessLog.ownKeys = [];
+
+  // setView 호출
+  renderer.setView({ R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], K: { fx: 1, fy: 1, cx: 0, cy: 0 }, width: 300, height: 150, devicePixelRatio: 1 });
+
+  // uploadPiece 호출
+  const key = '1.0.0.0.0.0';
+  const bytes = new Uint8Array(100);
+  await renderer.uploadPiece(key, bytes);
+
+  // setArrived 호출 (지연 경로, 선택은 다음 draw 에서)
+  renderer.setArrived([{ segmentId: 1, level: 0, keys: [key] }], { deferResult: true });
+
+  // draw 호출 (GL 경로 포함)
+  renderer.draw();
+
+  // dispose 호출
+  renderer.dispose();
+
+  // 시퀀스 중 deferred accesses 확인 (생성 후 접근이 있으면 안 됨)
+  assert.equal(accessLog.get.size, 0, `setView-uploadPiece-setArrived-draw-dispose 중 options get 호출 없어야 함 (기록: ${[...accessLog.get]})`);
+  assert.equal(accessLog.has.size, 0, 'setView-uploadPiece-setArrived-draw-dispose 중 options has 호출 없어야 함');
+  assert.equal(accessLog.ownKeys.length, 0, 'setView-uploadPiece-setArrived-draw-dispose 중 options ownKeys 호출 없어야 함');
 });

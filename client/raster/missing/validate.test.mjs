@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { nonEmptyValuesInEmpty, computeCoverage, compareWithReference } from './index.mjs';
+import { nonEmptyValuesInEmpty, computeCoverage, compareWithReference, drawnMask } from './index.mjs';
 import { emptyResult } from '../../../contracts/raster/index.mjs';
 
 // nonEmptyValuesInEmpty 입력 검증: result 객체가 유효해야 함
@@ -122,4 +122,143 @@ test('nonEmptyValuesInEmpty: 큰 배열에서 범위 검사', () => {
 test('nonEmptyValuesInEmpty: 범위 밖 인덱스 감지(100×100 배열)', () => {
   const r = emptyResult(100, 100);
   assert.throws(() => nonEmptyValuesInEmpty(r, [10000]), /^Error: missing:/);
+});
+
+// index=-1 인데 깊이·색이 어긋난 결과는 RenderResult 검사(computeCoverage 와 같음)에서 missing: 오류
+test('nonEmptyValuesInEmpty: index=-1 인데 깊이·색만 어긋난 빈 픽셀을 감지', () => {
+  const r = emptyResult(2, 2);
+  r.depth[0] = 5; // index 는 −1 인데 깊이가 0 이 아님
+  assert.throws(() => nonEmptyValuesInEmpty(r, [0]), /^Error: missing:/);
+  assert.throws(() => computeCoverage(r), /^Error: missing:/);
+
+  const r2 = emptyResult(2, 2);
+  r2.color[3] = 7; // index −1, 깊이 0 인데 색이 0 이 아님
+  assert.throws(() => nonEmptyValuesInEmpty(r2, [1]), /^Error: missing:/);
+  assert.throws(() => computeCoverage(r2), /^Error: missing:/);
+});
+
+// emptyPixels 에 든 칠해진 픽셀은 검사를 통과한 결과에서 목록으로 돌려준다
+test('nonEmptyValuesInEmpty: emptyPixels 에 든 칠해진 픽셀(번호·깊이·색)을 돌려준다', () => {
+  const r = emptyResult(2, 2);
+  r.index[2] = 7; r.depth[2] = 3; r.color[6] = 9;
+  assert.deepEqual(nonEmptyValuesInEmpty(r, [0, 2, 3]), [2]);
+});
+
+// F-251②: RenderResult 검사는 호출당 한 번만 일어난다. assertRenderResult 는 color 를 한 번 읽으므로 color 읽기 횟수로 센다.
+function countingResult(base) {
+  const counter = { color: 0 };
+  const r = {
+    width: base.width, height: base.height, depth: base.depth, index: base.index,
+    get color() { counter.color += 1; return base.color; },
+  };
+  return { r, counter };
+}
+test('RenderResult 검사 횟수: computeCoverage·drawnMask·compareWithReference·nonEmptyValuesInEmpty 모두 인자당 1회', () => {
+  const a = countingResult(emptyResult(3, 3));
+  computeCoverage(a.r);
+  assert.equal(a.counter.color, 1, 'computeCoverage');
+  const b = countingResult(emptyResult(3, 3));
+  drawnMask(b.r);
+  assert.equal(b.counter.color, 1, 'drawnMask');
+  const c = countingResult(emptyResult(3, 3));
+  const d = countingResult(emptyResult(3, 3));
+  compareWithReference(c.r, d.r);
+  assert.equal(c.counter.color, 1, 'compareWithReference 후보');
+  assert.equal(d.counter.color, 1, 'compareWithReference 참조');
+  const e = countingResult(emptyResult(3, 3));
+  nonEmptyValuesInEmpty(e.r, []);
+  assert.equal(e.counter.color, 1, 'nonEmptyValuesInEmpty');
+});
+
+// ② 변이 잡기: 0×0 및 음수 크기 RenderResult 검사
+test('computeCoverage: 0×0·음수 크기 RenderResult 는 missing: 오류', () => {
+  // 0×0 경우
+  const r0x0 = {
+    width: 0, height: 0,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => computeCoverage(r0x0), /^Error: missing:/, '0×0 RenderResult');
+
+  // 0×3 경우
+  const r0x3 = {
+    width: 0, height: 3,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => computeCoverage(r0x3), /^Error: missing:/, '0×3 RenderResult');
+
+  // 3×0 경우
+  const r3x0 = {
+    width: 3, height: 0,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => computeCoverage(r3x0), /^Error: missing:/, '3×0 RenderResult');
+
+  // 음수 크기
+  const rNeg = {
+    width: -2, height: 2,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => computeCoverage(rNeg), /^Error: missing:/, '-2×2 RenderResult');
+});
+
+test('toMask: RenderResult 검증이 정확히 작동', () => {
+  const validR = { width: 2, height: 2, color: new Uint8Array(12), depth: new Float32Array(4), index: new Int32Array(4).fill(-1) };
+  const result = computeCoverage(validR);
+  assert.equal(result.width, 2);
+  assert.equal(result.drawn, 0);
+
+  const badR = { width: 2, height: 2, color: new Uint8Array(5), depth: new Float32Array(4), index: new Int32Array(4) };
+  assert.throws(() => computeCoverage(badR), /^Error: missing:/);
+});
+
+// ③ nonEmptyValuesInEmpty 변이 테스트: 크기 검사 제거 감지
+test('nonEmptyValuesInEmpty: 음수 높이는 missing: 오류', () => {
+  const rNegH = {
+    width: 2, height: -1,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => nonEmptyValuesInEmpty(rNegH, []), /^Error: missing:/);
+});
+
+// ③ nonEmptyValuesInEmpty 변이 테스트: 음수 너비는 감지
+test('nonEmptyValuesInEmpty: 음수 너비는 missing: 오류', () => {
+  const rNegW = {
+    width: -2, height: 1,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => nonEmptyValuesInEmpty(rNegW, []), /^Error: missing:/);
+});
+
+// ③ nonEmptyValuesInEmpty 변이 테스트: index 배열 길이 불일치 감지
+test('nonEmptyValuesInEmpty: index 길이 불일치는 missing: 오류', () => {
+  const rBadIndex = {
+    width: 2, height: 2,
+    color: new Uint8Array(12),
+    depth: new Float32Array(4),
+    index: new Int32Array(3),  // 4가 아닌 3
+  };
+  assert.throws(() => nonEmptyValuesInEmpty(rBadIndex, [0]), /^Error: missing:/);
+});
+
+// ③ nonEmptyValuesInEmpty 변이 테스트: depth 배열 타입 검사
+test('nonEmptyValuesInEmpty: depth가 Float32Array가 아니면 missing: 오류', () => {
+  const rBadDepth = {
+    width: 2, height: 2,
+    color: new Uint8Array(12),
+    depth: new Array(4),  // Float32Array가 아님
+    index: new Int32Array(4),
+  };
+  assert.throws(() => nonEmptyValuesInEmpty(rBadDepth, [0]), /^Error: missing:/);
 });

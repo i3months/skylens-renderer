@@ -76,8 +76,62 @@ test('반환값 경로는 그대로 즉시 계산한다', async () => {
   assert.equal(steps.select, 1);
 });
 
-test('지연 경로: 모양이 틀린 입력은 즉시 거부', () => {
+test('지연 경로: 모양이 틀린 입력은 즉시 거부(빈 keys 항목은 piece, F-258)', () => {
   const { r } = make();
-  assert.throws(() => r.setArrived([], { deferResult: true }), { code: 'piece' });
+  const mixed = [{ segmentId: 1, level: 1, keys: [keyOf(0)] }, { segmentId: 1, level: 2, keys: [] }];
   assert.throws(() => r.setArrived([{ segmentId: 1, level: 1, keys: [] }], { deferResult: true }), { code: 'piece' });
+  assert.throws(() => r.setArrived(mixed, { deferResult: true }), { code: 'piece' });
+  assert.throws(() => r.setArrived(mixed), { code: 'piece' });
+});
+
+test('빈 arrived 배열 []은 즉시·지연 모두 받고 이후 draw 0 조각(F-260 6)', async () => {
+  for (const defer of [false, true]) {
+    const { r } = make();
+    for (let i = 0; i < 3; i++) await r.uploadPiece(keyOf(i), bytesOf(i));
+    r.setArrived(arrivedOf(0, 1), { deferResult: true });
+    assert.equal(r.draw().drawnPieces, 2);
+    let res;
+    assert.doesNotThrow(() => { res = defer ? r.setArrived([], { deferResult: true }) : r.setArrived([]); });
+    assert.equal(defer ? res : res.draw.length, defer ? undefined : 0);
+    assert.equal(r.draw().drawnPieces, 0, defer ? 'deferred' : 'immediate');
+  }
+});
+
+test('지연 경로: key 형식·level 범위 오류는 호출 시점에 piece 로 던지고, 직전 선택은 그대로 draw·uploadPiece 가 정상(F-250 ①)', async () => {
+  const { r } = make();
+  for (let i = 0; i < 3; i++) await r.uploadPiece(keyOf(i), bytesOf(i));
+  r.setArrived(arrivedOf(0, 1), { deferResult: true });
+  assert.equal(r.draw().drawnPieces, 2);
+  const bad = [
+    [{ segmentId: 3, level: 1, keys: ['bogus'] }], // key 형식
+    [{ segmentId: 1, level: 9, keys: [keyOf(2)] }], // level 범위
+    [{ segmentId: 2, level: 1, keys: [keyOf(2)] }], // (segmentId, level) 불일치
+    [{ segmentId: 1, level: 1, keys: [keyOf(2)] }, { segmentId: 1, level: 1, keys: ['bogus'] }], // 뒤 항목만 틀림
+  ];
+  for (const input of bad) assert.throws(() => r.setArrived(input, { deferResult: true }), { code: 'piece' });
+  // 던진 뒤에도 draw 는 직전 선택(0, 1)으로 매번 정상이다
+  assert.equal(r.draw().drawnPieces, 2);
+  assert.equal(r.draw().drawnPieces, 2);
+  // 관계없는 정상 업로드도 거부되지 않는다
+  await r.uploadPiece(keyOf(3), bytesOf(3));
+  assert.equal(r.draw().drawnPieces, 2);
+});
+
+test('지연 경로: 던진 입력은 한도 초과 업로드의 자리 만들기도 막지 않는다', async () => {
+  const evicted = [];
+  const probe = make().r;
+  await probe.uploadPiece(keyOf(0), bytesOf(0));
+  const per = probe.memoryBytes(); // 조각 하나의 바이트(한도를 2 조각으로 잡는다)
+  probe.dispose();
+  const r = createRenderer({
+    canvas: fakeCanvas(), decode, maxPieceBytes: 1 << 10, maxResidentBytes: 2 * per, now: () => 0,
+    onEvict: (k) => evicted.push(...k),
+  });
+  r.setView(VIEW);
+  await r.uploadPiece(keyOf(0), bytesOf(0));
+  await r.uploadPiece(keyOf(1), bytesOf(1));
+  r.setArrived(arrivedOf(0), { deferResult: true });
+  assert.throws(() => r.setArrived([{ segmentId: 1, level: 9, keys: [keyOf(2)] }], { deferResult: true }), { code: 'piece' });
+  await r.uploadPiece(keyOf(2), bytesOf(2)); // 넘침: 직전 선택(0)으로 자리를 만든다
+  assert.deepEqual(evicted, [keyOf(1)]);
 });

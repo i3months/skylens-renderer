@@ -342,10 +342,14 @@ test('selectDrawable(F-227): 완료 key 집합 밖의 같은 수준 key 는 그�
   const k1 = '9.1.0.0.0.1';
   // 두 번째 key 가 시도 중간에 abandoned: 완료 집합은 첫 번째뿐
   assert.deepEqual(selectDrawable([k0, k1], [{ segmentId: 9, level: 1, keys: [k0] }]), { draw: [k0], pending: [], discard: [k1] });
-  // keys 가 없거나 빈 배열인 항목은 거부한다(LEVEL_ARRIVED pieceCount ≥ 1, F-230)
+  // keys 가 없거나 빈 배열인 항목은 거부한다(LEVEL_ARRIVED pieceCount ≥ 1, F-230, F-258)
   for (const a of [{ segmentId: 9, level: 1 }, { segmentId: 9, level: 1, keys: [] }]) {
     assert.throws(() => selectDrawable([k0, k1], [a]), (e) => e instanceof ClientRasterError && e.code === 'piece', JSON.stringify(a));
   }
+  // F-258: 빈 keys 항목이 다른 수준 항목과 섞여도 거부한다(허용하면 낮은 수준 상주 조각이 전부 discard 가 된다)
+  assert.throws(() => selectDrawable(['1.1.0.0.0.0'], [{ segmentId: 1, level: 1, keys: ['1.1.0.0.0.0'] }, { segmentId: 1, level: 2, keys: [] }]), (e) => e instanceof ClientRasterError && e.code === 'piece');
+  // arrived 목록 자체가 빈 배열이면 허용한다(도착 없음)
+  assert.deepEqual(selectDrawable([k0], []), { draw: [], pending: [k0], discard: [] });
   // 같은 수준 항목이 둘이면 완료 집합은 합집합, 낮은 수준 항목의 집합은 쓰이지 않는다
   const low = '9.0.0.0.0.0';
   assert.deepEqual(
@@ -430,7 +434,7 @@ test('CLIENT_RASTER_API 서명은 문자열 전체가 기대값과 같다(순서
     dispose: 'renderer.dispose() -> void',
     onContextLost: 'renderer.onContextLost(callback?) -> () => void  컨텍스트 손실 알림, 구독 해제 함수 반환',
     onContextRestored: 'renderer.onContextRestored(callback?: (keys: string[]) => void) -> () => void  컨텍스트 복구 알림 (인자: 다시 올려야 할 key 배열); 둘째 인자 error 는 구현 확장(시험용), 구독 해제 함수 반환',
-    setArrived: 'renderer.setArrived(arrived: [{segmentId, level, keys}]) -> {draw: string[], pending: string[], discard: string[]}  LEVEL_ARRIVED 완료 집합으로 그리는 조각 결정',
+    setArrived: 'renderer.setArrived(arrived: [{segmentId, level, keys}], opts?: {deferResult: true}) -> {draw: string[], pending: string[], discard: string[]} | undefined  LEVEL_ARRIVED 완료 집합으로 그리는 조각 결정. deferResult 면 undefined 를 반환하고 선택은 다음 draw 로 미루되 입력 검사는 호출 시점에 한다. arrived 가 빈 배열[]이면 허용(도착 없음), 빈 keys 항목은 piece',
     residentKeys: 'renderer.residentKeys() -> string[]  현재 GPU 상주 key 배열',
     isContextLost: 'renderer.isContextLost() -> boolean  WebGL 컨텍스트 손실 상태',
     drawingBufferSize: 'drawingBufferSize(width, height, dpr) -> {width, height}  = round(width·dpr), round(height·dpr)',

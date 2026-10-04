@@ -106,3 +106,24 @@ test('checkGpuPlanes: count·형식·평면 검증(기존)', () => {
   const badPlaneLen = { ...d, gpu: { ...d.gpu, planes: { ...d.gpu.planes, position: new Float32Array(3) } } };
   assert.throws(() => checkGpuPlanes(badPlaneLen), (e) => e.code === 'piece' && /평면/.test(e.message));
 });
+
+
+test('checkGpuPlanes: bboxMin 과 origin 이 모두 Infinity 이면 유한성 검사 실패', () => {
+  const k = '3.1.0.0.0.0';
+  const d = withGpu(k);
+
+  // bboxMin 과 origin 을 모두 [Infinity, 0, 0] 으로 설정하면
+  // origin == bboxMin 검사는 통과하지만 유한성 검사는 실패해야 함
+  const infBbox = { ...d, header: { ...d.header, bboxMin: [Infinity, 0, 0] }, gpu: { ...d.gpu, origin: [Infinity, 0, 0] } };
+  assert.throws(() => checkGpuPlanes(infBbox), (e) => e instanceof ClientRasterError && e.code === 'piece' && /유한/.test(e.message));
+});
+
+test('checkGpuPlanes: bboxMin 과 origin 이 모두 -Infinity 이면 유한성 검사 실패', () => {
+  const k = '3.1.0.0.0.0';
+  const d = withGpu(k);
+
+  // bboxMin 과 origin 을 모두 [-Infinity, 0, 0] 으로 설정하면
+  // origin == bboxMin 검사는 통과하지만 유한성 검사는 실패해야 함
+  const neginf = { ...d, header: { ...d.header, bboxMin: [-Infinity, 0, 0] }, gpu: { ...d.gpu, origin: [-Infinity, 0, 0] } };
+  assert.throws(() => checkGpuPlanes(neginf), (e) => e instanceof ClientRasterError && e.code === 'piece' && /유한/.test(e.message));
+});

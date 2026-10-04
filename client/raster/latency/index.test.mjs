@@ -217,48 +217,122 @@ test('createLatencyProbe: 측정값 누적', (t) => {
 });
 
 test('createLatencyProbe: 마크 개수 상한 도달 시 가장 오래된 마크 삭제', (t) => {
-  // 작은 한계로 테스트하기 위해 직접 구현
+  // 작은 상한으로 테스트하기 위해 maxMarks 옵션 사용
   let time = 0;
-  const probe = createLatencyProbe({ now: () => time });
+  const maxMarks = 10;
+  const probe = createLatencyProbe({ now: () => time, maxMarks });
 
-  // MAX_MARKS(10000) 에 도달하기 전에, 적당한 개수의 마크를 추가해서 동작 확인
+  // 상한(10) + 1 개의 마크를 추가해서 동작 확인
   // 최근 N개 링을 유지하는 동작 검증
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < maxMarks + 1; i++) {
     probe.mark(`mark-${i}`);
     time += 1;
   }
 
   let { marks } = probe.events();
-  assert.equal(marks.length, 50);
+  // 상한 도달 시 가장 오래된 마크(mark-0)가 삭제됨
+  assert.equal(marks.length, maxMarks);
+  assert.equal(marks[0].key, 'mark-1');
+  assert.equal(marks[marks.length - 1].key, `mark-${maxMarks}`);
 
   // 재입력 시 삽입 순서 갱신 (같은 마크 다시 기록)
-  probe.mark('mark-0');
+  probe.mark('mark-1');
   ({ marks } = probe.events());
-  // mark-0 이 마지막에 배치됨 (삭제 후 다시 삽입)
-  assert.equal(marks[marks.length - 1].key, 'mark-0');
+  // mark-1 이 마지막에 배치됨 (삭제 후 다시 삽입)
+  assert.equal(marks[marks.length - 1].key, 'mark-1');
 });
 
 test('createLatencyProbe: 측정값 개수 상한 도달 시 가장 오래된 측정값 삭제', (t) => {
-  // 측정값 한계 동작 검증
+  // 측정값 상한 동작 검증
   let time = 0;
-  const probe = createLatencyProbe({ now: () => time });
+  const maxMeasurements = 10;
+  const probe = createLatencyProbe({ now: () => time, maxMeasurements });
 
   probe.mark('start');
-  time += 5;
-  probe.mark('end');
 
-  // 여러 측정을 반복해서 순서대로 추가됨을 확인
-  const measurements = [];
-  for (let i = 0; i < 50; i++) {
-    const dur = probe.measure('start', 'end');
-    measurements.push(dur);
+  // 상한(10) + 1 개의 측정을 반복해서 추가되고 가장 오래된 항목이 삭제됨을 확인
+  // 각 측정마다 다른 duration을 가지도록 하여 어떤 항목이 삭제되었는지 추적
+  for (let i = 0; i < maxMeasurements + 1; i++) {
+    time = 5 + i;  // duration = (5 + i) - 0 = 5 + i
+    probe.mark(`end-${i}`);
+    probe.measure('start', `end-${i}`);
   }
 
   const { measurements: recorded } = probe.events();
-  assert.equal(recorded.length, 50);
+  // 상한 도달 시 가장 오래된 측정이 삭제되고 최근 N개만 유지
+  assert.equal(recorded.length, maxMeasurements);
 
-  // 모든 측정이 기록되고 순서 유지
-  for (let i = 0; i < 50; i++) {
-    assert.equal(recorded[i].duration, 5);
+  // 가장 오래된 측정(duration 5인 첫 번째 측정)이 삭제되고
+  // 남은 측정들은 duration 6부터 15까지
+  for (let i = 0; i < maxMeasurements; i++) {
+    assert.equal(recorded[i].duration, 6 + i, `측정 ${i}는 duration ${6 + i}를 가져야 함 (가장 오래된 측정은 제거됨)`);
   }
+});
+
+test('createLatencyProbe: maxMarks 유효성 검증 - 정수 아님', (t) => {
+  assert.throws(
+    () => createLatencyProbe({ maxMarks: 10.5 }),
+    RangeError,
+    'maxMarks 가 정수가 아니면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMarks: '10' }),
+    RangeError,
+    'maxMarks 가 문자열이면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMarks: NaN }),
+    RangeError,
+    'maxMarks 가 NaN 이면 RangeError 발생'
+  );
+});
+
+test('createLatencyProbe: maxMarks 유효성 검증 - 0 이하', (t) => {
+  assert.throws(
+    () => createLatencyProbe({ maxMarks: 0 }),
+    RangeError,
+    'maxMarks 가 0 이면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMarks: -1 }),
+    RangeError,
+    'maxMarks 가 음수이면 RangeError 발생'
+  );
+});
+
+test('createLatencyProbe: maxMeasurements 유효성 검증 - 정수 아님', (t) => {
+  assert.throws(
+    () => createLatencyProbe({ maxMeasurements: 10.5 }),
+    RangeError,
+    'maxMeasurements 가 정수가 아니면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMeasurements: '10' }),
+    RangeError,
+    'maxMeasurements 가 문자열이면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMeasurements: NaN }),
+    RangeError,
+    'maxMeasurements 가 NaN 이면 RangeError 발생'
+  );
+});
+
+test('createLatencyProbe: maxMeasurements 유효성 검증 - 0 이하', (t) => {
+  assert.throws(
+    () => createLatencyProbe({ maxMeasurements: 0 }),
+    RangeError,
+    'maxMeasurements 가 0 이면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMeasurements: -1 }),
+    RangeError,
+    'maxMeasurements 가 음수이면 RangeError 발생'
+  );
 });

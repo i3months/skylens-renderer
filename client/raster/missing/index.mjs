@@ -5,14 +5,29 @@ import { assertRenderResult, EMPTY_INDEX, EMPTY_DEPTH } from '../../../contracts
 
 const ERR = 'missing:';
 
-/** 칠해진 픽셀 마스크(Uint8Array, 1 = 칠해짐)를 RenderResult 에서 뽑는다. 빈 번호와 빈 깊이가 어긋나면 오류. */
-export function drawnMask(result) {
+// RenderResult 검사 한 번. raster: 오류는 missing: 오류로 바꿔 던진다.
+function checkRenderResult(result) {
   if (!result || typeof result !== 'object') throw new Error(`${ERR} 결과가 객체가 아님: ${String(result)}`);
-  assertRenderResult(result);
+  try {
+    assertRenderResult(result);
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('raster:')) throw new Error(e.message.replace(/^raster:/, ERR));
+    throw e;
+  }
+}
+
+// 검사가 끝난 RenderResult 에서 마스크만 뽑는다(검사 없음).
+function maskOf(result) {
   const n = result.width * result.height;
   const mask = new Uint8Array(n);
   for (let i = 0; i < n; i += 1) mask[i] = result.index[i] === EMPTY_INDEX ? 0 : 1;
   return mask;
+}
+
+/** 칠해진 픽셀 마스크(Uint8Array, 1 = 칠해짐)를 RenderResult 에서 뽑는다. 빈 번호와 빈 깊이가 어긋나면 오류. */
+export function drawnMask(result) {
+  checkRenderResult(result);
+  return maskOf(result);
 }
 
 // 입력은 {width, height, drawn: Uint8Array} 마스크이거나 RenderResult 다.
@@ -29,20 +44,9 @@ function toMask(x) {
     }
     return { width: x.width, height: x.height, drawn: x.drawn };
   }
-  // RenderResult: 크기 먼저 검사(0×0·음수 거부)
-  if (!Number.isInteger(x.width) || !Number.isInteger(x.height) || x.width <= 0 || x.height <= 0) {
-    throw new Error(`${ERR} 크기가 양의 정수여야 함: ${x.width}×${x.height}`);
-  }
-  // 그 다음 나머지 RenderResult 항목 검사
-  try {
-    assertRenderResult(x);
-  } catch (e) {
-    if (e.message.startsWith('raster:')) {
-      throw new Error(e.message.replace(/^raster:/, ERR));
-    }
-    throw e;
-  }
-  return { width: x.width, height: x.height, drawn: drawnMask(x) };
+  // RenderResult: 검사는 여기서 한 번만 한다
+  checkRenderResult(x);
+  return { width: x.width, height: x.height, drawn: maskOf(x) };
 }
 
 /**
@@ -75,26 +79,23 @@ export function compareWithReference(candidate, reference) {
   return { filled, lost, ok: filled.length === 0 };
 }
 
-/** 빈 픽셀이 빈 값 그대로인지(색 0,0,0·깊이 0·번호 −1) 검사한다. 어긋난 픽셀 번호 목록을 돌려준다. */
+/**
+ * 빈 픽셀이 빈 값 그대로인지(색 0,0,0·깊이 0·번호 −1) 검사한다. 어긋난 픽셀 번호 목록을 돌려준다.
+ * RenderResult 의 무결성을 먼저 검증한 후 emptyPixels 목록을 확인한다.
+ * assertRenderResult 가 이미 보장하므로: index==EMPTY_INDEX 이면 depth==0 이고 color==0 이다.
+ * 따라서 index 만 검사하면 된다.
+ * @returns {number[]} 빈 값이 아닌 픽셀 인덱스 배열
+ */
 export function nonEmptyValuesInEmpty(result, emptyPixels) {
-  if (!result || typeof result !== 'object') throw new Error(`${ERR} 결과가 객체가 아님: ${String(result)}`);
-  try {
-    assertRenderResult(result);
-  } catch (e) {
-    if (e.message.startsWith('raster:')) {
-      throw new Error(e.message.replace(/^raster:/, ERR));
-    }
-    throw e;
-  }
-  if (!Array.isArray(emptyPixels)) throw new Error(`${ERR} emptyPixels 는 배열이어야 함`);
+  checkRenderResult(result);
   const n = result.width * result.height;
+  if (!Array.isArray(emptyPixels)) throw new Error(`${ERR} emptyPixels 는 배열이어야 함`);
   const bad = [];
   for (const p of emptyPixels) {
     if (!Number.isInteger(p) || p < 0 || p >= n) {
       throw new Error(`${ERR} 픽셀 인덱스 범위 벗어남: ${p} (범위 [0, ${n}))`);
     }
-    if (result.index[p] !== EMPTY_INDEX || result.depth[p] !== EMPTY_DEPTH
-      || (result.color[3 * p] | result.color[3 * p + 1] | result.color[3 * p + 2]) !== 0) bad.push(p);
+    if (result.index[p] !== EMPTY_INDEX) bad.push(p);
   }
   return bad;
 }
