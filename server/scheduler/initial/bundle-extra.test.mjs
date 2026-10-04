@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildInitialBundle, INITIAL_BUDGET_BYTES } from './index.mjs';
+import { buildInitialBundle, INITIAL_BUDGET_BYTES, WELCOME_FRAME_BYTES, LEVEL_ARRIVED_FRAME_BYTES, WS_HEADER_MAX_BYTES } from './index.mjs';
+import { FRAME_HEADER_BYTES } from '../../../contracts/proto/index.mjs';
 import { encodeMessage } from '../../proto/codec/index.mjs';
 import { encodeFrame, OPCODES } from '../../ws/frame/index.mjs';
 
@@ -19,11 +20,23 @@ test('F-209: bytes validation (negative, non-integer, NaN, string throw RangeErr
   assert.doesNotThrow(() => buildInitialBundle({ pose, catalog: [item(1, 0, 0)] }));
 });
 
-test('F-209: budgetBytes validation (positive integers only)', () => {
-  for (const bad of [0, -1, 1.5, NaN, Infinity, '10', null]) {
+test('F-209: budgetBytes validation (integers >= WELCOME frame only)', () => {
+  for (const bad of [0, -1, 1.5, NaN, Infinity, '10', null, 1, WELCOME_FRAME_BYTES - 1]) {
     assert.throws(() => buildInitialBundle({ pose, catalog: [item(1, 0, 5)], budgetBytes: bad }), RangeError, String(bad));
   }
-  assert.doesNotThrow(() => buildInitialBundle({ pose, catalog: [item(1, 0, 5)], budgetBytes: 1 }));
+  assert.doesNotThrow(() => buildInitialBundle({ pose, catalog: [item(1, 0, 5)], budgetBytes: WELCOME_FRAME_BYTES }));
+});
+
+test('F-217: WELCOME_FRAME_BYTES matches the real frame (contract header 8 B)', () => {
+  assert.equal(FRAME_HEADER_BYTES, 8);
+  assert.equal(WELCOME_FRAME_BYTES, encodeMessage({ type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 1 }).length + WS_HEADER_MAX_BYTES);
+  assert.equal(LEVEL_ARRIVED_FRAME_BYTES, encodeMessage({ type: 'LEVEL_ARRIVED', segmentId: 1, level: 0, pieceCount: 1 }).length + WS_HEADER_MAX_BYTES);
+});
+
+test('F-217: frameBytes never exceeds budgetBytes, even at the minimum budget', () => {
+  const r = buildInitialBundle({ pose, catalog: [item(1, 0, 0)], budgetBytes: WELCOME_FRAME_BYTES });
+  assert.ok(r.frameBytes <= WELCOME_FRAME_BYTES);
+  assert.equal(r.droppedCount, 1);
 });
 
 test('F-209: negative bytes cannot enlarge the budget', () => {

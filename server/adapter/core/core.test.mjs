@@ -584,6 +584,121 @@ test('F-204: 끝나지 않은 이벤트가 없으면 거부하지 않고, 재시
   assert.deepEqual(out.filter((m) => m.type === 'PIECE').map((m) => m.pieceSeq), [1, 2, 1, 2]);
 });
 
+test('F-223 ①: 실패 뒤 재시도가 skip 이 되면 부분 송출 key 를 놓고, LEVEL_ARRIVED 는 없고, 다음 이벤트가 동작한다', () => {
+  const server = createServerMachine();
+  const out = [];
+  const rel = [];
+  let failAt = 0;
+  let calls = 0;
+  const ad = createCoreAdapter({
+    levelMachine: server,
+    emit: (m) => { calls++; if (calls === failAt) throw new Error('x'); out.push(m); },
+    onRelease: (keys, info) => rel.push({ keys, info }),
+  });
+  const ev = levelEvent(9, 1); // 조각 2 개 + LEVEL_ARRIVED
+  failAt = 2; // 두 번째 PIECE 에서 실패: PIECE 하나만 나갔다
+  assert.throws(() => ad.handle(ev), /x/);
+  assert.equal(out.length, 1);
+  assert.notEqual(ad.unfinishedEvent(), null);
+  // 그 사이 같은 구간의 더 높은 수준이 다른 경로로 확정됐다(공유 기계)
+  server.arrive(9, 3, levelEvent(9, 3).pieces);
+  failAt = 0; calls = 0;
+  const r = ad.handle(ev);
+  assert.deepEqual([r.action, r.emitted], ['skip', 0]);
+  assert.equal(out.length, 1, '더 나간 것 없음');
+  assert.equal(out.filter((m) => m.type === 'LEVEL_ARRIVED').length, 0, '부분 송출 key 에 LEVEL_ARRIVED 없음');
+  assert.equal(rel.length, 1);
+  assert.deepEqual(rel[0].keys.map(pieceKeyString), ev.pieces.map((p) => pieceKeyString(p.key)));
+  assert.equal(rel[0].info.abandoned, true);
+  assert.deepEqual(r.abandoned, rel[0].keys);
+  assert.equal(ad.unfinishedEvent(), null, '끝나지 않은 표시가 지워진다');
+  assert.equal(ad.nextPieceSeq(), PIECE_SEQ_MIN + 2, '쓰였을 수 있는 pieceSeq 는 태운다');
+  // 다음 이벤트가 막히지 않고, 새 pieceSeq 로 나간다
+  assert.equal(ad.handle({ kind: 'segment_expected', segmentId: 7 }).emitted, 1);
+  const r2 = ad.handle(levelEvent(10, 0));
+  assert.equal(r2.action, 'first');
+  const seqs = out.filter((m) => m.type === 'PIECE').map((m) => m.pieceSeq);
+  assert.equal(new Set(seqs).size, seqs.length, 'pieceSeq 중복 없음');
+  assert.ok(seqs[seqs.length - 1] >= PIECE_SEQ_MIN + 2);
+  // 정상 skip(실패 이력 없음)은 놓지 않는다
+  const before = rel.length;
+  assert.equal(ad.handle(levelEvent(10, 0)).action, 'skip');
+  assert.equal(rel.length, before);
+});
+
+test('F-227: 같은 수준(L == M)에서 skip 이 되면 기계가 이미 쥔 key 는 놓지 않고, 나머지만 놓는다', () => {
+  const server = createServerMachine();
+  const out = [];
+  const rel = [];
+  let failAt = 0;
+  let calls = 0;
+  const ad = createCoreAdapter({
+    levelMachine: server,
+    emit: (m) => { calls++; if (calls === failAt) throw new Error('x'); out.push(m); },
+    onRelease: (keys, info) => rel.push({ keys, info }),
+  });
+  const ev = levelEvent(9, 1); // 수준 1 조각 2 개
+  failAt = 2;
+  assert.throws(() => ad.handle(ev), /x/);
+  // 다른 경로가 같은 수준 1 을 첫 조각의 같은 key 로만 확정했다(둘째 key 는 기계에 없다)
+  server.arrive(9, 1, [ev.pieces[0]]);
+  assert.equal(server.snapshot(9).level, 1);
+  failAt = 0; calls = 0;
+  const r = ad.handle(ev);
+  assert.equal(r.action, 'skip');
+  assert.equal(rel.length, 1);
+  assert.deepEqual(rel[0].info, { segmentId: 9, level: 1, previousLevel: 1, abandoned: true });
+  assert.deepEqual(rel[0].keys, [ev.pieces[1].key], '기계가 쥔 key 는 빠지고 없는 key 만 놓는다');
+  assert.deepEqual(r.abandoned, rel[0].keys);
+  assert.equal(ad.unfinishedEvent(), null);
+  assert.equal(ad.nextPieceSeq(), PIECE_SEQ_MIN + 2);
+});
+
+test('F-227: 같은 수준이고 모든 key 를 기계가 쥐고 있으면 아무것도 놓지 않는다', () => {
+  const server = createServerMachine();
+  const rel = [];
+  let fail = true;
+  const ad = createCoreAdapter({
+    levelMachine: server,
+    emit: (m) => { if (fail && m.type === 'LEVEL_ARRIVED') throw new Error('x'); },
+    onRelease: (keys, info) => rel.push({ keys, info }),
+  });
+  const ev = levelEvent(9, 1);
+  assert.throws(() => ad.handle(ev), /x/);
+  server.arrive(9, 1, ev.pieces);
+  fail = false;
+  const r = ad.handle(ev);
+  assert.equal(r.action, 'skip');
+  assert.deepEqual(rel, []);
+  assert.deepEqual(r.abandoned, []);
+  assert.equal(ad.unfinishedEvent(), null);
+});
+
+test('F-228: replace 의 onRelease 가 던져도 끝나지 않은 표시는 이미 지워져 있다', () => {
+  const server = createServerMachine();
+  const ad = createCoreAdapter({
+    levelMachine: server, emit: () => {},
+    onRelease: () => { throw new Error('알림 실패'); },
+  });
+  ad.handle(levelEvent(6, 0));
+  assert.throws(() => ad.handle(levelEvent(6, 2)), /알림 실패/);
+  assert.equal(ad.unfinishedEvent(), null);
+  assert.equal(ad.handle({ kind: 'segment_expected', segmentId: 7 }).emitted, 1, '이후 이벤트가 막히지 않는다');
+});
+
+test('F-228: onRelease info 전체(previousLevel 은 실제 이전 수준)', () => {
+  const server = createServerMachine();
+  const rel = [];
+  const ad = createCoreAdapter({ levelMachine: server, emit: () => {}, onRelease: (keys, info) => rel.push(info) });
+  ad.handle(levelEvent(6, 0));
+  ad.handle(levelEvent(6, 2)); // 0 -> 2
+  ad.handle(levelEvent(6, 3)); // 2 -> 3
+  assert.deepEqual(rel, [
+    { segmentId: 6, level: 2, previousLevel: 0 },
+    { segmentId: 6, level: 3, previousLevel: 2 },
+  ]);
+});
+
 test('F-203: 빈 pieces 는 거부, 이전 수준·순번 그대로이고 아무것도 나가지 않는다', () => {
   const server = createServerMachine();
   const out = [];
@@ -715,4 +830,75 @@ test('시간·타이머를 쓰지 않는다', () => {
   for (const w of ['setTimeout', 'setInterval', 'setImmediate', 'Date', 'performance', 'requestAnimationFrame', 'queueMicrotask']) {
     assert.ok(!src.includes(w), w);
   }
+});
+
+test('유효한 조각 + 범위 검사: 오류 문구까지 단언한다 (F-212 ③)', () => {
+  const out = [];
+  const ad = createCoreAdapter({ emit: (m) => out.push(m) });
+  const withKey = (patch, bytes = Uint8Array.of(1)) => {
+    const e = levelEvent(1, 0);
+    e.pieces[0] = { key: { ...e.pieces[0].key, ...patch }, bytes };
+    return e;
+  };
+  assert.throws(() => ad.handle(withKey({ segmentId: 2 })), (e) => e instanceof RangeError
+    && e.message === 'pieces[0].key.segmentId(2) 가 이벤트 구간(1)과 다르다');
+  assert.throws(() => ad.handle(withKey({ level: 1 })), (e) => e instanceof RangeError
+    && e.message === 'pieces[0].key.level(1) 가 이벤트 수준(0)과 다르다');
+  assert.throws(() => ad.handle(withKey({}, new Uint8Array(0))), (e) => e instanceof RangeError
+    && e.message === 'pieces[0].bytes 길이 범위 밖: 0');
+  // 두 번째 조각이 틀리면 인덱스 1 로 보고한다
+  const two = levelEvent(1, 1);
+  two.pieces[1] = { key: { ...two.pieces[1].key, segmentId: 5 }, bytes: Uint8Array.of(1) };
+  assert.throws(() => ad.handle(two), (e) => e instanceof RangeError
+    && e.message === 'pieces[1].key.segmentId(5) 가 이벤트 구간(1)과 다르다');
+  assert.equal(out.length, 0);
+  assert.equal(ad.nextPieceSeq(), PIECE_SEQ_MIN);
+});
+
+test('수준 기계 결정이 snapshot 결정과 다르면 오류 (F-212 ③, 스텁 기계)', () => {
+  // skip 으로 본 뒤 기계가 first 를 돌려준다
+  const out1 = [];
+  const stubSkip = {
+    expect() {}, snapshot: () => ({ level: 3, missing: false }),
+    arrive: () => ({ action: 'first', released: [] }),
+  };
+  const a1 = createCoreAdapter({ levelMachine: stubSkip, emit: (m) => out1.push(m) });
+  assert.throws(() => a1.handle(levelEvent(1, 0)), (e) => e instanceof Error
+    && e.message === '수준 기계 결정(first)이 snapshot 으로 본 결정(skip)과 다르다');
+  assert.equal(out1.length, 0);
+  // first 로 본 뒤 기계가 skip 을 돌려준다(송출 뒤 검사)
+  const stubFirst = {
+    expect() {}, snapshot: () => ({ level: -1, missing: false }),
+    arrive: () => ({ action: 'skip', released: [] }),
+  };
+  const a2 = createCoreAdapter({ levelMachine: stubFirst, emit() {} });
+  assert.throws(() => a2.handle(levelEvent(1, 0)), (e) => e instanceof Error
+    && e.message === '수준 기계 결정(skip)이 snapshot 으로 본 결정(first)과 다르다');
+});
+
+test('끝나지 않은 이벤트: 같은 bytes·다른 key, 조각 순서만 바뀐 재시도는 거부 (F-217 ③)', () => {
+  const mk = (tileXs, order = [0, 1]) => {
+    const pieces = order.map((c) => ({
+      key: { segmentId: 1, level: 0, lod: 0, chunkIndex: c, tileX: tileXs[c], tileY: c },
+      bytes: Uint8Array.of(7, c),
+    }));
+    return { kind: 'level_arrived', segmentId: 1, level: 0, pieces };
+  };
+  const out = [];
+  let fail = true;
+  const ad = createCoreAdapter({ emit: (m) => { if (fail && m.type === 'LEVEL_ARRIVED') throw new Error('x'); out.push(m); } });
+  assert.throws(() => ad.handle(mk([1, 2])), /x/);
+  const before = out.length;
+  const rejects = [
+    mk([1, 3]), // 같은 bytes, 다른 key(tileX)
+    mk([1, 2], [1, 0]), // 같은 조각, 순서만 바뀜
+  ];
+  for (const [i, ev] of rejects.entries()) {
+    assert.throws(() => ad.handle(ev), (e) => e instanceof UnfinishedEventError, `거부 ${i}`);
+    assert.equal(out.length, before, `거부 ${i}: emit 0`);
+  }
+  fail = false;
+  assert.equal(ad.nextPieceSeq(), PIECE_SEQ_MIN);
+  assert.equal(ad.handle(mk([1, 2])).action, 'first');
+  assert.equal(ad.nextPieceSeq(), PIECE_SEQ_MIN + 2);
 });

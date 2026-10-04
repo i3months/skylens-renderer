@@ -95,6 +95,19 @@ export function mutate(rng, frame) {
 
 const TYPES = Object.keys(MSG);
 
+/**
+ * seq 0(계약상 무효: PIECE.pieceSeq·WELCOME.nextPieceSeq >= 1) 시드. 부호화기가 field 로 거부해야 하고(아니면 'seed-encode' 위반),
+ * 복호기를 치도록 seq 1 로 부호화한 프레임의 seq 바이트를 0 으로 바꾼 프레임을 돌려준다.
+ */
+function zeroSeqSeed(rng, codec, res) {
+  const type = rng.int(2) ? 'PIECE' : 'WELCOME';
+  const m = randomMessage(rng, type);
+  const field = type === 'PIECE' ? 'pieceSeq' : 'nextPieceSeq';
+  try { codec.seedEncode({ ...m, [field]: 0 }); } catch (e) { if (e instanceof ProtoError && e.code === 'field') { m[field] = 1; const f = codec.seedEncode(m); new DataView(f.buffer).setUint32(type === 'PIECE' ? 8 : 13, 0, true); return f; } throw e; }
+  res.violations.push({ index: -1, kind: 'seed-encode', detail: `${type} seq 0 was encoded without field error`, inputHex: '' });
+  m[field] = 1; return codec.seedEncode(m);
+}
+
 function sameMessage(a, b) {
   try { return JSON.stringify(norm(a)) === JSON.stringify(norm(b)); } catch { return false; }
 }
@@ -164,8 +177,9 @@ function fuzzLoop(codec, { iterations, seed, stopAfter }) {
       const n = rng.next() < 0.7 ? rng.int(64) : rng.int(600);
       input = randBytes(rng, n); res.random++;
     } else { // (b) 유효 프레임 변형
-      let f = codec.seedEncode(randomMessage(rng, pick(rng, TYPES)));
-      const rounds = 1 + rng.int(3);
+      const zero = rng.int(16) === 0;
+      let f = zero ? zeroSeqSeed(rng, codec, res) : codec.seedEncode(randomMessage(rng, pick(rng, TYPES)));
+      const rounds = zero && rng.int(2) ? 0 : 1 + rng.int(3); // seq 0 프레임은 절반을 무변형으로 둔다
       for (let r = 0; r < rounds; r++) f = mutate(rng, f);
       input = f; res.mutated++;
       if (rng.int(10) === 0) input = codec.seedEncode(randomMessage(rng, pick(rng, TYPES))); // 무변형 유효 프레임도 섞는다(성공 경로 확보)

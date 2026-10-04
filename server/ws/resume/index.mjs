@@ -12,7 +12,7 @@
 //     실패한 시도가 쓰던 pieceSeq·key 그대로 다시 내보내므로, emit 안에서 recordSent 를 불러도 재시도가 막히지 않는다.
 //     미확인 항목이면 bytes 를 새 값으로 바꾸고(바이트 상한 검사 포함) 'shouldSend=false' 로 둔다. 이미 확인된 항목이면
 //     아무것도 바꾸지 않는다. 같은 seq 를 다른 key 로 쓰거나, 그 key 의 기록 순번과 다른 낮은 seq 면 여전히 RangeError.
-//     (축출된 항목은 대조할 정보가 없어 RangeError — 축출은 확인된 항목만 하므로 재시도 경로에서는 생기지 않는다.)
+//     (축출된 항목은 대조할 정보가 없다. seq 가 ackedUpTo 이하이고 항목이 없으면 멱등 true(F-219 ③), 그 밖은 RangeError.)
 //   u32 끝(F-203 ②): seq 0xFFFFFFFF 도 기록할 수 있다(계약 범위). 그 뒤 세션의 다음 순번 2^32 는 WELCOME.nextPieceSeq(u32)
 //     로 보낼 수 없으므로 그 세션은 이어받을 수 없다: open 은 그 세션을 지우고 새 세션(resumed=false, reason
 //     'UNKNOWN_SESSION', nextPieceSeq 1)을 돌려준다. open 이 돌려주는 nextPieceSeq 는 언제나 1..0xFFFFFFFF 이다.
@@ -99,6 +99,82 @@ class Queue {
   compact(keep) { this.a = this.a.slice(this.h).filter(keep); this.h = 0; }
 }
 
+// 삽입 순서를 지키는 Map. 가장 오래된 항목 조회가 V8 Map 의 앞쪽 빈자리(keys().next() 가 매번 건너뛴다) 때문에 크기에 비례해
+// 느려지지 않도록(F-213), 순서는 배열 + 머리 인덱스로 따로 두고 삭제는 표시만 한다(앞에서부터 걷으며 버린다).
+class OrderedMap {
+  constructor() {
+    this.map = new Map(); // key -> 항목 {k, v, dead}
+    this.q = [];          // 삽입 순서의 항목(죽은 것 포함)
+    this.head = 0;        // q[head] 앞은 이미 버린 자리
+    this.work = 0;        // 진단: oldest() 가 건너뛴 죽은 자리 + 압축이 훑은 자리의 누계(축출 1회당 O(1) 이어야 한다)
+  }
+  get size() { return this.map.size; }
+  has(k) { return this.map.has(k); }
+  get(k) { return this.map.get(k)?.v; }
+  set(k, v) {
+    const old = this.map.get(k);
+    if (old) old.dead = true;
+    const e = { k, v, dead: false };
+    this.map.set(k, e);
+    this.q.push(e);
+    this.#maybeCompact();
+    return this;
+  }
+  delete(k) {
+    const e = this.map.get(k);
+    if (!e) return false;
+    e.dead = true;
+    this.map.delete(k);
+    this.#maybeCompact();
+    return true;
+  }
+  /** 가장 오래된 살아 있는 항목 [k, v]. 없으면 undefined. 죽은 머리는 걷어낸다(상각 O(1)). */
+  oldest() {
+    const q = this.q;
+    while (this.head < q.length && q[this.head].dead) { q[this.head++] = undefined; this.work++; }
+    const e = q[this.head];
+    return e ? [e.k, e.v] : undefined;
+  }
+  *values() { for (let i = this.head; i < this.q.length; i++) { const e = this.q[i]; if (e && !e.dead) yield e.v; } }
+  *entries() { for (let i = this.head; i < this.q.length; i++) { const e = this.q[i]; if (e && !e.dead) yield [e.k, e.v]; } }
+  #maybeCompact() {
+    // 버린 머리와 가운데의 죽은 항목이 살아 있는 수의 2배(+32)를 넘으면 한 번에 다시 만든다(상각 O(1), 길이 <= 2×살아 있는 수 + 32 + a).
+    if (this.q.length - this.head > 2 * this.map.size + 32 || this.head > 1024 + this.map.size) {
+      this.work += this.q.length - this.head;
+      this.q = this.q.slice(this.head).filter((e) => !e.dead);
+      this.head = 0;
+    }
+  }
+}
+
+// ackedQ: 확인된 살아 있는 항목을 확인 순서로 담는 큐(F-213). 항목은 e.acked 로 소속을 표시하고 remove 는 표시만 바꾼다(해시 조회 없음).
+// 가장 오래된 것은 머리 인덱스로 걷으며 죽은 자리를 버린다 — V8 Map 의 앞쪽 빈자리를 매번 건너뛰는 keys().next() 를 쓰지 않는다.
+class AckedQueue {
+  constructor(diag) { this.q = []; this.head = 0; this.size = 0; this.diag = diag; } // diag.ackedWork: 건너뛴 자리 + 압축이 훑은 자리의 진단 누계(모든 세션 합)
+  push(e) {
+    e.acked = true;
+    this.q.push(e);
+    this.size++;
+  }
+  remove(e) {
+    if (!e.acked) return;
+    e.acked = false;
+    this.size--;
+    // 버린 머리와 가운데의 죽은 자리가 살아 있는 수의 2배(+32)를 넘으면 한 번에 다시 만든다(상각 O(1)).
+    if (this.q.length - this.head > 2 * this.size + 32 || this.head > 1024 + this.size) {
+      this.diag.ackedWork += this.q.length - this.head;
+      this.q = this.q.slice(this.head).filter((x) => x.acked);
+      this.head = 0;
+    }
+  }
+  /** 가장 오래전에 확인된 살아 있는 항목. 없으면 undefined. */
+  oldest() {
+    const q = this.q;
+    while (this.head < q.length && !q[this.head].acked) { q[this.head++] = undefined; this.diag.ackedWork++; }
+    return q[this.head];
+  }
+}
+
 export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntriesPerSession, maxBytesPerSession } = {}) {
   if (!Number.isInteger(maxSessions) || maxSessions < 1) throw new RangeError(`maxSessions 는 1 이상 정수: ${maxSessions}`);
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) throw new RangeError(`ttlMs 는 양수: ${ttlMs}`);
@@ -107,14 +183,12 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   const maxBytes = optLimit(maxBytesPerSession, 'maxBytesPerSession', DEFAULT_MAX_BYTES_PER_SESSION);
   const genId = randomId ?? (() => randomInt(1, U32_MAX));
   /** @type {Map<number, any>} 삽입 순서 = 최근 사용 순서(touch 때 다시 넣는다) */
-  const sessions = new Map();
+  const sessions = new OrderedMap();
+  const evictionDiag = { sessionEvictions: 0, ackedEvictions: 0, ackedWork: 0 }; // 진단(테스트): 축출 횟수와 그 때 쓴 걸음 수
 
   const expired = (s, t) => t - s.last >= ttlMs;
   function sweep(t) {
-    for (const [id, s] of sessions) {
-      if (!expired(s, t)) break; // 뒤쪽은 더 최근에 쓰인 세션
-      sessions.delete(id);
-    }
+    for (let o = sessions.oldest(); o && expired(o[1], t); o = sessions.oldest()) sessions.delete(o[0]); // 뒤쪽은 더 최근에 쓰인 세션
   }
   function touch(id, s, t) {
     s.last = t;
@@ -129,14 +203,14 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   }
   function create(t) {
     sweep(t);
-    while (sessions.size >= maxSessions) sessions.delete(sessions.keys().next().value);
+    while (sessions.size >= maxSessions) { sessions.delete(sessions.oldest()[0]); evictionDiag.sessionEvictions++; }
     let id;
     do { id = genId(); } while (id === 0 || sessions.has(id));
-    // sent: keyStr -> 항목 {seq,key,bytes,size,pending,dead}. pendingQ: 미확인 항목(순번 순). ackedQ: 확인된 살아 있는 항목 keyStr -> 항목(확인 순, Map 삽입 순서; 대체·축출 때 바로 지워 dead 가 쌓이지 않는다).
+    // sent: keyStr -> 항목 {seq,key,bytes,size,pending,dead}. pendingQ: 미확인 항목(순번 순). ackedQ: 확인된 살아 있는 항목(확인 순, 머리 인덱스 큐; 대체·축출 때 바로 지워 dead 가 쌓이지 않는다).
     // groupRefs: 묶음 -> sent 에 남은 그 묶음 항목 수(0 이 되면 groupMax 도 지운다).
     const s = {
       last: t, nextSeq: PIECE_SEQ_MIN, ackedUpTo: 0, sent: new Map(), groupMax: new Map(), groupRefs: new Map(),
-      pendingQ: new Queue(), ackedQ: new Map(), retained: 0, deadQ: 0,
+      pendingQ: new Queue(), ackedQ: new AckedQueue(evictionDiag), retained: 0, deadQ: 0,
     };
     sessions.set(id, s);
     return id;
@@ -151,7 +225,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       e.bytes = null;
       e.size = 0;
       e.pending = false;
-      s.ackedQ.set(e.ks, e);
+      s.ackedQ.push(e);
     }
   }
   // 항목 하나를 sent 에서 뺀다(같은 key 로 다시 기록돼 대체된 경우 포함). pendingQ 에는 dead 표시만 남기고(release 가 걷는다),
@@ -167,7 +241,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
         e.queued = false;
       }
     }
-    if (s.ackedQ.get(e.ks) === e) s.ackedQ.delete(e.ks);
+    s.ackedQ.remove(e);
     s.retained -= e.size;
     e.bytes = null;
     e.size = 0;
@@ -217,6 +291,10 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       const old = s.sent.get(ks);
       if (seq < s.nextSeq) {
         // 같은 key·같은 seq 재기록 = 멱등(F-197). 그 밖의 역행은 RangeError.
+        // 예외(F-219 ③): 이미 ack 된 순번(seq <= ackedUpTo)이고 그 key 항목이 없으면(어댑터 재시도 사이에 ack·축출로
+        // 지워짐) 멱등 true 로 아무것도 바꾸지 않는다. 클라이언트가 이미 받았다고 확인한 순번이라 보관할 것이 없다.
+        // 축출된 항목은 key 를 대조할 정보가 없으므로, 이 경로는 같은 seq 를 다른 key 로 쓰는 것을 잡지 못한다.
+        if (!old && seq <= s.ackedUpTo) { touch(sessionId, s, now()); return true; }
         if (!old || old.seq !== seq) {
           throw new RangeError(`seq 는 이미 기록한 최대 순번(${s.nextSeq - 1})보다 커야 한다: ${seq}`);
         }
@@ -236,12 +314,12 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       if (!old && s.sent.size + 1 > maxEntries) {
         const need = s.sent.size + 1 - maxEntries;
         if (s.ackedQ.size < need) return false; // ackedQ 는 살아 있는 항목만 담으므로 O(1)
-        for (let i = 0; i < need; i++) evict(s, s.ackedQ.values().next().value);
+        for (let i = 0; i < need; i++) { evict(s, s.ackedQ.oldest()); evictionDiag.ackedEvictions++; }
       }
       const g = overtakeGroup(key);
       if (old) drop(s, old); // 같은 key 대체: 묶음 항목 수는 그대로
       else s.groupRefs.set(g, (s.groupRefs.get(g) ?? 0) + 1);
-      const e = { seq, ks, key: { ...key }, bytes: bytes ?? null, size, pending: false, dead: false, queued: true };
+      const e = { seq, ks, key: { ...key }, bytes: bytes ?? null, size, pending: false, dead: false, queued: true, acked: false };
       s.sent.set(ks, e);
       s.pendingQ.push(e);
       s.retained += size;
@@ -292,6 +370,10 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       let unacked = 0;
       for (const e of s.pendingQ) if (!e.dead) unacked++;
       return { entries: s.sent.size, retainedBytes: s.retained, unacked, groups: s.groupMax.size };
+    },
+    /** 진단용(테스트): 축출 횟수와 걸음 수(건너뛴 자리 + 압축이 훑은 자리). 두 work 모두 해당 큐 전체 누계(압축 포함)다. */
+    evictionStats() {
+      return { sessionEvictions: evictionDiag.sessionEvictions, sessionWork: sessions.work, ackedEvictions: evictionDiag.ackedEvictions, ackedWork: evictionDiag.ackedWork };
     },
     /** 진단용(테스트): 세션의 ackedQ 길이. 없는 세션은 -1. */
     ackedQueueLength(sessionId) {

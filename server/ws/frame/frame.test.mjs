@@ -7,30 +7,57 @@ const KEY = Uint8Array.of(1, 2, 3, 4);
 const mask = (bytes) => bytes.map((v, i) => v ^ KEY[i & 3]);
 const run = (bytes, opts) => new FrameParser(opts).push(Buffer.from(bytes));
 
-test('4 MiB 프레임을 1400 B 조각으로 밀어 넣어도 100 ms 이내이고 내용이 보존된다', () => {
-  // 문턱 근거: 선형 구현은 복사 약 3 번(조각 복사·추출·언마스크)이라 4 MiB 에서 수 ms 수준이고,
-  // 기존 O(n^2) 구현은 같은 입력에 약 1 s 이상 걸렸다(F-191). 100 ms 는 느린 CI 에서도 넘지 않으면서 이차 구현은 확실히 잡는 값.
-  const size = 4 * 1024 * 1024;
+// 입력을 step 바이트씩 밀어 넣되 경과가 budgetMs 를 넘으면 루프 안에서 바로 throw 한다(퇴행 구현이 시험 전체를 멈추지 않게).
+function pushAll(p, wire, step, budgetMs, events = []) {
+  const t0 = performance.now();
+  for (let o = 0; o < wire.length; o += step) {
+    for (const e of p.push(wire.subarray(o, o + step))) events.push(e);
+    if ((o & 0x3ff) === 0 && performance.now() - t0 > budgetMs) {
+      throw new Error(`push ${budgetMs} ms 초과(오프셋 ${o}/${wire.length}, step ${step})`);
+    }
+  }
+  return performance.now() - t0;
+}
+
+function maskedWire(size, fill) {
   const body = Buffer.alloc(size);
-  for (let i = 0; i < size; i++) body[i] = (i * 31 + 7) & 0xff;
-  const wire = encodeFrame(OPCODES.BINARY, body, { maskKey: KEY });
-  const p = new FrameParser({ maxPayload: size });
-  const events = [];
-  const t0 = process.hrtime.bigint();
-  for (let o = 0; o < wire.length; o += 1400) events.push(...p.push(wire.subarray(o, o + 1400)));
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  assert.equal(events.length, 1);
-  assert.equal(events[0].type, 'message');
-  assert.ok(Buffer.from(events[0].data).equals(body));
-  assert.ok(ms < 100, `4 MiB 조각 push ${ms.toFixed(1)} ms`);
+  for (let i = 0; i < size; i++) body[i] = fill(i);
+  return { body, wire: encodeFrame(OPCODES.BINARY, body, { maskKey: KEY }) };
+}
+
+test('1400 B 조각 push 시간은 프레임 크기에 선형이고(4 배 크기 -> 시간비 < 10) 내용이 보존된다', () => {
+  // 벽시계 절대값 대신 같은 프로세스에서 1 MiB 와 4 MiB 를 각각 최솟값(5 회)으로 재 비율을 본다.
+  // 선형이면 비율 약 4, 이차이면 약 16. 부하는 두 측정에 같이 얹히고 최솟값이 이상치를 버린다.
+  const small = maskedWire(1024 * 1024, (i) => (i * 31 + 7) & 0xff);
+  const big = maskedWire(4 * 1024 * 1024, (i) => (i * 31 + 7) & 0xff);
+  const time = ({ wire, body }) => {
+    let best = Infinity;
+    let total = 0;
+    for (let r = 0; r < 5 && total < 1500; r++) { // 느린 구현은 반복하지 않고 일찍 끝낸다
+      const events = [];
+      const ms = pushAll(new FrameParser({ maxPayload: body.length }), wire, 1400, 1500, events);
+      total += ms;
+      assert.equal(events.length, 1);
+      assert.equal(events[0].type, 'message');
+      assert.ok(Buffer.from(events[0].data).equals(body));
+      best = Math.min(best, ms);
+    }
+    return best;
+  };
+  time(small); // 예열
+  const tSmall = time(small);
+  const tBig = time(big);
+  const ratio = tBig / Math.max(tSmall, 0.05);
+  console.log(`# 1400 B chunks: 1 MiB ${tSmall.toFixed(1)} ms, 4 MiB ${tBig.toFixed(1)} ms, ratio ${ratio.toFixed(1)}`);
+  assert.ok(ratio < 10, `시간비 ${ratio.toFixed(1)} (선형 ~4, 이차 ~16)`);
 });
 
 test('조각 크기에 선형: 1 B 단위 push 가 64 KiB 에서도 끝난다', () => {
   const body = Buffer.alloc(64 * 1024, 5);
   const wire = encodeFrame(OPCODES.BINARY, body, { maskKey: KEY });
   const p = new FrameParser();
-  let ev = [];
-  for (let i = 0; i < wire.length; i++) ev = ev.concat(p.push(wire.subarray(i, i + 1)));
+  const ev = [];
+  pushAll(p, wire, 1, 3000, ev);
   assert.equal(ev.length, 1);
   assert.equal(ev[0].data.length, body.length);
 });
@@ -159,6 +186,7 @@ test('F-208: 마스킹된 4 MiB 프레임을 1 B 조각으로 넣어도 2 s 미�
   const ev = [];
   for (let o = 0; o < frame.length; o++) {
     ev.push(...p.push(frame.subarray(o, o + 1)));
+    if ((o & 0x3ff) === 0 && performance.now() - t0 > 2000) throw new Error(`2 s 초과(오프셋 ${o}/${frame.length})`);
     if ((o & 0xffff) === 0) peak = Math.max(peak, process.memoryUsage().heapUsed + process.memoryUsage().external);
   }
   const ms = performance.now() - t0;
@@ -173,15 +201,34 @@ test('F-208: 마스킹된 4 MiB 프레임을 1 B 조각으로 넣어도 2 s 미�
   assert.ok(growth <= SIZE + 8 * 1048576, `growth ${growth}`);
 });
 
+test('큰 조각(>= 16384 B)도 복사되어 호출자 버퍼를 나중에 바꿔도 결과가 변하지 않는다', () => {
+  for (const size of [16384, 20000, 70000]) {
+    const body = Buffer.alloc(size);
+    for (let i = 0; i < size; i++) body[i] = (i * 7 + 3) & 0xff;
+    const w = Buffer.from(encodeFrame(OPCODES.BINARY, body, { maskKey: KEY }));
+    const cut = Math.max(16384, w.length - 100); // 첫 조각이 문턱 이상, 나머지는 작은 조각
+    const p = new FrameParser({ maxPayload: size });
+    assert.deepEqual(p.push(w.subarray(0, cut)), [], `size ${size}`);
+    w.fill(0xee, 0, cut); // 첫 조각의 원 버퍼를 덮어쓴다
+    const ev = p.push(w.subarray(cut));
+    assert.equal(ev[0].type, 'message', `size ${size}`);
+    assert.ok(Buffer.from(ev[0].data).equals(body), `size ${size}: 원 버퍼 별칭`);
+  }
+  // 한 번에 통째로 넣고 이벤트를 받은 뒤 입력을 바꿔도 data 는 그대로여야 한다
+  const body = Buffer.alloc(30000, 9);
+  const w = Buffer.from(encodeFrame(OPCODES.BINARY, body, { maskKey: KEY }));
+  const ev = new FrameParser({ maxPayload: 30000 }).push(w);
+  w.fill(0);
+  assert.ok(Buffer.from(ev[0].data).equals(body));
+});
+
 test('F-208: 1400 B 조각도 빠르고 내용이 보존된다', () => {
   const SIZE = 4 * 1024 * 1024;
   const payload = Buffer.alloc(SIZE, 0x5a);
   const frame = encodeFrame(OPCODES.BINARY, payload, { maskKey: KEY });
   const p = new FrameParser({ maxPayload: SIZE + 1024 });
-  const t0 = performance.now();
   const ev = [];
-  for (let o = 0; o < frame.length; o += 1400) ev.push(...p.push(frame.subarray(o, o + 1400)));
-  const ms = performance.now() - t0;
+  const ms = pushAll(p, frame, 1400, 500, ev);
   assert.equal(ev.length, 1);
   assert.ok(Buffer.from(ev[0].data).equals(payload));
   assert.ok(ms < 500, `${ms} ms`);

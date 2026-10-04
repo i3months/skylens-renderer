@@ -14,6 +14,7 @@ export const MAX_CONTROL_PAYLOAD = 125;
 // 한 메시지를 이루는 데이터 프레임 수 상한(길이 0 포함). 정상 클라이언트는 메시지당 몇 프레임이면 충분하다.
 export const DEFAULT_MAX_FRAGMENTS = 4096;
 
+const TAIL_MAX_BYTES = 1 << 20; // 꼬리 한 번 할당의 상한. 크기는 받은 양에 비례해 두 배씩 키우되 이 값을 넘지 않는다
 const TAIL_MIN_BYTES = 16384; // 이보다 작은 입력 조각은 꼬리 버퍼에 합친다
 const FRAME_HEADER_MAX = 14;
 
@@ -107,7 +108,7 @@ export class FrameParser {
 
   /**
    * 입력을 q 에 붙인다. 작은 조각은 마지막 조각이 가리키는 미리 할당한 꼬리 버퍼에 이어 쓴다(조각마다 Buffer 를 만들지 않는다).
-   * 꼬리 크기는 머리에서 알게 된 need 까지 남은 바이트(없으면 TAIL_MIN_BYTES). 큰 조각은 한 번 복사해 그대로 쌓는다.
+   * 꼬리 크기는 받은 양에 비례한다(지수 증가, 상한 TAIL_MAX_BYTES; 선언 길이로 선할당하지 않는다). 큰 조각은 한 번 복사해 그대로 쌓는다.
    * 어느 경우든 호출자 버퍼는 복사되므로 나중에 바꿔도 안전하다.
    */
   #append(chunk) {
@@ -127,7 +128,8 @@ export class FrameParser {
     }
     this.#flush(); // 꼬리가 가득 찼으니 낡은 마지막 뷰를 맞춘 뒤 새 꼬리를 쌓는다
     const remaining = this.need > this.qBytes ? this.need - this.qBytes : 0;
-    const cap = Math.max(TAIL_MIN_BYTES, Math.min(remaining, this.maxPayload + FRAME_HEADER_MAX));
+    // 머리가 선언한 길이는 믿지 않는다(원격 메모리 증폭 방지, F-218). 지금까지 받은 양(qBytes)만큼씩 지수로 키우고 한 번에 TAIL_MAX_BYTES 까지.
+    const cap = Math.max(TAIL_MIN_BYTES, Math.min(remaining, this.qBytes, TAIL_MAX_BYTES));
     t = this.tail = { buf: Buffer.allocUnsafeSlow(cap), len: n, start: 0, dirty: false };
     t.buf.set(chunk, 0);
     this.q.push(t.buf.subarray(0, n));

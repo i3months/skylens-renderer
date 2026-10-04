@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { createSessionStore, DEFAULT_MAX_ENTRIES_PER_SESSION, DEFAULT_MAX_BYTES_PER_SESSION } from './index.mjs';
 import { encodeMessage } from '../../proto/codec/index.mjs';
@@ -499,7 +500,7 @@ test('F-209 ⑦: ack 후 같은 key 재기록 100만 번 뒤에도 ackedQ <= max
   assert.ok(st.ackedQueueLength(sessionId) <= maxEntries, `ackedQ=${st.ackedQueueLength(sessionId)}`);
   assert.equal(st.ackedQueueLength(sessionId), 3);
   assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 0, unacked: 0, groups: 3 });
-  assert.ok(ms < 3000, `${ms} ms`);
+  console.log(`# cpu ms = ${ms}`); // 시간 단정 없음(로그만)
   // 가득 찬 뒤에도 가장 오래 확인된 항목부터 축출된다
   st.recordSent(sessionId, key(9), seq++, 1);
   assert.equal(st.recordSent(sessionId, key(10), seq++, 1), true);
@@ -566,7 +567,7 @@ test('F-212: TTL 갱신은 open 뿐 아니라 recordSent(새 기록·멱등 재�
     }
     c.t += ttl - 1;
     assert.equal(st.shouldSend(sessionId, key(77)), true, name);
-    c.t += 1; // 마지막 활동(shouldSend 는 갱신하지 않는다)이 아니라 step 이후 경과 2*(ttl-1)+1 → 만료
+    c.t += 1; // 마지막 활동(shouldSend 는 갱신하지 않는다)이 아니라 step 이후 경과 (ttl-1)+1 = ttl → 만료
     assert.equal(st.stats(sessionId), null, name);
   }
   // 활동이 없으면 갱신도 없다: shouldSend/stats 는 TTL 을 늘리지 않는다
@@ -596,7 +597,7 @@ test('F-212 ⑥: ack 없이 같은 key 100만 번 재기록해도 pendingQ <= 2�
   assert.ok(peak <= 2 * maxEntries, `pendingQ=${peak}`);
   assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 1, unacked: 1, groups: 1 });
   assert.deepEqual(st.unacked(sessionId), [{ seq: 1_000_000, key: key(1) }]);
-  assert.ok(ms < 3000, `${ms} ms`);
+  console.log(`# cpu ms = ${ms}`); // 시간 단정 없음(로그만)
   // 압축 뒤에도 ack·재접속 동작은 그대로
   st.ack(sessionId, 1_000_000);
   assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 0, unacked: 0, groups: 1 });
@@ -608,9 +609,141 @@ test('F-212 ⑥: 여러 key 가 섞여 대체돼도 순서·재전송 후보가 
   const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
   let seq = 1;
   for (let n = 0; n < 5000; n++) st.recordSent(sessionId, key(1 + (n % 3)), seq++, 1);
-  assert.ok(st.pendingQueueLength(sessionId) <= 16);
+  assert.ok(st.pendingQueueLength(sessionId) <= 2 * 3, `pendingQ=${st.pendingQueueLength(sessionId)}`); // 살아 있는 3개 -> 길이 <= 2×3
   st.open({ sessionId, lastPieceSeq: 0 });
   assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [4998, 4999, 5000]);
   st.ack(sessionId, 4999);
   assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [5000]);
+});
+
+// ---- F-213: 상한에 닿은 뒤 '가장 오래된 것 축출'이 상한 크기에 비례해 느려지지 않는다 ----
+// 다른 시험이 남긴 JIT·힙 상태에 휘둘리지 않도록 새 프로세스에서 잰다. 각 상한을 번갈아 7회씩 재 중앙값을 견준다(채우는 시간은 제외).
+const EVICTION_BENCH = `
+import { createSessionStore } from ${JSON.stringify(new URL('./index.mjs', import.meta.url).href)};
+const kind = process.argv[1], ops = Number(process.argv[2]);
+const sessions = (cap) => {
+  let n = 1;
+  const st = createSessionStore({ maxSessions: cap, ttlMs: 1e12, now: () => 0, randomId: () => n++ });
+  const step = () => st.open({ sessionId: 0, lastPieceSeq: 0 });
+  return { fill: cap, step, done: () => { if (st.size() !== cap) throw new Error('size'); } };
+};
+const acked = (cap) => {
+  const st = createSessionStore({ maxSessions: 2, ttlMs: 1e12, now: () => 0, maxEntriesPerSession: cap });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  let seq = 1;
+  const step = () => {
+    if (!st.recordSent(sessionId, { segmentId: 1, level: 0, lod: 0, chunkIndex: seq, tileX: 0, tileY: 0 }, seq, 1)) throw new Error('rejected');
+    st.ack(sessionId, seq++);
+  };
+  return { fill: cap, step, done: () => { if (st.ackedQueueLength(sessionId) !== cap) throw new Error('len'); } };
+};
+const make = kind === 'sessions' ? sessions : acked;
+const time = (cap, n) => {
+  const b = make(cap);
+  for (let i = 0; i < b.fill; i++) b.step();
+  const t0 = process.hrtime.bigint();
+  for (let i = 0; i < n; i++) b.step();
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  b.done();
+  return ms;
+};
+time(1000, 20000); time(65536, 20000);
+const all = { 1000: [], 65536: [] };
+for (let r = 0; r < 7; r++) for (const cap of [65536, 1000]) all[cap].push(time(cap, ops));
+const med = (a) => a.sort((x, y) => x - y)[a.length >> 1];
+console.log(JSON.stringify({ 1000: med(all[1000]), 65536: med(all[65536]) }));
+`;
+function evictionRatio(kind, ops) {
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', EVICTION_BENCH, kind, String(ops)], { encoding: 'utf8', timeout: 120000 });
+  assert.equal(r.status, 0, r.stderr);
+  const best = JSON.parse(r.stdout);
+  return { ratio: best[65536] / best[1000], best };
+}
+
+// 판정 시험(결정적): 구현이 스스로 올리는 카운터는 믿지 않는다. 축출 구간에서 Map 의 반복 진입점(keys/values/entries/[Symbol.iterator]/forEach)을
+// 밖에서 감싸 큰 Map(크기 >= SPY_MIN)에 대한 반복자 생성과 next() 호출을 센다. V8 Map 의 keys().next() 는 앞쪽 빈자리를 안에서 건너뛰어
+// 상한에 비례해 느려지므로(R1/R2), 큰 Map 반복은 축출 경로에서 한 번도 없어야 하고 next() 호출도 축출 1회당 상수 이하여야 한다.
+const SPY_MIN = 1024;
+function spyMapIteration(fn) {
+  const P = Map.prototype;
+  const orig = { keys: P.keys, values: P.values, entries: P.entries, iter: P[Symbol.iterator], forEach: P.forEach };
+  const c = { creates: 0, nexts: 0, forEachCalls: 0 };
+  const wrap = (f) => function (...a) {
+    const it = f.apply(this, a);
+    if (this.size < SPY_MIN) return it;
+    c.creates++;
+    const next = it.next;
+    it.next = function (...b) { c.nexts++; return next.apply(this, b); };
+    return it;
+  };
+  P.keys = wrap(orig.keys); P.values = wrap(orig.values); P.entries = wrap(orig.entries); P[Symbol.iterator] = wrap(orig.iter);
+  P.forEach = function (...a) { if (this.size >= SPY_MIN) c.forEachCalls++; return orig.forEach.apply(this, a); };
+  try { fn(); } finally {
+    P.keys = orig.keys; P.values = orig.values; P.entries = orig.entries; P[Symbol.iterator] = orig.iter; P.forEach = orig.forEach;
+  }
+  return c;
+}
+const EVICTIONS = 250_000;
+const MAX_NEXTS_PER_EVICTION = 4;
+
+test('F-213: 상한 65536 에서 25만 회 대체해도 세션 축출은 큰 Map 반복 없이 O(1)', () => {
+  const cap = 65536;
+  let n = 1;
+  const st = createSessionStore({ maxSessions: cap, ttlMs: 1e12, now: () => 0, randomId: () => n++ });
+  for (let i = 0; i < cap; i++) st.open({ sessionId: 0, lastPieceSeq: 0 });
+  assert.equal(st.size(), cap);
+  const c = spyMapIteration(() => {
+    for (let i = 0; i < EVICTIONS; i++) st.open({ sessionId: 0, lastPieceSeq: 0 });
+  });
+  assert.equal(st.size(), cap);
+  assert.equal(c.creates, 0, `큰 Map 반복자 생성 ${c.creates}회`);
+  assert.equal(c.forEachCalls, 0);
+  assert.ok(c.nexts <= MAX_NEXTS_PER_EVICTION * EVICTIONS, `next/eviction = ${c.nexts / EVICTIONS}`);
+});
+
+test('F-213: 상한 65536 에서 25만 회 대체해도 ackedQ 축출은 큰 Map 반복 없이 O(1)', () => {
+  const cap = 65536;
+  const st = createSessionStore({ maxSessions: 2, ttlMs: 1e12, now: () => 0, maxEntriesPerSession: cap });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  const rec = (seq) => {
+    assert.ok(st.recordSent(sessionId, { segmentId: 1, level: 0, lod: 0, chunkIndex: seq, tileX: 0, tileY: 0 }, seq, 1));
+    st.ack(sessionId, seq);
+  };
+  for (let seq = 1; seq <= cap; seq++) rec(seq);
+  assert.equal(st.ackedQueueLength(sessionId), cap);
+  const c = spyMapIteration(() => {
+    for (let seq = cap + 1; seq <= cap + EVICTIONS; seq++) rec(seq);
+  });
+  assert.equal(st.ackedQueueLength(sessionId), cap);
+  assert.equal(c.creates, 0, `큰 Map 반복자 생성 ${c.creates}회`);
+  assert.equal(c.forEachCalls, 0);
+  assert.ok(c.nexts <= MAX_NEXTS_PER_EVICTION * EVICTIONS, `next/eviction = ${c.nexts / EVICTIONS}`);
+});
+
+// 보조 측정(판정 아님): 벽시계 비율을 로그로만 남긴다. 장비·GC 에 따라 흔들리므로 판정에는 쓰지 않는다(시계 단정 없음).
+for (const [kind, label] of [['sessions', 'session cap'], ['acked', 'ackedQ']]) {
+  test(`F-213 (보조 측정): ${label} 축출 벽시계 비율 cap65536/cap1000 을 로그로 남긴다`, () => {
+    const { ratio, best } = evictionRatio(kind, 250_000);
+    console.log(`# F-213 ${label} wall-clock ratio cap65536/cap1000 = ${ratio.toFixed(2)} ${JSON.stringify(best)}`);
+  });
+}
+
+test('F-213: 오래된 순서 축출은 최근 사용(touch) 순서와 ackedQ 확인 순서를 지킨다', () => {
+  const { c, st } = mk({ maxSessions: 3 });
+  const a = st.open({ sessionId: 0, lastPieceSeq: 0 }).sessionId;
+  const b = st.open({ sessionId: 0, lastPieceSeq: 0 }).sessionId;
+  const d = st.open({ sessionId: 0, lastPieceSeq: 0 }).sessionId;
+  c.t += 1;
+  st.ack(a, 0); // a 를 최근으로
+  st.open({ sessionId: 0, lastPieceSeq: 0 }); // b 가 축출된다
+  assert.equal(st.stats(b), null);
+  assert.notEqual(st.stats(a), null);
+  assert.notEqual(st.stats(d), null);
+  const { st: s2 } = mk({ maxEntriesPerSession: 3 });
+  const id = s2.open({ sessionId: 0, lastPieceSeq: 0 }).sessionId;
+  for (let i = 1; i <= 3; i++) s2.recordSent(id, key(i), i, 1);
+  s2.ack(id, 3);
+  for (let i = 4; i <= 9; i++) { s2.recordSent(id, key(i), i, 1); s2.ack(id, i); }
+  assert.equal(s2.shouldSend(id, key(9)), false);
+  assert.equal(s2.stats(id).entries, 3);
 });

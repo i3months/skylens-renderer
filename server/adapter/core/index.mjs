@@ -14,6 +14,9 @@
 //     first / replace      : 조각마다 PIECE 한 건(pieceSeq 는 어댑터가 PIECE_SEQ_MIN(1)부터 1씩 올리는 u32), 그다음 LEVEL_ARRIVED 한 건.
 //                            순서는 PIECE 들이 먼저이고 LEVEL_ARRIVED 가 마지막이다. 받는 쪽은 LEVEL_ARRIVED 를 "그 수준의
 //                            조각 pieceCount 개가 모두 왔다" 는 완료 표시로 쓰고, 그때 자기 수준 기계에 arrive 한다.
+//                            완료 표시 없이 조각만 온 것은 수준 도착으로 세지 않고 버린다(실패한 송출의 조각이 그런 경우).
+//     실패 뒤 재시도가 skip 이 되면(그 사이 같거나 높은 수준이 도착) 부분 송출된 key 는 onRelease(keys, {abandoned:true})
+//     로 놓고, 끝나지 않은 표시를 지우며, 쓰였을 수 있는 pieceSeq 는 태운다(결과의 abandoned 에도 key 가 담긴다).
 //     replace              : 기계가 released 로 내보낸 이전 수준 조각의 key 목록을 onRelease(keys, info) 로 알린다.
 //   송출과 상태 확정 순서(F-189):
 //     ① 기계 snapshot 과 decideArrival 로 결정을 미리 본다(skip 이면 끝). ② 보낼 메시지를 모두 만들고 부호화까지 마친다.
@@ -29,7 +32,22 @@
 //     시도가 쓰려던 pieceSeq 부터 같은 key 로 다시 매긴다(끊김 없음). 이미 나간 emit 은 같은 pieceSeq·key 로 다시 나가므로
 //     받는 쪽은 그것을 같은 조각으로 다룬다. 재시도가 ③ 을 다 마치면 끝나지 않은 이벤트 표시가 지워진다.
 //     이어받기 저장소(server/ws/resume)의 recordSent 는 같은 key·같은 seq 재기록을 멱등으로 받으므로(F-197) emit 안에서
-//     recordSent 를 불러도 재시도가 막히지 않는다.
+//     recordSent 를 불러도 재시도가 막히지 않는다. 실패한 시도 사이에 ack·축출로 그 항목이 지워졌어도(seq <= ackedUpTo)
+//     recordSent 는 멱등 true 다(F-219 ③).
+//     "같은 bytes" 는 실패한 시도 때의 내용이다. 어댑터는 실패 시점의 bytes 를 실제로 복사해 둔다(new Uint8Array,
+//     F-219 ①) — Buffer.prototype.slice 는 뷰라서 호출자가 원본(pool Buffer 등)을 덮어쓰면 재시도가 내용이 다른 조각을
+//     같은 pieceSeq·key 로 보내게 된다. 원본이 바뀐 재시도는 다른 이벤트로 보고 UnfinishedEventError 로 거부한다.
+//     재시도 때 수준 기계가 외부에서(어댑터를 거치지 않고) 진행돼 결정이 skip 이 되면(F-219 ②): 그 이벤트를 다시 보낼
+//     일이 없으므로 아무것도 내보내지 않고, 실패한 시도에 묶였던 pieceSeq 들(firstPieceSeq..+pieceCount-1)을 소비한 것으로
+//     확정하고(nextSeq 를 그만큼 올림) 끝나지 않은 표시를 지운 뒤 action 'skip' 을 돌려준다. 순번을 다시 쓰지 않으므로
+//     한 pieceSeq 가 두 key 에 쓰이는 일은 없다. 대가: 그 순번 중 일부는 선에 나갔을 수도, 안 나갔을 수도 있고(순번에
+//     빈칸이 생길 수 있음), 그 수준의 LEVEL_ARRIVED 는 나가지 않는다 — 받는 쪽은 완료 표시 없는 조각을 수준 도착으로
+//     세지 않는다.
+//     재시도가 영구히 실패할 때의 복구(F-219 ④): 어댑터 하나로는 풀 수 없다(같은 이벤트 재시도 말고는 모두 거부).
+//     호출자는 그 어댑터를 버리고 새로 만든다. 새 어댑터의 firstPieceSeq 는 옛 어댑터가 썼을 수 있는 모든 순번보다 커야
+//     한다: unfinishedEvent() 의 firstPieceSeq + pieceCount(또는 이어받기 저장소를 쓰면 open 이 돌려주는 nextPieceSeq 중
+//     큰 값). 수준 기계도 새로(또는 옛 기계 그대로 — 실패한 이벤트는 기계에 확정되지 않았다) 넘긴다. 연결이 끊긴 경우라면
+//     클라이언트는 HELLO 이어받기로 남은 조각을 다시 받고, 이어받을 수 없으면 새 세션으로 처음부터 받는다.
 //     ⑤ 는 상태 확정 뒤라 실패해도 되돌리지 않는다(메시지는 이미 다 나갔다). onRelease 는 함수 또는 함수 배열이며,
 //     하나가 던져도 나머지를 모두 부른 다음 예외를 다시 던진다(하나면 그 예외, 둘 이상이면 AggregateError).
 //   도착하지 않은 것을 만들거나 메우지 않는다. 시간·타이머를 쓰지 않는다. 상태는 handle 호출로만 바뀐다.
@@ -210,7 +228,23 @@ export function createCoreAdapter(options = {}) {
       // skip 은 기계에도 알린다(기계 이력 등). 상태는 바뀌지 않는다.
       const r = machine.arrive(segmentId, level, pieces);
       if (r.action !== ACTIONS.SKIP) throw new Error(`수준 기계 결정(${r.action})이 snapshot 으로 본 결정(skip)과 다르다`);
-      return { action: 'skip', emitted: 0, released: [] };
+      if (!unfinished) return { action: 'skip', emitted: 0, released: [] };
+      // 실패한 시도의 재시도가 그 사이 더 높거나 같은 수준이 도착해 skip 이 된 경우(F-223 ①). 실패한 시도가 조각 일부를
+      // 이미 내보냈을 수 있다. 그 조각들은 LEVEL_ARRIVED 완료 표시가 없으므로 받는 쪽은 수준 도착으로 세지 않고 버린다
+      // (도착하지 않은 것을 메우지 않는다 — 수준은 교체될 뿐이다). 어댑터는 끝나지 않은 표시를 지우고(안 지우면 이후
+      // 모든 이벤트가 UNFINISHED_EVENT 로 막힌다), 그 pieceSeq 들은 이미 그 key 로 쓰였을 수 있으므로 태워서 다른 key 에
+      // 다시 쓰지 않으며, onRelease 로 그 key 들을 놓는다(info.abandoned = true).
+      // 같은 수준(L == M)이면 공유 기계가 같은 key 의 조각을 이미 확정해 지금 그려지고 있을 수 있다(F-227). 기계의 현재 수준이
+      // 쥔 key 는 놓지 않는다. L < M 이면 그 수준의 조각이 아니므로 그대로 모두 놓는다.
+      const snap = machine.snapshot(segmentId);
+      const live = new Set();
+      if (snap.level === level) for (const p of snap.pieces) live.add(pieceKeyString(p.key));
+      const abandonedInfo = { segmentId, level, previousLevel: snap.level, abandoned: true };
+      const abandoned = pieces.filter((p) => !live.has(pieceKeyString(p.key))).map((p) => ({ ...p.key }));
+      nextSeq += unfinished.keys.length;
+      unfinished = null;
+      if (abandoned.length > 0) notifyRelease(abandoned, abandonedInfo);
+      return { action: 'skip', emitted: 0, released: [], abandoned };
     }
     // ② 메시지를 모두 만들고 부호화까지 마친다. 여기서 던지면 아무것도 나가지 않는다.
     const messages = pieces.map((p, i) => ({ type: 'PIECE', pieceSeq: nextSeq + i, key: { ...p.key }, chunk: p.bytes }));
@@ -219,7 +253,7 @@ export function createCoreAdapter(options = {}) {
     // ③ 전부 송출한다. 던지면 상태·nextSeq 를 확정하지 않고, 이 이벤트를 끝나지 않은 이벤트로 남긴 채 다시 던진다.
     if (!unfinished) {
       unfinished = {
-        segmentId, level, keys: pieces.map((p) => pieceKeyString(p.key)), bytes: pieces.map((p) => p.bytes.slice()),
+        segmentId, level, keys: pieces.map((p) => pieceKeyString(p.key)), bytes: pieces.map((p) => new Uint8Array(p.bytes)), // 실제 사본(Buffer.slice 는 뷰, F-219 ①)
       };
     }
     for (const m of outgoing) emit(m);
