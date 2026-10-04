@@ -34,7 +34,7 @@
  *   emit 은 HELLO 처리 전에는 던지고, 닫는 중에도 던진다. 첫 메시지 또는 HELLO 뒤에 복호가 실패해도 ERROR(BAD_MESSAGE) 후 close(1002).
  *   정지 정책: replayAfterHello 가 stoppedAt !== null 을 돌려주면 onSession·makeEmit 없이 ERROR(UNAVAILABLE) 후 close(1011) 로 닫고,
  *   이 연결에서는 생방송 송출을 허용하지 않는다(같은 연결에서 생방송이 이어지면 누적 ACK 가 빠진 조각과 그 창의 LEVEL_ARRIVED 기록을 지운다).
- *   대가: 영구히 못 얻는 바이트가 있으면 재접속해도 같은 멈춤이 반복되므로, 호출자가 그 세션을 닫고 새 세션으로 받게 해야 한다.
+ *   대가: 영구히 못 얻는 바이트가 있으면 재접속해도 같은 멈춤이 반복되므로, 호출자가 그 세션을 닫고 클라이언트가 새 세션을 열게 해야 한다(이후 새로 도착하는 것만 받는다, 아래 클라이언트 규약).
  *   정지 알림(F-279): 정지하면 close(1011, 'replay-stopped')(CLOSE_REASON_REPLAY_STOPPED) 로 닫는다. 그 밖의 1011(onSession·replay·
  *   onMessage 예외)은 사유 'internal-error'(CLOSE_REASON_INTERNAL) 다. 닫은 뒤 onStopped(sessionId, { stoppedAt }) 를 한 번 부르고,
  *   정지 뒤에도 api.sessionId() 는 값을 돌려준다. 호출자는 onStopped 에서 store.close(sessionId) 를 불러야 한다.
@@ -47,14 +47,16 @@
  *   onStopped 가 던지거나 거부해도 무시한다.
  *   클라이언트 규약: ERROR(UNAVAILABLE) 를 받으면(뒤이어 1011 'replay-stopped' 로 닫힌다) 같은 sessionId 로 다시 HELLO 하지
  *   않는다. HELLO{sessionId:0, lastPieceSeq:0} 으로 새 세션을 연다. 새 세션은 이후 새로 도착하는 것만 받는다
- *   (이전 세션의 미도착분은 메우지 않는다; resumed=false 면 재전송 0). 이전 세션의 도착·상주 상태는 클라이언트가 버리거나
- *   새로 도착하는 것과 섞지 않고 따로 처리해야 한다. 같은 sessionId 로 다시 와도 서버가 세션을
+ *   (이전 세션의 미도착분은 메우지 않는다; resumed=false 면 재전송 0). 클라이언트는 새 세션 도착분이 (구간, 수준) 키로
+ *   교체하고, 새 세션이 도착시키지 않은 칸은 비운다. 이전 세션 데이터로 채우거나 보간하지 않는다. 같은 sessionId 로 다시 와도 서버가 세션을
  *   닫았으면 WELCOME{resumed:false}(저장소 reason 'UNKNOWN_SESSION')로 새 세션이 열린다.
  *   비동기 콜백(F-282): onSession 이 thenable 을 돌려주고 거부하면 동기 예외와 같이 close(1011, 'internal-error') 1회로 닫고 그 뒤
  *   emit 은 던진다(onSession 은 기다리지 않는다). onClose 의 반환은 Promise.resolve(r).catch(() => {}) 로 삼킨다.
  *   onSession(sessionId, { resumed, nextPieceSeq }) 는 WELCOME 과 재전송이 끝난 뒤 한 번 불린다(WELCOME 직후가 아니다).
- *   부르지 않는 경우(F-281): 재전송 정지(stoppedAt !== null), replay 를 기다리는 중 접속이 닫힌 경우(replay 가 정지를 보고했어도
- *   onSession 은 안 부르고 onStopped 만 부른다), replay·onSession 의 예외.
+ *   부르지 않는 경우(F-281): 재전송 정지(정수 stoppedAt), replay 를 기다리는 중 접속이 닫힌 경우(replay 가 정지를 보고했어도
+ *   onSession 은 안 부르고 onStopped 만 부른다), replay 의 예외(replay 가 던지면 1011), onSession 의 예외.
+ *   stoppedAt 이 정수가 아니고 null·undefined 도 아니면(NaN·문자열) 정지로 보지 않고 close(1011, 'internal-error') 로 닫는다.
+ *   conn 이 닫힘 콜백을 여러 번 불러도 onClose 는 한 번만 부른다.
  *   어댑터는 이어받기 뒤 firstPieceSeq 를 nextPieceSeq 이상으로 만들어야 한다. 어기면 emit 이 minPieceSeq 하한으로 send 없이 던진다.
  *   createRecordingEmit 에는 minPieceSeq 옵션(정수 또는 함수)이 있다.
  */

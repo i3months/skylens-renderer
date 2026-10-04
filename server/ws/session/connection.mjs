@@ -15,6 +15,7 @@
 // 정지 판별(F-285): 서버 쪽 정지 판별은 onStopped 로만 한다. onClose 의 reason 은 믿지 않는다(실제 서버는 피어 close 에코가
 //   reason 을 덮어 {code:1011, reason:""} 로 알린다). onStopped 와 onClose 의 호출 순서는 보장하지 않는다
 //   (닫힌 뒤 replay 가 정지를 보고하면 onClose 가 먼저 오고, 정지 중 닫으면 close 에코에 따라 어느 쪽이 먼저일 수 있다).
+// stoppedAt 은 정수일 때만 정지다. 그 밖의 값(NaN·문자열 등, null·undefined 제외)은 내부 오류 1011 'internal-error' 로 닫는다.
 // onSession 미호출 조건(F-281): 재전송 정지(replay 가 stoppedAt 을 돌려줄 때), replay 중 접속이 닫힌 경우, replay·onSession 예외.
 //   replay 중 닫혔는데 replay 가 정지를 보고했다면 onSession 은 부르지 않지만 onStopped 는 부른다(sessionId() 도 값을 돌려준다).
 import { decodeMessage, encodeMessage } from '../../proto/codec/index.mjs';
@@ -96,13 +97,19 @@ export function attachConnection({
       sessionKnown = true;
       // replay 를 기다리는 동안 접속이 닫혔으면 송출 배선을 만들지 않는다(F-277 ①). 다만 replay 가 정지를 보고했다면
       // 닫힌 뒤여도 호출자가 세션을 닫을 수 있게 onStopped 는 부른다(F-285 ③; ERROR·close 는 이미 닫혀 보내지 않는다).
+      const noStop = result.stoppedAt === null || result.stoppedAt === undefined;
       if (closing) {
-        if (result.stoppedAt !== null && result.stoppedAt !== undefined && onStopped) {
+        if (Number.isInteger(result.stoppedAt) && onStopped) {
           notifyQuietly(onStopped, sessionId, { stoppedAt: result.stoppedAt });
         }
         return;
       }
-      if (result.stoppedAt !== null && result.stoppedAt !== undefined) {
+      // 정지는 정수 stoppedAt 만이다. NaN·문자열 같은 값은 정지로 보지 않고 내부 오류(1011 'internal-error')로 닫는다.
+      if (!noStop && !Number.isInteger(result.stoppedAt)) {
+        internalError();
+        return;
+      }
+      if (!noStop) {
         // 재전송 정지: 이 접속에서는 생방송을 허용하지 않는다(F-275, 머리 주석의 정책 (a)). emitFn 은 null 로 남는다.
         try {
           conn.send(encode({ type: 'ERROR', code: ERR_CODES.UNAVAILABLE, text: `조각 ${result.stoppedAt} 의 바이트가 없어 재전송을 멈췄다` }));
@@ -151,8 +158,11 @@ export function attachConnection({
     chain = chain.then(() => handle(bytes));
     return chain;
   });
+  let closeNotified = false;
   conn.onClose((info) => {
     closing = true;
+    if (closeNotified) return; // conn 이 closeCb 를 두 번 불러도 onClose 는 한 번
+    closeNotified = true;
     if (onClose) notifyQuietly(onClose, info);
   });
 
