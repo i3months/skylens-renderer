@@ -61,7 +61,7 @@ test('중복 키는 한 번만 (같은 호출 안, 다른 호출, drain 뒤)', (
 
 test('모든 drain 결과가 부호화되고 decode 한 값이 원본과 같다', () => {
   const p = createArrivalPlanner();
-  const ks = Array.from({ length: 600 }, (_, i) => key(7, i % 65536, i % 4, i % 8, i - 300, -i));
+  const ks = Array.from({ length: 600 }, (_, i) => key(7, i % 65536, i % 4, i % 8, i - 300, i === 0 ? 0 : -i));
   ks.push(key(0x3fffffff, 65535, 3, 7, 2147483647, -2147483648));
   p.onSegmentArrived(7, ks);
   const out = p.drain();
