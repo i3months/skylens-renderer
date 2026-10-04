@@ -71,30 +71,22 @@ export function compareWithReference(candidate, reference) {
   return { filled, lost, ok: filled.length === 0 };
 }
 
-/** 빈 픽셀이 빈 값 그대로인지(색 0,0,0·깊이 0·번호 −1) 검사한다. 어긋난 픽셀 번호 목록을 돌려준다. */
+/**
+ * 빈 픽셀이 빈 값 그대로인지(색 0,0,0·깊이 0·번호 −1) 검사한다. 어긋난 픽셀 번호 목록을 돌려준다.
+ * RenderResult 의 무결성을 먼저 검증한 후 emptyPixels 목록을 확인한다.
+ * @returns {number[]} 빈 값이 아닌 픽셀 인덱스 배열
+ */
 export function nonEmptyValuesInEmpty(result, emptyPixels) {
   if (!result || typeof result !== 'object') throw new Error(`${ERR} 결과가 객체가 아님: ${String(result)}`);
-  // 해상도 및 배열 구조만 검사 (값 검증은 하지 않음)
-  if (!Number.isInteger(result.width) || !Number.isInteger(result.height) || result.width <= 0 || result.height <= 0) {
-    throw new Error(`${ERR} 크기가 양의 정수여야 함: ${result.width}×${result.height}`);
-  }
+  // 입력 검증: assertRenderResult 한 번만 호출
+  assertRenderResult(result);
   const n = result.width * result.height;
-  if (!(result.index instanceof Int32Array) || result.index.length !== n) {
-    throw new Error(`${ERR} index 길이 ${n} 이어야 함`);
-  }
-  if (!(result.depth instanceof Float32Array) || result.depth.length !== n) {
-    throw new Error(`${ERR} depth 길이 ${n} 이어야 함`);
-  }
-  if (!(result.color instanceof Uint8Array) || result.color.length !== 3 * n) {
-    throw new Error(`${ERR} color 길이 ${n * 3} 이어야 함`);
-  }
   if (!Array.isArray(emptyPixels)) throw new Error(`${ERR} emptyPixels 는 배열이어야 함`);
   const bad = [];
   for (const p of emptyPixels) {
     if (!Number.isInteger(p) || p < 0 || p >= n) {
       throw new Error(`${ERR} 픽셀 인덱스 범위 벗어남: ${p} (범위 [0, ${n}))`);
     }
-    // 이제 이 검사가 실제로 작동한다: assertRenderResult가 없으므로 빈 픽셀이 아닌 값을 가지면 감지
     if (result.index[p] !== EMPTY_INDEX || result.depth[p] !== EMPTY_DEPTH
       || (result.color[3 * p] | result.color[3 * p + 1] | result.color[3 * p + 2]) !== 0) bad.push(p);
   }

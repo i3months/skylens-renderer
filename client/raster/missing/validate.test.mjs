@@ -187,7 +187,51 @@ test('toMask: RenderResult 검증이 정확히 작동', () => {
   const result = computeCoverage(validR);
   assert.equal(result.width, 2);
   assert.equal(result.drawn, 0);
-  
+
   const badR = { width: 2, height: 2, color: new Uint8Array(5), depth: new Float32Array(4), index: new Int32Array(4) };
   assert.throws(() => computeCoverage(badR), /^Error: missing:/);
+});
+
+// ③ nonEmptyValuesInEmpty 변이 테스트: 크기 검사 제거 감지
+test('nonEmptyValuesInEmpty: 음수 높이는 missing: 오류', () => {
+  const rNegH = {
+    width: 2, height: -1,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => nonEmptyValuesInEmpty(rNegH, []), /^Error: missing:/);
+});
+
+// ③ nonEmptyValuesInEmpty 변이 테스트: 음수 너비는 감지
+test('nonEmptyValuesInEmpty: 음수 너비는 missing: 오류', () => {
+  const rNegW = {
+    width: -2, height: 1,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => nonEmptyValuesInEmpty(rNegW, []), /^Error: missing:/);
+});
+
+// ③ nonEmptyValuesInEmpty 변이 테스트: index 배열 길이 불일치 감지
+test('nonEmptyValuesInEmpty: index 길이 불일치는 missing: 오류', () => {
+  const rBadIndex = {
+    width: 2, height: 2,
+    color: new Uint8Array(12),
+    depth: new Float32Array(4),
+    index: new Int32Array(3),  // 4가 아닌 3
+  };
+  assert.throws(() => nonEmptyValuesInEmpty(rBadIndex, [0]), /^Error: missing:/);
+});
+
+// ③ nonEmptyValuesInEmpty 변이 테스트: depth 배열 타입 검사
+test('nonEmptyValuesInEmpty: depth가 Float32Array가 아니면 missing: 오류', () => {
+  const rBadDepth = {
+    width: 2, height: 2,
+    color: new Uint8Array(12),
+    depth: new Array(4),  // Float32Array가 아님
+    index: new Int32Array(4),
+  };
+  assert.throws(() => nonEmptyValuesInEmpty(rBadDepth, [0]), /^Error: missing:/);
 });
