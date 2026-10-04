@@ -58,6 +58,8 @@ export function readHeaderClient(bytes) {
       if (!Number.isFinite(f64(o + 8 * k))) throw new AssetFormatError('bbox', 'bbox not finite');
     }
   }
+  const chunkIndex = dv.getUint32(OFFSETS.chunkIndex, true);
+  if (chunkIndex > 65535) throw new AssetFormatError('field', `chunkIndex ${chunkIndex} not in 0..65535`);
   return {
     versionMajor,
     versionMinor: dv.getUint16(OFFSETS.versionMinor, true),
@@ -72,7 +74,7 @@ export function readHeaderClient(bytes) {
     tileSizeM,
     lod: u8[OFFSETS.lod],
     quantExp,
-    chunkIndex: dv.getUint32(OFFSETS.chunkIndex, true),
+    chunkIndex,
     bodyBytes,
     bboxMin: [f64(OFFSETS.bboxMin), f64(OFFSETS.bboxMin + 8), f64(OFFSETS.bboxMin + 16)],
     bboxMax: [f64(OFFSETS.bboxMax), f64(OFFSETS.bboxMax + 8), f64(OFFSETS.bboxMax + 16)],

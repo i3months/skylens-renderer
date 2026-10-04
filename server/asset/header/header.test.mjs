@@ -83,7 +83,7 @@ test('header_roundtrip: 무작위 1,000개 쓰기→읽기 왕복', () => {
     const need = sizes.reduce((a, sz) => a + Math.ceil((pointCount * sz) / 4) * 4, 0);
     const f = {
       format, codec: 0, segmentId: ri(0, 2 ** 30 - 1), level: ri(0, 3), pointCount, tileX, tileY, tileSizeM: 64,
-      lod: ri(0, 7), quantExp, chunkIndex: ri(0, 0xffffffff), bodyBytes: need + ri(0, 64), bboxMin, bboxMax,
+      lod: ri(0, 7), quantExp, chunkIndex: ri(0, 65535), bodyBytes: need + ri(0, 64), bboxMin, bboxMax,
       anchor: { lat: (rnd() - 0.5) * 180, lon: (rnd() - 0.5) * 360, alt: rnd() * 1000 },
     };
     const b = writeHeader(f);
