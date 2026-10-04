@@ -17,10 +17,17 @@
 //     replace              : 기계가 released 로 내보낸 이전 수준 조각의 key 목록을 onRelease(keys, info) 로 알린다.
 //   송출과 상태 확정 순서(F-189):
 //     ① 기계 snapshot 과 decideArrival 로 결정을 미리 본다(skip 이면 끝). ② 보낼 메시지를 모두 만들고 부호화까지 마친다.
-//     ③ 전부 emit 한다. ④ 그다음에야 machine.arrive 로 상태를 확정하고 nextSeq 를 올린다. ⑤ onRelease 를 부른다.
-//     ②·③ 에서 던지면 기계 상태·nextSeq 는 그대로이고 예외를 다시 던진다. 같은 이벤트를 다시 넣으면 결정이 그대로
-//     first/replace 로 나오고, 실패한 시도가 쓰려던 pieceSeq 부터 다시 매긴다(끊김 없음). 실패한 시도에서 일부 emit 이
-//     이미 나갔다면 같은 pieceSeq·key 로 다시 나가므로 받는 쪽은 그것을 같은 조각으로 다룬다.
+//     ③ 전부 emit 한다. ④ 그다음에야 nextSeq 를 올리고 machine.arrive 로 상태를 확정한다. ⑤ onRelease 를 부른다.
+//     ② 에서 던지면(부호화 실패) 아무것도 나가지 않았으므로 기계 상태·nextSeq 는 그대로이고 예외를 다시 던진다.
+//     ③ 에서 던지면 기계 상태·nextSeq 는 그대로이고, 어댑터는 그 이벤트를 "끝나지 않은 이벤트" 로 기억한 채 예외를 다시
+//     던진다(F-204). emit 이 던졌을 때 그 메시지가 실제로 쓰였는지(이어받기 저장소에 기록됐는지) 어댑터는 알 수 없으므로,
+//     실패한 시도가 매긴 pieceSeq 는 모두 "그 key 로 이미 쓰였을 수 있는 순번" 으로 본다.
+//     규칙: 한 pieceSeq 는 절대 서로 다른 두 key 에 쓰이지 않는다(contracts/proto 재전송 규약).
+//     그래서 끝나지 않은 이벤트가 있는 동안 그것과 다른 이벤트(다른 level_arrived, segment_expected 모두)는 아무것도 내보내지
+//     않고 UnfinishedEventError(code 'UNFINISHED_EVENT')로 거부한다(상태·순번 그대로). 복구는 같은 이벤트(같은 구간·수준,
+//     같은 순서의 같은 조각 key·같은 bytes)를 다시 넣는 것뿐이다. 그러면 결정이 그대로 first/replace 로 나오고, 실패한
+//     시도가 쓰려던 pieceSeq 부터 같은 key 로 다시 매긴다(끊김 없음). 이미 나간 emit 은 같은 pieceSeq·key 로 다시 나가므로
+//     받는 쪽은 그것을 같은 조각으로 다룬다. 재시도가 ③ 을 다 마치면 끝나지 않은 이벤트 표시가 지워진다.
 //     이어받기 저장소(server/ws/resume)의 recordSent 는 같은 key·같은 seq 재기록을 멱등으로 받으므로(F-197) emit 안에서
 //     recordSent 를 불러도 재시도가 막히지 않는다.
 //     ⑤ 는 상태 확정 뒤라 실패해도 되돌리지 않는다(메시지는 이미 다 나갔다). onRelease 는 함수 또는 함수 배열이며,
@@ -42,6 +49,21 @@ export const MAX_PIECE_BYTES = MAX_PAYLOAD_BYTES - PIECE_PREFIX_BYTES;
 const U32_MAX = 0xffffffff;
 const I32_MIN = -0x80000000;
 const I32_MAX = 0x7fffffff;
+
+/**
+ * 송출 중 실패한 level_arrived 가 끝나지 않았는데 다른 이벤트가 들어왔을 때 던진다(F-204).
+ * 복구는 같은 이벤트를 다시 넣는 것뿐이다. pending 은 끝나지 않은 이벤트 요약이다.
+ */
+export class UnfinishedEventError extends Error {
+  /** @param {{segmentId:number, level:number, firstPieceSeq:number, pieceCount:number}} pending */
+  constructor(pending) {
+    super(`송출이 끝나지 않은 이벤트(구간 ${pending.segmentId}, 수준 ${pending.level}, pieceSeq ${pending.firstPieceSeq}..`
+      + `${pending.firstPieceSeq + pending.pieceCount - 1})가 있다. 같은 이벤트를 다시 넣어야 한다`);
+    this.name = 'UnfinishedEventError';
+    this.code = 'UNFINISHED_EVENT';
+    this.pending = { ...pending };
+  }
+}
 
 /**
  * 코어가 내보내는 입력 이벤트(가정, 위 머리 주석 참고).
@@ -119,6 +141,28 @@ export function createCoreAdapter(options = {}) {
   const releaseFns = onRelease === undefined ? [] : Array.isArray(onRelease) ? onRelease.slice() : [onRelease];
   if (!releaseFns.every((f) => typeof f === 'function')) throw new TypeError('onRelease 는 함수 또는 함수 배열이어야 한다');
   let nextSeq = checkFirstSeq(options.firstPieceSeq);
+  /**
+   * 송출(③) 중 실패한 level_arrived(F-204). null 이면 없음. pieceSeq nextSeq..nextSeq+keys.length-1 은 이 key 들에 묶였다.
+   * @type {null | {segmentId:number, level:number, keys:string[], bytes:Uint8Array[]}}
+   */
+  let unfinished = null;
+
+  function unfinishedInfo() {
+    return { segmentId: unfinished.segmentId, level: unfinished.level, firstPieceSeq: nextSeq, pieceCount: unfinished.keys.length };
+  }
+
+  /** 끝나지 않은 이벤트와 같은 이벤트인가(같은 구간·수준, 같은 순서의 같은 key·같은 bytes). */
+  function sameAsUnfinished(segmentId, level, pieces) {
+    const u = unfinished;
+    if (u.segmentId !== segmentId || u.level !== level || u.keys.length !== pieces.length) return false;
+    for (let i = 0; i < pieces.length; i++) {
+      if (pieceKeyString(pieces[i].key) !== u.keys[i]) return false;
+      const a = pieces[i].bytes, b = u.bytes[i];
+      if (a.length !== b.length) return false;
+      for (let j = 0; j < a.length; j++) if (a[j] !== b[j]) return false;
+    }
+    return true;
+  }
 
   function send(message) {
     emit(encode ? encode(message) : message);
@@ -136,6 +180,7 @@ export function createCoreAdapter(options = {}) {
 
   function onExpected(ev) {
     const segmentId = intIn(ev.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId');
+    if (unfinished) throw new UnfinishedEventError(unfinishedInfo());
     machine.expect(segmentId);
     if (!machine.snapshot(segmentId).missing) return { action: 'expect', emitted: 0, released: [] };
     send({ type: 'MISSING', segmentId });
@@ -154,6 +199,8 @@ export function createCoreAdapter(options = {}) {
       if (seen.has(s)) throw new RangeError(`같은 조각 key 가 두 번 있다: ${s}`);
       seen.add(s);
     }
+    // 끝나지 않은 이벤트가 있으면 같은 이벤트의 재시도만 받는다(F-204). 순번은 그 이벤트의 key 들에 묶여 있다.
+    if (unfinished && !sameAsUnfinished(segmentId, level, pieces)) throw new UnfinishedEventError(unfinishedInfo());
     // pieceSeq 는 u32 이다. 넘치면 되감지 않고 거부한다(받은 쪽 순번이 거꾸로 가지 않게).
     if (nextSeq + pieces.length - 1 > U32_MAX) throw new RangeError('pieceSeq 가 u32 범위를 넘는다');
 
@@ -169,12 +216,18 @@ export function createCoreAdapter(options = {}) {
     const messages = pieces.map((p, i) => ({ type: 'PIECE', pieceSeq: nextSeq + i, key: { ...p.key }, chunk: p.bytes }));
     messages.push({ type: 'LEVEL_ARRIVED', segmentId, level, pieceCount: pieces.length });
     const outgoing = encode ? messages.map((m) => encode(m)) : messages;
-    // ③ 전부 송출한다. 던지면 상태·nextSeq 를 확정하지 않은 채로 다시 던진다.
+    // ③ 전부 송출한다. 던지면 상태·nextSeq 를 확정하지 않고, 이 이벤트를 끝나지 않은 이벤트로 남긴 채 다시 던진다.
+    if (!unfinished) {
+      unfinished = {
+        segmentId, level, keys: pieces.map((p) => pieceKeyString(p.key)), bytes: pieces.map((p) => p.bytes.slice()),
+      };
+    }
     for (const m of outgoing) emit(m);
-    // ④ 송출이 끝난 뒤 상태와 순번을 확정한다.
+    // ④ 송출이 끝났다. 순번을 확정하고(이 pieceSeq 들은 이제 쓰였다) 끝나지 않은 표시를 지운 뒤 상태를 확정한다.
+    unfinished = null;
+    nextSeq += pieces.length;
     const r = machine.arrive(segmentId, level, pieces);
     if (r.action !== planned) throw new Error(`수준 기계 결정(${r.action})이 snapshot 으로 본 결정(${planned})과 다르다`);
-    nextSeq += pieces.length;
     let released = [];
     if (r.action === ACTIONS.REPLACE) {
       released = r.released.map((p) => ({ ...p.key }));
@@ -195,6 +248,10 @@ export function createCoreAdapter(options = {}) {
     /** 다음에 쓸 pieceSeq. */
     nextPieceSeq() {
       return nextSeq;
+    },
+    /** 송출 중 실패해 끝나지 않은 이벤트 요약(F-204). 없으면 null. 있으면 같은 이벤트의 재시도만 받는다. */
+    unfinishedEvent() {
+      return unfinished ? unfinishedInfo() : null;
     },
   };
 }
