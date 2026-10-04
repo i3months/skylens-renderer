@@ -64,16 +64,20 @@ test('HELLO 뒤 ACK 두 번은 store.ack 2회, 값 전달', async () => {
   assert.deepEqual(store.acks, [[7, 3], [7, 9]]);
 });
 
-test('onSession 1회, 둘째 HELLO 는 무시, emit 은 HELLO 뒤 동작', async () => {
+test('onSession 1회, emit 은 HELLO 뒤 동작, 둘째 HELLO 는 ERROR 와 close(1002) (F-270 ④)', async () => {
   const { conn, sessions, emitted, api } = setup();
   await conn.msgCb(hello());
-  await conn.msgCb(hello(7));
-  assert.equal(sessions.length, 1);
-  assert.deepEqual(sessions[0], [7, { resumed: false }]);
-  assert.equal(conn.closes.length, 0);
   api.emit({ type: 'MISSING' });
   assert.equal(emitted.length, 1);
   assert.equal(api.sessionId(), 7);
+  await conn.msgCb(hello(7));
+  assert.equal(sessions.length, 1);
+  assert.deepEqual(sessions[0], [7, { resumed: false, nextPieceSeq: undefined }]);
+  assert.deepEqual(conn.closes, [1002]);
+  assert.throws(() => api.emit({ type: 'MISSING' }), /닫/);
+  assert.equal(emitted.length, 1, '거부된 emit 은 나가지 않는다');
+  assert.equal(conn.sent.length, 1, '둘째 HELLO 거부 ERROR 한 건');
+  assert.equal(conn.sent[0][0], 9);
 });
 
 test('VIEW_UPDATE 는 onMessage 로만 넘어가고 store 를 건드리지 않는다', async () => {
