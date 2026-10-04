@@ -175,3 +175,27 @@ test('기록 규칙이 없는 type 은 TypeError, 잘못된 옵션은 TypeError'
   const bad = createRecordingEmit({ store, sessionId: () => 'x', send: () => {} });
   assert.throws(() => bad({ type: 'PIECE', pieceSeq: 1, key: key(1, 0, 0), chunk: Uint8Array.of(1) }), TypeError);
 });
+
+test('(g) 저장소가 truthy 이지만 true 가 아닌 값을 돌려주면 RecordRejectedError', () => {
+  // recordSent 가 truthy 하지만 true 가 아닌 값(1, 'ok' 등)을 반환하면 !== true 검사에 걸려 실패
+  let sends = 0;
+  const store1 = {
+    recordSent: () => 1, // truthy 하지만 true 가 아님
+    recordLevelArrived: () => { throw new Error('불리면 안 된다'); },
+  };
+  const emit1 = createRecordingEmit({ store: store1, sessionId: 5, send: () => { sends++; } });
+  assert.throws(() => emit1({ type: 'PIECE', pieceSeq: 1, key: key(1, 0, 0), chunk: Uint8Array.of(1) }),
+    (e) => e instanceof RecordRejectedError && e.method === 'recordSent');
+  assert.equal(sends, 0);
+
+  // recordLevelArrived 가 truthy 하지만 true 가 아닌 값('ok' 등)을 반환해도 마찬가지
+  sends = 0;
+  const store2 = {
+    recordSent: () => true,
+    recordLevelArrived: () => 'ok', // truthy 하지만 true 가 아님
+  };
+  const emit2 = createRecordingEmit({ store: store2, sessionId: 6, send: () => { sends++; } });
+  assert.throws(() => emit2(la(2, 0, 1, 1)),
+    (e) => e instanceof RecordRejectedError && e.method === 'recordLevelArrived');
+  assert.equal(sends, 0);
+});
