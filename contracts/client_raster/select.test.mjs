@@ -166,6 +166,20 @@ describe('selectDrawable: 타일마다 LOD 하나(F-243 ④)', () => {
     });
   });
 
+  test('tileY 만 다른 타일도 따로 고른다', () => {
+    const a0 = '7.1.5.6.0.0';
+    const a2 = '7.1.5.6.2.0';
+    const b2 = '7.1.5.7.2.0'; // tileY 만 다름: 그 타일의 유일한 LOD 라 draw
+    assert.deepEqual(selectDrawable([a0, a2, b2], [A(7, 1, [a0, a2, b2])]), { draw: [a0, b2], pending: [], discard: [a2] });
+  });
+
+  test('같은 완료 key 가 여러 LEVEL_ARRIVED 항목에 있어도 완료 chunk 수를 두 번 세지 않는다', () => {
+    const f0 = '7.1.0.0.0.0';
+    const c0 = '7.1.0.0.2.0';
+    // f0 이 두 항목에 겹쳐 있다. 두 번 세면 lod 0 이 '덜 상주'로 보여 c0 를 그리게 된다
+    assert.deepEqual(selectDrawable([f0, c0], [A(7, 1, [f0, c0]), A(7, 1, [f0])]), { draw: [f0], pending: [], discard: [c0] });
+  });
+
   test('중복 key 가 있어도 LOD 상주 수를 두 번 세지 않는다', () => {
     const f0 = '7.1.0.0.0.0';
     const f1 = '7.1.0.0.0.1';

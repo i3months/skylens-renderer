@@ -418,6 +418,9 @@ export function parsePieceKey(key) {
  * 비용: key 당 Map get 1회·set 1회가 더 든다. 중복 key 제거(EMITTED 표시)와 해석 결과 재사용을 한 Map 이 겸하므로 key 마다 get(조회)과
  *   set(처리 표시)이 필요하고, 중복 없는 10만 key 에서 해석 한 번만 하는 단순 구현(약 45~47 ms) 대비 약 1.6배(약 71~80 ms)다.
  *   중복 제거를 포기하지 않는 한 key 당 get·set 을 더 줄일 수 없어 그대로 두었다(F-237 ⑤). 도착 이벤트마다 한 번 부르는 주기에서는 감수한다.
+ * 비용(F-243 ④ LOD 고르기): 완료 key 마다 타일 문자열(key 앞 네 마디 slice) 하나와 타일 Map get 1회가 더 든다. 같은 기계에서
+ *   10만 key·한 수준을 번갈아 잰 중앙값(각 10회)으로 고치기 전 약 160~200 ms 대비 약 245~315 ms(약 1.3~1.8배)였다(이 측정
+ *   기계는 위 45~80 ms 측정 때보다 약 3배 느리다). 타일마다 묶지 않으면 LOD 하나를 고를 수 없어 감수한다. key 당 객체는 만들지 않는다.
  * completedKeys(./arrival.mjs) 주의: completedKeys 는 호출마다 pieces 전체로 색인을 다시 만든다(n=100k 한 번에 약 105 ms).
  *   도착 이벤트마다 부르면 O(n·k) 이므로 이벤트마다 호출하지 않는다. 이벤트를 따라가는 증분 경로는 collectArrivals 다(F-237 ④).
  * @param {string[]} keys ASSET_FORMAT §11 정규 문자열
@@ -429,80 +432,87 @@ export function parsePieceKey(key) {
 export function selectDrawable(keys, arrived) {
   if (!Array.isArray(keys)) throw new ClientRasterError('piece', 'keys 는 배열이어야 함');
   if (!Array.isArray(arrived)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
-  const top = new Map(); // segmentId -> {level, done: Set<string>}
+  const top = new Map(); // segmentId -> 도착한 가장 높은 수준 M
   const EMITTED = -1;
-  const parsed = new Map(); // key -> segmentId * 4 + level(처리한 key 는 EMITTED): 해석 결과 재사용과 중복 제거를 겸한다
-  const lodInfo = new Map(); // 완료 집합 key -> {tile, lod}: LOD 고르기(헤더 ④)용. 완료 집합 밖 key 는 draw 후보가 아니라 필요 없다
+  // key -> 해석 결과. 해석 결과 재사용과 중복 제거(처리한 key 는 EMITTED)를 겸한다.
+  // 완료 집합 key 는 타일 번호 * 8 + lod(0 이상, PIECE_KEY_PATTERN 이 lod 0..7 만 받는다)로 담는다. 타일은 (segmentId, level,
+  // tileX, tileY) 이고 정규 key 의 앞 네 마디 문자열로 0 부터 차례로 번호를 매긴다(tileSegLevel 에 segmentId * 4 + level).
+  // key 마다 객체를 만들지 않고 수 하나로 담아 타일·LOD 별 수를 배열로 센다(F-243 ④, 비용은 아래 selectDrawable 주석).
+  const parsed = new Map();
+  const tileIndex = new Map(); // 'segmentId.level.tileX.tileY' -> 타일 번호
+  const tileSegLevel = []; // 타일 번호 -> segmentId * 4 + level
+  const need = []; // [타일 * 8 + lod] -> 완료 집합의 chunk 수(중복 key 는 한 번)
   for (const a of arrived) {
     if (!a || !Number.isInteger(a.segmentId) || Object.is(a.segmentId, -0) || a.segmentId < 0 || a.segmentId >= SEGMENT_ID_LIMIT || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
       throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
     }
     if (!Array.isArray(a.keys) || a.keys.length === 0) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 는 비지 않은 배열이어야 함: ${JSON.stringify(a)}`);
-    const done = [];
     for (const k of a.keys) {
       const p = parsePieceKey(k);
       if (p.segmentId !== a.segmentId || p.level !== a.level) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 의 key 가 항목의 (segmentId, level) 과 다름: ${k}`);
-      parsed.set(k, a.segmentId * 4 + a.level);
-      lodInfo.set(k, { tile: `${p.segmentId}.${p.tileX}.${p.tileY}`, lod: p.lod });
-      done.push(k);
+      if (parsed.has(k)) continue; // 같은 완료 key 가 여러 항목에 있다(완료 집합은 합집합)
+      const dot = k.lastIndexOf('.', k.lastIndexOf('.') - 1); // 정규 문자열이라 lod 앞의 '.'
+      const tileId = k.slice(0, dot);
+      let t = tileIndex.get(tileId);
+      if (t === undefined) {
+        t = tileIndex.size;
+        tileIndex.set(tileId, t);
+        tileSegLevel.push(a.segmentId * 4 + a.level);
+        for (let i = 0; i < 8; i++) need.push(0);
+      }
+      const code = t * 8 + p.lod;
+      need[code]++;
+      parsed.set(k, code);
     }
     const cur = top.get(a.segmentId);
-    if (cur === undefined || a.level > cur.level) top.set(a.segmentId, { level: a.level, done: new Set(done) });
-    else if (a.level === cur.level) for (const k of done) cur.done.add(k);
+    if (cur === undefined || a.level > cur) top.set(a.segmentId, a.level);
   }
-  // 타일·LOD 마다 완료 집합의 chunk 수(최고 수준 M 의 것만). 상주 수와 같으면 그 LOD 는 '완전'하다
-  const need = new Map(); // tile -> Map<lod, count>
-  for (const m of top.values()) {
-    for (const k of m.done) {
-      const { tile, lod } = lodInfo.get(k);
-      let byLod = need.get(tile);
-      if (byLod === undefined) need.set(tile, (byLod = new Map()));
-      byLod.set(lod, (byLod.get(lod) ?? 0) + 1);
-    }
-  }
-  const order = []; // 입력 순서의 [key, 분류]. 분류: 0 = draw 후보(LOD 고르기 전), 1 = pending, 2 = discard
-  const have = new Map(); // tile -> Map<lod, 상주 완료 chunk 수>
+  // 입력 순서의 [key, 분류]. 분류: PENDING·DISCARD, 또는 0 이상이면 draw 후보(LOD 고르기 전)의 타일 * 8 + lod
+  const PENDING = -2;
+  const DISCARD = -3;
+  const order = [];
+  const have = new Uint32Array(need.length); // [타일 * 8 + lod] -> 상주 완료 chunk 수. 상주 수 = need 이면 그 LOD 는 '완전'하다
   for (const key of keys) {
-    let packed = parsed.get(key);
-    if (packed === EMITTED) continue; // 중복 key: 첫 등장만 남긴다
-    if (packed === undefined) {
-      const p = parsePieceKey(key);
-      packed = p.segmentId * 4 + p.level;
-    }
+    const code = parsed.get(key);
+    if (code === EMITTED) continue; // 중복 key: 첫 등장만 남긴다
     parsed.set(key, EMITTED);
-    const segmentId = Math.floor(packed / 4);
-    const level = packed % 4;
-    const m = top.get(segmentId);
-    if (m === undefined || level > m.level) order.push(key, 1);
-    else if (level === m.level && m.done.has(key)) {
-      const { tile, lod } = lodInfo.get(key);
-      let byLod = have.get(tile);
-      if (byLod === undefined) have.set(tile, (byLod = new Map()));
-      byLod.set(lod, (byLod.get(lod) ?? 0) + 1);
-      order.push(key, 0);
-    } else order.push(key, 2);
+    if (code === undefined) {
+      // 어느 완료 집합에도 없는 key: 도착 수준이 없거나 더 높으면 pending, 아니면(같거나 낮은 수준) discard
+      const p = parsePieceKey(key);
+      const m = top.get(p.segmentId);
+      order.push(key, m === undefined || p.level > m ? PENDING : DISCARD);
+      continue;
+    }
+    // 완료 집합 key: 자기 수준이 그 구간의 가장 높은 수준 M 이면 draw 후보, 낮으면(바뀌었다) discard
+    const sl = tileSegLevel[(code - (code % 8)) / 8];
+    if (sl % 4 === top.get((sl - (sl % 4)) / 4)) {
+      have[code]++;
+      order.push(key, code);
+    } else order.push(key, DISCARD);
   }
   // 타일마다 그릴 LOD 하나: 완전한 LOD 중 가장 세밀한 것, 없으면 상주 chunk 가 있는 LOD 중 가장 세밀한 것(헤더 ④)
-  const chosen = new Map(); // tile -> lod
-  for (const [tile, byLod] of have) {
-    const needLod = need.get(tile);
-    let best = Infinity;
-    let bestComplete = Infinity;
-    for (const [lod, n] of byLod) {
-      if (lod < best) best = lod;
-      if (n === needLod.get(lod) && lod < bestComplete) bestComplete = lod;
+  const tiles = tileSegLevel.length;
+  const chosen = new Int8Array(tiles).fill(-1); // 타일 -> 고른 lod(-1 = 상주 후보 없음)
+  for (let t = 0; t < tiles; t++) {
+    let best = -1;
+    let bestComplete = -1;
+    for (let lod = 7; lod >= 0; lod--) { // 성긴 쪽부터 훑어 마지막에 남는 것이 가장 세밀하다
+      const n = have[t * 8 + lod];
+      if (n === 0) continue;
+      best = lod;
+      if (n === need[t * 8 + lod]) bestComplete = lod;
     }
-    chosen.set(tile, bestComplete !== Infinity ? bestComplete : best);
+    chosen[t] = bestComplete !== -1 ? bestComplete : best;
   }
   const out = { draw: [], pending: [], discard: [] };
   for (let i = 0; i < order.length; i += 2) {
     const key = order[i];
     const c = order[i + 1];
-    if (c === 1) out.pending.push(key);
-    else if (c === 2) out.discard.push(key);
+    if (c === PENDING) out.pending.push(key);
+    else if (c === DISCARD) out.discard.push(key);
     else {
-      const { tile, lod } = lodInfo.get(key);
-      const pick = chosen.get(tile);
+      const lod = c % 8;
+      const pick = chosen[(c - lod) / 8];
       if (lod === pick) out.draw.push(key);
       else if (lod > pick) out.discard.push(key); // 더 성긴 LOD: 바꿔 끼워졌다
       else out.pending.push(key); // 더 세밀하지만 덜 상주한 LOD: 나머지 chunk 를 기다린다
