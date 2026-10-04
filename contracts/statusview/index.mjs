@@ -83,8 +83,8 @@ export const STATUSVIEW_API = Object.freeze({
   },
   // T13.8 client/status/e2e
   createStatusView: {
-    fn: 'createStatusView(options: {modules?: object, countOf?: (pieceBytes: Uint8Array) => number}) -> StatusView',
-    rule: 'StatusView = {handle(message): void, setCamera(pose, size): {view, viewUpdate}, setMarkers(markers): void, frame(): {view, drawKeys, releasedKeys, markers: ProjectedMarker[], notices, reveal, fallback}, requests(): PieceRequestMessage[]}. message 는 client/proto decodeMessage 의 s2c 출력. modules 로 위 일곱 모듈을 주입할 수 있고 기본은 ../<모듈>/index.mjs.',
+    fn: 'createStatusView(options: {modules: object, countOf?: (pieceBytes: Uint8Array) => number}) -> StatusView',
+    rule: 'StatusView = {handle(message): void, setCamera(pose, size): {view, viewUpdate}, setMarkers(markers): void, frame(): {view, drawKeys, releasedKeys, markers: ProjectedMarker[], notices, reveal, fallback}, requests(): PieceRequestMessage[]}. message 는 client/proto decodeMessage 의 s2c 출력. modules 는 필수이고(없으면 TypeError) 위 일곱 모듈을 주입한다. 기본 조립은 await loadDefaultModules() 가 ../<모듈>/index.mjs 를 동적으로 읽어 돌려준다. WELCOME{resumed:false}(새 세션)에서는 수준·요청 상태를 새로 만들고 이전 조각 key 를 releasedKeys 로 내보낸다(새 세션 도착분이 (구간, 수준) 키로 교체하고 도착시키지 않은 칸은 비운다, server/ws/session/contract.mjs).',
   },
 });
 
@@ -114,6 +114,6 @@ export function enuToScene(p) {
   return [p[0], p[2], -p[1] === 0 ? 0 : -p[1]];
 }
 
-/** 초기 표시 규칙 값(T13.9·T13.10 측정 문턱의 근거는 SPEC §4, 여기서는 이름만 둔다). */
-export const STATUS_BANDWIDTH_LIMITS = Object.freeze({ initialBytes: 15 * 1024 * 1024, perSegmentBytes: 3 * 1024 * 1024 });
+/** SPEC S6 의 MB 는 10^6 B 이다(bench/proto 의 고정 값과 같다). */
+export const STATUS_BANDWIDTH_LIMITS = Object.freeze({ initialBytes: 15_000_000, perSegmentBytes: 3_000_000 });
 export const STATUS_QUALITY_MIN_SSIM = 0.95;

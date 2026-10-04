@@ -33,7 +33,7 @@ test('뷰포트 검사', () => {
 });
 
 test('측정 문턱 상수는 SPEC 수치다', () => {
-  assert.equal(STATUS_BANDWIDTH_LIMITS.initialBytes, 15 * 1024 * 1024);
-  assert.equal(STATUS_BANDWIDTH_LIMITS.perSegmentBytes, 3 * 1024 * 1024);
+  assert.equal(STATUS_BANDWIDTH_LIMITS.initialBytes, 15_000_000);
+  assert.equal(STATUS_BANDWIDTH_LIMITS.perSegmentBytes, 3_000_000);
   assert.equal(STATUS_QUALITY_MIN_SSIM, 0.95);
 });
