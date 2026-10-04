@@ -1,0 +1,220 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { completedKeys, collectArrivals, pieceKeyToString } from './arrival.mjs';
+import { selectDrawable, ClientRasterError } from './index.mjs';
+import { encodeChunkKey } from '../../server/asset/ids/index.mjs';
+import { createCoreAdapter } from '../../server/adapter/core/index.mjs';
+import { createLevelMachine } from '../../server/levels/state/index.mjs';
+import { encodeMessage } from '../../server/proto/codec/index.mjs';
+import { decodeMessage } from '../../client/proto/index.mjs';
+
+// 수준 도착 완료 key 집합(F-230) 검사.
+// server/adapter/core 를 실제로 돌려 낸 메시지를 서버 코덱으로 부호화하고 클라이언트 코덱으로 복호한 뒤
+// collectArrivals → selectDrawable 에 넣는다. 기준값은 손으로 적은 key 문자열이다.
+
+const isPiece = (e) => e instanceof ClientRasterError && e.code === 'piece';
+
+/** 구간 seg 수준 level 의 조각 이벤트. 조각 c 의 key 는 (lod 0, chunkIndex c, tile (1, −2)). */
+function event(seg, level, chunks) {
+  return {
+    kind: 'level_arrived', segmentId: seg, level,
+    pieces: chunks.map((c) => ({ key: { segmentId: seg, level, lod: 0, chunkIndex: c, tileX: 1, tileY: -2 }, bytes: Uint8Array.of(seg, level, c, 0x5a) })),
+  };
+}
+
+/**
+ * 어댑터 + 선. emit 은 부호화된 바이트를 받는다. fail = {call, where}: call 번째 emit 에서 'before'(선에 쓰기 전) 또는
+ * 'after'(선에 쓴 뒤) 던진다. 선(wire)은 실제로 쓰인 프레임만 담는다.
+ */
+function harness({ machine = createLevelMachine(), firstPieceSeq } = {}) {
+  const wire = [];
+  const released = [];
+  let fail = null;
+  let calls = 0;
+  const adapter = createCoreAdapter({
+    levelMachine: machine, encode: encodeMessage, firstPieceSeq,
+    emit: (bytes) => {
+      calls += 1;
+      if (fail && fail.where === 'before' && calls === fail.call) throw new Error('송출 실패');
+      wire.push(bytes);
+      if (fail && fail.where === 'after' && calls === fail.call) throw new Error('송출 실패');
+    },
+    onRelease: (keys, info) => released.push({ keys, info }),
+  });
+  return {
+    adapter, machine, wire, released,
+    run(ev, f = null) { fail = f; calls = 0; try { return adapter.handle(ev); } finally { fail = null; } },
+    decoded: () => wire.map((b) => decodeMessage(b)),
+  };
+}
+
+test('pieceKeyToString 은 server/asset/ids encodeChunkKey 와 같은 문자열', () => {
+  const cases = [
+    [{ segmentId: 7, level: 2, lod: 0, chunkIndex: 0, tileX: 1, tileY: -2 }, '7.2.1.-2.0.0'],
+    [{ segmentId: 0, level: 0, lod: 0, chunkIndex: 0, tileX: -0, tileY: 0 }, '0.0.0.0.0.0'],
+    [{ segmentId: 1073741823, level: 3, lod: 7, chunkIndex: 65535, tileX: 2147483647, tileY: -2147483648 }, '1073741823.3.2147483647.-2147483648.7.65535'],
+  ];
+  for (const [k, want] of cases) {
+    assert.equal(pieceKeyToString(k), want);
+    assert.equal(pieceKeyToString(k), encodeChunkKey(k));
+    // 선을 거친 PieceKey 도 같다
+    const m = decodeMessage(encodeMessage({ type: 'PIECE', pieceSeq: 1, key: k, chunk: Uint8Array.of(1) }));
+    assert.equal(pieceKeyToString(m.key), want);
+  }
+  for (const bad of [
+    null, { segmentId: 1073741824, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0 },
+    { segmentId: 7, level: 4, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0 },
+    { segmentId: 7, level: 0, lod: 8, chunkIndex: 0, tileX: 0, tileY: 0 },
+    { segmentId: 7, level: 0, lod: 0, chunkIndex: 65536, tileX: 0, tileY: 0 },
+    { segmentId: 7, level: 0, lod: 0, chunkIndex: 0, tileX: 2147483648, tileY: 0 },
+    { segmentId: 7, level: 0, lod: 0, chunkIndex: 0.5, tileX: 0, tileY: 0 },
+  ]) assert.throws(() => pieceKeyToString(bad), isPiece, JSON.stringify(bad));
+});
+
+test('정상 1수준 도착: 어댑터 → 코덱 → collectArrivals → selectDrawable, 모든 key 를 그린다', () => {
+  const h = harness();
+  assert.equal(h.run(event(7, 2, [0, 1, 2])).action, 'first');
+  const msgs = h.decoded();
+  assert.deepEqual(msgs.map((m) => m.type), ['PIECE', 'PIECE', 'PIECE', 'LEVEL_ARRIVED']);
+  const { keys, arrived } = collectArrivals(msgs);
+  assert.deepEqual(keys, ['7.2.1.-2.0.0', '7.2.1.-2.0.1', '7.2.1.-2.0.2']);
+  assert.deepEqual(arrived, [{ segmentId: 7, level: 2, keys: ['7.2.1.-2.0.0', '7.2.1.-2.0.1', '7.2.1.-2.0.2'] }]);
+  // completedKeys 직접 호출도 같다
+  assert.deepEqual(completedKeys(msgs.slice(0, 3), msgs[3]), ['7.2.1.-2.0.0', '7.2.1.-2.0.1', '7.2.1.-2.0.2']);
+  assert.deepEqual(selectDrawable(keys, arrived), { draw: ['7.2.1.-2.0.0', '7.2.1.-2.0.1', '7.2.1.-2.0.2'], pending: [], discard: [] });
+  // LEVEL_ARRIVED 전까지는 그리지 않는다
+  const early = collectArrivals(msgs.slice(0, 3));
+  assert.deepEqual(selectDrawable(early.keys, early.arrived), { draw: [], pending: ['7.2.1.-2.0.0', '7.2.1.-2.0.1', '7.2.1.-2.0.2'], discard: [] });
+  // 이어 들어온 높은 수준: 낮은 수준은 버린다
+  assert.equal(h.run(event(7, 3, [0, 1])).action, 'replace');
+  const all = collectArrivals(h.decoded());
+  assert.deepEqual(all.arrived[1], { segmentId: 7, level: 3, keys: ['7.3.1.-2.0.0', '7.3.1.-2.0.1'] });
+  assert.deepEqual(selectDrawable(all.keys, all.arrived), {
+    draw: ['7.3.1.-2.0.0', '7.3.1.-2.0.1'], pending: [], discard: ['7.2.1.-2.0.0', '7.2.1.-2.0.1', '7.2.1.-2.0.2'],
+  });
+});
+
+test('같은 이벤트 재시도(재전송)는 같은 pieceSeq·key 라 한 조각으로 센다', () => {
+  // 1) 둘째 PIECE 를 쓰기 전에 실패 → 재시도: 선 P1, P1 P2 P3 LA
+  // 2) LEVEL_ARRIVED 를 쓴 뒤 실패 → 재시도: 선 P1 P2 P3 LA, P1 P2 P3 LA(완료 표시 두 번, 같은 창)
+  for (const [f, types, nArrived] of [
+    [{ call: 2, where: 'before' }, ['PIECE', 'PIECE', 'PIECE', 'PIECE', 'LEVEL_ARRIVED'], 1],
+    [{ call: 4, where: 'after' }, ['PIECE', 'PIECE', 'PIECE', 'LEVEL_ARRIVED', 'PIECE', 'PIECE', 'PIECE', 'LEVEL_ARRIVED'], 2],
+  ]) {
+    const h = harness();
+    assert.throws(() => h.run(event(7, 1, [0, 1, 2]), f), /송출 실패/);
+    assert.equal(h.run(event(7, 1, [0, 1, 2])).action, 'first');
+    const msgs = h.decoded();
+    assert.deepEqual(msgs.map((m) => m.type), types, f.where);
+    assert.deepEqual(msgs.filter((m) => m.type === 'PIECE').map((m) => m.pieceSeq), types[3] === 'LEVEL_ARRIVED' ? [1, 2, 3, 1, 2, 3] : [1, 1, 2, 3]);
+    const { keys, arrived } = collectArrivals(msgs);
+    assert.deepEqual(keys, ['7.1.1.-2.0.0', '7.1.1.-2.0.1', '7.1.1.-2.0.2']);
+    assert.equal(arrived.length, nArrived);
+    for (const a of arrived) assert.deepEqual(a, { segmentId: 7, level: 1, keys: ['7.1.1.-2.0.0', '7.1.1.-2.0.1', '7.1.1.-2.0.2'] });
+    assert.deepEqual(selectDrawable(keys, arrived), { draw: ['7.1.1.-2.0.0', '7.1.1.-2.0.1', '7.1.1.-2.0.2'], pending: [], discard: [] });
+  }
+});
+
+test('abandoned 섞인 재시도(F-223 ①): 어댑터가 abandoned 로 알린 key 는 discard, 뒤 수준은 draw', () => {
+  const machine = createLevelMachine();
+  const h = harness({ machine });
+  // 수준 1 조각 3 개 중 둘째 PIECE 에서 실패: 선에는 P1(c0) 만
+  assert.throws(() => h.run(event(9, 1, [0, 1, 2]), { call: 2, where: 'before' }), /송출 실패/);
+  machine.arrive(9, 2, event(9, 2, [0]).pieces); // 다른 경로로 더 높은 수준 확정(공유 기계)
+  const r = h.run(event(9, 1, [0, 1, 2]));
+  assert.equal(r.action, 'skip');
+  assert.deepEqual(r.abandoned.map(pieceKeyToString), ['9.1.1.-2.0.0', '9.1.1.-2.0.1', '9.1.1.-2.0.2']);
+  assert.equal(h.released.length, 1);
+  assert.equal(h.released[0].info.abandoned, true);
+  assert.equal(h.adapter.nextPieceSeq(), 4, 'pieceSeq 1..3 은 태운다');
+  // 이 구간의 다음 수준은 이 선으로 나간다(태운 순번 뒤)
+  assert.equal(h.run(event(9, 3, [0, 1])).action, 'replace');
+  const msgs = h.decoded();
+  assert.deepEqual(msgs.map((m) => [m.type, m.pieceSeq]), [['PIECE', 1], ['PIECE', 4], ['PIECE', 5], ['LEVEL_ARRIVED', undefined]]);
+  const { keys, arrived } = collectArrivals(msgs);
+  assert.deepEqual(keys, ['9.1.1.-2.0.0', '9.3.1.-2.0.0', '9.3.1.-2.0.1']);
+  assert.deepEqual(arrived, [{ segmentId: 9, level: 3, keys: ['9.3.1.-2.0.0', '9.3.1.-2.0.1'] }]);
+  const sel = selectDrawable(keys, arrived);
+  assert.deepEqual(sel, { draw: ['9.3.1.-2.0.0', '9.3.1.-2.0.1'], pending: [], discard: ['9.1.1.-2.0.0'] });
+  // 어댑터가 abandoned 로 알린 key 중 선에 나간 것은 모두 discard 다(그리지 않는다)
+  const abandoned = h.released.flatMap((x) => x.keys.map(pieceKeyToString));
+  for (const k of keys) if (abandoned.includes(k)) assert.ok(sel.discard.includes(k), k);
+  // 뒤 수준 전: 태운 조각은 도착 수준이 없어 pending(그리지 않음)
+  const before = collectArrivals(msgs.slice(0, 1));
+  assert.deepEqual(selectDrawable(before.keys, before.arrived), { draw: [], pending: ['9.1.1.-2.0.0'], discard: [] });
+});
+
+test('abandoned 섞인 재시도(어댑터 교체, F-219 ④): 같은 수준의 창 밖 key 는 discard', () => {
+  // 옛 어댑터: 수준 1 조각 3 개 중 셋째 PIECE 에서 영구 실패 → 선에는 P1(c0), P2(c1)
+  const a = harness();
+  assert.throws(() => a.run(event(9, 1, [0, 1, 2]), { call: 3, where: 'before' }), /송출 실패/);
+  const u = a.adapter.unfinishedEvent();
+  assert.deepEqual(u, { segmentId: 9, level: 1, firstPieceSeq: 1, pieceCount: 3 });
+  // 새 어댑터(새 기계): 첫 pieceSeq = 1 + 3. 코어가 다시 낸 수준 1 은 조각 c1, c2
+  const b = harness({ firstPieceSeq: u.firstPieceSeq + u.pieceCount });
+  assert.equal(b.run(event(9, 1, [1, 2])).action, 'first');
+  const msgs = [...a.decoded(), ...b.decoded()];
+  assert.deepEqual(msgs.map((m) => [m.type, m.pieceSeq]), [['PIECE', 1], ['PIECE', 2], ['PIECE', 4], ['PIECE', 5], ['LEVEL_ARRIVED', undefined]]);
+  const { keys, arrived } = collectArrivals(msgs);
+  assert.deepEqual(keys, ['9.1.1.-2.0.0', '9.1.1.-2.0.1', '9.1.1.-2.0.2']);
+  assert.deepEqual(arrived, [{ segmentId: 9, level: 1, keys: ['9.1.1.-2.0.1', '9.1.1.-2.0.2'] }]);
+  assert.deepEqual(selectDrawable(keys, arrived), { draw: ['9.1.1.-2.0.1', '9.1.1.-2.0.2'], pending: [], discard: ['9.1.1.-2.0.0'] });
+});
+
+test('현재 어댑터 출력 기준: LEVEL_ARRIVED 를 쓴 뒤 실패하고 재시도가 skip 이면 선에는 완료 표시가 이미 있다', () => {
+  // 어댑터는 이 key 들을 abandoned 로 알리지만(F-223 주석의 'LEVEL_ARRIVED 완료 표시가 없으므로' 가정과 다름) 선에는
+  // PIECE 들과 LEVEL_ARRIVED 가 모두 나갔다. 받는 쪽 규칙은 선만 보므로 완료로 센다.
+  const machine = createLevelMachine();
+  const h = harness({ machine });
+  assert.throws(() => h.run(event(9, 1, [0, 1]), { call: 3, where: 'after' }), /송출 실패/);
+  machine.arrive(9, 3, event(9, 3, [0]).pieces);
+  const r = h.run(event(9, 1, [0, 1]));
+  assert.equal(r.action, 'skip');
+  assert.deepEqual(r.abandoned.map(pieceKeyToString), ['9.1.1.-2.0.0', '9.1.1.-2.0.1']);
+  const { keys, arrived } = collectArrivals(h.decoded());
+  assert.deepEqual(arrived, [{ segmentId: 9, level: 1, keys: ['9.1.1.-2.0.0', '9.1.1.-2.0.1'] }]);
+  assert.deepEqual(selectDrawable(keys, arrived).draw, ['9.1.1.-2.0.0', '9.1.1.-2.0.1']);
+});
+
+test('빈 keys 항목은 던진다: 변환 결과의 keys 를 비우면 selectDrawable 이 거부', () => {
+  const h = harness();
+  h.run(event(7, 0, [0]));
+  const { keys, arrived } = collectArrivals(h.decoded());
+  assert.deepEqual(selectDrawable(keys, arrived).draw, ['7.0.1.-2.0.0']);
+  assert.throws(() => selectDrawable(keys, [{ ...arrived[0], keys: [] }]), isPiece);
+  assert.throws(() => selectDrawable(keys, [{ segmentId: 7, level: 0 }]), isPiece);
+  // 복호한 LEVEL_ARRIVED 를 그대로 넘기는 것(keys 없음)도 거부한다
+  assert.throws(() => selectDrawable(keys, [h.decoded()[1]]), isPiece);
+});
+
+test('이상 입력은 ClientRasterError(piece)', () => {
+  const P = (pieceSeq, segmentId, level, chunkIndex) => ({ type: 'PIECE', pieceSeq, key: { segmentId, level, lod: 0, chunkIndex, tileX: 0, tileY: 0 }, chunk: Uint8Array.of(1) });
+  const LA = (segmentId, level, pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId, level, pieceCount });
+  // 기준(통과): P1 P2 → LA n=2
+  assert.deepEqual(completedKeys([P(1, 7, 0, 0), P(2, 7, 0, 1)], LA(7, 0, 2)), ['7.0.0.0.0.0', '7.0.0.0.0.1']);
+  // 창이 최대 pieceSeq 에서 끝난다: 앞의 같은 수준 조각은 창 밖
+  assert.deepEqual(completedKeys([P(1, 7, 0, 0), P(3, 7, 0, 1), P(4, 7, 0, 2)], LA(7, 0, 2)), ['7.0.0.0.0.1', '7.0.0.0.0.2']);
+  for (const [name, f] of [
+    ['pieceCount 가 받은 조각보다 많음', () => completedKeys([P(1, 7, 0, 0), P(2, 7, 0, 1)], LA(7, 0, 3))],
+    ['창에 빈칸(태운 순번)', () => completedKeys([P(1, 7, 0, 0), P(3, 7, 0, 1)], LA(7, 0, 2))],
+    ['다른 수준 섞임', () => completedKeys([P(1, 7, 1, 0), P(2, 7, 0, 1)], LA(7, 0, 2))],
+    ['다른 구간 섞임', () => completedKeys([P(1, 8, 0, 0), P(2, 7, 0, 1)], LA(7, 0, 2))],
+    ['창 끝이 다른 수준(뒤 이벤트 조각이 앞섬)', () => completedKeys([P(1, 7, 0, 0), P(2, 7, 1, 0)], LA(7, 0, 1))],
+    ['같은 pieceSeq 에 다른 key', () => completedKeys([P(1, 7, 0, 0), P(1, 7, 0, 1)], LA(7, 0, 1))],
+    ['창 안 같은 key 두 번', () => completedKeys([P(1, 7, 0, 0), P(2, 7, 0, 0)], LA(7, 0, 2))],
+    ['조각 없음', () => completedKeys([], LA(7, 0, 1))],
+    ['pieceCount 0', () => completedKeys([P(1, 7, 0, 0)], LA(7, 0, 0))],
+    ['segmentId 상한(2^30)', () => completedKeys([P(1, 7, 0, 0)], LA(1073741824, 0, 1))],
+    ['PIECE key segmentId 상한(2^30)', () => completedKeys([P(1, 1073741824, 0, 0)], LA(7, 0, 1))],
+    ['level 4', () => completedKeys([P(1, 7, 0, 0)], LA(7, 4, 1))],
+    ['pieceSeq 0', () => completedKeys([P(0, 7, 0, 0)], LA(7, 0, 1))],
+    ['LEVEL_ARRIVED 아님', () => completedKeys([P(1, 7, 0, 0)], { type: 'MISSING', segmentId: 7 })],
+    ['pieces 배열 아님', () => completedKeys(null, LA(7, 0, 1))],
+    ['messages type 없음', () => collectArrivals([{ pieceSeq: 1 }])],
+    ['collectArrivals 에서 모자람', () => collectArrivals([P(1, 7, 0, 0), LA(7, 0, 2)])],
+  ]) assert.throws(f, isPiece, name);
+  // collectArrivals 는 LEVEL_ARRIVED 시점까지의 PIECE 만 본다(뒤 PIECE 로 앞 창을 채우지 않는다)
+  assert.throws(() => collectArrivals([P(1, 7, 0, 0), LA(7, 0, 2), P(2, 7, 0, 1)]), isPiece);
+  // 다른 종류는 건너뛴다
+  assert.deepEqual(collectArrivals([{ type: 'MISSING', segmentId: 3 }, P(1, 7, 0, 0), LA(7, 0, 1)]).arrived, [{ segmentId: 7, level: 0, keys: ['7.0.0.0.0.0'] }]);
+});
