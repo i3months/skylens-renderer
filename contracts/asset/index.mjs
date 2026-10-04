@@ -33,6 +33,8 @@ export const LEVEL_STEPS = Object.freeze([250, 1000, 3500, 7000]);
 export const LEVEL_COUNT = 4;
 /** 구간 id 상한(배타). seg_level = segment_id·4 + level 이 u32 에 들어가야 한다. */
 export const SEGMENT_ID_LIMIT = 2 ** 30;
+/** chunkIndex 상한(배타). 헤더 칸은 u32 지만 값은 0..65535 만 허용한다. contracts/proto PieceKey 가 u16 이라 같은 값을 PIECE 로 보내야 하기 때문(F-193). */
+export const CHUNK_INDEX_LIMIT = 65536;
 /** LOD 단계 범위 0..7. 0 = 가장 세밀(도착한 점 그대로). 단계 의미(거리표)는 T07 계약이 정한다. */
 export const LOD_MAX = 7;
 /** 위치 양자화 단계 = 2^-quant_exp m. 허용 quant_exp 8..10. */
@@ -132,7 +134,7 @@ export class AssetFormatError extends Error {
  * @property {number} tileSizeM     v1 은 64 고정
  * @property {number} lod           LOD 단계 0..7
  * @property {number} quantExp      위치 양자화 단계 = 2^-quantExp m
- * @property {number} chunkIndex    같은 (구간, 수준, 타일, LOD) 안의 조각 번호(u32)
+ * @property {number} chunkIndex    같은 (구간, 수준, 타일, LOD) 안의 조각 번호(0..CHUNK_INDEX_LIMIT-1 = 0..65535. 칸은 u32 지만 contracts/proto PieceKey u16 과 같은 상한을 쓴다)
  * @property {number} bodyBytes     본문 바이트(필수 평면 + 확장 평면)
  * @property {[number, number, number]} bboxMin  양자화 원점 = 조각 점들의 최솟값(f64)
  * @property {[number, number, number]} bboxMax  조각 점들의 최댓값(f64)
@@ -245,7 +247,7 @@ export function parseHeader(bytes) {
     tileSizeM: dv.getUint16(OFFSETS.tileSizeM, true),
     lod: u8[OFFSETS.lod],
     quantExp: u8[OFFSETS.quantExp],
-    chunkIndex: dv.getUint32(OFFSETS.chunkIndex, true),
+    chunkIndex: readChunkIndex(dv),
     bodyBytes: dv.getUint32(OFFSETS.bodyBytes, true),
     bboxMin: [f64(OFFSETS.bboxMin), f64(OFFSETS.bboxMin + 8), f64(OFFSETS.bboxMin + 16)],
     bboxMax: [f64(OFFSETS.bboxMax), f64(OFFSETS.bboxMax + 8), f64(OFFSETS.bboxMax + 16)],
@@ -255,6 +257,13 @@ export function parseHeader(bytes) {
     reserved: new Uint8Array(u8.subarray(OFFSETS.reserved, OFFSETS.reserved + RESERVED_BYTES)),
     extension: new Uint8Array(u8.subarray(HEADER_SIZE, headerSize)),
   };
+}
+
+/** @param {DataView} dv */
+function readChunkIndex(dv) {
+  const v = dv.getUint32(OFFSETS.chunkIndex, true);
+  if (v >= CHUNK_INDEX_LIMIT) throw new AssetFormatError('field', `chunkIndex ${v} not in 0..${CHUNK_INDEX_LIMIT - 1}`);
+  return v;
 }
 
 /** @param {unknown} v @param {number} lo @param {number} hi @param {string} name */
@@ -299,7 +308,7 @@ export function serializeHeader(h) {
   dv.setUint16(OFFSETS.tileSizeM, int(h.tileSizeM, 0, 0xffff, 'tileSizeM'), true);
   out[OFFSETS.lod] = int(h.lod, 0, 0xff, 'lod');
   out[OFFSETS.quantExp] = int(h.quantExp, 0, 0xff, 'quantExp');
-  dv.setUint32(OFFSETS.chunkIndex, int(h.chunkIndex, 0, 0xffffffff, 'chunkIndex'), true);
+  dv.setUint32(OFFSETS.chunkIndex, int(h.chunkIndex, 0, CHUNK_INDEX_LIMIT - 1, 'chunkIndex'), true);
   dv.setUint32(OFFSETS.bodyBytes, int(h.bodyBytes, 0, 0xffffffff, 'bodyBytes'), true);
   for (let a = 0; a < 3; a++) {
     dv.setFloat64(OFFSETS.bboxMin + 8 * a, num(h.bboxMin?.[a], `bboxMin[${a}]`), true);

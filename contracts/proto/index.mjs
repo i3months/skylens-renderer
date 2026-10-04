@@ -33,7 +33,7 @@ export const MAX_REQUEST_ITEMS = 256;
 export const MAX_ERROR_TEXT = 256;
 /** 첫 조각 순번. 0 은 '받은 것 없음' 과 겹치므로 쓰지 않는다(F-184). */
 export const PIECE_SEQ_MIN = 1;
-/** PieceKey chunkIndex 상한(u16). contracts/asset 은 더 큰 chunkIndex 를 허용하지만 PIECE 로는 보낼 수 없다(F-193). */
+/** PieceKey chunkIndex 상한(배타, u16). contracts/asset CHUNK_INDEX_LIMIT 와 같은 값이다: 두 계약 모두 0..65535 만 받는다(F-193). */
 export const CHUNK_INDEX_LIMIT = 65536;
 
 export const MSG = Object.freeze({
