@@ -1,5 +1,5 @@
-// F-262: 업로드 성공·희생 해제·releasePiece 마다 makeRoom 의 상주 표(resident·base)를 그 key 의 타일 하나만 고치는지 본다.
-// 호출 횟수·판정 결과만 본다(벽시계 아님). 변이 대상: roomResidentChange 의 추가·제거 두 갈래, clear 시 roomCache 비우기.
+// F-262: 업로드 성공·희생 해제·releasePiece 마다 makeRoom 의 상주 표(resident·base)를 그 key 의 타일 하나만 고쳐도 보호 판정이 selectDrawable 과 같은지 본다.
+// 호출 횟수·판정 결과만 본다(벽시계 아님). 증분 갱신의 성능(전체 재구성 여부)은 이 시험이 아니라 bench 소관이다. 제거 갈래·clear 변이는 room_incremental_*.test.mjs 가 맡는다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRenderer } from './index.mjs';
