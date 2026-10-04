@@ -97,7 +97,7 @@ export function createStatusView(options) {
   let levels = modules.levels.createStatusLevels();
   const fallback = modules.fallback.createFallbackController();
 
-  // 받은 조각 장부(한 세션). 받은 pieceSeq 는 둘 중 하나에만 있다.
+  // 받은 조각 장부(한 세션). 설계 근거: 연구 저장소 decisions 0041(조각 요청 입력·pieceSeq 장부). 받은 pieceSeq 는 둘 중 하나에만 있다.
   //   live    : pieceSeq -> {key, count}  아직 창이 오지 않았거나 그리는 수준의 조각
   //   retired : pieceSeq -> key  해제·건너뜀으로 끝난 조각(재전송을 알아보고 다른 key 를 거부하려고 key 만 남긴다)
   let live = new Map();
@@ -105,7 +105,8 @@ export function createStatusView(options) {
   let liveSeqsByKey = new Map(); // key -> 그 key 를 가진 live pieceSeq 목록(해제 때 live 항목을 옮기려고)
   let receivedKeys = new Set(); // 이 세션에서 받은 key(요청에서 뺀다)
   let arrivedSegments = new Set(); // 이 세션에서 LEVEL_ARRIVED 가 받아진 구간(MISSING 요청 판단, O(1))
-  let pendingAsks = []; // MISSING 때 모은 요청 후보 [{segmentId, keys}] — requests() 때 다시 걸러 planner 에 넣는다
+  let pendingAsks = new Map(); // MISSING 때 모은 요청 후보 segmentId -> keys(구간당 하나, 덮어쓴다) — requests() 때 다시 걸러 planner 에 넣는다
+  let windows = new Map(); // `${segmentId}.${level}` -> {first, n}: 처음 받아들인 LEVEL_ARRIVED 창(끝난 조각이 든 창이 이와 다르면 서버 계약 위반)
   let maxSeq = 0;
   let sessionId; // 앞서 본 WELCOME 의 sessionId
   let pendingReleased = new Set(); // frame() 이 아직 내주지 않은 해제 key(같은 key 는 한 번만)
@@ -122,13 +123,21 @@ export function createStatusView(options) {
     }
     if (!m.resumed) {
       // 새 세션: 앞 세션의 그림은 모두 해제하고, 알던 구간은 도착 전 칸으로 비운다.
+      // 먼저 모두 계산하고(던지면 상태 불변), 마지막에 한 번에 반영한다. 비우는 읽기(released)는 계산의 맨 끝에 둔다.
       const states = levels.snapshots();
       const out = new Set(pendingReleased);
-      for (const k of levels.released()) out.add(k);
       for (const s of states) for (const p of s.pieces) out.add(p.key);
       const nextLevels = modules.levels.createStatusLevels();
       for (const s of states) nextLevels.expect(s.segmentId);
       const nextPlanner = modules.arrival.createArrivalPlanner();
+      const drained = levels.released();
+      try {
+        fallback.handle({ kind: 'connected' });
+      } catch (e) {
+        for (const k of drained) pendingReleased.add(k); // 비운 해제 key 는 되돌려 둔다
+        throw e;
+      }
+      for (const k of drained) out.add(k);
       levels = nextLevels;
       planner = nextPlanner;
       pendingReleased = out;
@@ -137,8 +146,11 @@ export function createStatusView(options) {
       liveSeqsByKey = new Map();
       receivedKeys = new Set();
       arrivedSegments = new Set();
-      pendingAsks = [];
+      pendingAsks = new Map();
+      windows = new Map();
       maxSeq = 0;
+      sessionId = m.sessionId;
+      return;
     }
     fallback.handle({ kind: 'connected' });
     sessionId = m.sessionId;
@@ -179,6 +191,17 @@ export function createStatusView(options) {
     if (seqs.length === 0) liveSeqsByKey.delete(p.key);
   }
 
+  /** key 하나의 live pieceSeq 를 모두 한 번에 retired 로 옮긴다(O(개수)). */
+  function retireKey(key) {
+    const seqs = liveSeqsByKey.get(key);
+    if (seqs === undefined) return;
+    liveSeqsByKey.delete(key);
+    for (const s of seqs) {
+      live.delete(s);
+      retired.set(s, key);
+    }
+  }
+
   /** 창의 조각을 검사한다. 돌려주는 값: {pieces: live 항목 목록, seqs, done: 창에 이미 끝난(retired) 조각이 있는가}. */
   function windowPieces(m) {
     const { segmentId, level } = m;
@@ -208,6 +231,11 @@ export function createStatusView(options) {
 
   function onLevelArrived(m) {
     const win = windowPieces(m);
+    const wkey = `${m.segmentId}.${m.level}`;
+    const known = windows.get(wkey);
+    if (win.done && known !== undefined && (known.first !== m.firstPieceSeq || known.n !== m.pieceCount)) {
+      throw new TypeError(`LEVEL_ARRIVED(${m.segmentId}, ${m.level}) 창 ${m.firstPieceSeq}+${m.pieceCount} 가 처음 받은 창 ${known.first}+${known.n} 과 다르다`);
+    }
     if (win.done) {
       // 창에 해제·건너뜀으로 끝난 조각이 있다 = 이 (구간, 수준) 은 이미 지나갔다(같은 세션에서 수준은 늘기만 하니 다시 받아도 skip).
       // 이어받기 재전송이다. 그림·해제는 그대로 두고 창에 남은 live 조각만 끝낸다.
@@ -215,13 +243,12 @@ export function createStatusView(options) {
       return;
     }
     const result = levels.arrive(m.segmentId, m.level, win.pieces.map((p) => ({ key: p.key, count: p.count })));
+    windows.set(wkey, { first: m.firstPieceSeq, n: m.pieceCount });
     arrivedSegments.add(m.segmentId);
     // 해제는 levels.released() 한 곳에서 받는다(skip 이면 빈 목록). 받은 즉시 비워 levels 쪽에 쌓이지 않게 한다.
     for (const key of levels.released()) {
       pendingReleased.add(key);
-      const seqs = liveSeqsByKey.get(key);
-      if (seqs === undefined) continue;
-      for (const s of seqs.slice()) retireSeq(s);
+      retireKey(key);
     }
     // 건너뛴(skip) 창은 그리지 않으니 끝낸다(재전송이 오면 위 done 경로로 조용히 무시된다).
     if (!result.accepted) for (const s of win.seqs) retireSeq(s);
@@ -248,7 +275,8 @@ export function createStatusView(options) {
     if (!Number.isInteger(segmentId) || Object.is(segmentId, -0) || segmentId < 0) throw new TypeError(`MISSING segmentId 가 틀림: ${String(segmentId)}`);
     const ask = missingRequestKeys(segmentId); // 검사 위반은 여기서 던지고 상태는 그대로
     levels.expect(segmentId);
-    if (ask.length > 0) pendingAsks.push({ segmentId, keys: ask });
+    if (ask.length > 0) pendingAsks.set(segmentId, ask);
+    else pendingAsks.delete(segmentId);
   }
 
   function onError(m) {
@@ -311,14 +339,16 @@ export function createStatusView(options) {
 
   function requests() {
     // MISSING 뒤에 도착한 조각·구간은 여기서 뺀다(MISSING → 조각 도착 → requests() 순서에서도 받은 key 를 요청하지 않는다).
-    const asks = [];
-    for (const a of pendingAsks) {
-      if (arrivedSegments.has(a.segmentId)) continue;
-      const keys = a.keys.filter((k) => !receivedKeys.has(k.key)).map((k) => k.pieceKey);
-      if (keys.length > 0) asks.push([a.segmentId, keys]);
+    // planner 가 던지면 아직 넣지 못한 후보는 남는다(넣은 구간만 뺀다).
+    for (const [segmentId, all] of pendingAsks) {
+      if (arrivedSegments.has(segmentId)) {
+        pendingAsks.delete(segmentId);
+        continue;
+      }
+      const keys = all.filter((k) => !receivedKeys.has(k.key)).map((k) => k.pieceKey);
+      if (keys.length > 0) planner.onSegmentArrived(segmentId, keys);
+      pendingAsks.delete(segmentId);
     }
-    pendingAsks = [];
-    for (const [segmentId, keys] of asks) planner.onSegmentArrived(segmentId, keys);
     return planner.drain();
   }
 
