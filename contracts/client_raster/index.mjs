@@ -155,7 +155,7 @@
  * @property {() => void} dispose  리소스 정리
  * @property {(callback?: () => void) => (() => void)} onContextLost  WebGL 컨텍스트 손실 핸들러. 구독 해제 함수 반환(부르면 그 callback 을 더 부르지 않는다)
  * @property {(callback?: (keys: string[], error?: Error) => void) => (() => void)} onContextRestored  WebGL 컨텍스트 복구 핸들러. 콜백 인자: 다시 올려야 할 key 배열(소실 당시 상주·업로드 중이던 것). 둘째 인자 error 는 구현 확장(시험용, 계약 밖). 구독 해제 함수 반환
- * @property {(arrived: {segmentId: number, level: number, keys: string[]}[]) => {draw: string[], pending: string[], discard: string[]}} setArrived  LEVEL_ARRIVED 완료 집합을 넘겨 그리는 조각을 정한다. 두 번째 인자 {deferResult: true} 면 반환 없이(undefined) selectDrawable 을 다음 draw 로 미뤄 프레임당 1회로 합친다(F-248 ④: 이벤트 폭주 때 이벤트 수 × 전체를 피한다). 반환값을 쓰면 인자 없이 부르며 그때는 지금처럼 즉시 계산한다. 지연 경로도 항목·key 해석(key 형식, segmentId·level 일치, level 0..3)을 호출 시점에 검사해 'piece' 로 던지며, 던지면 직전 상태를 바꾸지 않는다
+ * @property {(arrived: {segmentId: number, level: number, keys: string[]}[], opts?: {deferResult: true}) => {draw: string[], pending: string[], discard: string[]} | undefined} setArrived  LEVEL_ARRIVED 완료 집합을 넘겨 그리는 조각을 정한다. 두 번째 인자 {deferResult: true} 면 반환 없이(undefined) selectDrawable 을 다음 draw 로 미뤄 프레임당 1회로 합친다(F-248 ④: 이벤트 폭주 때 이벤트 수 × 전체를 피한다). 반환값을 쓰면 인자 없이 부르며 그때는 지금처럼 즉시 계산한다. 지연 경로도 항목·key 해석(key 형식, segmentId·level 일치, level 0..3)을 호출 시점에 검사해 'piece' 로 던지며, 던지면 직전 상태를 바꾸지 않는다
  * @property {() => string[]} residentKeys  현재 상주 key 배열
  * @property {() => boolean} isContextLost  WebGL 컨텍스트 손실 상태
  *
