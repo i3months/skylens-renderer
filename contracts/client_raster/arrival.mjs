@@ -1,6 +1,6 @@
 // 수준 도착의 완료 key 집합(F-230). 계약: ./index.mjs ④, contracts/proto(PIECE·LEVEL_ARRIVED·재전송 규약)
 //
-// 선의 LEVEL_ARRIVED 는 {segmentId, level, pieceCount} 뿐이고 key 가 없다. selectDrawable 의 arrived 항목
+// 선의 LEVEL_ARRIVED 는 {segmentId, level, pieceCount, firstPieceSeq} 이고 key 는 없다. selectDrawable 의 arrived 항목
 // {segmentId, level, keys} 는 받은 PIECE 열과 LEVEL_ARRIVED 로 여기서 만든다. 순수 함수이고 상태를 두지 않는다.
 //
 // 규칙(받은 순서대로 본 PIECE 들과 그 뒤에 온 LEVEL_ARRIVED 하나, 연결이 바뀌어도 한 세션의 수신 이력 전체):
