@@ -68,8 +68,8 @@ test('s2c 종류 부호화 바이트 고정', () => {
 
 test('서버 복호는 s2c 종류를 direction 으로 거부', () => {
   for (const m of [
-    { type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 0 },
-    { type: 'PIECE', pieceSeq: 0, key: KEY, chunk: Uint8Array.of(1) },
+    { type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 1 },
+    { type: 'PIECE', pieceSeq: 1, key: KEY, chunk: Uint8Array.of(1) },
     { type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 0 },
     { type: 'MISSING', segmentId: 0 },
     { type: 'ERROR', code: 1, text: '' },
@@ -104,9 +104,9 @@ test('오류 limit 와 경계', () => {
   // 상한과 같으면 limit 아님(프레임 길이 불일치로 length)
   assert.equal(code(() => decodeMessage(h(MAX_PAYLOAD_BYTES))), 'length');
   // 부호화: 상한 정확히는 가능, 1 초과는 limit
-  const ok = encodeMessage({ type: 'PIECE', pieceSeq: 0, key: KEY, chunk: new Uint8Array(MAX_PAYLOAD_BYTES - 20) });
+  const ok = encodeMessage({ type: 'PIECE', pieceSeq: 1, key: KEY, chunk: new Uint8Array(MAX_PAYLOAD_BYTES - 20) });
   assert.equal(ok.length, 8 + MAX_PAYLOAD_BYTES);
-  assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 0, key: KEY, chunk: new Uint8Array(MAX_PAYLOAD_BYTES - 19) })), 'limit');
+  assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 1, key: KEY, chunk: new Uint8Array(MAX_PAYLOAD_BYTES - 19) })), 'limit');
 });
 test('오류 length', () => {
   assert.equal(code(() => decodeMessage(Uint8Array.from([...ack(1), 0]))), 'length'); // 프레임이 더 김
@@ -172,8 +172,8 @@ test('부호화 field 오류', () => {
   assert.equal(code(() => encodeMessage({ type: 'ACK', upToPieceSeq: 1.5 })), 'field');
   assert.equal(code(() => encodeMessage({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 4, pieceCount: 0 })), 'field');
   assert.equal(code(() => encodeMessage({ type: 'MISSING', segmentId: 2 ** 30 })), 'field');
-  assert.equal(code(() => encodeMessage({ type: 'WELCOME', sessionId: 0, resumed: 1, nextPieceSeq: 0 })), 'field');
-  assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 0, key: KEY, chunk: new Uint8Array(0) })), 'field');
+  assert.equal(code(() => encodeMessage({ type: 'WELCOME', sessionId: 0, resumed: 1, nextPieceSeq: 1 })), 'field');
+  assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 1, key: KEY, chunk: new Uint8Array(0) })), 'field');
   assert.equal(code(() => encodeMessage({ type: 'ERROR', code: 1, text: 'a'.repeat(257) })), 'field');
   assert.equal(encodeMessage({ type: 'ERROR', code: 1, text: 'a'.repeat(256) }).length, 8 + 4 + 256);
   assert.equal(code(() => encodeMessage({ type: 'ERROR', code: 99, text: '' })), 'field');
@@ -200,4 +200,18 @@ test('서버 복호 바이트배열 아님은 short', () => {
   assert.equal(code(() => decodeMessage('string')), 'short');
   assert.equal(code(() => decodeMessage(123)), 'short');
   assert.equal(code(() => decodeMessage(Buffer.from([1, 2, 3]))), 'short');
+});
+
+test('pieceSeq·nextPieceSeq 0 은 field, 1 은 왕복(부호화)', () => {
+  assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 0, key: KEY, chunk: Uint8Array.of(1) })), 'field');
+  assert.equal(code(() => encodeMessage({ type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 0 })), 'field');
+  assert.deepEqual(hex(encodeMessage({ type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 1 })).slice(13), [1, 0, 0, 0]);
+  assert.deepEqual(hex(encodeMessage({ type: 'PIECE', pieceSeq: 1, key: KEY, chunk: Uint8Array.of(1) })).slice(8, 12), [1, 0, 0, 0]);
+  assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 0xffffffff, key: KEY, chunk: Uint8Array.of(1) })), null);
+  assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 2 ** 32, key: KEY, chunk: Uint8Array.of(1) })), 'field');
+});
+test('서버 복호: pieceSeq 0 프레임은 s2c 라 direction(1 도 동일)', () => {
+  const w = (seq) => { const e = encodeMessage({ type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 1 }); new DataView(e.buffer).setUint32(13, seq, true); return e; };
+  assert.equal(code(() => decodeMessage(w(0))), 'direction');
+  assert.equal(code(() => decodeMessage(w(1))), 'direction');
 });

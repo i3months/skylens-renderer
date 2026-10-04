@@ -49,8 +49,8 @@ function gen(r) {
       return { type: 'PIECE_REQUEST', reqId: u32(), items };
     },
     ACK: () => ({ type: 'ACK', upToPieceSeq: u32() }),
-    WELCOME: () => ({ type: 'WELCOME', sessionId: u32(), resumed: r() < 0.5, nextPieceSeq: u32() }),
-    PIECE: () => ({ type: 'PIECE', pieceSeq: u32(), key: key(), chunk: Uint8Array.from({ length: int(1, 200) }, () => int(0, 255)) }),
+    WELCOME: () => ({ type: 'WELCOME', sessionId: u32(), resumed: r() < 0.5, nextPieceSeq: Math.max(1, u32()) }),
+    PIECE: () => ({ type: 'PIECE', pieceSeq: Math.max(1, u32()), key: key(), chunk: Uint8Array.from({ length: int(1, 200) }, () => int(0, 255)) }),
     LEVEL_ARRIVED: () => ({ type: 'LEVEL_ARRIVED', segmentId: int(0, 2 ** 30 - 1), level: int(0, 3), pieceCount: u32() }),
     MISSING: () => ({ type: 'MISSING', segmentId: int(0, 2 ** 30 - 1) }),
     ERROR: () => ({ type: 'ERROR', code: int(1, 5), text: ['', 'a', '초과', 'x'.repeat(int(0, 80)), '😀 ok'][int(0, 4)] }),

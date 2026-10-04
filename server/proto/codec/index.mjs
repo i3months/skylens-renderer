@@ -21,6 +21,11 @@ function uint(v, max, name) {
   if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > max) fail('field', `${name} 범위 밖: ${v}`);
   return v;
 }
+/** pieceSeq·nextPieceSeq 는 1 부터(계약). 0 은 'field'. */
+function seq1(v, name) {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > U32_MAX) fail('field', `${name} 범위 밖(1..${U32_MAX}): ${v}`);
+  return v;
+}
 function int32(v, name) {
   if (typeof v !== 'number' || !Number.isInteger(v) || v < -0x80000000 || v > 0x7fffffff) fail('field', `${name} 범위 밖: ${v}`);
   return v;
@@ -123,14 +128,14 @@ export function encodeMessage(m) {
       return out;
     }
     case 'WELCOME': {
-      uint(m.sessionId, U32_MAX, 'sessionId'); uint(m.nextPieceSeq, U32_MAX, 'nextPieceSeq');
+      uint(m.sessionId, U32_MAX, 'sessionId'); seq1(m.nextPieceSeq, 'nextPieceSeq');
       if (typeof m.resumed !== 'boolean') fail('field', 'resumed 는 boolean');
       const { out, dv, o } = frame(type, 9);
       dv.setUint32(o, m.sessionId, true); dv.setUint8(o + 4, m.resumed ? 1 : 0); dv.setUint32(o + 5, m.nextPieceSeq, true);
       return out;
     }
     case 'PIECE': {
-      uint(m.pieceSeq, U32_MAX, 'pieceSeq'); checkKey(m.key);
+      seq1(m.pieceSeq, 'pieceSeq'); checkKey(m.key);
       if (!(m.chunk instanceof Uint8Array)) fail('field', 'chunk 는 Uint8Array');
       if (m.chunk.length < 1) fail('field', 'chunk 는 1 B 이상');
       const { out, dv, o } = frame(type, 4 + PIECE_KEY_BYTES + m.chunk.length);

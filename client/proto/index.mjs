@@ -137,14 +137,14 @@ export function encodeMessage(message) {
     case MSG.WELCOME: {
       const sid = int(message.sessionId, 0, U32_MAX, 'sessionId');
       if (typeof message.resumed !== 'boolean') fail('field', 'resumed 는 boolean 이어야 한다');
-      const next = int(message.nextPieceSeq, 0, U32_MAX, 'nextPieceSeq');
+      const next = int(message.nextPieceSeq, 1, U32_MAX, 'nextPieceSeq');
       const resumed = message.resumed ? 1 : 0;
       payload = 9;
       write = (dv, b) => { dv.setUint32(b, sid, true); dv.setUint8(b + 4, resumed); dv.setUint32(b + 5, next, true); };
       break;
     }
     case MSG.PIECE: {
-      const seq = int(message.pieceSeq, 0, U32_MAX, 'pieceSeq');
+      const seq = int(message.pieceSeq, 1, U32_MAX, 'pieceSeq');
       checkKey(message.key, 'key');
       const chunk = message.chunk;
       if (!(chunk instanceof Uint8Array)) fail('field', 'chunk 는 Uint8Array 여야 한다');
@@ -216,13 +216,17 @@ export function decodeMessage(bytes) {
     case MSG.WELCOME: {
       const resumed = dv.getUint8(b + 4);
       if (resumed > 1) fail('field', `resumed ${resumed}`);
-      return { type: 'WELCOME', sessionId: dv.getUint32(b, true), resumed: resumed === 1, nextPieceSeq: dv.getUint32(b + 5, true) };
+      const nextPieceSeq = dv.getUint32(b + 5, true);
+      if (nextPieceSeq < 1) fail('field', 'nextPieceSeq 0');
+      return { type: 'WELCOME', sessionId: dv.getUint32(b, true), resumed: resumed === 1, nextPieceSeq };
     }
     case MSG.PIECE: {
       if (payload < 21) fail('length', `PIECE 본문 ${payload} B < 21`);
       const key = readKey(dv, b + 4);
       checkKey(key, 'key');
-      return { type: 'PIECE', pieceSeq: dv.getUint32(b, true), key, chunk: new Uint8Array(bytes.slice(b + 20)) };
+      const pieceSeq = dv.getUint32(b, true);
+      if (pieceSeq < 1) fail('field', 'pieceSeq 0');
+      return { type: 'PIECE', pieceSeq, key, chunk: new Uint8Array(bytes.slice(b + 20)) };
     }
     case MSG.LEVEL_ARRIVED: {
       const segmentId = dv.getUint32(b, true);

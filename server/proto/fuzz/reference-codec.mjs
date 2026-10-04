@@ -30,6 +30,7 @@ export function encodeMessage(m) {
   const t = MSG[m.type];
   if (t === undefined) fail('type', String(m.type));
   const u32 = (v, n) => inr(v, 0, 0xffffffff, n);
+  const seq1 = (v, n) => inr(v, 1, 0xffffffff, n);
   let n;
   if (m.type === 'PIECE_REQUEST') n = 6 + PIECE_KEY_BYTES * inr(m.items.length, 0, MAX_REQUEST_ITEMS, 'count');
   else if (m.type === 'PIECE') n = 4 + PIECE_KEY_BYTES + inr(m.chunk.length, 1, MAX_PAYLOAD_BYTES - 20, 'chunk');
@@ -50,8 +51,8 @@ export function encodeMessage(m) {
     }
     case 'PIECE_REQUEST': dv.setUint32(o, u32(m.reqId, 'reqId'), true); dv.setUint16(o + 4, m.items.length, true); m.items.forEach((k, i) => writeKey(dv, o + 6 + 16 * i, k)); break;
     case 'ACK': dv.setUint32(o, u32(m.upToPieceSeq, 'seq'), true); break;
-    case 'WELCOME': dv.setUint32(o, u32(m.sessionId, 'sessionId'), true); dv.setUint8(o + 4, m.resumed ? 1 : 0); dv.setUint32(o + 5, u32(m.nextPieceSeq, 'seq'), true); break;
-    case 'PIECE': dv.setUint32(o, u32(m.pieceSeq, 'seq'), true); writeKey(dv, o + 4, m.key); out.set(m.chunk, o + 20); break;
+    case 'WELCOME': dv.setUint32(o, u32(m.sessionId, 'sessionId'), true); dv.setUint8(o + 4, m.resumed ? 1 : 0); dv.setUint32(o + 5, seq1(m.nextPieceSeq, 'nextPieceSeq'), true); break;
+    case 'PIECE': dv.setUint32(o, seq1(m.pieceSeq, 'pieceSeq'), true); writeKey(dv, o + 4, m.key); out.set(m.chunk, o + 20); break;
     case 'LEVEL_ARRIVED': dv.setUint32(o, inr(m.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId'), true); dv.setUint8(o + 4, inr(m.level, 0, 3, 'level')); dv.setUint32(o + 5, u32(m.pieceCount, 'pieceCount'), true); break;
     case 'MISSING': dv.setUint32(o, inr(m.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId'), true); break;
     case 'ERROR': if (!ERR_CODE_SET.has(m.code)) fail('field', 'code'); dv.setUint16(o, m.code, true); dv.setUint16(o + 2, m._b.length, true); out.set(m._b, o + 4); break;
@@ -99,10 +100,12 @@ export function makeDecoder(direction) {
       case 'ACK': return { type: 'ACK', upToPieceSeq: dv.getUint32(o, true) };
       case 'WELCOME': {
         const r = dv.getUint8(o + 4); if (r > 1) fail('field', 'resumed');
+        if (dv.getUint32(o + 5, true) < 1) fail('field', 'nextPieceSeq');
         return { type: 'WELCOME', sessionId: dv.getUint32(o, true), resumed: r === 1, nextPieceSeq: dv.getUint32(o + 5, true) };
       }
       case 'PIECE': {
         if (n < 21) fail('length', 'piece');
+        if (dv.getUint32(o, true) < 1) fail('field', 'pieceSeq');
         return { type: 'PIECE', pieceSeq: dv.getUint32(o, true), key: readKey(dv, o + 4), chunk: bytes.slice(o + 20) };
       }
       case 'LEVEL_ARRIVED': {
