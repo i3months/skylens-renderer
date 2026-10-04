@@ -24,7 +24,7 @@ export const buildBuildingLod = todo('buildBuildingLod');
 export const sampleBuildingPoints = todo('sampleBuildingPoints');
 /** T14.6 server/buildings/black/index.mjs — (mesh: Mesh) → { mesh: Mesh, edgeLines: Float32Array }. 모서리 선(xyz 쌍 연속) 수 = 정답. */
 export const buildBlackBuilding = todo('buildBlackBuilding');
-/** T14.7 server/buildings/aerial_uv/index.mjs — (mesh: Mesh, image: {width,height,rgb,bounds: Bounds}) → { uv: Float32Array(정점당 2) }, 값 ∈ [0,1]. */
+/** T14.7 server/buildings/aerial_uv/index.mjs — (mesh: Mesh, image: {width,height,rgb,bounds: Bounds}) → { uv: Float32Array(정점당 2), wallMask: Uint8Array(정점당 1) }, 값 ∈ [0,1]. wallMask=1 인 정점(벽)은 영상이 없는 면이라 uv 가 무의미하고 검정으로 그린다(결정 0044 §6). */
 export const buildAerialUv = todo('buildAerialUv');
 /** T14.8 server/terrain/tile_index/index.mjs — (bounds: Bounds, items: Array<{ id, bounds }>) → { query(x, y): number[], tilesIn(b: Bounds): Array<{tx,ty}> }. */
 export const buildTileIndex = todo('buildTileIndex');
