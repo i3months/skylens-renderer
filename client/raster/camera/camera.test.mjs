@@ -153,36 +153,65 @@ for (const mode of ['contain', 'cover']) {
   });
 }
 
-test('같은 CSS 화면에서 dpr 만 바꾸면 CSS 위치가 dpr = 1 과 ≤ 0.5 px', () => {
+test('같은 CSS 화면에서 dpr 만 바꾸면 CSS 위치가 정답(truthCss)과 ≤ 0.5 px', () => {
+  // 서로 같은 구현끼리(dpr = 1 대 dpr) 비교하면 둘이 함께 틀려도 통과하므로 양쪽 모두 정답과 비교한다.
   let worst = 0;
   for (const [W, H] of [[375, 667], [333, 222], [1920, 1080], [412, 915]]) {
     const U1 = buildCameraUniforms(viewFor(W, H, 1));
     for (const dpr of [1.25, 1.5, 1.75, 2, 2.625, 3, 4]) {
       const U = buildCameraUniforms(viewFor(W, H, dpr));
       for (const X of POINTS) {
+        const [tu, tv] = truthCss(X, W, H, 'contain');
         const a = toCss(projectWithUniforms(U1, X), U1, W, H);
         const b = ndcToCss(projectWithUniforms(U, X).ndc, W, H);
-        worst = Math.max(worst, Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
+        worst = Math.max(worst, Math.abs(a[0] - tu), Math.abs(a[1] - tv), Math.abs(b[0] - tu), Math.abs(b[1] - tv));
       }
     }
   }
   assert.ok(worst <= TOL_CSS_PX, `최대 오차 ${worst} CSS px`);
+  assert.ok(worst < 1e-6, `최대 오차 ${worst} CSS px`);
 });
 
-test('한 단계 fitIntrinsics(…, dpr) 와의 차이는 버퍼 반올림(≤ 0.5 장치 픽셀) 이내', () => {
+// 정답(버퍼 기준): 기준 영상 픽셀을 bw×bh 장치 버퍼에 중앙 맞춤으로 옮긴다. 유니폼·fitIntrinsics 와 독립인 식.
+function truthDevice(Xw, bw, bh) {
+  const x = R0[0] * Xw[0] + R0[1] * Xw[1] + R0[2] * Xw[2] + T0[0];
+  const y = R0[3] * Xw[0] + R0[4] * Xw[1] + R0[5] * Xw[2] + T0[1];
+  const d = R0[6] * Xw[0] + R0[7] * Xw[1] + R0[8] * Xw[2] + T0[2];
+  const uR = K_REF.fx * (x / d) + K_REF.cx;
+  const vR = K_REF.fy * (y / d) + K_REF.cy;
+  const s = Math.min(bw / REF_W, bh / REF_H);
+  return [s * uR + (bw - s * REF_W) / 2, s * vR + (bh - s * REF_H) / 2];
+}
+
+function worstVsTruthDevice(K1, U, W, H) {
+  const Ux = { ...U, ...K1 };
+  let worst = 0;
+  for (const X of POINTS) {
+    const p = projectWithUniforms(Ux, X);
+    const [tu, tv] = truthDevice(X, U.bw, U.bh);
+    worst = Math.max(worst, Math.abs(p.u - tu), Math.abs(p.v - tv));
+  }
+  return worst;
+}
+
+test('한 단계 fitIntrinsics(…, dpr) 는 정답(truthDevice)과 장치 픽셀 1e-6 이내', () => {
   let worst = 0;
   for (const [W, H, dpr] of SCREENS) {
     const U = buildCameraUniforms(viewFor(W, H, dpr));
-    const K1 = fitIntrinsics(K_REF, REF_W, REF_H, W, H, dpr);
-    const U1 = { ...U, ...K1 };
-    for (const X of POINTS) {
-      const a = projectWithUniforms(U, X);
-      const b = projectWithUniforms(U1, X);
-      worst = Math.max(worst, Math.abs(a.u - b.u), Math.abs(a.v - b.v));
-    }
+    worst = Math.max(worst, worstVsTruthDevice(fitIntrinsics(K_REF, REF_W, REF_H, W, H, dpr), U, W, H));
   }
-  assert.ok(worst <= 0.5, `최대 차이 ${worst} 장치 px`);
- 
+  assert.ok(worst < 1e-6, `최대 오차 ${worst} 장치 px`);
+});
+
+test('판별력: fitIntrinsics 자리에 scaleIntrinsics 를 바꿔 써도 정답과의 비교가 잡아낸다(667×375@3 에서 약 0.45 장치 px)', () => {
+  // 기준 영상과 가로세로비가 거의 같은 화면에서는 두 함수의 차이가 0.5 px 안쪽이라 허용 오차 0.5 로는 놓치지만,
+  // 같은 구현끼리가 아니라 정답과 1e-6 으로 비교하면 걸린다.
+  const [W, H, dpr] = [667, 375, 3];
+  const U = buildCameraUniforms(viewFor(W, H, dpr));
+  const sc = worstVsTruthDevice(scaleIntrinsics(K_REF, REF_W, REF_H, W, H, dpr), U, W, H);
+  assert.ok(sc > 0.1 && sc <= 0.5, `scale 대체 오차 ${sc} 장치 px`);
+  assert.ok(sc >= 1e-6, '정답 비교 문턱(1e-6)에 걸려야 한다');
+  assert.ok(worstVsTruthDevice(fitIntrinsics(K_REF, REF_W, REF_H, W, H, dpr), U, W, H) < 1e-6);
 });
 
 test('float32 유니폼(GPU 정밀도)으로도 CSS 위치 ≤ 0.5 px', () => {
