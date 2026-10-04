@@ -8,7 +8,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createWsServer, loadConfig, acceptKey } from './index.mjs';
+import { createWsServer, loadConfig, acceptKey, DEFAULT_MAX_WRITE_BUFFER, DEFAULT_MAX_PINGS_PER_SECOND } from './index.mjs';
 import { FrameParser, encodeFrame, encodeClosePayload, OPCODES, MAX_MESSAGE_BYTES } from './frame/index.mjs';
 import { MAX_PAYLOAD_BYTES } from '../../contracts/proto/index.mjs';
 
@@ -90,7 +90,13 @@ function connect(ws, { wsKey = Buffer.from('0123456789abcdef').toString('base64'
         timer = setTimeout(() => { const i = waiters.indexOf(check); if (i >= 0) waiters.splice(i, 1); rej(new Error(`next() 시간 초과 ${ms} ms`)); }, ms);
         waiters.push(check);
       }),
-      closed: () => new Promise((res) => { if (ended) res(); else sock.once('close', res); }),
+      // next() 처럼 시한이 있다: close 가 오지 않으면 60 초 매달리지 않고 거절로 실패한다.
+      closed: (ms = NEXT_TIMEOUT_MS) => new Promise((res, rej) => {
+        if (ended) return res();
+        const t = setTimeout(() => { sock.off('close', onClose); rej(new Error(`closed() 시간 초과 ${ms} ms`)); }, ms);
+        const onClose = () => { clearTimeout(t); res(); };
+        sock.once('close', onClose);
+      }),
     };
   });
 }
@@ -415,7 +421,7 @@ test('읽지 않는 클라이언트에 ping 을 쏟아도 서버 writableLength 
   const PINGS = 1_000_000; // 125 B 본문 ping 100 만 건(약 131 MB 송신)
   const s = serverSide();
   const closes = [];
-  const ws = await start((c) => { c.onClose((r) => closes.push(r)); s.onConnection(c); }, { maxWriteBuffer: CAP, maxPingsPerSecond: Infinity });
+  const ws = await start((c) => { c.onClose((r) => closes.push(r)); s.onConnection(c); }, { maxWriteBuffer: CAP, maxPingsPerSecond: Number.MAX_SAFE_INTEGER });
   const cl = await connect(ws);
   cl.sock.pause(); // 읽지 않는다
   const conn = await s.first;
@@ -530,4 +536,205 @@ test('저장소 grep: server/·tools/ 아래 소스에 주소·포트 리터럴 
     lines.forEach((ln, i) => { for (const re of patterns) if (re.test(ln)) hits.push(`${path.relative(root, f)}:${i + 1}: ${ln.trim()}`); });
   }
   assert.deepEqual(hits, []);
+});
+
+// ---- F-206 / F-200 / F-207 ----
+const MIB = 1 << 20;
+
+/** 주입 시계. set(t) 로 임의 값(되감기 포함)으로 옮긴다. */
+function fakeClock(t = 1_000_000) {
+  const f = () => t;
+  f.set = (v) => { t = v; };
+  f.advance = (d) => { t += d; };
+  return f;
+}
+const pingN = (cl, n) => { for (let i = 0; i < n; i++) cl.send(OPCODES.PING, Uint8Array.of(i & 0xff)); };
+const expectPongs = async (cl, n) => {
+  for (let i = 0; i < n; i++) {
+    const ev = await cl.next();
+    assert.deepEqual([ev.type, [...ev.data]], ['pong', [i & 0xff]]);
+  }
+};
+
+test('기본값: 쓰기 버퍼 1 MiB, ping 초당 50', () => {
+  assert.equal(DEFAULT_MAX_WRITE_BUFFER, 1048576);
+  assert.equal(DEFAULT_MAX_PINGS_PER_SECOND, 50);
+});
+
+test('옵션 없이 만든 서버: 50 번째 ping 까지 pong, 51 번째는 1008', async () => {
+  const closes = [];
+  const ws = await start((c) => c.onClose((r) => closes.push(r))); // 옵션 없음(기본 한도, 실제 시계)
+  const cl = await connect(ws);
+  pingN(cl, 50);
+  await expectPongs(cl, 50);
+  cl.send(OPCODES.PING, Uint8Array.of(51));
+  const ev = await cl.next();
+  assert.deepEqual([ev.type, ev.code], ['close', 1008]);
+  cl.send(OPCODES.CLOSE, encodeClosePayload(1008));
+  await cl.closed();
+  await waitFor(() => closes.length === 1);
+  assert.equal(closes[0].code, 1008);
+  await ws.close();
+});
+
+test('2 MiB send 로 버퍼가 찬 상태에서 ping 1 건: 연결 유지, pong 도착', async () => {
+  const CAP = 64 * 1024;
+  const s = serverSide();
+  const closes = [];
+  const ws = await start((c) => { c.onClose((r) => closes.push(r)); s.onConnection(c); }, { maxWriteBuffer: CAP });
+  const cl = await connect(ws);
+  cl.sock.pause();
+  const conn = await s.first;
+  const payload = new Uint8Array(2 * MIB).fill(7);
+  // 커널 소켓 버퍼가 일부를 흡수하므로, 2 MiB 묶음을 서버 쪽 대기 바이트가 상한을 넘을 때까지 보낸다.
+  let sent = 0;
+  while (conn.bufferedAmount() <= CAP && sent < 8) { conn.send(payload); sent++; }
+  assert.ok(conn.bufferedAmount() > CAP, `send 데이터가 상한(${CAP})보다 쌓여 있어야 시험이 의미 있다: ${conn.bufferedAmount()}`);
+  cl.send(OPCODES.PING, Uint8Array.of(1));
+  await new Promise((r) => setTimeout(r, 100));
+  cl.sock.resume();
+  let msgs = 0;
+  let ev;
+  do {
+    ev = await cl.next(5000);
+    if (ev.type === 'message') { assert.equal(ev.data.length, 2 * MIB); msgs++; }
+  } while (ev.type === 'message');
+  assert.deepEqual([ev.type, [...ev.data]], ['pong', [1]]);
+  assert.equal(msgs, sent);
+  assert.deepEqual(closes, []);
+  cl.sock.destroy();
+  await ws.close();
+});
+
+test('옵션 검증: maxWriteBuffer·maxPingsPerSecond 의 NaN/0/200 등은 RangeError', async () => {
+  const base = { host: loopbackHost(), port: 0, onConnection: () => {} };
+  for (const v of [NaN, 0, 200, 256, -1, 1.5, Infinity, '1024']) {
+    assert.throws(() => createWsServer({ ...base, maxWriteBuffer: v }), RangeError, `maxWriteBuffer ${String(v)}`);
+  }
+  for (const v of [NaN, 0, -3, 0.5, Infinity, '5', null]) {
+    assert.throws(() => createWsServer({ ...base, maxPingsPerSecond: v }), RangeError, `maxPingsPerSecond ${String(v)}`);
+  }
+  for (const v of [NaN, 0, Infinity]) {
+    assert.throws(() => createWsServer({ ...base, maxSendBuffer: v }), RangeError);
+    assert.throws(() => createWsServer({ ...base, maxPendingMessages: v }), RangeError);
+  }
+  // 경계: 257 과 1 은 허용
+  const ok = track(await createWsServer({ ...base, maxWriteBuffer: 257, maxPingsPerSecond: 1 }));
+  await ok.close();
+});
+
+test('주입 시계: 창 안 N+1 번째 ping 은 1008, 창이 지난 뒤에는 N 건 모두 pong', async () => {
+  const N = 5;
+  const clock = fakeClock();
+  const closes = [];
+  const ws = await start((c) => c.onClose((r) => closes.push(r)), { maxPingsPerSecond: N, now: clock });
+  const cl = await connect(ws);
+  pingN(cl, N);
+  await expectPongs(cl, N);
+  clock.advance(999); // 아직 창 안
+  cl.send(OPCODES.PING, Uint8Array.of(0));
+  const ev = await cl.next();
+  assert.deepEqual([ev.type, ev.code], ['close', 1008]);
+  await cl.closed();
+  assert.equal(closes[0].code, 1008);
+
+  const cl2 = await connect(ws);
+  pingN(cl2, N);
+  await expectPongs(cl2, N);
+  clock.advance(1000); // 창이 지남
+  pingN(cl2, N);
+  await expectPongs(cl2, N);
+  clock.advance(1000);
+  pingN(cl2, N);
+  await expectPongs(cl2, N);
+  cl2.sock.destroy();
+  await ws.close();
+});
+
+test('시계가 되감겨도 오탐 1008 이 없다', async () => {
+  const N = 3;
+  const clock = fakeClock(5_000_000);
+  const closes = [];
+  const ws = await start((c) => c.onClose((r) => closes.push(r)), { maxPingsPerSecond: N, now: clock });
+  const cl = await connect(ws);
+  pingN(cl, N);
+  await expectPongs(cl, N);
+  clock.set(1_000); // 한참 되감김
+  pingN(cl, N);
+  await expectPongs(cl, N);
+  clock.advance(-1);
+  pingN(cl, N);
+  await expectPongs(cl, N);
+  assert.deepEqual(closes, []);
+  cl.sock.destroy();
+  await ws.close();
+});
+
+test('send 상한: 넘기는 프레임은 쓰지 않고 false, 연결은 1008 로 닫힌다', async () => {
+  const s = serverSide();
+  const closes = [];
+  const ws = await start((c) => { c.onClose((r) => closes.push(r)); s.onConnection(c); }, { maxSendBuffer: MIB });
+  const cl = await connect(ws);
+  cl.sock.pause();
+  const conn = await s.first;
+  const chunk = new Uint8Array(256 * 1024);
+  let refused = false;
+  for (let i = 0; i < 400 && !refused; i++) {
+    conn.send(chunk);
+    refused = conn.send(new Uint8Array(MIB)) === false; // 1 MiB 프레임 + 쌓인 양이 상한을 넘는다
+  }
+  assert.ok(refused, 'send 가 상한에서 false 를 돌려줘야 한다');
+  assert.ok(conn.bufferedAmount() <= MIB + 1024, `bufferedAmount ${conn.bufferedAmount()}`);
+  assert.equal(conn.send(chunk), false); // 닫는 중
+  cl.sock.resume();
+  let ev;
+  do { ev = await cl.next(5000); } while (ev && ev.type !== 'close');
+  assert.equal(ev.code, 1008);
+  cl.send(OPCODES.CLOSE, encodeClosePayload(1008));
+  await cl.closed();
+  await waitFor(() => closes.length === 1);
+  assert.equal(closes[0].code, 1008);
+  await ws.close();
+});
+
+test('async onMessage 처리 중 상한: 넘는 메시지는 읽기를 멈추고 끝나는 대로 순서대로 처리한다', async () => {
+  const CAP = 2;
+  const started = [];
+  const gates = [];
+  let inflight = 0;
+  let maxInflight = 0;
+  const ws = await start((c) => {
+    c.onMessage((m) => {
+      started.push(m[0]);
+      inflight++; maxInflight = Math.max(maxInflight, inflight);
+      return new Promise((r) => gates.push(() => { inflight--; r(); }));
+    });
+  }, { maxPendingMessages: CAP });
+  const cl = await connect(ws);
+  for (let i = 0; i < 6; i++) cl.send(OPCODES.BINARY, Uint8Array.of(i));
+  await waitFor(() => started.length === CAP);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(started, [0, 1]); // 3 번째부터는 아직 호출되지 않는다
+  for (let done = 0; done < 6; done++) {
+    await waitFor(() => gates.length > done);
+    gates[done]();
+  }
+  await waitFor(() => started.length === 6);
+  assert.deepEqual(started, [0, 1, 2, 3, 4, 5]);
+  assert.ok(maxInflight <= CAP, `동시 처리 ${maxInflight} > ${CAP}`);
+  cl.sock.destroy();
+  await ws.close();
+});
+
+test('onConnection catch 의 socket.destroy: 빠지면 hang 이 아니라 시한 안에 실패한다', async () => {
+  const ws = await start(() => { throw new Error('connboom2'); }, { onError: () => {} });
+  const cl = await connect(ws);
+  await cl.closed(3000); // destroy 가 없으면 3 s 뒤 거절
+  // closed() 가 시한을 지키는지 확인: 닫히지 않는 연결에서는 거절된다.
+  const ws2 = await start(() => {});
+  const cl2 = await connect(ws2);
+  await assert.rejects(cl2.closed(200), /시간 초과/);
+  cl2.sock.destroy();
+  await ws.close();
+  await ws2.close();
 });
