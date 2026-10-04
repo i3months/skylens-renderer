@@ -33,6 +33,7 @@ import {
 } from '../../contracts/client_raster/index.mjs';
 import { decodeChunkClient } from '../codec/index.mjs';
 import { createContext } from './context/index.mjs';
+import { checkArrived } from './arrived_check/index.mjs';
 import {
   createPointProgram, pointUniformValues, applyPointUniforms, applyPieceOrigin, ATTRIB, DEFAULT_AMBIENT,
 } from './shader/index.mjs';
@@ -162,7 +163,7 @@ export function checkGpuPlanes(decoded) {
  * @param {() => number} [options.now]  draw 의 drawMs 용 시계(기본 performance.now)
  * @param {(keys: string[]) => void} [options.onEvict]  메모리 한도 때문에 해제한 그리지 않는 조각 key 알림
  * @param {object} [options.contextAttributes]  getContext 속성(createContext 기본값 위에 덮어씀)
- * @param {{selectDrawable?: Function, toGpuPlanes?: Function}} [options.testHooks]  시험 전용: 호출 횟수 계측용 대체 함수(운영 코드는 쓰지 않는다)
+ * @param {{selectDrawable?: Function, toGpuPlanes?: Function, checkArrivedKey?: () => void}} [options.testHooks]  시험 전용: 호출 횟수 계측용 대체 함수(운영 코드는 쓰지 않는다)
  */
 export function createRenderer(options) {
   if (options === null || typeof options !== 'object') throw new ClientRasterError('context', 'options 가 객체가 아님');
@@ -173,6 +174,7 @@ export function createRenderer(options) {
   const onEvict = options.onEvict;
   const select = options.testHooks?.selectDrawable ?? selectDrawable;
   const toPlanes = options.testHooks?.toGpuPlanes ?? toGpuPlanes;
+  const checkProbe = options.testHooks?.checkArrivedKey ? { onKey: options.testHooks.checkArrivedKey } : undefined;
   const shading = { ...DEFAULT_SHADING, ...(options.shading ?? {}) };
   // 셰이딩 옵션은 만들 때 한 번 검사한다(PointShaderError 를 'view' 로 바꾼다)
   try {
@@ -409,7 +411,7 @@ export function createRenderer(options) {
       // 항목·key 검사(key 형식·level 0..3·(segmentId, level) 일치, O(key 수))는 상태를 바꾸기 전에 지금 하고 던지면 직전 상태 그대로다.
       if (!Array.isArray(list)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
       if (list.length === 0) throw new ClientRasterError('piece', 'arrived 는 비지 않은 배열이어야 함');
-      selectDrawable([], list); // 상주 key 없이 돌려 항목·key 검사만 한다(계약 검사와 같은 규칙)
+      checkArrived(list, checkProbe); // 항목·key 검사만(타일 표 없는 가벼운 검사기, 거부 기준은 selectDrawable 과 같다. F-253 ②)
       arrived = list.map((a) => ({ segmentId: a.segmentId, level: a.level, keys: [...a.keys] }));
       arrivedKeys = new Set();
       for (const a of arrived) for (const k of a.keys) arrivedKeys.add(k);
