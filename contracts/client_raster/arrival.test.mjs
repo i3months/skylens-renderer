@@ -179,6 +179,7 @@ test('재시도 skip(F-235): LEVEL_ARRIVED 가 쓰였으면 완료, 안 쓰였�
     const { keys, arrived } = collectArrivals(msgs);
     const sel = selectDrawable(keys, arrived);
     assert.deepEqual(sel, { draw, pending, discard: [] }, f.where);
+    for (const k of [...sel.discard, ...sel.pending]) assert.ok(!sel.draw.includes(k), f.where);
     // 어댑터가 알린 abandoned 는 고정 배열이다: 'before'(LEVEL_ARRIVED 안 쓰임)는 두 key 전부, 'after'(쓰임)는 빈 배열(F-235).
     assert.deepEqual((r.abandoned ?? []).map(pieceKeyToString), abandoned, f.where);
   }
@@ -241,6 +242,8 @@ test('firstPieceSeq 명시 창(F-236): 단독 재전송·maxSeq 와 다른 창·
   // 창 끝은 firstPieceSeq+n−1(포함): 마지막 PIECE 가 창의 끝이면 통과, 한 칸 모자라면 거부
   assert.deepEqual(completedKeys(pieces, LA(2, 4)), ['7.0.0.0.0.3', '7.0.0.0.0.4']);
   assert.throws(() => completedKeys(pieces, LA(2, 5)), (e) => isPiece(e) && /pieceSeq 6 조각을 받지 못함\(창 5\.\.6\)/.test(e.message));
+  // 창 끝이 정확히 u32 최대면 통과(경계: firstPieceSeq+n−1 == U32_MAX)
+  assert.deepEqual(completedKeys([P(0xffffffff, 0)], LA(1, 0xffffffff)), ['7.0.0.0.0.0']);
   // 범위 밖
   const range = /firstPieceSeq 는 1 이상이고 창 끝이 u32 안이어야 함/;
   for (const [first, n] of [[0, 1], [1.5, 1], [0xffffffff, 2]]) {
@@ -260,10 +263,10 @@ test('새 세션(F-234): WELCOME resumed=false 가 PIECE 뒤에 오면 거부, �
   assert.equal(out, null, 'collectArrivals 가 던져야 한다');
   // 같은 입력에서 둘째 세션의 P1 은 첫 세션 P1 과 순번·key 가 같아 재전송과 구별되지 않는다. 그래서 WELCOME 검사가 필요하다.
   // 단조 검사(규칙 ①): 같은 순번에 다른 key 는 '두 key', 처음 보는 순번이 가장 큰 순번 이하면 거부.
-  assert.throws(() => collectArrivals([P(1, 9, 1, 0), P(2, 9, 1, 1), P(1, 9, 1, 1)]), isPiece);
-  assert.throws(() => collectArrivals([P(1, 9, 1, 0), P(3, 9, 1, 1), P(2, 9, 1, 2), LA(9, 1, 2)]), isPiece);
-  assert.throws(() => completedKeys([P(1, 9, 1, 0), P(3, 9, 1, 1), P(2, 9, 1, 2)], LA(9, 1, 2)), isPiece);
-  assert.throws(() => completedKeys([P(2, 9, 1, 0), P(1, 9, 1, 1)], LA(9, 1, 1)), isPiece);
+  assert.throws(() => collectArrivals([P(1, 9, 1, 0), P(2, 9, 1, 1), P(1, 9, 1, 1)]), (e) => isPiece(e) && /pieceSeq 1 가 두 key 에 쓰임/.test(e.message));
+  assert.throws(() => collectArrivals([P(1, 9, 1, 0), P(3, 9, 1, 1), P(2, 9, 1, 2), LA(9, 1, 2)]), (e) => isPiece(e) && /pieceSeq 2 가 재전송이 아닌데 받은 가장 큰 pieceSeq 3 이하/.test(e.message));
+  assert.throws(() => completedKeys([P(1, 9, 1, 0), P(3, 9, 1, 1), P(2, 9, 1, 2)], LA(9, 1, 2)), (e) => isPiece(e) && /pieceSeq 2 가 재전송이 아닌데 받은 가장 큰 pieceSeq 3 이하/.test(e.message));
+  assert.throws(() => completedKeys([P(2, 9, 1, 0), P(1, 9, 1, 1)], LA(9, 1, 1)), (e) => isPiece(e) && /pieceSeq 1 가 재전송이 아닌데 받은 가장 큰 pieceSeq 2 이하/.test(e.message));
   // 새 세션은 새 입력: WELCOME 뒤 수신만 넣으면 '9.1.0.0.0.0' 만 그린다
   const fresh = collectArrivals([W(77, false, 1), P(1, 9, 1, 0), LA(9, 1, 1)]);
   assert.deepEqual(fresh, { keys: ['9.1.0.0.0.0'], arrived: [{ segmentId: 9, level: 1, keys: ['9.1.0.0.0.0'] }] });
@@ -273,8 +276,8 @@ test('새 세션(F-234): WELCOME resumed=false 가 PIECE 뒤에 오면 거부, �
   assert.deepEqual(resumed.keys, ['9.1.0.0.0.0', '9.1.0.0.0.1', '9.1.0.0.0.2']);
   assert.deepEqual(resumed.arrived, [{ segmentId: 9, level: 1, keys: ['9.1.0.0.0.0', '9.1.0.0.0.1', '9.1.0.0.0.2'] }]);
   // 이어받기라며 sessionId 가 다르면 거부, resumed 가 boolean 이 아니면 거부
-  assert.throws(() => collectArrivals([W(77, false, 1), P(1, 9, 1, 0), W(78, true, 2), P(2, 9, 1, 1)]), isPiece);
-  assert.throws(() => collectArrivals([W(77, 0, 1)]), isPiece);
+  assert.throws(() => collectArrivals([W(77, false, 1), P(1, 9, 1, 0), W(78, true, 2), P(2, 9, 1, 1)]), (e) => isPiece(e) && /sessionId 78 가 앞 세션 77 와 다름/.test(e.message));
+  assert.throws(() => collectArrivals([W(77, 0, 1)]), (e) => isPiece(e) && /WELCOME resumed 는 boolean 이어야 함: 0/.test(e.message));
   // sessionId 는 u32, 앞 sessionId 없는 resumed=true 는 거부
   for (const bad of [-1, 1.5, 0x100000000, undefined, '7']) {
     assert.throws(() => collectArrivals([W(bad, false, 1)]), (e) => isPiece(e) && /WELCOME sessionId 는 u32 정수여야 함/.test(e.message), String(bad));
@@ -288,13 +291,13 @@ test('새 세션(F-234): WELCOME resumed=false 가 PIECE 뒤에 오면 거부, �
   // 선을 거친 WELCOME 도 같다
   const wire = [encodeMessage(P(1, 9, 1, 0)), encodeMessage(W(77, false, 1)), encodeMessage(P(1, 9, 1, 0))].map((b) => decodeMessage(b));
   assert.equal(wire[1].resumed, false);
-  assert.throws(() => collectArrivals(wire), isPiece);
+  assert.throws(() => collectArrivals(wire), (e) => isPiece(e) && /WELCOME resumed=false/.test(e.message));
 });
 
 test('LEVEL_ARRIVED segmentId -0 은 거부(F-237 ①, selectDrawable 과 같음), 0 은 통과', () => {
   const P0 = { type: 'PIECE', pieceSeq: 1, key: { segmentId: 0, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0 }, chunk: Uint8Array.of(1) };
-  assert.throws(() => collectArrivals([P0, { type: 'LEVEL_ARRIVED', segmentId: -0, level: 0, pieceCount: 1 }]), isPiece);
-  assert.throws(() => completedKeys([P0], { segmentId: -0, level: 0, pieceCount: 1 }), isPiece);
+  assert.throws(() => collectArrivals([P0, { type: 'LEVEL_ARRIVED', segmentId: -0, level: 0, pieceCount: 1 }]), (e) => isPiece(e) && /segmentId 가 범위 밖/.test(e.message));
+  assert.throws(() => completedKeys([P0], { segmentId: -0, level: 0, pieceCount: 1 }), (e) => isPiece(e) && /segmentId 가 범위 밖/.test(e.message));
   const ok = collectArrivals([P0, { type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 1 }]);
   assert.ok(Object.is(ok.arrived[0].segmentId, 0));
   assert.deepEqual(selectDrawable(ok.keys, ok.arrived).draw, ['0.0.0.0.0.0']);
