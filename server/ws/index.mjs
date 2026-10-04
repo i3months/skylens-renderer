@@ -12,6 +12,13 @@ export const ENV_HOST = 'SKYLENS_WS_HOST';
 export const ENV_PORT = 'SKYLENS_WS_PORT';
 const HANDSHAKE_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const CLOSE_WAIT_MS = 2000;
+// 쓰기 버퍼 상한(소켓 writableLength): 읽지 않는 클라이언트에게 pong 이 무한히 쌓이는 것을 막는다. 넘기려는 pong 은 쓰지 않고 1008 로 닫는다.
+export const DEFAULT_MAX_WRITE_BUFFER = 1 << 20;
+// close 프레임을 상한 안에서 보낼 수 있게 pong 판단에서 남겨 두는 여유(close 본문은 최대 125 B + 머리 2 B).
+const CLOSE_RESERVE = 256;
+// ping 속도 제한: 1 초 창마다 허용하는 ping 수. 넘으면 1008.
+export const DEFAULT_MAX_PINGS_PER_SECOND = 50;
+const PING_WINDOW_MS = 1000;
 
 /** 환경 변수에서 { host, port } 를 읽는다. 없거나 잘못되면 오류. */
 export function loadConfig(env) {
@@ -29,7 +36,7 @@ export function acceptKey(key) {
   return createHash('sha1').update(key + HANDSHAKE_GUID).digest('base64');
 }
 
-function createConnection(socket, head, onError) {
+function createConnection(socket, head, onError, limits) {
   const parser = new FrameParser();
   let msgCb = () => {};
   let closeCb = () => {};
@@ -38,6 +45,8 @@ function createConnection(socket, head, onError) {
   let timer = null;
   let result = { code: 1006, reason: '' };
   let failed = false;
+  let pingWindowStart = 0;
+  let pingCount = 0;
 
   // onError 자체가 던져도 서버는 멈추지 않는다.
   const report = (err, where) => {
@@ -60,6 +69,23 @@ function createConnection(socket, head, onError) {
     startClose(1011, 'internal error');
   };
 
+  // 규칙 위반(상한·속도): 이 연결만 code 로 닫는다. 이미 닫는 중이면 무시.
+  const violate = (code, reason) => {
+    if (failed || finished || closeSent) return;
+    failed = true;
+    result = { code, reason };
+    startClose(code, reason);
+  };
+  const onPing = (data) => {
+    if (closeSent) return;
+    const now = Date.now();
+    if (now - pingWindowStart >= PING_WINDOW_MS) { pingWindowStart = now; pingCount = 0; }
+    if (++pingCount > limits.maxPingsPerSecond) return violate(1008, 'ping rate');
+    const frame = encodeFrame(OPCODES.PONG, data);
+    if (socket.writableLength + frame.length > limits.maxWriteBuffer - CLOSE_RESERVE) return violate(1008, 'write buffer');
+    socket.write(frame);
+  };
+
   const finish = () => {
     if (finished) return;
     finished = true;
@@ -78,10 +104,11 @@ function createConnection(socket, head, onError) {
   };
 
   const feed = (chunk) => {
+    if (failed || finished) return; // 닫는 중에는 더 해석하지 않는다
     for (const ev of parser.push(chunk)) {
       if (finished || failed) return;
       if (ev.type === 'message') { guarded(msgCb, ev.data, 'onMessage'); if (failed) return; }
-      else if (ev.type === 'ping') { if (!closeSent) socket.write(encodeFrame(OPCODES.PONG, ev.data)); }
+      else if (ev.type === 'ping') { onPing(ev.data); if (failed) return; }
       else if (ev.type === 'close') {
         result = { code: ev.code, reason: ev.reason };
         if (!closeSent) sendClose(ev.code === 1005 ? 1000 : ev.code);
@@ -115,10 +142,11 @@ function createConnection(socket, head, onError) {
 }
 
 /**
- * @param {{host: string, port: number, onConnection: (conn: object) => void, onError?: (err: unknown, where: string) => void}} options
+ * @param {{host: string, port: number, maxWriteBuffer?: number, maxPingsPerSecond?: number, onConnection: (conn: object) => void, onError?: (err: unknown, where: string) => void}} options
  * @returns {Promise<{server: http.Server, address(): object, close(): Promise<void>}>} listen 이 끝난 뒤 반환.
  */
-export function createWsServer({ host, port, onConnection, onError }) {
+export function createWsServer({ host, port, onConnection, onError, maxWriteBuffer = DEFAULT_MAX_WRITE_BUFFER, maxPingsPerSecond = DEFAULT_MAX_PINGS_PER_SECOND }) {
+  const limits = { maxWriteBuffer, maxPingsPerSecond };
   if (typeof onConnection !== 'function') throw new TypeError('onConnection 필요');
   const server = http.createServer((req, res) => {
     res.writeHead(426, { Upgrade: 'websocket', 'Content-Length': 0 });
@@ -142,7 +170,7 @@ export function createWsServer({ host, port, onConnection, onError }) {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     try {
-      onConnection(createConnection(socket, head, onError));
+      onConnection(createConnection(socket, head, onError, limits));
     } catch (err) {
       // onConnection 이 던지면 그 소켓만 닫는다.
       try { onError?.(err, 'onConnection'); } catch { /* 보고 실패는 삼킨다 */ }
