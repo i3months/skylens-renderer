@@ -51,9 +51,7 @@ test('frameMs 유효값: droppedFrames 는 정수·Infinity·NaN 아님', () => 
   assert.equal(s.droppedFrames, 0);
   r.step(64);
   s = loop.stats();
-  assert.equal(Number.isFinite(s.droppedFrames), true);
   assert.equal(s.droppedFrames, 3);
-  assert.ok(!Number.isNaN(s.droppedFrames));
 });
 
 // ev.data 가 null 이거나 객체가 아닐 때의 처리.
@@ -74,20 +72,19 @@ test('ev.data 정의되지 않음: TypeError 대신 조용히 버린다', () => 
   assert.equal(c.stats().pending, 1);
 });
 
-test('ev.data 숫자: TypeError 대신 조용히 버린다', () => {
-  const w = { postMessage() {}, terminate() {} };
-  const c = createDecodeWorkerClient({ spawn: () => w });
-  c.decode(new Uint8Array(1));
-  assert.doesNotThrow(() => w.onmessage({ data: 42 }));
-  assert.equal(c.stats().pending, 1);
-});
+const invalidDataCases = [
+  { name: '숫자', value: 42 },
+  { name: '배열', value: [1, 2, 3] },
+];
 
-test('ev.data 배열: TypeError 대신 조용히 버린다', () => {
-  const w = { postMessage() {}, terminate() {} };
-  const c = createDecodeWorkerClient({ spawn: () => w });
-  c.decode(new Uint8Array(1));
-  assert.doesNotThrow(() => w.onmessage({ data: [1, 2, 3] }));
-  assert.equal(c.stats().pending, 1);
+invalidDataCases.forEach(({ name, value }) => {
+  test(`ev.data ${name}: TypeError 대신 조용히 버린다`, () => {
+    const w = { postMessage() {}, terminate() {} };
+    const c = createDecodeWorkerClient({ spawn: () => w });
+    c.decode(new Uint8Array(1));
+    assert.doesNotThrow(() => w.onmessage({ data: value }));
+    assert.equal(c.stats().pending, 1);
+  });
 });
 
 test('ev 자체가 null: TypeError 대신 조용히 버린다', () => {
