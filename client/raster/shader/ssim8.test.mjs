@@ -99,6 +99,22 @@ for (const [label, mutate] of Object.entries(MUTATIONS)) {
   });
 }
 
+// 실제 GL 경로 판별력: CPU 모사가 아니라 실제 WebGL2 셰이더 픽셀도 변이(셰이더 옵션으로만 주입, 소스 변이 아님)에 SSIM 이 떨어져야 한다.
+// 그렇지 않으면 GLSL 쪽이 망가져도 CPU 모사 음성 시험만 통과하는 공백이 생긴다. 셰이딩 끄기·빛 방향 반전·점 크기 1.5배 모두 건다.
+for (const [label, mutate] of Object.entries(MUTATIONS)) {
+  test(`판별력(실제 WebGL2): ${label} 변이는 8시점 중 적어도 한 시점에서 SSIM < SSIM_MIN`,
+    { skip: glSkip(chrome ? null : 'Chromium 없음(SKYLENS_CHROMIUM 또는 Playwright 설치 필요): 실제 GL 판별력 검증 불가, CPU 모사만 검증됨') },
+    (t) => {
+      assert.ok(chrome, 'Chromium 없음: SKYLENS_REQUIRE_GL=1 에서는 실제 GL 검증을 건너뛸 수 없다');
+      const views = cams.map(({ camera }) => cameraUniforms(camera, mutate(OPTS)));
+      const gl = renderInChromium(chrome, views, pts);
+      assert.equal(gl.glError, 0);
+      const scores = cams.map(({ camera }, k) => ssim(refs[k].color, gl.views[k], camera.width, camera.height, 3));
+      t.diagnostic(`GL ${label}: ${scores.map((s) => s.toFixed(3)).join(', ')}`);
+      assert.ok(scores.some((s) => s < SSIM_MIN), `GL 변이가 SSIM 을 못 떨어뜨림: ${scores.map((s) => s.toFixed(3)).join(', ')}`);
+    });
+}
+
 // 시점별 점 반지름 진단: r = fx·pointSizeM/(2d) ≥ 1 인 점의 비율. 비율이 낮은 시점은 점 크기 공식이 중심 칸 규칙에만 기대어 검증이 약하다.
 test('진단: 시점별 점 반지름 r ≥ 1 비율 출력, 점 크기 공식이 검증되는 시점이 있다', (t) => {
   const lines = [];
@@ -116,6 +132,9 @@ test('진단: 시점별 점 반지름 r ≥ 1 비율 출력, 점 크기 공식�
       if ((U.u_fx * U.u_pointSizeM) / (2 * d) >= 1) big += 1;
     }
     const ratio = visible ? big / visible : 0;
+    // 기준 0.5 의 근거: 측정값(2026-10 기준) low_close_box 55.4%, street_level 40.5%, tower_high 36.6% 등이고 top_down·aerial_overview 는 0%(r ≈ 0.39 px).
+    // 점 크기 공식을 r ≥ 1 영역에서 확인할 수 있는 시점이 적어도 하나는 있어야 하므로 "절반 이상" 인 시점 하나를 요구한다.
+    // 장면·시점이 바뀌어 그런 시점이 사라지면 이 시험이 실패해 알린다(기준을 낮추지 말고 시점을 보강한다).
     if (ratio >= 0.5) anyStrong = true;
     lines.push(`${name} ${(100 * ratio).toFixed(1)}%`);
   }
