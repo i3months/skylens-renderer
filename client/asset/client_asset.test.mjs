@@ -101,6 +101,7 @@ for (const name of ['point27', 'gauss56']) {
     rejects(mutate(name, (b) => { b[OFFSETS.quantExp] = 11; }), 'field');
     rejects(mutate(name, (b, dv) => dv.setUint32(OFFSETS.pointCount, 0, true)), 'field');
     rejects(mutate(name, (b, dv) => dv.setUint16(OFFSETS.tileSizeM, 63, true)), 'field');
+    rejects(mutate(name, (b, dv) => dv.setUint32(OFFSETS.chunkIndex, 65536, true)), 'field');
     // 길이 불일치: 잘린 본문, 뒤 바이트, body_bytes 변조
     const { bytes } = load(name);
     rejects(bytes.subarray(0, bytes.length - 1), 'body');
@@ -120,3 +121,13 @@ for (const name of ['point27', 'gauss56']) {
     assert.throws(() => readPlanesClient(bytes, { ...h, codec: 1 }), (e) => e instanceof AssetFormatError && e.code === 'codec');
   });
 }
+
+test('client rejects chunkIndex > 65535', () => {
+  const { bytes: origBytes } = load('point27');
+  const b = origBytes.slice();
+  const dv = new DataView(b.buffer);
+  dv.setUint32(OFFSETS.chunkIndex, 65535, true);
+  assert.doesNotThrow(() => readHeaderClient(b), 'chunkIndex 65535 accepted');
+  dv.setUint32(OFFSETS.chunkIndex, 65536, true);
+  assert.throws(() => readHeaderClient(b), (e) => e instanceof AssetFormatError && e.code === 'field');
+});

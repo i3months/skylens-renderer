@@ -100,3 +100,32 @@ test('chunkIndex 상한이 proto·asset 에서 같다(65535 수용, 65536 같은
   assert.match(errs[1].message, /0\.\.65535/);
   assert.ok(rej(() => A.serializeHeader(hdr(2 ** 32 - 1))));
 });
+
+// ---- F-209 ①: readHeaderClient 크로스 시험 ----
+test('readHeaderClient 상한이 proto·asset·server 에서 같다(65535 수용, 65536 거부)', async () => {
+  const A = await import('../asset/index.mjs');
+  const Client = await import('../../client/asset/index.mjs');
+  assert.equal(A.CHUNK_INDEX_LIMIT, 65536);
+  const hdr = (chunkIndex) => ({
+    versionMajor: 1, versionMinor: 0, format: A.FORMAT_POINT27, codec: 0, segmentId: 1, level: 0, pointCount: 1,
+    tileX: 0, tileY: 0, tileSizeM: 64, lod: 0, quantExp: 8, chunkIndex, bodyBytes: 11,
+    bboxMin: [0, 0, 0], bboxMax: [0, 0, 0], anchor: { lat: 0, lon: 0, alt: 0 }, checksum: 0,
+  });
+  const rej = (fn) => { try { fn(); } catch (e) { return e; } return null; };
+  // 65535: readHeaderClient 수용
+  const bytes65535 = A.serializeHeader(hdr(65535));
+  const fullBytes65535 = new Uint8Array(128 + 11);
+  fullBytes65535.set(bytes65535);
+  const result65535 = Client.readHeaderClient(fullBytes65535);
+  assert.equal(result65535.chunkIndex, 65535);
+  // 65536: readHeaderClient 거부
+  const fullBytes65536 = new Uint8Array(128 + 11);
+  const bytes65536 = A.serializeHeader(hdr(65535));
+  fullBytes65536.set(bytes65536);
+  new DataView(fullBytes65536.buffer).setUint32(A.OFFSETS.chunkIndex, 65536, true);
+  const err = rej(() => Client.readHeaderClient(fullBytes65536));
+  assert.ok(err);
+  assert.equal(err.code, 'field');
+  assert.match(err.message, /chunkIndex/);
+  assert.match(err.message, /0\.\.65535/);
+});

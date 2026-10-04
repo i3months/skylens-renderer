@@ -1,5 +1,5 @@
 // 구간·수준 식별자와 조각 키 인코딩 (명세 §10~§11). 계약: contracts/asset/stubs.mjs
-import { AssetFormatError, LEVEL_STEPS, LEVEL_COUNT, SEGMENT_ID_LIMIT, LOD_MAX } from '../../../contracts/asset/index.mjs';
+import { AssetFormatError, LEVEL_STEPS, LEVEL_COUNT, SEGMENT_ID_LIMIT, LOD_MAX, CHUNK_INDEX_LIMIT } from '../../../contracts/asset/index.mjs';
 
 const I32_MIN = -(2 ** 31);
 const I32_MAX = 2 ** 31 - 1;
@@ -41,7 +41,7 @@ export function encodeChunkKey(key) {
   checkInt('tileX', tileX, I32_MIN, I32_MAX);
   checkInt('tileY', tileY, I32_MIN, I32_MAX);
   checkInt('lod', lod, 0, LOD_MAX);
-  checkInt('chunkIndex', chunkIndex, 0, U32_MAX);
+  checkInt('chunkIndex', chunkIndex, 0, CHUNK_INDEX_LIMIT - 1);
   // -0 은 템플릿 문자열에서 '0' 이 되어 정규형이 유지된다.
   return `${segmentId}.${level}.${tileX}.${tileY}.${lod}.${chunkIndex}`;
 }
@@ -66,6 +66,6 @@ export function decodeChunkKey(s) {
     tileX: field('tileX', p[2], SIGNED, I32_MIN, I32_MAX),
     tileY: field('tileY', p[3], SIGNED, I32_MIN, I32_MAX),
     lod: field('lod', p[4], UNSIGNED, 0, LOD_MAX),
-    chunkIndex: field('chunkIndex', p[5], UNSIGNED, 0, U32_MAX),
+    chunkIndex: field('chunkIndex', p[5], UNSIGNED, 0, CHUNK_INDEX_LIMIT - 1),
   };
 }
