@@ -163,7 +163,9 @@ export function checkGpuPlanes(decoded) {
  * @param {() => number} [options.now]  draw 의 drawMs 용 시계(기본 performance.now)
  * @param {(keys: string[]) => void} [options.onEvict]  메모리 한도 때문에 해제한 그리지 않는 조각 key 알림
  * @param {object} [options.contextAttributes]  getContext 속성(createContext 기본값 위에 덮어씀)
- * @param {{selectDrawable?: Function, toGpuPlanes?: Function, checkArrivedKey?: () => void}} [options.testHooks]  시험 전용: 호출 횟수 계측용 대체 함수(운영 코드는 쓰지 않는다)
+ * @param {{selectDrawable?: Function, toGpuPlanes?: Function, checkArrivedKey?: () => void, onGlUploadStart?: () => void, onGlUploadEnd?: () => void, onDrawStart?: () => void, onDrawEnd?: () => void}} [options.testHooks]
+ *   시험 전용: 호출 횟수 계측용 대체 함수와 GL 구간 경계 알림(운영 코드는 쓰지 않는다). onGlUploadStart/End 는 pool.upload 호출 직전·직후,
+ *   onDrawStart/End 는 draw 의 GL 호출 구간 직전·직후에 인자 없이 부른다(시각은 시험이 찍는다)
  */
 export function createRenderer(options) {
   if (options === null || typeof options !== 'object') throw new ClientRasterError('context', 'options 가 객체가 아님');
@@ -175,6 +177,11 @@ export function createRenderer(options) {
   const select = options.testHooks?.selectDrawable ?? selectDrawable;
   const toPlanes = options.testHooks?.toGpuPlanes ?? toGpuPlanes;
   const checkProbe = options.testHooks?.checkArrivedKey ? { onKey: options.testHooks.checkArrivedKey } : undefined;
+  const noop = () => {};
+  const onGlUploadStart = options.testHooks?.onGlUploadStart ?? noop;
+  const onGlUploadEnd = options.testHooks?.onGlUploadEnd ?? noop;
+  const onDrawStart = options.testHooks?.onDrawStart ?? noop;
+  const onDrawEnd = options.testHooks?.onDrawEnd ?? noop;
   const shading = { ...DEFAULT_SHADING, ...(options.shading ?? {}) };
   // 셰이딩 옵션은 만들 때 한 번 검사한다(PointShaderError 를 'view' 로 바꾼다)
   try {
@@ -389,12 +396,15 @@ export function createRenderer(options) {
     for (const v of Object.values(gpuPiece.planes)) bytesTotal += v.byteLength;
     if (bytesTotal > maxPieceBytes) throw new ClientRasterError('piece', `조각 ${bytesTotal} B 가 maxPieceBytes ${maxPieceBytes} 초과`);
     const evicted = makeRoom(key, bytesTotal);
+    onGlUploadStart();
     try {
       pool.upload(key, gpuPiece); // 풀이 한도를 다시 검사한다
     } catch (e) {
       // 희생은 이미 해제됐는데 새 조각이 없다: 선택이 해제된 key 를 가리키지 않게 다음 draw 에서 한 번 다시 돈다
       if (evicted) selectionStale = true;
       throw e;
+    } finally {
+      onGlUploadEnd();
     }
     meter.remove(key); // 삽입 순서를 최신으로
     meter.add(key, bytesTotal);
@@ -495,6 +505,8 @@ export function createRenderer(options) {
       return { drawnPoints: 0, drawnPieces: 0, droppedFrames, drawMs: 0 };
     }
     const { cam, values } = view;
+    const drawKeys = currentSelection().draw; // 선택 재계산(CPU)은 GL 구간 밖에서 한다
+    onDrawStart();
     if (canvas.width !== cam.bw) canvas.width = cam.bw;
     if (canvas.height !== cam.bh) canvas.height = cam.bh;
     gl.viewport(0, 0, cam.bw, cam.bh);
@@ -515,7 +527,7 @@ export function createRenderer(options) {
     // u_shade 는 프레임 시작(applyPointUniforms)에서 올린 값에서 바뀔 때만 다시 올린다
     const hasShade = gpu.uniforms.u_shade !== null && gpu.uniforms.u_shade !== undefined;
     let shadeNow = values.u_shade ? 1 : 0;
-    for (const key of currentSelection().draw) {
+    for (const key of drawKeys) {
       const info = meta.get(key);
       if (!info) continue;
       bindPiece(key, info);
@@ -527,6 +539,7 @@ export function createRenderer(options) {
       drawnPieces += 1;
     }
     gl.bindVertexArray(null);
+    onDrawEnd();
     return { drawnPoints, drawnPieces, droppedFrames, drawMs: Math.max(0, now() - t0) };
   }
 

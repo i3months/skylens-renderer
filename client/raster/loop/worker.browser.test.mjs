@@ -21,7 +21,11 @@ import { decodeChunkClient } from '../../codec/index.mjs';
 import { glSkip, findChromium } from '../shader/gl_harness.mjs';
 
 const POINTS = 600_000;
-const LONG_TASK_LIMIT = 0; // 성공 기준(T12.5). 측정에 맞춰 바꾸지 않는다.
+// 성공 기준(T12.5). 측정에 맞춰 바꾸지 않는다. 판정 범위(F-255 2차, 결정 0038): t0(uploadPiece 호출) 뒤에 끝나는 모든 long task 를
+// 센다 — uploadPiece 동기부·복호 응답 처리·검사·makeRoom·setArrived·setView·첫 draw 와 그 뒤 take 대기까지. 빼는 것은 GL 호출 구간
+// (렌더러 testHooks 가 알리는 pool.upload 호출 직전~직후, draw 의 GL 호출 직전~직후)에 완전히 든 long task 뿐이다(헤드리스 SwiftShader 의
+// 소프트웨어 GL 은 실제 장치와 달라서). GL 구간을 포함한 전체 구간 long task 0 은 실제 GPU 에서 보는 [local] 하위 작업이다.
+const LONG_TASK_LIMIT = 0;
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 process.env.PLAYWRIGHT_BROWSERS_PATH ??= '/opt/pw-browsers';
@@ -123,9 +127,17 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
     // 본 측정: 실제 렌더러(decode = Worker client.decode)로 uploadPiece 부터 첫 draw 까지
     const worker = new Worker('/client/raster/loop/worker.mjs', { type: 'module' });
     const client = createDecodeWorkerClient({ spawn: () => worker, now: () => performance.now() });
+    // 계측은 시각만 찍는다(await·sleep 을 끼우지 않아 측정 경로의 task 구성이 운영과 같다)
     const marks = {};
+    const gl = []; // GL 호출 구간 [{kind, s, e}] — 렌더러 testHooks 가 알린다
+    const glStart = (kind) => () => gl.push({ kind, s: performance.now(), e: NaN });
+    const glEnd = (kind) => () => { const g = gl[gl.length - 1]; if (g && g.kind === kind && Number.isNaN(g.e)) g.e = performance.now(); else gl.push({ kind, s: NaN, e: performance.now() }); };
     const canvas = document.createElement('canvas');
-    const renderer = createRenderer({ canvas, maxPieceBytes: 1 << 26, maxResidentBytes: 1 << 28, decode: async (b) => { const p = client.decode(b); marks.called = performance.now(); const d = await p; marks.decoded = performance.now(); await sleep(0); marks.afterYield = performance.now(); return d; } });
+    const renderer = createRenderer({
+      canvas, maxPieceBytes: 1 << 26, maxResidentBytes: 1 << 28,
+      decode: async (b) => { const p = client.decode(b); marks.called = performance.now(); const d = await p; marks.decoded = performance.now(); return d; },
+      testHooks: { onGlUploadStart: glStart('glUpload'), onGlUploadEnd: glEnd('glUpload'), onDrawStart: glStart('draw'), onDrawEnd: glEnd('draw') },
+    });
     out.webgl2 = !!canvas.getContext('webgl2');
     // Worker 생성·createRenderer·getContext·셰이더 컴파일은 t0 전에 일어나므로 버린다
     await take();
@@ -133,24 +145,38 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
     const t0 = performance.now();
     await renderer.uploadPiece(key, bytes.slice()); // 전송(transfer)되므로 사본을 보낸다
     const t1 = performance.now();
-    await sleep(0); // GL 업로드 task 와 setArrived·draw task 를 가른다(단계 귀속용; 어느 task 도 가려지지 않는다)
-    const tS = performance.now();
     renderer.setArrived([{ segmentId, level, keys: [key] }]);
     const tA = performance.now();
     renderer.setView({ R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [-96, 96, -40], K: { fx: 400, fy: 400, cx: 320, cy: 240 }, width: 640, height: 480, devicePixelRatio: 1 });
     const stats = renderer.draw();
     const t2 = performance.now();
-    out.stageEdges = { t0, called: marks.called, decoded: marks.decoded, afterYield: marks.afterYield, t1, tS, tA, t2 };
+    const up = gl.filter((g) => g.kind === 'glUpload'), dr = gl.filter((g) => g.kind === 'draw');
+    out.glSpans = gl.map((g) => ({ kind: g.kind, s: g.s - t0, e: g.e - t0 }));
+    out.marksOk = up.length === 1 && dr.length === 1 && gl.every((g) => Number.isFinite(g.s) && Number.isFinite(g.e) && g.s <= g.e)
+      && Number.isFinite(marks.called) && Number.isFinite(marks.decoded);
     out.uploadMs = t1 - t0;
     out.drawMs = t2 - t1;
     out.drawnPoints = stats.drawnPoints;
-    // 단계: uploadPiece 동기부(decode 호출까지) / 복호 응답 처리 / GL 업로드(pool.upload) / setArrived / draw
-    // 각 단계의 첫 task 는 안쪽에서 찍은 시각(mark)보다 조금 먼저 시작하므로 경계에 2 ms 여유를 둔다(귀속 용도일 뿐 판정 문턱이 아니다)
-    const E = 2;
-    const stageOf = (tm) => (tm < marks.called ? 'sync' : tm < marks.afterYield - E ? 'response' : tm < tS - E ? 'glUpload' : tm < tA - E ? 'setArrived' : tm < t2 ? 'draw' : 'after');
-    out.realPathTasks = (await take()).filter((x) => x.start + x.duration > t0).map((x) => ({
-      ms: Math.round(x.duration), stage: stageOf(x.start), endStage: stageOf(x.start + x.duration), startRel: Math.round(x.start - t0),
-    }));
+    const pathTasks = (await take()).filter((x) => x.start + x.duration > t0);
+    if (out.marksOk) {
+      const [u] = up, [d] = dr;
+      out.stageEdges = { t0, called: marks.called, decoded: marks.decoded, glUploadStart: u.s, glUploadEnd: u.e, t1, tA, drawStart: d.s, drawEnd: d.e, t2 };
+      // 단계(시각 구간): long task 가 걸친 단계마다 겹친 ms 를 남겨 판단 근거로 쓴다(판정은 아래 glOnly 만 본다)
+      const stages = [
+        ['before', -Infinity, t0], ['sync', t0, marks.called], ['response', marks.called, u.s], ['glUpload', u.s, u.e], ['afterUpload', u.e, t1],
+        ['setArrived', t1, tA], ['setView', tA, d.s], ['draw', d.s, d.e], ['afterDraw', d.e, t2], ['after', t2, Infinity],
+      ];
+      out.realPathTasks = pathTasks.map((x) => {
+        const a = x.start, b = x.start + x.duration;
+        const by = {};
+        for (const [name, s, e] of stages) { const ov = Math.min(b, e) - Math.max(a, s); if (ov > 0) by[name] = Math.round(ov * 10) / 10; }
+        // 제외 조건: 그 task 전체가 GL 호출 구간 하나 안에 완전히 든다
+        const glOnly = [u, d].some((g) => a >= g.s && b <= g.e);
+        return { ms: Math.round(x.duration), startRel: Math.round(a - t0), stages: by, glOnly };
+      });
+    } else {
+      out.realPathTasks = pathTasks.map((x) => ({ ms: Math.round(x.duration), startRel: Math.round(x.start - t0), stages: null, glOnly: false }));
+    }
     out.clientStats = client.stats();
     renderer.dispose();
     client.terminate();
@@ -167,8 +193,10 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
   }, { key: KEY, segmentId: h.segmentId, level: h.level });
 
   assert.deepEqual(errors, [], `페이지 오류: ${errors.join('; ')}`);
+  // GL 구간 표시가 없거나 짝이 안 맞으면 제외 판정을 할 수 없으므로 곧바로 실패한다
+  assert.equal(r.marksOk, true, `GL 구간 표시(testHooks)가 비었거나 짝이 안 맞음: ${JSON.stringify(r.glSpans)}`);
   console.log(`# T12.5 측정(SwiftShader) chunkBytes=${chunk.length} uploadPiece ms=${r.uploadMs.toFixed(1)} setArrived·setView·draw ms=${r.drawMs.toFixed(1)} drawnPoints=${r.drawnPoints}`);
-  console.log(`# T12.5 측정 실제 경로(uploadPiece→첫 draw) long task 수=${r.realPathTasks.length} 길이(ms)=[${r.realPathTasks.map((x) => x.ms)}] 단계=${JSON.stringify(r.realPathTasks)} 단계경계(ms,t0 기준)=${JSON.stringify(Object.fromEntries(Object.entries(r.stageEdges).map(([k, v]) => [k, Math.round(v - r.stageEdges.t0)])))} 유휴 long task=${r.idleTasks}`);
+  console.log(`# T12.5 측정 실제 경로(uploadPiece→첫 draw) long task 수=${r.realPathTasks.length} 길이(ms)=[${r.realPathTasks.map((x) => x.ms)}] 단계=${JSON.stringify(r.realPathTasks)} 단계경계(ms,t0 기준)=${JSON.stringify(Object.fromEntries(Object.entries(r.stageEdges).map(([k, v]) => [k, Math.round((v - r.stageEdges.t0) * 10) / 10])))} 유휴 long task=${r.idleTasks}`);
   console.log(`# T12.5 대조(메인 동기 복호) ms=${r.controlMs.toFixed(1)} long task 수=${r.controlTasks.length} 길이(ms)=[${r.controlTasks}]`);
   assert.equal(r.supportsLongtask, true, 'longtask 관찰자를 지원하지 않는 브라우저');
   assert.equal(r.webgl2, true, 'webgl2 컨텍스트를 얻지 못함');
@@ -176,9 +204,7 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
   assert.equal(r.clientStats.responses, 1);
   assert.equal(r.idleTasks, 0, `유휴 구간에 long task ${r.idleTasks} 개: 계측 기준선이 오염됨`);
   assert.ok(r.controlTasks.length > 0, '대조(메인 스레드 동기 복호)에서 long task 가 잡히지 않아 계측이 유효하지 않음');
-  // GL 단계(pool.upload=texImage·draw=drawArrays)는 SwiftShader 소프트웨어 렌더라 메인 스레드에서 오래 걸린다. 복호·응답 처리·uploadPiece 동기부
-  // (이 시험이 지키려는 것: 복호가 메인을 막지 않음)와 분리해 판정하고, GL 단계 long task 는 별도 작업으로 위 로그에 단계별로 남긴다.
-  const GL_STAGES = new Set(['glUpload', 'setArrived', 'draw']);
-  const nonGl = r.realPathTasks.filter((x) => !GL_STAGES.has(x.stage));
-  assert.equal(nonGl.length, LONG_TASK_LIMIT, `uploadPiece→첫 draw 비-GL 단계 long task ${nonGl.length} 개 ${JSON.stringify(nonGl)} (전체 ${JSON.stringify(r.realPathTasks)}; 기준 ${LONG_TASK_LIMIT})`);
+  // GL 호출 구간(pool.upload·draw 의 GL 호출)에 완전히 든 long task 만 뺀다(LONG_TASK_LIMIT 주석). 나머지는 단계가 어디든 센다.
+  const counted = r.realPathTasks.filter((x) => !x.glOnly);
+  assert.equal(counted.length, LONG_TASK_LIMIT, `uploadPiece→첫 draw 구간 long task ${counted.length} 개(GL 구간에 완전히 든 것 제외) ${JSON.stringify(counted)} (전체 ${JSON.stringify(r.realPathTasks)}; GL 구간 ${JSON.stringify(r.glSpans)}; 기준 ${LONG_TASK_LIMIT})`);
 });
