@@ -169,6 +169,8 @@ function createConnection(socket, head, onError, limits) {
 
   socket.on('data', feed);
   socket.on('error', () => {});
+  // 상대가 close 프레임 없이 FIN 만 보내면 끝낸다(result 기본값 1006, 이미 정해진 코드는 유지).
+  socket.on('end', finish);
   socket.on('close', finish);
   if (head && head.length) queueMicrotask(() => feed(head));
 
@@ -205,6 +207,8 @@ export function createWsServer({ host, port, onConnection, onError, maxWriteBuff
   });
   const sockets = new Set();
   server.on('upgrade', (req, socket, head) => {
+    // 거절 경로(400)에서도 상대의 RST 가 uncaughtException 이 되지 않게 가장 먼저 단다.
+    socket.on('error', (err) => { try { onError?.(err, 'handshake'); } catch { /* 보고 실패는 삼킨다 */ } });
     const key = req.headers['sec-websocket-key'];
     const ok = req.method === 'GET'
       && String(req.headers.upgrade ?? '').toLowerCase() === 'websocket'

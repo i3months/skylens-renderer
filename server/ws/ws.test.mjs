@@ -738,3 +738,38 @@ test('onConnection catch 의 socket.destroy: 빠지면 hang 이 아니라 시한
   await ws.close();
   await ws2.close();
 });
+
+test('핸드셰이크 거절 직후 RST 20 회: uncaughtException 0, 이후 정상 접속', () => withUncaught(async (uncaught) => {
+  const ws = await start(() => {}, { onError: () => {} });
+  const { address, port } = ws.address();
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => {
+      const sock = net.connect({ host: address, port });
+      openSockets.add(sock);
+      sock.on('error', () => {});
+      sock.on('close', resolve);
+      sock.on('connect', () => {
+        sock.write('GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: AAAA\r\nSec-WebSocket-Version: 12\r\n\r\n');
+        sock.resetAndDestroy();
+      });
+    });
+  }
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(uncaught, []);
+  const cl = await connect(ws);
+  cl.sock.destroy();
+  await ws.close();
+}));
+
+test('close 프레임 없이 FIN: onClose 정확히 한 번, 코드 1006, 2 초 안', async () => {
+  const closes = [];
+  const ws = await start((c) => c.onClose((r) => closes.push(r)));
+  const cl = await connect(ws);
+  cl.sock.end();
+  const end = Date.now() + 2000;
+  while (closes.length === 0 && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(closes.length, 1);
+  assert.equal(closes[0].code, 1006);
+  await ws.close();
+});
