@@ -4,7 +4,9 @@
 import { createRenderer } from '../client/raster/index.mjs';
 import { selectDrawable, FORMAT_POINT27 } from '../contracts/client_raster/index.mjs';
 
-const N = Number(process.argv[2] ?? 4000);
+// F-262: node bench/room_reject_bench.mjs f262 [N...] 은 한도 가득 상태의 연속 업로드(희생 1개 뒤 성공) 시간을 N 별로 잰다.
+const F262 = process.argv[2] === 'f262';
+const N = Number(F262 ? 4000 : (process.argv[2] ?? 4000));
 const REJECTS = Number(process.argv[3] ?? 300);
 
 const base = {
@@ -32,6 +34,70 @@ function decode(bytes) {
       normal_oct_x: new Int8Array(1), normal_oct_y: new Int8Array(1),
     },
   };
+}
+
+
+// F-262: 상주 N 중 절반은 도착 밖(희생 후보), 절반은 도착 조각(보호). 한도 가득. 도착 집합의 새 key 1000 개를 연속 업로드한다.
+// 매번 희생 1개를 해제한 뒤 성공한다. 업로드 성공마다 meta 가 바뀌어도 시간이 N 에 거의 선형이어야 하고 select 호출은 0 이어야 한다.
+async function f262(n, uploads = 1000) {
+  let calls = 0;
+  let evicted = 0;
+  const r = createRenderer({
+    canvas, decode, maxPieceBytes: 1 << 10, maxResidentBytes: n * 17, now: () => 0,
+    testHooks: { selectDrawable: (k, a) => { calls += 1; return selectDrawable(k, a); } },
+    onEvict: (ks) => { evicted += ks.length; }, // 실제 퇴출 수(업로드 수가 아니다)
+  });
+  r.setView({ R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], K: { fx: 20, fy: 20, cx: 16.5, cy: 12.5 }, width: 32, height: 24, devicePixelRatio: 1 });
+  const inside = [];
+  for (let i = 0; i < n; i++) {
+    const k = i % 2 === 0 ? `4.1.${i}.0.0.0` : `3.1.${i}.0.0.0`; // 짝수: 도착 밖, 홀수: 도착 조각(타일마다 lod0 chunk 1개)
+    if (i % 2 === 1) inside.push(k);
+    await r.uploadPiece(k, enc(k));
+  }
+  const fresh = Array.from({ length: uploads }, (_, i) => `3.1.${n + i}.0.0.0`);
+  r.setArrived([{ segmentId: 3, level: 1, keys: [...inside, ...fresh] }], { deferResult: true });
+  r.draw();
+  calls = 0;
+  const t0 = process.hrtime.bigint();
+  evicted = 0;
+  for (const k of fresh) await r.uploadPiece(k, enc(k));
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  console.log(`F-262 N=${n} 연속 업로드 ${uploads}개, 실제 퇴출 ${evicted}개: select 호출 ${calls}, ${ms.toFixed(1)} ms`);
+  r.dispose();
+}
+// F-266 ③: 타일 하나에 n 개가 상주(모두 도착 조각)하고 그 key 들이 meta 앞쪽에 있다. 뒤쪽에 도착 밖 희생 후보 victims 개.
+// 한도 가득, 같은 타일의 새 chunk 를 연속 업로드하면 매번 보호 key n 개를 지나 희생 1개를 찾고(makeRoom 의 O(M) 탐색은 그대로),
+// 성공마다 roomResidentChange 가 그 타일을 증분 갱신한다. 업로드당 ms 를 잰다.
+async function f266(n, uploads = 200, protectedFirst = true) {
+  let evicted = 0;
+  const r = createRenderer({
+    canvas, decode, maxPieceBytes: 1 << 10, maxResidentBytes: (n + uploads) * 17, now: () => 0,
+    onEvict: (ks) => { evicted += ks.length; },
+  });
+  r.setView({ R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], K: { fx: 20, fy: 20, cx: 16.5, cy: 12.5 }, width: 32, height: 24, devicePixelRatio: 1 });
+  const prot = Array.from({ length: n }, (_, i) => `3.1.0.0.0.${i}`); // 같은 타일의 lod0 chunk n 개(meta 앞쪽)
+  const fresh = Array.from({ length: uploads }, (_, i) => `3.1.0.0.0.${n + i}`);
+  const victims = Array.from({ length: uploads }, (_, i) => `4.1.${i}.0.0.0`); // 도착 밖(meta 뒤쪽)
+  for (const k of protectedFirst ? prot : victims) await r.uploadPiece(k, enc(k));
+  for (const k of protectedFirst ? victims : prot) await r.uploadPiece(k, enc(k));
+  r.setArrived([{ segmentId: 3, level: 1, keys: [...prot, ...fresh] }], { deferResult: true });
+  r.draw();
+  const t0 = process.hrtime.bigint();
+  for (const k of fresh) await r.uploadPiece(k, enc(k));
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  console.log(`F-266 타일 하나 상주 ${n}, ${protectedFirst ? '보호 key 앞쪽(희생 탐색 O(M))' : '희생 후보 앞쪽'}, 업로드 ${uploads}개, 실제 퇴출 ${evicted}개: ${ms.toFixed(1)} ms, 업로드당 ${(ms / uploads).toFixed(3)} ms`);
+  r.dispose();
+}
+if (process.argv[2] === 'f266') {
+  const sizes = process.argv.length > 3 ? process.argv.slice(3).map(Number) : [4000, 16000];
+  for (const n of sizes) { await f266(n, 200, false); await f266(n, 200, true); }
+  process.exit(0);
+}
+
+if (F262) {
+  const sizes = process.argv.length > 3 ? process.argv.slice(3).map(Number) : [2000, 4000, 8000];
+  for (const n of sizes) await f262(n);
+  process.exit(0);
 }
 
 let selectCalls = 0;

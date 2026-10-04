@@ -22,9 +22,10 @@ import { glSkip, findChromium } from '../shader/gl_harness.mjs';
 
 const POINTS = 600_000;
 // 성공 기준(T12.5). 측정에 맞춰 바꾸지 않는다. 판정 범위(F-255 3차, 결정 0038): t0(uploadPiece 호출) 뒤에 끝나는 long task 마다
-// 비-GL 시간 = duration − (그 task 구간과 GL 호출 구간들이 겹친 ms 합) 을 구하고, 비-GL 시간이 LONG_TASK_MS(long task 정의 50 ms)를
-// 넘는 task 를 센다. GL 호출 구간은 렌더러 testHooks 가 알리는 pool.upload 호출 직전~직후와 draw 의 GL 호출 직전~직후다(헤드리스
-// SwiftShader 의 소프트웨어 GL 시간은 실제 장치와 달라서 뺀다). 그 밖(uploadPiece 동기부·복호 응답 처리·검사·makeRoom·setArrived·
+// 비-GL 시간 = duration − (그 task 구간과 GL 호출 단위 구간들이 겹친 ms 합) 을 구하고, 비-GL 시간이 LONG_TASK_MS(long task 정의 50 ms)를
+// 넘는 task 를 센다. GL 호출 구간은 페이지가 WebGL2RenderingContext.prototype 의 GPU 작업 호출(bufferData·drawArrays·texImage2D·
+// compileShader·linkProgram·readPixels·finish·flush 등과 드로잉 버퍼를 다시 할당하는 canvas.width/height 대입)을 감싸 잰 호출별 시작~끝이다(헤드리스 SwiftShader 의 소프트웨어 GL 시간은
+// 실제 장치와 달라서 뺀다). 경계 hook(onGlUploadStart~End, onDrawStart~End) 구간 전체는 더 이상 빼지 않는다(그 안의 CPU 작업도 센다). 그 밖(uploadPiece 동기부·복호 응답 처리·검사·makeRoom·setArrived·
 // setView·draw 의 선택 계산)은 같은 task 에 GL 이 섞여도 모두 센다. 경계 hook 위치는 client/raster/hook_order.test.mjs 가 고정한다.
 // GL 구간을 포함한 전체 구간 long task 0 은 실제 GPU 에서 보는 [local] 하위 작업이다.
 const LONG_TASK_LIMIT = 0;
@@ -133,6 +134,36 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
     // 계측은 시각만 찍는다(await·sleep 을 끼우지 않아 측정 경로의 task 구성이 운영과 같다)
     const marks = {};
     const gl = []; // GL 호출 구간 [{kind, s, e}] — 렌더러 testHooks 가 알린다
+    // GL 호출 단위 계측: 실제 GPU 작업 호출(WebGL2RenderingContext.prototype)을 감싸 호출마다 [시작, 끝] 을 남긴다.
+    // 판정의 차감은 이 호출 구간만이다(경계 hook 구간 전체가 아님): 경계 안의 사건 없는 CPU 작업은 차감되지 않는다.
+    const glCalls = [];
+    const GL_FNS = ['bufferData', 'bufferSubData', 'drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced', 'texImage2D', 'texSubImage2D', 'texImage3D', 'texSubImage3D', 'createBuffer', 'createTexture', 'createShader', 'createProgram', 'compileShader', 'linkProgram', 'readPixels', 'finish', 'flush', 'clear', 'generateMipmap', 'deleteBuffer', 'deleteTexture'];
+    out.wrappedGl = [];
+    for (const name of GL_FNS) {
+      const orig = WebGL2RenderingContext.prototype[name];
+      if (typeof orig !== 'function') continue;
+      out.wrappedGl.push(name);
+      WebGL2RenderingContext.prototype[name] = function (...a) {
+        const s = performance.now();
+        try { return orig.apply(this, a); } finally { glCalls.push({ name, s, e: performance.now() }); }
+      };
+    }
+    // canvas.width/height 대입은 드로잉 버퍼(백버퍼)를 다시 할당하는 GPU 작업이다(첫 draw 에서 일어남): 같은 GL 호출로 센다
+    for (const prop of ['width', 'height']) {
+      const desc = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, prop);
+      if (!desc || !desc.set) continue;
+      out.wrappedGl.push(`canvas.${prop}=`);
+      Object.defineProperty(HTMLCanvasElement.prototype, prop, { ...desc, set(v) {
+        const s = performance.now();
+        try { desc.set.call(this, v); } finally { glCalls.push({ name: `canvas.${prop}=`, s, e: performance.now() }); }
+      } });
+    }
+    const glMsIn = (a, b) => { // [a,b] 와 GL 호출 구간 합집합이 겹친 ms
+      const iv = glCalls.map((c) => [Math.max(a, c.s), Math.min(b, c.e)]).filter(([x, y]) => y > x).sort((p, q) => p[0] - q[0]);
+      let sum = 0, cur = -Infinity;
+      for (const [x, y] of iv) { const lo = Math.max(x, cur); if (y > lo) { sum += y - lo; cur = y; } }
+      return sum;
+    };
     const glStart = (kind) => () => gl.push({ kind, s: performance.now(), e: NaN });
     const glEnd = (kind) => () => { const g = gl[gl.length - 1]; if (g && g.kind === kind && Number.isNaN(g.e)) g.e = performance.now(); else gl.push({ kind, s: NaN, e: performance.now() }); };
     const canvas = document.createElement('canvas');
@@ -155,8 +186,10 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
     const stats = renderer.draw();
     const t2 = performance.now();
     const up = gl.filter((g) => g.kind === 'glUpload'), dr = gl.filter((g) => g.kind === 'draw');
+    out.glCallCount = glCalls.length;
     out.glSpans = gl.map((g) => ({ kind: g.kind, s: g.s - t0, e: g.e - t0 }));
     out.marksOk = up.length === 1 && dr.length === 1 && gl.every((g) => Number.isFinite(g.s) && Number.isFinite(g.e) && g.s <= g.e)
+      && glCalls.some((c) => c.s >= t0 && c.name === 'bufferData') && glCalls.some((c) => c.s >= t0 && c.name === 'drawArrays') // t0 이후 기록만(t0 앞 셰이더 호출로는 참이 되지 않게)
       && Number.isFinite(marks.called) && Number.isFinite(marks.decoded);
     out.uploadMs = t1 - t0;
     out.drawMs = t2 - t1;
@@ -174,8 +207,8 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
         const a = x.start, b = x.start + x.duration;
         const by = {};
         for (const [name, s, e] of stages) { const ov = Math.min(b, e) - Math.max(a, s); if (ov > 0) by[name] = Math.round(ov * 10) / 10; }
-        // 판정값: 비-GL 시간 = duration − (task 구간과 GL 호출 구간들의 겹친 ms 합)
-        const glMs = [u, d].reduce((acc, g) => acc + Math.max(0, Math.min(b, g.e) - Math.max(a, g.s)), 0);
+        // 판정값: 비-GL 시간 = duration − (task 구간과 GL 호출 단위 구간들의 겹친 ms 합)
+        const glMs = glMsIn(a, b);
         const nonGl = x.duration - glMs;
         return { ms: Math.round(x.duration), startRel: Math.round(a - t0), stages: by, glMs: Math.round(glMs * 10) / 10, nonGl: Math.round(nonGl * 10) / 10, counted: nonGl > LONG_TASK_MS };
       });
@@ -202,6 +235,7 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
   assert.equal(r.marksOk, true, `GL 구간 표시(testHooks)가 비었거나 짝이 안 맞음: ${JSON.stringify(r.glSpans)}`);
   console.log(`# T12.5 측정(SwiftShader) chunkBytes=${chunk.length} uploadPiece ms=${r.uploadMs.toFixed(1)} setArrived·setView·draw ms=${r.drawMs.toFixed(1)} drawnPoints=${r.drawnPoints}`);
   console.log(`# T12.5 측정 실제 경로(uploadPiece→첫 draw) long task 수=${r.realPathTasks.length} 길이(ms)=[${r.realPathTasks.map((x) => x.ms)}] 단계=${JSON.stringify(r.realPathTasks)} 단계경계(ms,t0 기준)=${JSON.stringify(Object.fromEntries(Object.entries(r.stageEdges).map(([k, v]) => [k, Math.round((v - r.stageEdges.t0) * 10) / 10])))} 유휴 long task=${r.idleTasks}`);
+  console.log(`# T12.5 GL 호출 단위 계측 감싼 함수=${r.wrappedGl.length} 기록 호출 수=${r.glCallCount}`);
   console.log(`# T12.5 대조(메인 동기 복호) ms=${r.controlMs.toFixed(1)} long task 수=${r.controlTasks.length} 길이(ms)=[${r.controlTasks}]`);
   assert.equal(r.supportsLongtask, true, 'longtask 관찰자를 지원하지 않는 브라우저');
   assert.equal(r.webgl2, true, 'webgl2 컨텍스트를 얻지 못함');
