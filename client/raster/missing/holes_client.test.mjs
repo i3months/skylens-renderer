@@ -130,7 +130,7 @@ test('도우미: filled 는 메운 픽셀 전부를 오름차순으로 돌려준
   assert.deepEqual(compareWithReference(m(4, 4, [1, 2]), m(4, 4, [2, 5, 6])).lost, [5, 6]);
 });
 
-test('도우미: nonEmptyValuesInEmpty 는 번호·깊이·색 중 하나라도 어긋나면 잡는다', () => {
+test('도우미: nonEmptyValuesInEmpty 는 번호가 어긋나면 잡는다', () => {
   const mk = () => emptyResult(3, 3);
   // 빈 결과는 검출하지 않음
   assert.deepEqual(nonEmptyValuesInEmpty(mk(), [0, 1, 2]), []);
@@ -139,12 +139,13 @@ test('도우미: nonEmptyValuesInEmpty 는 번호·깊이·색 중 하나라도 
   const a = mk(); a.index[1] = 3; a.depth[1] = 5;
   assert.deepEqual(nonEmptyValuesInEmpty(a, [0, 1, 2]), [1]);
 
-  // 픽셀 2를 칠하면(index 설정) 감지됨
-  // 유효한 RenderResult 를 위해 깊이와 색도 함께 설정한다
+  // 픽셀 2의 번호를 설정하면 감지됨
+  // 유효한 RenderResult 를 위해 깊이도 함께 설정한다
   const b = mk(); b.depth[2] = 4; b.index[2] = 0;  // 칠한 픽셀로 만들기
   assert.deepEqual(nonEmptyValuesInEmpty(b, [0, 1, 2]), [2]);
 
-  // 색이 0이 아닌 픽셀 0을 설정하면 감지됨
+  // 픽셀 0의 번호를 설정하면 감지됨
+  // 유효한 RenderResult 를 위해 깊이와 색도 함께 설정한다
   for (const c of [0, 1, 2]) {
     const d = mk(); d.index[0] = 1; d.depth[0] = 1; d.color[c] = 7;
     assert.deepEqual(nonEmptyValuesInEmpty(d, [0, 1]), [0], `색 채널 ${c}`);
