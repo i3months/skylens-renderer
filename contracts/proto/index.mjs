@@ -9,14 +9,14 @@
 //   VIEW_UPDATE(2, c→s)   40 B  viewSeq u32, pos f32×3 (ENU m), quat f32×4 (x,y,z,w, 단위), fovY f32 (rad, 0<fovY<π), width u16, height u16
 //   PIECE_REQUEST(3, c→s) 6 + 16·n B  reqId u32, count u16 (≤ MAX_REQUEST_ITEMS), 항목 n 개: PieceKey 16 B
 //   ACK(4, c→s)           4 B   upToPieceSeq u32 (여기까지 받았음)
-//   WELCOME(5, s→c)       9 B   sessionId u32, resumed u8 (0|1), nextPieceSeq u32
+//   WELCOME(5, s→c)       9 B   sessionId u32 (≥ 1, 0 은 HELLO 새 접속 전용), resumed u8 (0|1), nextPieceSeq u32
 //   PIECE(6, s→c)         4 + 16 + chunkLen B  pieceSeq u32, PieceKey 16 B, 조각 바이트(contracts/asset 의 .skla 조각 그대로, 1 B 이상)
 //   LEVEL_ARRIVED(7, s→c) 13 B  segmentId u32, level u8 (0..3), pieceCount u32 (>= 1: 조각 0 개 도착은 보내지 않는다),
 //                               firstPieceSeq u32 (>= 1, 그 수준 첫 조각의 pieceSeq. firstPieceSeq + pieceCount − 1 ≤ 0xFFFFFFFF)
 //     완료 창은 pieceSeq firstPieceSeq..firstPieceSeq+pieceCount−1 이다(선에 명시, F-236·decisions 0032). 받는 쪽은 창을
 //     '그때까지 받은 가장 큰 pieceSeq' 로 추정하지 않는다 — 그래서 같은 LEVEL_ARRIVED 를 뒤늦게 혼자 다시 받아도 같은 창이다(멱등).
 //     LEVEL_ARRIVED 는 pieceSeq 를 쓰지 않는다. 이어받기 때 서버는 창 끝이 클라이언트 lastPieceSeq 이상인 LEVEL_ARRIVED 를
-//     자기 조각들 뒤에 다시 보낸다(server/ws/resume resendPlan).
+//     자기 조각들 뒤에 다시 보낸다(server/ws/resume resendPlan). (현재 미배선, F-238 ④)
 //   재전송 규약: 송출 실패 뒤 같은 pieceSeq·같은 PieceKey 로 다시 보낸 PIECE 는 같은 조각이다(수신측은 하나로 센다).
 //     한 pieceSeq 는 절대 서로 다른 두 PieceKey 에 쓰이지 않는다(F-204). 송출이 실패한 수준 도착의 pieceSeq 는 그 key 들에
 //     묶이고, 서버(server/adapter/core)는 그 수준 도착을 같은 pieceSeq·key 로 다시 보내 끝내기 전에는 다른 이벤트를 보내지
@@ -34,7 +34,7 @@
 //   → payloadLength > MAX_PAYLOAD_BYTES 'limit' → 프레임 길이 불일치 'length' → 본문 값 범위 'field'.
 // 방향 검사는 프레임 길이 검사 다음, 고정 크기 검사 앞이다. 서버 복호는 c→s 종류만, 클라이언트 복호는 s→c 종류만 받는다. 반대 방향 type 은 'direction'.
 
-/** 결정 0032: 외부 클라이언트가 생기면 올린다(그 전까지 1 유지). */
+/** 결정 0032: 두 조건 중 하나가 생기면 올린다(그 전까지 1 유지): ① 외부 클라이언트, ② 선 형식 재변경. 옛 9 B 'length' 는 거부한다. */
 export const PROTO_VERSION = 1;
 export const FRAME_HEADER_BYTES = 8;
 export const PIECE_KEY_BYTES = 16;
