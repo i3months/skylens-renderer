@@ -8,7 +8,7 @@ import {
   BUILDING_LOD_REF_PIXEL_RAD, BUILDING_LOD_MAX_GAP_PX, BUILDING_LOD_CELL_M,
 } from './index.mjs';
 import { parseSeeds } from '../../../tools/lod_seed_sweep.mjs';
-import { mulberry32, prism, denseCity, meshBounds, VIEWS, FAR_VIEW_MIN_REDUCTION, TILE_M, lodForView, triCount, render, blockSsim, W, H } from './scene.mjs';
+import { mulberry32, prism, denseCity, meshBounds, VIEWS, FAR_VIEW_MIN_REDUCTION, lodForView, triCount, render, blockSsim, W, H } from './scene.mjs';
 
 // 합성 장면·소프트웨어 래스터·블록 SSIM 은 scene.mjs 에 있다(시드 일괄 검사 도구와 공유).
 
@@ -172,7 +172,7 @@ const DENSE_SEEDS = [1, 42, 307];
 // 감소율: 틈 칸(어느 구성 건물에도 속하지 않는 땅)은 hideTol(1/4 px)까지만 메운다(F-326). 이 장면은 필지마다 앞뒤 면이
 // 0.2~0.8 m 들쭉날쭉해서, 먼 곳 기준(500 m)에 가까운 타일만 LOD 되는 S-near 는 그 들쭉날쭉한 면을 메울 수 없어 시드에 따라
 // 감소가 0 이다(면 수는 늘지 않는다). 그래서 시드·시점마다 면 수가 늘지 않음을 단언하고, 감소율 하한(FAR_VIEW_MIN_REDUCTION,
-// 근거는 scene.mjs)은 먼 시점 5개의 시드 합계에만 단언한다. S-near·NE-mid·SW-mid 의 감소율은 진단 기록만 한다.
+// 근거는 scene.mjs)은 먼 시점 5개의 시드 합계에만 단언한다. S-near·NE-mid·SW-mid 는 하한 없이 시드 합계 감소 > 0 만 단언한다.
 function sweepAssert(t, seeds, cityOf) {
   const perView = new Map(VIEWS.map((v) => [v.name, { orig: 0, lod: 0, min: Infinity, minSeed: 0 }]));
   for (const seed of seeds) {
@@ -190,6 +190,8 @@ function sweepAssert(t, seeds, cityOf) {
     t.diagnostic(`${name}: 최저 건물 영역 SSIM ${pv.min.toFixed(4)} (시드 ${pv.minSeed}), 시드 합계 감소율 ${(red * 100).toFixed(1)}%${floor === undefined ? ' (진단만)' : ` (하한 ${(floor * 100).toFixed(1)}%)`}`);
     assert.ok(pv.min >= BUILDING_LOD_MIN_SSIM, `${name}: 최저 SSIM ${pv.min} (시드 ${pv.minSeed}) < ${BUILDING_LOD_MIN_SSIM}`);
     if (floor !== undefined) assert.ok(red >= floor, `${name}: 시드 합계 감소율 ${(red * 100).toFixed(2)}% < 하한 ${(floor * 100).toFixed(1)}% (${pv.orig} → ${pv.lod})`);
+    // 하한 없는 시점도 시드 합계 감소 > 0 (결정 0044 §7). LOD 를 끄면 합계가 0 이 되어 여기서 실패한다.
+    else assert.ok(pv.lod < pv.orig, `${name}: 시드 합계 감소 없음 (${pv.orig} → ${pv.lod})`);
   }
 }
 
@@ -218,14 +220,22 @@ test('장면 전체를 한 번에 넘긴다: 동 보존, 면 수 감소, 건물 
     assert.equal(new Set(ids).size, DENSE.length, `${name}: id 중복`);
     const lodTris = triCount(groups.map((g) => g.mesh));
     assert.ok(lodTris < origTris, `${name}: 감소 없음 (${origTris} → ${lodTris})`);
+    // 각 그룹의 구성 건물 중심이 리터럴 64 m 칸 하나 안에 있어야 한다(구현 칸 키를 상수로 바꾸는 변이를 잡는다).
+    const byId = new Map(DENSE.map((b) => [b.id, meshBounds(b.mesh)]));
+    for (const g of groups) {
+      const cellKeys = new Set(g.ids.map((id) => {
+        const bb = byId.get(id);
+        return `${Math.floor((bb.minX + bb.maxX) / 2 / 64)},${Math.floor((bb.minY + bb.maxY) / 2 / 64)}`;
+      }));
+      assert.equal(cellKeys.size, 1, `${name}: 그룹 ${g.ids.join(',')} 가 64 m 칸 ${cellKeys.size}개에 걸침`);
+    }
     const s = blockSsim(render(origMeshes, view), render(groups.map((g) => g.mesh), view));
     assert.ok(s.buildingBlocks > 0, `${name}: 건물 블록 없음`);
     assert.ok(s.buildingMean >= BUILDING_LOD_MIN_SSIM, `${name}: 건물 영역 SSIM ${s.buildingMean} < ${BUILDING_LOD_MIN_SSIM}`);
   }
 });
 
-test('시험 장면 타일 크기(리터럴 64)가 구현 칸 크기와 같다', () => {
-  assert.equal(TILE_M, 64);
+test('구현 칸 크기가 리터럴 64 m 이다', () => {
   assert.equal(BUILDING_LOD_CELL_M, 64);
 });
 
