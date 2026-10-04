@@ -20,7 +20,15 @@ function toMask(x) {
     if (!Number.isInteger(x.width) || !Number.isInteger(x.height) || x.drawn.length !== x.width * x.height) {
       throw new Error(`${ERR} 마스크 모양이 틀림`);
     }
+    // 0×0 거부 및 음수 크기 거부
+    if (x.width <= 0 || x.height <= 0) {
+      throw new Error(`${ERR} 크기가 양수여야 함: ${x.width}×${x.height}`);
+    }
     return { width: x.width, height: x.height, drawn: x.drawn };
+  }
+  // 0×0 거부 및 음수 크기 거부
+  if (!Number.isInteger(x.width) || !Number.isInteger(x.height) || x.width <= 0 || x.height <= 0) {
+    throw new Error(`${ERR} 크기가 양의 정수여야 함: ${x.width}×${x.height}`);
   }
   return { width: x.width, height: x.height, drawn: drawnMask(x) };
 }

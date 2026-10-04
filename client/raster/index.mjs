@@ -83,8 +83,14 @@ export function toGpuPlanes(decoded) {
   if (format === FORMAT_POINT27) {
     const normalOct = new Int8Array(2 * n);
     for (let i = 0; i < n; i += 1) {
-      normalOct[2 * i] = p.normal_oct_x[i];
-      normalOct[2 * i + 1] = p.normal_oct_y[i];
+      const x = p.normal_oct_x[i];
+      const y = p.normal_oct_y[i];
+      // ASSET_FORMAT §4.2: normal_oct 범위 -127..127 (−128 거부)
+      if (x < -127 || x > 127 || y < -127 || y > 127) {
+        throw new ClientRasterError('piece', `normal_oct 값이 범위 [-127, 127] 밖: [${x}, ${y}]`);
+      }
+      normalOct[2 * i] = x;
+      normalOct[2 * i + 1] = y;
     }
     planes.normalOct = normalOct;
   }
