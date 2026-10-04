@@ -208,7 +208,7 @@ test('fuzz_no_panic', { timeout: WALL_GUARD_MS + 10_000 }, () => {
   for (const g of goldens) {
     for (const [n, t] of Object.entries(targets)) {
       const r = callTarget(n, t, g.slice(), false, stats[n]);
-      assert.ok(r === null || r.kind === 'ok', `${n} 골든 실패: ${r?.why}`);
+      assert.ok(r === null || r.kind === 'ok', `${n} 골든 실패: kind=${r?.kind} ${r?.why}`);
       stats[n].maxMs = 0; stats[n].skipped = 0; stats[n].slow = 0; stats[n].retryPass = 0;
     }
   }
