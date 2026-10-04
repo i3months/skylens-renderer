@@ -917,6 +917,7 @@ test('F-231 ⑥: skip 의 onRelease 가 같은 어댑터 handle 을 불러도 �
   assert.deepEqual(r, { action: 'skip', emitted: 0, released: [], abandoned: keys });
   assert.deepEqual(rel, [keys], 'key 당 1 번(2 번 이하)');
   assert.deepEqual(inner, [{ action: 'expect', emitted: 1, released: [] }]);
+  assert.ok(!('releaseDropped' in inner[0]));
   assert.deepEqual(ad.pendingReleases(), []);
   ad.handle({ kind: 'segment_expected', segmentId: 10 });
   assert.equal(rel.length, 1);
@@ -1087,6 +1088,20 @@ test('F-239 ⑨: levelArrivedMaybeSent skip 은 기계가 쥐지 않은 key 의 
   assert.deepEqual(r.abandoned, []);
   assert.deepEqual(h.rel, [], 'onRelease 는 불리지 않는다');
   assert.deepEqual(h.ad.pendingReleases(), [], '보관한 알림도 없다');
+});
+
+test('F-240 ④: L == M(재시도 수준이 기계의 현재 수준과 같음)에서도 levelArrivedMaybeSent skip 이고 서버 내부 해제는 알리지 않는다', () => {
+  const h = laHarness();
+  h.attempt(3);
+  h.machine.arrive(9, 1, piecesEvent(9, 1, 2).pieces);
+  const n = h.out.length;
+  const r = h.retry();
+  assert.deepEqual(r, { action: 'skip', emitted: 0, released: [], abandoned: [], levelArrivedMaybeSent: true });
+  assert.equal(h.out.length, n, 'skip 은 아무것도 내보내지 않는다');
+  assert.deepEqual(h.rel, [], 'onRelease 는 불리지 않는다');
+  assert.deepEqual(h.ad.pendingReleases(), [], '보관한 알림도 없다');
+  assert.equal(h.ad.unfinishedEvent(), null);
+  assert.equal(h.ad.nextPieceSeq(), PIECE_SEQ_MIN + 2, '쓰였을 수 있는 pieceSeq 는 태운다');
 });
 
 test('F-235: LEVEL_ARRIVED emit 을 부른 시도 뒤 재시도가 더 일찍 실패해도 표시는 남는다', () => {
