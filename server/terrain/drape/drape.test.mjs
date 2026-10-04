@@ -3,11 +3,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
-  ALIGN_TOLERANCE_PX, DRAPE_MIP_COUNT, TowerAssetError,
+  ALIGN_TOLERANCE_PX, DRAPE_MIP_COUNT, TowerAssetError, TERRAIN_TILE_SIZE_M, tileBounds,
 } from '../../../contracts/tower_assets/index.mjs';
 import * as stubs from '../../../contracts/tower_assets/stubs.mjs';
 import {
-  buildDrapeTile, measureDrapeAlignment, drapeTileSize, tilePixelToEnu, enuToTilePixel, MAX_DRAPE_TILE_PX, ALIGN_BLOCK_PX,
+  buildDrapeTile, measureDrapeAlignment, drapeTileSize, tilePixelToEnu, enuToTilePixel, MAX_DRAPE_TILE_PX,
+  ALIGN_BLOCKS_PER_SIDE, ALIGN_MIN_BLOCK_PX, drapeTableBuildCount,
 } from './index.mjs';
 
 /** 합성 영상: 각 픽셀 중심 ENU 로 색을 정한다. 행 0 = 북. */
@@ -139,7 +140,9 @@ test('좌표 정합: measureDrapeAlignment 는 정상 타일에서 1 px 이내, 
     for (const [tx, ty] of [[0, 0], [-1, -1], [1, 1]]) {
       const m = measureDrapeAlignment(imgA, buildDrapeTile(imgA, tx, ty, mip));
       assert.ok(m.maxMisalignPx <= ALIGN_TOLERANCE_PX, `(${tx},${ty}) mip ${mip}: ${m.maxMisalignPx}`);
+      assert.equal(m.status, 'measured');
       assert.equal(m.maxMisalignPx, 0);
+      assert.deepEqual([m.edgeMaxPx, m.blockMaxPx, m.scaleX, m.scaleY, m.rotationRad], [0, 0, 0, 0, 0]);
       assert.ok(m.rms < 0.6, `rms ${m.rms}`);
     }
   }
@@ -180,11 +183,195 @@ test('좌표 정합: 축척 오류(전역 이동 0) 타일을 블록 이동량·
   assert.ok(c2.maxMisalignPx > ALIGN_TOLERANCE_PX, `(0,0) 2%: ${c2.maxMisalignPx}`);
   // 전역 이동량은 축척 오류를 거의 못 본다(중심 근처 타일에서 0 근처) — 블록 측정이 필요한 이유.
   assert.ok(Math.hypot(c2.dxPx, c2.dyPx) < ALIGN_TOLERANCE_PX, `전역 ${c2.dxPx}, ${c2.dyPx}`);
-  // 블록 수: 128 px 타일 / 16 px 블록 = 8×8.
-  assert.equal(c2.blocks.length, (128 / ALIGN_BLOCK_PX) ** 2);
+  // 블록 수: 128 px 타일을 축마다 8개로 → 16 px 블록 8×8. 16 px 타일(밉 3)은 4 px 블록 4×4(블록 한 변 ∝ 타일 크기).
+  assert.equal(ALIGN_BLOCKS_PER_SIDE, 8);
+  assert.equal(c2.blocks.length, ALIGN_BLOCKS_PER_SIDE ** 2);
+  assert.deepEqual(c2.blockPx, { width: 16, height: 16 });
+  const c3 = measureDrapeAlignment(imgA, buildDrapeTile(imgA, 0, 0, 3));
+  assert.deepEqual([c3.blockPx, c3.blocks.length], [{ width: ALIGN_MIN_BLOCK_PX, height: ALIGN_MIN_BLOCK_PX }, 16]);
   // 정상 타일은 블록·가장자리 모두 0.
   const ok = measureDrapeAlignment(imgA, buildDrapeTile(imgA, 1, 0, 0));
   assert.deepEqual([ok.maxMisalignPx, ok.blockMaxPx, ok.edgeMaxPx], [0, 0, 0]);
+});
+
+// ── F-317: 완전 아핀(회전·축척) 정합 모형 ──
+// 영상 A 중심(31.75, 31.75) 기준 왜곡. warp(p) = 타일 ENU 점 p 에 실제로 담긴 원본 영상 점.
+const A_CENTER = { x: 31.75, y: 31.75 };
+const rotationWarp = (deg) => {
+  const t = (deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t);
+  return (p) => ({
+    x: A_CENTER.x + c * (p.x - A_CENTER.x) - s * (p.y - A_CENTER.y),
+    y: A_CENTER.y + s * (p.x - A_CENTER.x) + c * (p.y - A_CENTER.y),
+  });
+};
+// scaledImage(img, f) 로 만든 타일의 내용: 원본 점 = 중심 + (p − 중심)/(1+f).
+const scaleWarp = (f) => (p) => ({ x: A_CENTER.x + (p.x - A_CENTER.x) / (1 + f), y: A_CENTER.y + (p.y - A_CENTER.y) / (1 + f) });
+
+/** 해석값: 타일 네 모서리(타일 가장자리 꼭짓점)의 실제 변위 최댓값(타일 px). */
+function trueCornerPx(tile, warp) {
+  const tb = tileBounds(tile.tx, tile.ty), pw = TERRAIN_TILE_SIZE_M / tile.width;
+  let m = 0;
+  for (const x of [tb.minX, tb.maxX]) {
+    for (const y of [tb.minY, tb.maxY]) { const q = warp({ x, y }); m = Math.max(m, Math.hypot(q.x - x, q.y - y) / pw); }
+  }
+  return m;
+}
+
+/** 원본 영상의 축 정렬 박스 [x0,x1]×[y0,y1](ENU) 면적 가중 평균. 영상 밖에 걸치면 false. */
+function boxMean(img, x0, x1, y0, y1, out) {
+  const b = img.bounds, sx = (b.maxX - b.minX) / img.width, sy = (b.maxY - b.minY) / img.height;
+  const u0 = (x0 - b.minX) / sx, u1 = (x1 - b.minX) / sx, v0 = (b.maxY - y1) / sy, v1 = (b.maxY - y0) / sy;
+  if (u0 < 0 || v0 < 0 || u1 > img.width || v1 > img.height) return false;
+  out.fill(0);
+  let a = 0;
+  for (let r = Math.floor(v0); r < Math.ceil(v1); r++) {
+    const ly = Math.min(v1, r + 1) - Math.max(v0, r);
+    if (ly <= 0) continue;
+    for (let c = Math.floor(u0); c < Math.ceil(u1); c++) {
+      const lx = Math.min(u1, c + 1) - Math.max(u0, c);
+      if (lx <= 0) continue;
+      const w = lx * ly, o = (r * img.width + c) * 3;
+      for (let k = 0; k < 3; k++) out[k] += img.rgb[o + k] * w;
+      a += w;
+    }
+  }
+  for (let k = 0; k < 3; k++) out[k] /= a;
+  return true;
+}
+
+/** warp 로 내용이 틀어진 드레이프 타일(밉 크기·박스 필터는 buildDrapeTile 과 같음, 픽셀당 4×4 부분 박스로 근사). */
+function warpedTile(img, tx, ty, mip, warp) {
+  const { width, height } = drapeTileSize(img, mip);
+  const tb = tileBounds(tx, ty), pw = TERRAIN_TILE_SIZE_M / width, ph = TERRAIN_TILE_SIZE_M / height, n = 4;
+  const rgb = new Uint8Array(width * height * 3), mask = new Uint8Array(width * height);
+  const acc = new Float64Array(3), sum = new Float64Array(3);
+  for (let j = 0; j < height; j++) {
+    for (let i = 0; i < width; i++) {
+      sum.fill(0);
+      let ok = true;
+      for (let b = 0; b < n && ok; b++) {
+        for (let a = 0; a < n && ok; a++) {
+          const q = warp({ x: tb.minX + (i + (a + 0.5) / n) * pw, y: tb.maxY - (j + (b + 0.5) / n) * ph });
+          ok = boxMean(img, q.x - pw / n / 2, q.x + pw / n / 2, q.y - ph / n / 2, q.y + ph / n / 2, acc);
+          for (let k = 0; k < 3; k++) sum[k] += acc[k];
+        }
+      }
+      if (!ok) continue;
+      const o = j * width + i;
+      mask[o] = 255;
+      for (let k = 0; k < 3; k++) rgb[o * 3 + k] = Math.round(sum[k] / (n * n));
+    }
+  }
+  return { tx, ty, mip, width, height, rgb, coverage: { mask } };
+}
+
+test('F-317 회전: 1° 타일 (1,1) 밉 0~2 는 실제 > 1 px → 보고 > 1 px, 해석값 ±0.15 px, 회전 sin θ ±0.002', () => {
+  const deg = 1, warp = rotationWarp(deg);
+  const got = [];
+  for (let mip = 0; mip <= 2; mip++) {
+    const t = warpedTile(imgA, 1, 1, mip, warp);
+    const truth = trueCornerPx(t, warp);
+    const m = measureDrapeAlignment(imgA, t);
+    got.push([mip, truth, m.maxMisalignPx]);
+    assert.equal(m.status, 'measured');
+    assert.ok(truth > ALIGN_TOLERANCE_PX, `mip ${mip} 실제 ${truth}`);
+    assert.ok(m.maxMisalignPx > ALIGN_TOLERANCE_PX, `mip ${mip}: 보고 ${m.maxMisalignPx} (실제 ${truth})`);
+    assert.ok(Math.abs(m.edgeMaxPx - truth) <= 0.15, `mip ${mip}: edge ${m.edgeMaxPx} vs 해석 ${truth}`);
+    assert.ok(Math.abs(m.maxMisalignPx - truth) <= 0.15, `mip ${mip}: max ${m.maxMisalignPx} vs 해석 ${truth}`);
+    // 순수 회전: kxy = sin θ, kyx = −sin θ, 축척 0.
+    assert.ok(Math.abs(m.rotationRad - Math.sin((deg * Math.PI) / 180)) <= 0.002, `mip ${mip} 회전 ${m.rotationRad}`);
+    assert.ok(Math.abs(m.scaleX) <= 0.002 && Math.abs(m.scaleY) <= 0.002, `mip ${mip} 축척 ${m.scaleX}, ${m.scaleY}`);
+  }
+  // 해석값(타일 px): 모서리 (128,128) 의 중심 거리 136.1 m × 2 sin 0.5° = 2.376 m → 0.5·2^mip m/px 로 나눔.
+  assert.deepEqual(got.map(([, t]) => Math.round(t * 1000) / 1000), [4.751, 2.376, 1.188]);
+});
+
+test('F-317 회전: 0.5° 타일 (0,0) 밉 0 은 실제 0.80 px → 과대 보고 없이 ≤ 실제 + 0.3 px(거짓 실패 없음)', () => {
+  const warp = rotationWarp(0.5);
+  const t = warpedTile(imgA, 0, 0, 0, warp);
+  const truth = trueCornerPx(t, warp);
+  assert.ok(Math.abs(truth - 0.796) < 0.001, `해석 ${truth}`);
+  const m = measureDrapeAlignment(imgA, t);
+  assert.equal(m.status, 'measured');
+  assert.ok(m.maxMisalignPx <= truth + 0.3, `보고 ${m.maxMisalignPx} > 실제 ${truth} + 0.3`);
+  assert.ok(Math.abs(m.maxMisalignPx - truth) <= 0.15, `보고 ${m.maxMisalignPx} vs 해석 ${truth}`);
+  assert.ok(m.maxMisalignPx <= ALIGN_TOLERANCE_PX);
+});
+
+test('F-317 축척: 해석값 scale = −f/(1+f) ±0.002, edgeMaxPx ±0.15, 4% 타일 (-1,-1) 밉 3 은 > 1 px', () => {
+  for (const f of [0.02, 0.04]) {
+    const warp = scaleWarp(f);
+    const t = buildDrapeTile(scaledImage(imgA, f), 1, 0, 0);
+    const m = measureDrapeAlignment(imgA, t);
+    const truth = trueCornerPx(t, warp);
+    assert.equal(m.status, 'measured');
+    assert.ok(Math.abs(m.scaleX + f / (1 + f)) <= 0.002, `${f}: scaleX ${m.scaleX} vs ${-f / (1 + f)}`);
+    assert.ok(Math.abs(m.scaleY + f / (1 + f)) <= 0.002, `${f}: scaleY ${m.scaleY} vs ${-f / (1 + f)}`);
+    assert.ok(Math.abs(m.rotationRad) <= 0.002, `${f}: 회전 ${m.rotationRad}`);
+    assert.ok(Math.abs(m.edgeMaxPx - truth) <= 0.15, `${f}: edge ${m.edgeMaxPx} vs 해석 ${truth}`);
+    assert.ok(Math.abs(m.maxMisalignPx - truth) <= 0.15, `${f}: max ${m.maxMisalignPx} vs 해석 ${truth}`);
+  }
+  // 밉 3: 4% 타일 (-1,-1) 은 15 px(4.27 m/px), 블록 5 px 3×3. 실제 모서리 변위 1.22 px.
+  const warp = scaleWarp(0.04);
+  const t3 = buildDrapeTile(scaledImage(imgA, 0.04), -1, -1, 3);
+  const truth3 = trueCornerPx(t3, warp);
+  assert.ok(truth3 > ALIGN_TOLERANCE_PX, `해석 ${truth3}`);
+  const m3 = measureDrapeAlignment(imgA, t3);
+  assert.equal(m3.status, 'measured');
+  assert.ok(m3.maxMisalignPx > ALIGN_TOLERANCE_PX, `밉 3: 보고 ${m3.maxMisalignPx} (실제 ${truth3})`);
+  assert.ok(Math.abs(m3.maxMisalignPx - truth3) <= 0.15, `밉 3: ${m3.maxMisalignPx} vs 해석 ${truth3}`);
+  assert.ok(m3.scaleX < 0 && m3.scaleY < 0);
+});
+
+test('F-317 측정 불가: 블록이 3개 미만이면 0 이 아니라 status unmeasurable·NaN', () => {
+  // 16 m/px 영상 → 밉 0 타일 4 px → 블록 1개.
+  const coarse = makeImage({ minX: 0, minY: 0, maxX: 64, maxY: 64 }, 4, 4, (x, y, c, r) => [c * 60, r * 60, (c * r * 37) & 255]);
+  const m = measureDrapeAlignment(coarse, buildDrapeTile(coarse, 0, 0, 0));
+  assert.equal(m.status, 'unmeasurable');
+  assert.ok(Number.isNaN(m.maxMisalignPx) && Number.isNaN(m.edgeMaxPx) && Number.isNaN(m.scaleX));
+  assert.equal(m.maxMisalignPx <= ALIGN_TOLERANCE_PX, false); // 허용 판정을 통과하지 못한다.
+  assert.match(m.reason, /블록/);
+  // 서쪽 절반이 영상 밖인 8 px 타일(영상 B 밉 3): 피복된 블록이 한 열(2개)뿐 → 측정 불가.
+  const half = measureDrapeAlignment(imgB, buildDrapeTile(imgB, 0, 0, 3));
+  assert.equal(half.status, 'unmeasurable');
+  assert.equal(half.blocks.length, 2);
+  // 완전 피복 8 px 타일(1 m/px 영상 밉 3)은 블록 2×2 로 잰다.
+  const img1 = makeImage({ minX: 0, minY: 0, maxX: 64, maxY: 64 }, 64, 64, (x, y, c, r) => [
+    (c * 7 + r * 3) & 255, ((c * c + r) * 13) & 255, (c ^ r) & 255,
+  ]);
+  const full = measureDrapeAlignment(img1, buildDrapeTile(img1, 0, 0, 3));
+  assert.deepEqual([full.status, full.blocks.length, full.maxMisalignPx], ['measured', 4, 0]);
+});
+
+test('F-319 ⑤ 성능: 누적 합 표는 영상당 1회, 1024² 타일 측정은 수 초 안', () => {
+  const N = 1024;
+  const big = makeImage({ minX: 0, minY: 0, maxX: 64, maxY: 64 }, N, N, (x, y, c, r) => [
+    ((c >> 4) + (r >> 4)) & 1 ? 200 : 40, 128 + Math.round(100 * Math.sin(c * 0.05) * Math.cos(r * 0.037)),
+    (((c * 73856093) ^ (r * 19349663)) >>> 0) % 256,
+  ]);
+  const t0 = buildDrapeTile(big, 0, 0, 0);
+  assert.equal(t0.width, 1024);
+  const before = drapeTableBuildCount();
+  const start = performance.now();
+  const m = measureDrapeAlignment(big, t0);
+  const ms = performance.now() - start;
+  assert.ok(ms < 5000, `1024² 측정 ${ms.toFixed(0)} ms`);
+  assert.deepEqual([m.status, m.maxMisalignPx], ['measured', 0]);
+  // 같은 영상(및 bounds 만 바꾼 사본)으로 다시 재도 표를 다시 만들지 않는다.
+  measureDrapeAlignment(big, buildDrapeTile(big, 0, 0, 2));
+  measureDrapeAlignment({ ...big, bounds: { ...big.bounds } }, t0);
+  assert.equal(drapeTableBuildCount() - before, 1);
+  // rgb 를 고치면 낡은 표를 쓰지 않고 다시 만든다.
+  big.rgb[0] ^= 0xff;
+  measureDrapeAlignment(big, buildDrapeTile(big, 0, 0, 3));
+  assert.equal(drapeTableBuildCount() - before, 2);
+});
+
+test('F-319 ⑥ 겹친 폭이 1e-300 m 처럼 사실상 0 인 빈 타일은 오류', () => {
+  // 영상 x 범위 [-64, 1e-300] 은 타일 (0,0) 과 bounds 상으로만 닿고 원본 칸과 양의 면적으로 겹치지 않는다.
+  const touching = makeImage({ minX: -64, minY: 0, maxX: 1e-300, maxY: 64 }, 64, 64, () => [9, 9, 9]);
+  assert.throws(() => buildDrapeTile(touching, 0, 0, 0), TowerAssetError);
+  assert.throws(() => buildDrapeTile(touching, 0, 0, 3), TowerAssetError);
 });
 
 test('입력 검증: 타일 한 변 픽셀 상한, tile.tx/ty NaN', () => {
