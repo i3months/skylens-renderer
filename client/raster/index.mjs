@@ -243,7 +243,10 @@ export function createRenderer(options) {
     }
     for (const k of victims) dropPiece(k);
     invalidate();
-    if (victims.length && typeof onEvict === 'function') onEvict(victims);
+    if (victims.length && typeof onEvict === 'function') {
+      // 알림 콜백의 예외가 업로드를 막지 않게 한다(희생 조각은 이미 해제됨)
+      try { onEvict(victims); } catch { /* 호출자 콜백 오류는 렌더러 상태와 무관 */ }
+    }
   }
 
   async function uploadPiece(key, bytes) {
@@ -253,8 +256,12 @@ export function createRenderer(options) {
     if (lost) throw new ClientRasterError('context', `문맥 소실 중: ${key} 는 복구 뒤 다시 올려야 함`);
     const token = nextToken++;
     const gen = generation;
+    // 같은 key 의 앞선 업로드가 아직 진행 중이면 그 토큰들을 무효로 한다(늦게 끝나도 새 업로드를 덮지 않게)
+    if (active.get(key)) superseded.set(key, token - 1);
+    active.set(key, (active.get(key) ?? 0) + 1);
     inflight.set(key, token);
     let gpuPiece;
+    let stale = false;
     try {
       let decoded;
       try {
@@ -269,11 +276,16 @@ export function createRenderer(options) {
       }
     } finally {
       if (gen === generation && inflight.get(key) === token) inflight.delete(key);
+      // 무효 여부는 기록을 지우기 전에 확정한다
+      stale = inflightSuperseded(key, token);
+      const n = active.get(key) - 1;
+      if (n > 0) active.set(key, n);
+      else { active.delete(key); superseded.delete(key); } // 진행 중 업로드가 없으면 기록도 없다
     }
     if (disposed) throw new ClientRasterError('context', 'dispose 된 렌더러');
     if (gen !== generation) throw new ClientRasterError('context', `업로드 중 문맥 소실: ${key} 는 복구 뒤 다시 올려야 함`);
     // 해제됐거나 더 새 업로드가 시작된 key 는 올리지 않는다(늦게 끝난 업로드가 해제를 되살리지 않게)
-    if (inflightSuperseded(key, token)) return;
+    if (stale) return;
     let bytesTotal = 0;
     for (const v of Object.values(gpuPiece.planes)) bytesTotal += v.byteLength;
     if (bytesTotal > maxPieceBytes) throw new ClientRasterError('piece', `조각 ${bytesTotal} B 가 maxPieceBytes ${maxPieceBytes} 초과`);
@@ -287,7 +299,8 @@ export function createRenderer(options) {
   }
 
   // 업로드 시작 뒤 releasePiece 나 같은 key 의 새 uploadPiece 가 있었는가
-  const superseded = new Map(); // key → 마지막으로 무효화된 토큰 상한
+  const superseded = new Map(); // key → 마지막으로 무효화된 토큰 상한(진행 중 업로드가 있는 key 만)
+  const active = new Map(); // key → 진행 중 업로드 수
   function inflightSuperseded(key, token) {
     const s = superseded.get(key);
     if (s !== undefined && token <= s) return true;
@@ -298,7 +311,7 @@ export function createRenderer(options) {
     if (disposed) return;
     if (typeof key !== 'string') throw new ClientRasterError('piece', 'key 는 문자열이어야 함');
     // 진행 중인 업로드(지금까지 시작된 모든 토큰)를 무효로 표시한다
-    superseded.set(key, nextToken - 1);
+    if (active.get(key)) superseded.set(key, nextToken - 1); // 진행 중일 때만 기록(누수 방지)
     inflight.delete(key);
     lostKeys.delete(key);
     if (meta.has(key)) {
@@ -421,5 +434,7 @@ export function createRenderer(options) {
     setArrived,
     residentKeys: () => [...meta.keys()],
     isContextLost: () => lost,
+    /** 업로드 장부 크기(시험·관측용): 진행 중 업로드가 있는 key 수와 무효 기록 수 */
+    uploadBookkeeping: () => ({ active: active.size, superseded: superseded.size }),
   };
 }
