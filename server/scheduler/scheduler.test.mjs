@@ -382,6 +382,11 @@ function observe() {
 
 // 처음 몇 연산의 고정 비용(첫 호출 준비 등)을 위한 여유. 상한은 누계 <= ops * 연산당 상한 + SLACK 이다.
 const SLACK = 1024;
+// 하한: enqueue 마다 힙에 항목을 하나 넣고(wrapArray 로 감싼 힙의 push 가 인덱스 대입 1 로 센다) nextBatch 로 비우는 측정도 있어
+// check(ops) 의 ops 는 enqueue 수의 최대 2 배다(오름차순+비우기 시험의 2n). 그래서 연산당 stored >= 0.5 를 하한으로 둔다.
+// wrapArray 를 아예 거치지 않는 지역 배열 O(n) 삽입 변이는 stored 가 거의 0 이라 이 하한에서 바로 실패한다(F-237 ⑧, 시간 단언 아님).
+// SLACK 은 처음 몇 연산의 고정 비용과 같은 값을 쓴다(하한은 ops * 0.5 - SLACK).
+const STORED_MIN_PER_OP = 0.5;
 // 측정 구간: 시험 쪽 비교 계수기와 저장소 Proxy 를 넣은 스케줄러를 만들고 body(s, check) 를 관측 아래에서 돌린다.
 // check(ops) 는 지금까지의 누계가 ops * 연산당 상한 + SLACK 을 넘으면 바로 실패한다(상한 = 연산당 상수 * log2 n).
 // maxOps 는 body 가 마지막으로 check 할 ops 다. 계수기는 maxOps 기준 전체 상한을 넘는 순간 던진다(check 사이의 동기 구간 보호).
@@ -409,6 +414,11 @@ async function measured(opts, body, bounds, maxOps, signal) {
       if (signal?.aborted) {
         c.restore();
         throw new Error(`측정 중단(ops=${ops}): ${signal.reason?.message ?? signal.reason}`);
+      }
+      if (c.stored < ops * STORED_MIN_PER_OP - SLACK) {
+        const snap = { stored: c.stored };
+        c.restore();
+        assert.fail(`ops=${ops}: stored ${snap.stored} (>= ${ops} * ${STORED_MIN_PER_OP} - ${SLACK}) - 내부 배열이 wrapArray 를 거치지 않는다`);
       }
       if (c.moved > ops * bounds.moved + SLACK || c.touched > ops * bounds.touched + SLACK || c.stored > ops * bounds.stored + SLACK || cmp.n > ops * bounds.compares + SLACK) {
         const snap = { moved: c.moved, touched: c.touched, stored: c.stored, compares: cmp.n };
