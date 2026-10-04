@@ -25,31 +25,56 @@ function maskedWire(size, fill) {
   return { body, wire: encodeFrame(OPCODES.BINARY, body, { maskKey: KEY }) };
 }
 
-test('1400 B 조각 push 시간은 프레임 크기에 선형이고(4 배 크기 -> 시간비 < 10) 내용이 보존된다', () => {
-  // 벽시계 절대값 대신 같은 프로세스에서 1 MiB 와 4 MiB 를 각각 최솟값(5 회)으로 재 비율을 본다.
-  // 선형이면 비율 약 4, 이차이면 약 16. 부하는 두 측정에 같이 얹히고 최솟값이 이상치를 버린다.
+// push 중 복사된 바이트 수를 센다(copy, TypedArray.set, Buffer.concat). 벽시계와 달리 CPU 부하에 영향받지 않는다.
+function countCopiedBytes(fn) {
+  let bytes = 0;
+  const origCopy = Buffer.prototype.copy;
+  const origSet = Uint8Array.prototype.set;
+  const origConcat = Buffer.concat;
+  Buffer.prototype.copy = function (target, ts, ss = 0, se = this.length) {
+    const r = origCopy.call(this, target, ts, ss, se);
+    bytes += r;
+    return r;
+  };
+  Uint8Array.prototype.set = function (src, off) {
+    bytes += src.length;
+    return origSet.call(this, src, off);
+  };
+  Buffer.concat = function (list, total) {
+    const r = origConcat.call(Buffer, list, total);
+    bytes += r.length;
+    return r;
+  };
+  try {
+    fn();
+  } finally {
+    Buffer.prototype.copy = origCopy;
+    Uint8Array.prototype.set = origSet;
+    Buffer.concat = origConcat;
+  }
+  return bytes;
+}
+
+test('1400 B 조각 push 복사량은 프레임 크기에 선형이고(4 배 크기 -> 복사량비 < 6) 내용이 보존된다', () => {
+  // 시간 대신 복사된 바이트 수로 판정한다. 선형이면 비율 약 4, 조각마다 전체를 복사하는 이차 구현이면 약 16 이상.
   const small = maskedWire(1024 * 1024, (i) => (i * 31 + 7) & 0xff);
   const big = maskedWire(4 * 1024 * 1024, (i) => (i * 31 + 7) & 0xff);
-  const time = ({ wire, body }) => {
-    let best = Infinity;
-    let total = 0;
-    for (let r = 0; r < 5 && total < 1500; r++) { // 느린 구현은 반복하지 않고 일찍 끝낸다
-      const events = [];
-      const ms = pushAll(new FrameParser({ maxPayload: body.length }), wire, 1400, 1500, events);
-      total += ms;
-      assert.equal(events.length, 1);
-      assert.equal(events[0].type, 'message');
-      assert.ok(Buffer.from(events[0].data).equals(body));
-      best = Math.min(best, ms);
-    }
-    return best;
+  const measure = ({ wire, body }) => {
+    const events = [];
+    // 퇴행 구현이 시험 전체를 멈추지 않도록 시간 예산은 안전장치로만 둔다(판정에는 쓰지 않는다)
+    const copied = countCopiedBytes(() => {
+      pushAll(new FrameParser({ maxPayload: body.length }), wire, 1400, 20000, events);
+    });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, 'message');
+    assert.ok(Buffer.from(events[0].data).equals(body));
+    return copied;
   };
-  time(small); // 예열
-  const tSmall = time(small);
-  const tBig = time(big);
-  const ratio = tBig / Math.max(tSmall, 0.05);
-  console.log(`# 1400 B chunks: 1 MiB ${tSmall.toFixed(1)} ms, 4 MiB ${tBig.toFixed(1)} ms, ratio ${ratio.toFixed(1)}`);
-  assert.ok(ratio < 10, `시간비 ${ratio.toFixed(1)} (선형 ~4, 이차 ~16)`);
+  const cSmall = measure(small);
+  const cBig = measure(big);
+  const ratio = cBig / Math.max(cSmall, 1);
+  console.log(`# 1400 B chunks: 1 MiB copied ${cSmall} B, 4 MiB copied ${cBig} B, ratio ${ratio.toFixed(2)}`);
+  assert.ok(ratio < 6, `복사량비 ${ratio.toFixed(2)} (선형 ~4, 이차 ~16)`);
 });
 
 test('조각 크기에 선형: 1 B 단위 push 가 64 KiB 에서도 끝난다', () => {
