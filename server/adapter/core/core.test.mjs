@@ -1076,6 +1076,19 @@ for (const [failAt, expected] of [
   });
 }
 
+test('F-239 ⑨: levelArrivedMaybeSent skip 은 기계가 쥐지 않은 key 의 서버 내부 해제도 알리지 않는다', () => {
+  const h = laHarness();
+  h.attempt(3);
+  h.machine.arrive(9, 3, levelEvent(9, 3).pieces);
+  const held = new Set(h.machine.snapshot(9).pieces.map((p) => JSON.stringify(p.key)));
+  assert.ok(F231_KEYS.every((k) => !held.has(JSON.stringify(k))), '재시도 수준 key 는 기계가 쥐지 않는다');
+  const r = h.retry();
+  assert.equal(r.levelArrivedMaybeSent, true);
+  assert.deepEqual(r.abandoned, []);
+  assert.deepEqual(h.rel, [], 'onRelease 는 불리지 않는다');
+  assert.deepEqual(h.ad.pendingReleases(), [], '보관한 알림도 없다');
+});
+
 test('F-235: LEVEL_ARRIVED emit 을 부른 시도 뒤 재시도가 더 일찍 실패해도 표시는 남는다', () => {
   const h = laHarness();
   h.attempt(3); // LEVEL_ARRIVED emit 이 던짐(쓰였을 수 있다)
