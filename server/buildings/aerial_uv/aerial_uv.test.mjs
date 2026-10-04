@@ -113,7 +113,7 @@ test('벽·바닥 정점은 영상 UV 를 쓰지 않는다: wallMask 1, 지붕 �
 
 test('지붕과 벽이 정점을 공유하면 지붕으로 친다(mask 0), 아래 향 면만 쓰는 정점은 mask 1', () => {
   const img = codedImage(4, 4, { minX: 0, minY: 0, maxX: 10, maxY: 10 });
-  // 정점 0..2 = 지붕(z=5, 위 향), 정점 3 = 바닥 z=0. 벽 삼각형 (0,1,3) 은 수직이 아니어도 위 향이 아니면 mask 에 기여 안 함.
+  // 정점 0..2 = 지붕(z=5, 위 향), 정점 3..5 = 바닥(z=0). 바닥 삼각형 (3,5,4) 는 아래 향이라 mask 에 기여하지 않는다.
   const positions = new Float32Array([1, 1, 5, 6, 1, 5, 1, 6, 5, 1, 1, 0, 6, 1, 0, 1, 6, 0]);
   const indices = new Uint32Array([0, 1, 2, 3, 5, 4]); // 지붕(위), 바닥(아래)
   const { wallMask } = buildAerialUv({ positions, indices }, img);
@@ -234,4 +234,55 @@ test('aerialUvOf: bounds 검증', () => {
   assert.throws(() => aerialUvOf(0, 0, { minX: 0, minY: 0, maxX: 0, maxY: 1 }), TowerAssetError);
   assert.throws(() => aerialUvOf(0, 0, { minX: 0, minY: 0, maxX: NaN, maxY: 1 }), TowerAssetError);
   assert.throws(() => aerialUvOf(0, 0, { minX: 0, minY: 1, maxX: 1, maxY: 0 }), TowerAssetError);
+});
+
+test('가파른 경사면(법선 z 비율 < 0.5, 위 향)은 지붕이 아니다: 법선 길이는 3성분 전체로 잰다', () => {
+  const img = codedImage(4, 4, { minX: 0, minY: 0, maxX: 10, maxY: 10 });
+  // 정점 0,1,2: x 방향 4 m 에 z 가 +8 m 오르는 경사 (법선 ∝ (-2·.., 0, 1)): 법선 z 비율 = 1/√5 ≈ 0.447 (< 0.5), nz > 0.
+  const steep = new Float32Array([1, 1, 0, 1, 5, 0, 5, 1, 8]);
+  // 위 향 순서 확인: (b-a)×(c-a) 의 z > 0
+  const a = steep, ux = a[3] - a[0], uy = a[4] - a[1], vx = a[6] - a[0], vy = a[7] - a[1];
+  const nz = ux * vy - uy * vx;
+  const idx = nz > 0 ? [0, 1, 2] : [0, 2, 1];
+  assert.ok(nz !== 0);
+  const { wallMask } = buildAerialUv({ positions: steep, indices: new Uint32Array(idx) }, img);
+  assert.deepEqual([...wallMask], [1, 1, 1]);
+  // 완만한 경사(z 비율 > 0.5)는 지붕
+  const gentle = new Float32Array([1, 1, 0, 1, 5, 0, 5, 1, 2]);
+  const { wallMask: m2 } = buildAerialUv({ positions: gentle, indices: new Uint32Array(idx) }, img);
+  assert.deepEqual([...m2], [0, 0, 0]);
+});
+
+// Float32 에서 다음(위) / 이전(아래) 표현 가능한 값.
+function stepF32(x, dir) {
+  const f = new Float32Array([x]), u = new Uint32Array(f.buffer);
+  if (x === 0) return dir > 0 ? 1.401298464324817e-45 : -1.401298464324817e-45;
+  u[0] += (x > 0) === (dir > 0) ? 1 : -1;
+  return f[0];
+}
+
+test('Float32 경계 허용은 정확히 fround(경계) 까지: 다음 Float32 값은 위·아래 모두 거부', () => {
+  const tri = (x, y) => ({ positions: new Float32Array([x, y, 0]), indices: new Uint32Array(0) });
+  // 경계가 Float32 로 표현되는 경우(10)와 안 되는 경우(0.1) 모두.
+  for (const [lo, hi] of [[0, 10], [-0.1, 0.1]]) {
+    const img = codedImage(4, 4, { minX: lo, minY: lo, maxX: hi, maxY: hi });
+    const hiOk = Math.max(hi, Math.fround(hi)), loOk = Math.min(lo, Math.fround(lo));
+    const hiBad = stepF32(Math.fround(hiOk), +1), loBad = stepF32(Math.fround(loOk), -1);
+    assert.ok(hiBad > hiOk && loBad < loOk);
+    assert.doesNotThrow(() => buildAerialUv(tri(Math.fround(hi), Math.fround(hi)), img));
+    assert.doesNotThrow(() => buildAerialUv(tri(Math.fround(lo), Math.fround(lo)), img));
+    assert.throws(() => buildAerialUv(tri(hiBad, 0), img), TowerAssetError, `maxX 다음 값 ${hiBad}`);
+    assert.throws(() => buildAerialUv(tri(0, hiBad), img), TowerAssetError, `maxY 다음 값 ${hiBad}`);
+    assert.throws(() => buildAerialUv(tri(loBad, 0), img), TowerAssetError, `minX 이전 값 ${loBad}`);
+    assert.throws(() => buildAerialUv(tri(0, loBad), img), TowerAssetError, `minY 이전 값 ${loBad}`);
+  }
+});
+
+test('음수·비정수 인덱스는 TowerAssetError', () => {
+  const img = codedImage(2, 2, { minX: 0, minY: 0, maxX: 1, maxY: 1 });
+  const positions = new Float32Array([0.1, 0.1, 0, 0.5, 0.1, 0, 0.5, 0.5, 0]);
+  for (const bad of [-1, 0.5, NaN]) {
+    assert.throws(() => buildAerialUv({ positions, indices: [0, 1, bad] }, img), TowerAssetError, String(bad));
+  }
+  assert.throws(() => buildAerialUv({ positions, indices: [0, 1, 3] }, img), TowerAssetError);
 });

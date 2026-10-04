@@ -135,3 +135,24 @@ test('잘못된 입력은 TowerAssetError', () => {
   bad.push(null, undefined, {}, { positions: null, indices: null });
   for (const b of bad) assert.throws(() => buildBlackBuilding(b), TowerAssetError);
 });
+
+// 두 삼각형이 공유 변 (0,0,0)-(1,0,0) 에서 법선 사이 각 deg 로 접힌 메시. 공유 변이 선으로 남는지 돌려준다.
+function sharedEdgeKept(deg) {
+  const t = (deg * Math.PI) / 180;
+  const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -Math.cos(t), Math.sin(t)]);
+  const indices = new Uint32Array([0, 1, 2, 1, 0, 3]);
+  const { edgeLines } = buildBlackBuilding({ positions, indices });
+  for (let i = 0; i < edgeLines.length; i += 6) {
+    const s = [...edgeLines.slice(i, i + 6)].map((x) => Math.round(x * 1e3));
+    if (s.join(',') === '0,0,0,1000,0,0') return true;
+  }
+  return false;
+}
+
+test('임계 각 5도 경계: 4.9도는 같은 평면(선 제외), 5.1도는 모서리(선 포함)', () => {
+  assert.equal(EDGE_ANGLE_THRESHOLD_DEG, 5);
+  assert.equal(sharedEdgeKept(4.9), false);
+  assert.equal(sharedEdgeKept(5.1), true);
+  assert.equal(sharedEdgeKept(0), false);
+  assert.equal(sharedEdgeKept(90), true);
+});

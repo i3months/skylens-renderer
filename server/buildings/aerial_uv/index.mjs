@@ -105,7 +105,7 @@ export function buildAerialUv(mesh, image) {
   if (idx) {
     for (let t = 0; t + 2 < idx.length; t += 3) {
       const a = idx[t], bb = idx[t + 1], c = idx[t + 2];
-      if (!(a < n && bb < n && c < n)) throw new TowerAssetError('aerial_uv: 인덱스가 정점 범위 밖이다');
+      if (![a, bb, c].every((i) => Number.isInteger(i) && i >= 0 && i < n)) throw new TowerAssetError('aerial_uv: 인덱스가 정점 범위 밖이다');
       const ux = p[bb * 3] - p[a * 3], uy = p[bb * 3 + 1] - p[a * 3 + 1];
       const vx = p[c * 3] - p[a * 3], vy = p[c * 3 + 1] - p[a * 3 + 1];
       const nz = ux * vy - uy * vx;

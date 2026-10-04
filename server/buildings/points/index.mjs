@@ -80,7 +80,7 @@ export function sampleBuildingPoints(mesh, id, rule = DEFAULT_POINT_RULE) {
     if (!Number.isFinite(p[i])) throw new TowerAssetError('sampleBuildingPoints: 정점 좌표가 유한하지 않다');
   }
   for (let i = 0; i < idx.length; i++) {
-    if (!(idx[i] * 3 + 2 < p.length)) throw new TowerAssetError('sampleBuildingPoints: 인덱스가 정점 범위 밖이다');
+    if (!Number.isInteger(idx[i]) || idx[i] < 0 || !(idx[i] * 3 + 2 < p.length)) throw new TowerAssetError('sampleBuildingPoints: 인덱스가 정점 범위 밖이다');
   }
   const cum = new Float64Array(tris);
   let total = 0, roof = 0, zMin = Infinity, zMax = -Infinity;

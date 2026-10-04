@@ -138,3 +138,12 @@ test('정점 수 상한 초과는 TowerAssetError, 상한 이하는 통과', () 
   assert.throws(() => extrudeBuilding({ id: 10, ring: ring(MAX_RING_VERTICES + 1) }), TowerAssetError);
   assert.ok(extrudeBuilding({ id: 10, ring: ring(200) }).positions.length > 0);
 });
+
+test('Float32 로 Infinity 가 되는 유한 double(좌표 1e39, floors 1e300)은 TowerAssetError', () => {
+  assert.ok(Number.isFinite(1e39) && !Number.isFinite(Math.fround(1e39)));
+  assert.throws(() => extrudeBuilding({ id: 9, ring: [[0, 0], [1e39, 0], [1e39, 1e39], [0, 1e39]], floors: 3 }), TowerAssetError);
+  assert.throws(() => extrudeBuilding({ id: 10, ring: sq, floors: 1e300 }), TowerAssetError);
+  // 경계 안쪽은 통과하고 모든 좌표가 유한하다
+  const m = extrudeBuilding({ id: 11, ring: sq, floors: 3 });
+  assert.ok(m.positions.every(Number.isFinite));
+});
