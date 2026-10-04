@@ -12,7 +12,7 @@
 //     실패한 시도가 쓰던 pieceSeq·key 그대로 다시 내보내므로, emit 안에서 recordSent 를 불러도 재시도가 막히지 않는다.
 //     미확인 항목이면 bytes 를 새 값으로 바꾸고(바이트 상한 검사 포함) 'shouldSend=false' 로 둔다. 이미 확인된 항목이면
 //     아무것도 바꾸지 않는다. 같은 seq 를 다른 key 로 쓰거나, 그 key 의 기록 순번과 다른 낮은 seq 면 여전히 RangeError.
-//     (축출된 항목은 대조할 정보가 없어 RangeError — 축출은 확인된 항목만 하므로 재시도 경로에서는 생기지 않는다.)
+//     (축출된 항목은 대조할 정보가 없다. seq 가 ackedUpTo 이하이고 항목이 없으면 멱등 true(F-219 ③), 그 밖은 RangeError.)
 //   u32 끝(F-203 ②): seq 0xFFFFFFFF 도 기록할 수 있다(계약 범위). 그 뒤 세션의 다음 순번 2^32 는 WELCOME.nextPieceSeq(u32)
 //     로 보낼 수 없으므로 그 세션은 이어받을 수 없다: open 은 그 세션을 지우고 새 세션(resumed=false, reason
 //     'UNKNOWN_SESSION', nextPieceSeq 1)을 돌려준다. open 이 돌려주는 nextPieceSeq 는 언제나 1..0xFFFFFFFF 이다.
