@@ -142,12 +142,15 @@
  * @property {() => FrameStats} draw  프레임 렌더링 및 통계 반환
  * @property {() => number} memoryBytes  현재 GPU 메모리 사용량(바이트)
  * @property {() => void} dispose  리소스 정리
- * @property {(callback?: () => void) => void} onContextLost  WebGL 컨텍스트 손실 핸들러
- * @property {(callback?: () => void) => void} onContextRestored  WebGL 컨텍스트 복구 핸들러
+ * @property {(callback?: () => void) => void} onContextLost  WebGL 컨텍스트 손실 핸들러. 구독 해제 함수 반환
+ * @property {(callback?: (keys: string[]) => void) => void} onContextRestored  WebGL 컨텍스트 복구 핸들러. 콜백 인자: 다시 올려야 할 key 배열(소실 당시 상주·업로드 중이던 것). 구독 해제 함수 반환
+ * @property {(arrived: {segmentId: number, level: number, keys: string[]}[]) => {draw: string[], pending: string[], discard: string[]}} setArrived  LEVEL_ARRIVED 완료 집합을 넘겨 그리는 조각을 정한다
+ * @property {() => string[]} residentKeys  현재 상주 key 배열
+ * @property {() => boolean} isContextLost  WebGL 컨텍스트 손실 상태
  *
  * @typedef {Object} CreateRendererOptions
  * @property {HTMLCanvasElement} canvas  렌더 타겟
- * @property {number} maxPieceBytes  한 조각 최대 크기(바이트, 복호 후)
+ * @property {number} maxPieceBytes  한 조각 최대 크기(바이트, GPU 평면 합 = 형식 1 위치·색·법선 또는 형식 2 위치·색)
  * @property {number} maxResidentBytes  GPU 상주 메모리 상한(바이트)
  */
 
@@ -185,8 +188,11 @@ export const CLIENT_RASTER_API = Object.freeze({
   draw: { fn: 'renderer.draw() -> FrameStats  {drawnPoints, drawnPieces, droppedFrames, drawMs}' },
   memoryBytes: { fn: 'renderer.memoryBytes() -> number' },
   dispose: { fn: 'renderer.dispose() -> void' },
-  onContextLost: { fn: 'renderer.onContextLost(callback?) -> void' },
-  onContextRestored: { fn: 'renderer.onContextRestored(callback?) -> void' },
+  onContextLost: { fn: 'renderer.onContextLost(callback?) -> () => void  컨텍스트 손실 알림, 구독 해제 함수 반환' },
+  onContextRestored: { fn: 'renderer.onContextRestored(callback?: (keys: string[]) => void) -> () => void  컨텍스트 복구 알림 (인자: 다시 올려야 할 key 배열), 구독 해제 함수 반환' },
+  setArrived: { fn: 'renderer.setArrived(arrived: [{segmentId, level, keys}]) -> {draw: string[], pending: string[], discard: string[]}  LEVEL_ARRIVED 완료 집합으로 그리는 조각 결정' },
+  residentKeys: { fn: 'renderer.residentKeys() -> string[]  현재 GPU 상주 key 배열' },
+  isContextLost: { fn: 'renderer.isContextLost() -> boolean  WebGL 컨텍스트 손실 상태' },
   drawingBufferSize: { fn: 'drawingBufferSize(width, height, dpr) -> {width, height}  = round(width·dpr), round(height·dpr)' },
   scaleIntrinsics: { fn: 'scaleIntrinsics(K, refW, refH, W, H, dpr) -> Intrinsics  sx = round(W·dpr)/refW, sy = round(H·dpr)/refH  (same aspect / dpr step only)' },
   fitIntrinsics: { fn: "fitIntrinsics(K, refW, refH, W, H, dpr, mode?) -> Intrinsics  s = min|max(sx, sy) ('contain' default | 'cover'), fx·fy·s, centred" },
