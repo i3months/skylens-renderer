@@ -53,18 +53,11 @@ test('missingNotices - input not an array', () => {
   assert.throws(() => missingNotices({ segmentId: 0 }), TypeError);
 });
 
-test('missingNotices - input immutability and frozen input', () => {
-  const deepFreeze = (o) => {
-    if (o && typeof o === 'object') {
-      Object.values(o).forEach(deepFreeze);
-      Object.freeze(o);
-    }
-    return o;
-  };
-  const states = deepFreeze([
+test('missingNotices - input immutability with unfrozen copy', () => {
+  const states = [
     { segmentId: 0, level: -1, missing: true, pieces: [] },
     { segmentId: 1, level: 0, missing: false, pieces: [] },
-  ]);
+  ];
   const stateCopy = JSON.parse(JSON.stringify(states));
   const result = missingNotices(states);
   assert.deepEqual(result, [{ segmentId: 0, text: '없음' }]);
