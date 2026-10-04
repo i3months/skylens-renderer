@@ -63,7 +63,8 @@ for (const [name, want] of Object.entries(EXPECT)) {
     const totals = [], dropped = [];
     for (const vp of vps) {
       const r = buildInitialBundle({ pose: poseOfViewpoint(vp), catalog: c.catalog }); // 예산은 소스 기본값
-      assert.ok(r.totalBytes <= LIMIT, `${name}/${vp.name}: ${r.totalBytes} > ${LIMIT}`);
+      assert.ok(r.totalBytes <= LIMIT, `${name}/${vp.name}: totalBytes ${r.totalBytes} > ${LIMIT}`);
+      assert.ok(r.frameBytes <= LIMIT, `${name}/${vp.name}: frameBytes ${r.frameBytes} > ${LIMIT}`);
       assert.equal(r.totalBytes, r.items.reduce((s, it) => s + it.bytes, 0));
       totals.push(r.totalBytes);
       dropped.push(r.droppedCount);
@@ -81,9 +82,11 @@ test('large: 레벨 0 합이 15,000,000 B 초과인 합성 대형 장면에서 d
   const r = buildInitialBundle({ pose: poseOfViewpoint(vps[0]), catalog: c.catalog });
   assert.ok(r.droppedCount > 0);
   assert.ok(r.totalBytes <= LIMIT);
+  assert.ok(r.frameBytes <= LIMIT);
   // 예산을 명시해도 같은 결과(기본값이 15,000,000 임을 확인)
   const r2 = buildInitialBundle({ pose: poseOfViewpoint(vps[0]), catalog: c.catalog, budgetBytes: LIMIT });
   assert.equal(r.totalBytes, r2.totalBytes);
+  assert.equal(r.frameBytes, r2.frameBytes);
   assert.equal(r.droppedCount, r2.droppedCount);
 });
 
