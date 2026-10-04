@@ -53,15 +53,23 @@ test('missingNotices - input not an array', () => {
   assert.throws(() => missingNotices({ segmentId: 0 }), TypeError);
 });
 
-test('missingNotices - input immutability with unfrozen copy', () => {
-  const states = [
-    { segmentId: 0, level: -1, missing: true, pieces: [] },
+test('missingNotices - input is not mutated (deep-frozen, descending order)', () => {
+  const deepFreeze = (o) => {
+    if (o && typeof o === 'object' && !Object.isFrozen(o)) {
+      Object.freeze(o);
+      Object.values(o).forEach(deepFreeze);
+    }
+    return o;
+  };
+  // Input is deliberately in 1,0 order so an in-place sort would reorder it.
+  const states = deepFreeze([
     { segmentId: 1, level: 0, missing: false, pieces: [] },
-  ];
+    { segmentId: 0, level: -1, missing: true, pieces: [] },
+  ]);
   const stateCopy = JSON.parse(JSON.stringify(states));
+  // Frozen input: any in-place sort/reverse/assignment throws TypeError.
   const result = missingNotices(states);
   assert.deepEqual(result, [{ segmentId: 0, text: '없음' }]);
-  // Verify that the input hasn't been modified after function call
   assert.deepEqual(states, stateCopy);
   // Modify the result and verify input is still unchanged
   result[0].text = 'modified';
