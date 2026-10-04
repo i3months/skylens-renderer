@@ -29,20 +29,16 @@ function toMask(x) {
     }
     return { width: x.width, height: x.height, drawn: x.drawn };
   }
-  // RenderResult: 크기 먼저 검사(0×0·음수 거부)
-  if (!Number.isInteger(x.width) || !Number.isInteger(x.height) || x.width <= 0 || x.height <= 0) {
-    throw new Error(`${ERR} 크기가 양의 정수여야 함: ${x.width}×${x.height}`);
-  }
-  // 그 다음 나머지 RenderResult 항목 검사
+  // RenderResult: drawnMask 가 assertRenderResult 로 모든 검사를 한다
+  // raster: 오류를 missing: 으로 변환
   try {
-    assertRenderResult(x);
+    return { width: x.width, height: x.height, drawn: drawnMask(x) };
   } catch (e) {
     if (e.message.startsWith('raster:')) {
       throw new Error(e.message.replace(/^raster:/, ERR));
     }
     throw e;
   }
-  return { width: x.width, height: x.height, drawn: drawnMask(x) };
 }
 
 /**
@@ -78,21 +74,27 @@ export function compareWithReference(candidate, reference) {
 /** 빈 픽셀이 빈 값 그대로인지(색 0,0,0·깊이 0·번호 −1) 검사한다. 어긋난 픽셀 번호 목록을 돌려준다. */
 export function nonEmptyValuesInEmpty(result, emptyPixels) {
   if (!result || typeof result !== 'object') throw new Error(`${ERR} 결과가 객체가 아님: ${String(result)}`);
-  try {
-    assertRenderResult(result);
-  } catch (e) {
-    if (e.message.startsWith('raster:')) {
-      throw new Error(e.message.replace(/^raster:/, ERR));
-    }
-    throw e;
+  // 해상도 및 배열 구조만 검사 (값 검증은 하지 않음)
+  if (!Number.isInteger(result.width) || !Number.isInteger(result.height) || result.width <= 0 || result.height <= 0) {
+    throw new Error(`${ERR} 크기가 양의 정수여야 함: ${result.width}×${result.height}`);
+  }
+  const n = result.width * result.height;
+  if (!(result.index instanceof Int32Array) || result.index.length !== n) {
+    throw new Error(`${ERR} index 길이 ${n} 이어야 함`);
+  }
+  if (!(result.depth instanceof Float32Array) || result.depth.length !== n) {
+    throw new Error(`${ERR} depth 길이 ${n} 이어야 함`);
+  }
+  if (!(result.color instanceof Uint8Array) || result.color.length !== 3 * n) {
+    throw new Error(`${ERR} color 길이 ${n * 3} 이어야 함`);
   }
   if (!Array.isArray(emptyPixels)) throw new Error(`${ERR} emptyPixels 는 배열이어야 함`);
-  const n = result.width * result.height;
   const bad = [];
   for (const p of emptyPixels) {
     if (!Number.isInteger(p) || p < 0 || p >= n) {
       throw new Error(`${ERR} 픽셀 인덱스 범위 벗어남: ${p} (범위 [0, ${n}))`);
     }
+    // 이제 이 검사가 실제로 작동한다: assertRenderResult가 없으므로 빈 픽셀이 아닌 값을 가지면 감지
     if (result.index[p] !== EMPTY_INDEX || result.depth[p] !== EMPTY_DEPTH
       || (result.color[3 * p] | result.color[3 * p + 1] | result.color[3 * p + 2]) !== 0) bad.push(p);
   }

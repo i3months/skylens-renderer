@@ -123,3 +123,71 @@ test('nonEmptyValuesInEmpty: 범위 밖 인덱스 감지(100×100 배열)', () =
   const r = emptyResult(100, 100);
   assert.throws(() => nonEmptyValuesInEmpty(r, [10000]), /^Error: missing:/);
 });
+
+// ① 변이 잡기: 깊이·색 조건 줄 제거 (라인 98-99 삭제 변이)
+test('nonEmptyValuesInEmpty: index=-1 인데 깊이·색만 어긋난 빈 픽셀을 감지', () => {
+  const r = emptyResult(2, 2);
+  // 픽셀 0: index는 EMPTY_INDEX(-1) 이지만 깊이가 0이 아님
+  r.index[0] = -1;
+  r.depth[0] = 5;  // 빈 픽셀이 아닌데 index는 빈값
+  // color[0,1,2]는 기본값 0
+  const result1 = nonEmptyValuesInEmpty(r, [0]);
+  assert.deepEqual(result1, [0], 'index=-1 이어도 depth!=0 이면 감지해야 함');
+
+  // 픽셀 1: index는 EMPTY_INDEX(-1) 이지만 색이 0이 아님
+  const r2 = emptyResult(2, 2);
+  r2.index[1] = -1;
+  r2.depth[1] = 0;  // depth는 정상
+  r2.color[3] = 7;  // color[3*1+0] = 7, 빈 픽셀이 아님
+  const result2 = nonEmptyValuesInEmpty(r2, [1]);
+  assert.deepEqual(result2, [1], 'index=-1 이어도 color!=0 이면 감지해야 함');
+});
+
+// ② 변이 잡기: 0×0 및 음수 크기 RenderResult 검사
+test('computeCoverage: 0×0·음수 크기 RenderResult 는 missing: 오류', () => {
+  // 0×0 경우
+  const r0x0 = {
+    width: 0, height: 0,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => computeCoverage(r0x0), /^Error: missing:/, '0×0 RenderResult');
+
+  // 0×3 경우
+  const r0x3 = {
+    width: 0, height: 3,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => computeCoverage(r0x3), /^Error: missing:/, '0×3 RenderResult');
+
+  // 3×0 경우
+  const r3x0 = {
+    width: 3, height: 0,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => computeCoverage(r3x0), /^Error: missing:/, '3×0 RenderResult');
+
+  // 음수 크기
+  const rNeg = {
+    width: -2, height: 2,
+    color: new Uint8Array(0),
+    depth: new Float32Array(0),
+    index: new Int32Array(0),
+  };
+  assert.throws(() => computeCoverage(rNeg), /^Error: missing:/, '-2×2 RenderResult');
+});
+
+test('toMask: RenderResult 검증이 정확히 작동', () => {
+  const validR = { width: 2, height: 2, color: new Uint8Array(12), depth: new Float32Array(4), index: new Int32Array(4).fill(-1) };
+  const result = computeCoverage(validR);
+  assert.equal(result.width, 2);
+  assert.equal(result.drawn, 0);
+  
+  const badR = { width: 2, height: 2, color: new Uint8Array(5), depth: new Float32Array(4), index: new Int32Array(4) };
+  assert.throws(() => computeCoverage(badR), /^Error: missing:/);
+});
