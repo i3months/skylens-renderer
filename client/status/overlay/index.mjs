@@ -6,6 +6,10 @@
 //
 // View 검증: contracts/client_raster 는 View 검증 함수를 내보내지 않는다(finiteArray 는 모듈 내부). 그래서 여기서 직접 한다.
 // 형식 위반(객체 아님·배열 길이·수가 아님·유한 아님)은 TypeError, 값 범위 위반(K 양수·width/height 양의 정수·R 회전 아님)은 RangeError.
+//
+// 수치 범위: projectMarkers 는 넘친 결과를 visible = false, u = v = 0 으로 돌려준다(던지지 않는다).
+// unprojectToEnu 는 유한한 u·v·depth 라도 (u − cx)/fx·depth 등 중간값이나 결과가 넘치면
+// (예: u = 1e308, depth = 1e308) RangeError 를 던진다. 비유한 값이 든 배열은 돌려주지 않는다.
 
 /**
  * R 이 회전 행렬인지 볼 때 쓰는 허용 오차(R·Rᵀ = I, det = +1). client/raster/camera ROT_TOL 과 같은 1e-6 이라
@@ -108,6 +112,7 @@ export function projectMarkers(view, markers) {
  * 화면 좌표(u, v)와 깊이 d 를 ENU 로 되돌린다. X_c = d·K⁻¹[u,v,1]ᵀ, X_w = R⁻¹(X_c − t).
  * R⁻¹ 은 수반 행렬 / det 로 구한 실제 역이다(정확한 회전이면 Rᵀ 와 같다. ROTATION_TOL 설명 참조).
  * depth 는 양의 유한 수여야 한다(depth ≤ 0 은 projectMarkers 에서 u,v 가 투영값이 아니므로 되돌릴 수 없다).
+ * 입력이 모두 유한해도 결과 성분이 넘치면(Infinity·NaN) RangeError 다. 돌려주는 세 수는 언제나 유한하다.
  * @returns {number[]} [동, 북, 위] (m)
  */
 export function unprojectToEnu(view, u, v, depth) {
@@ -121,9 +126,14 @@ export function unprojectToEnu(view, u, v, depth) {
   const b = ((v - K.cy) / K.fy) * depth - t[1];
   const c = depth - t[2];
   const Ri = inverse3(R);
-  return [
+  const out = [
     Ri[0] * a + Ri[1] * b + Ri[2] * c,
     Ri[3] * a + Ri[4] * b + Ri[5] * c,
     Ri[6] * a + Ri[7] * b + Ri[8] * c,
   ];
+  // 넘침: 예) u = 1e308, depth = 1e308 → (u − cx)/fx·depth = Infinity. 비유한 배열은 내보내지 않는다.
+  if (!out.every(Number.isFinite)) {
+    throw new RangeError(`u·v·depth 가 너무 커서 ENU 결과가 유한하지 않다: u ${u}, v ${v}, depth ${depth}`);
+  }
+  return out;
 }

@@ -248,3 +248,17 @@ test('허용 오차 안의 비직교 R, |X_w| 1e4·1e5 m: 왕복 오차 ≤ 1 cm
     assert.ok(errT > 0.01, `Rᵀ 역투영 오차 ${errT} m 가 1 cm 를 넘어야 입력이 의미 있다`);
   }
 });
+
+test('unprojectToEnu 넘침: 유한 입력이라도 결과가 비유한이면 RangeError(비유한 배열을 내지 않는다)', () => {
+  const v = identityView();
+  assert.throws(() => unprojectToEnu(v, 1e308, 50, 1e308), { name: 'RangeError', message: /유한하지 않다/ });
+  assert.throws(() => unprojectToEnu(v, 50, -1e308, 1e308), { name: 'RangeError', message: /유한하지 않다/ });
+  // c = depth − t[2] 넘침
+  assert.throws(() => unprojectToEnu({ ...v, t: [0, 0, -1.7e308] }, 320, 240, 1.7e308), { name: 'RangeError', message: /유한하지 않다/ });
+  // 회전 뒤 합이 넘치는 경우: x축 45°, b·c 는 각각 유한(1.7e308)이어도 R⁻¹ 행의 합이 넘친다
+  const c = Math.SQRT1_2;
+  const rot = { ...v, R: [1, 0, 0, 0, c, -c, 0, c, c], t: [0, -1.7e308, 0] };
+  assert.throws(() => unprojectToEnu(rot, 320, 240, 1.7e308), { name: 'RangeError', message: /유한하지 않다/ });
+  // 넘치지 않는 큰 값은 그대로 유한 결과
+  assert.deepEqual(unprojectToEnu(v, 320 + 500, 240, 1e300), [1e300, 0, 1e300]);
+});

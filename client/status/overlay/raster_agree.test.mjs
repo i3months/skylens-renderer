@@ -168,3 +168,56 @@ for (const dpr of [2, 1.5]) {
     assert.ok(err <= 0.12, `공개 픽셀 역투영 오차 ${err} m`);
   });
 }
+
+// fx ≠ fy(renderer_basis K 그대로: fx 754.32, fy 753.85), dpr 1.5.
+// syncCamera 는 fx = fy 라 위 시험들은 projectMarkers·unprojectToEnu 안에서 fx 와 fy 를 바꿔 써도 통과한다.
+// 여기서는 view.K 를 fx ≠ fy 로 바꿔 래스터 유니폼 경로(장치 픽셀 ÷dpr)와 비교한다.
+// 판별력(사전 산정): fx↔fy 를 바꾸면 u 가 0.47·|X_c.x/d| px, v 가 0.47·|X_c.y/d| px 어긋난다. 점을 |X_c.x/d| ≤ 0.9,
+// |X_c.y/d| ≤ 0.6 에 고르게 두면 최대 약 0.4·0.28 px. 허용치는 1e-6 CSS px(부동소수 차는 훨씬 작다)라 넉넉히 갈린다.
+// 역투영에서 바꾸면 X_c 가 |u − cx|·d·|1/fx − 1/fy| ≈ |u − cx|·d·8.3e-7 m 어긋난다(d 800 m, |u − cx| 600 px → 0.4 m).
+test('fx ≠ fy(754.32/753.85), dpr 1.5: projectMarkers 가 래스터 ÷dpr 과 1e-6 px 이내, 래스터 픽셀 역투영이 ENU 와 0.01 m 이내', () => {
+  const K = { fx: 754.32, fy: 753.85, cx: 480, cy: 270 };
+  const size = { width: 960, height: 540, devicePixelRatio: 1.5 };
+  const MAX_PX = 1e-6;
+  const rnd = mulberry32(298);
+  let maxSwapU = 0;
+  let maxSwapV = 0;
+  let maxSwapBack = 0;
+  for (let k = 0; k < 10; k += 1) {
+    const quat = [rnd() - 0.5, rnd() - 0.5, rnd() - 0.5, rnd() - 0.5];
+    const pos = [rnd() * 2000 - 1000, rnd() * 2000 - 1000, 20 + rnd() * 200];
+    const { view: synced } = syncCamera({ pos, quat, fovY: 2 * Math.atan(270 / 753.85) }, size, k);
+    const view = { ...synced, K: { ...K } };
+    const U = buildCameraUniforms(view);
+    assert.equal(U.bw, 1440);
+    assert.equal(U.bh, 810);
+    const C = quatToMatrix(unit(quat));
+    const pts = [];
+    for (let i = 0; i < 25; i += 1) {
+      const d = 3 + rnd() * 800;
+      const a = (rnd() * 2 - 1) * 0.9 * d;
+      const b = (rnd() * 2 - 1) * 0.6 * d;
+      const enu = [0, 1, 2].map((r) => pos[r] + C[3 * r] * a + C[3 * r + 1] * b + C[3 * r + 2] * d);
+      pts.push({ id: `${k}.${i}`, enu, a, b, d });
+    }
+    const out = projectMarkers(view, pts.map(({ id, enu }) => ({ id, enu })));
+    out.forEach((m, i) => {
+      const { enu, a, b, d } = pts[i];
+      const r = rasterCss(U, 1.5, enu);
+      assert.notEqual(r, null);
+      assert.ok(Math.abs(m.u - r.u) <= MAX_PX, `u ${m.id}: 마커 ${m.u} 래스터 ${r.u}`);
+      assert.ok(Math.abs(m.v - r.v) <= MAX_PX, `v ${m.id}: 마커 ${m.v} 래스터 ${r.v}`);
+      // 래스터가 그린 CSS 픽셀과 깊이를 되돌리면 원래 ENU
+      const back = unprojectToEnu(view, r.u, r.v, r.d);
+      const err = Math.hypot(...back.map((x, j) => x - enu[j]));
+      assert.ok(err <= MAX_DIFF_M, `역투영 ${m.id}: ${err} m`);
+      // 입력이 fx↔fy 교환을 가르는지(바꾼 식의 예측과 래스터의 차)
+      maxSwapU = Math.max(maxSwapU, Math.abs((K.fy * a) / d + K.cx - r.u));
+      maxSwapV = Math.max(maxSwapV, Math.abs((K.fx * b) / d + K.cy - r.v));
+      maxSwapBack = Math.max(maxSwapBack, Math.hypot(((r.u - K.cx) / K.fy - (r.u - K.cx) / K.fx) * r.d, ((r.v - K.cy) / K.fx - (r.v - K.cy) / K.fy) * r.d));
+    });
+  }
+  assert.ok(maxSwapU > 0.3, `fx↔fy 교환 u 차 최대 ${maxSwapU} px 가 허용치보다 훨씬 커야 판별력이 있다`);
+  assert.ok(maxSwapV > 0.2, `fx↔fy 교환 v 차 최대 ${maxSwapV} px`);
+  assert.ok(maxSwapBack > 10 * MAX_DIFF_M, `fx↔fy 교환 역투영 차 최대 ${maxSwapBack} m`);
+});
