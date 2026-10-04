@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRenderer } from './index.mjs';
-import { findChromium } from './shader/gl_harness.mjs';
+import { findChromium, glSkip } from './shader/gl_harness.mjs';
 import { packChunk } from '../../server/asset/pack/index.mjs';
 import { FORMAT_POINT27 } from '../../contracts/client_raster/index.mjs';
 
@@ -127,7 +127,8 @@ function worldAtDevicePixel(e, i, j) {
   return [-T[0] + (5 * (uCss - K_CSS.cx)) / K_CSS.fx, -T[1] + (5 * (vCss - K_CSS.cy)) / K_CSS.fy, 5];
 }
 
-test('실제 WebGL2 dpr 2·3·1.5: 점이 장치 픽셀 버퍼의 기대 칸에 그려지고 다른 칸은 검다', { skip: CHROME ? false : SKIP_REASON }, () => {
+test('실제 WebGL2 dpr 2·3·1.5: 점이 장치 픽셀 버퍼의 기대 칸에 그려지고 다른 칸은 검다', { skip: glSkip(CHROME ? null : SKIP_REASON) }, () => {
+  assert.ok(CHROME, 'Chromium 없음: SKYLENS_REQUIRE_GL=1 에서는 실제 GL 검증을 건너뛸 수 없다');
   const cases = CASES.filter(([, , dpr]) => dpr !== 1).map(([w, h, dpr]) => {
     const e = expectedDevice(w, h, dpr);
     // 버퍼의 네 사분면에 흩어 둔 칸. CSS K 를 그대로 쓰면 장면이 1/dpr 크기로 왼쪽 위에 몰려 이 칸들을 벗어난다

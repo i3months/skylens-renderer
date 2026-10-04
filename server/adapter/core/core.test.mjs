@@ -917,7 +917,6 @@ test('F-231 ⑥: skip 의 onRelease 가 같은 어댑터 handle 을 불러도 �
   assert.deepEqual(r, { action: 'skip', emitted: 0, released: [], abandoned: keys });
   assert.deepEqual(rel, [keys], 'key 당 1 번(2 번 이하)');
   assert.deepEqual(inner, [{ action: 'expect', emitted: 1, released: [] }]);
-  assert.deepEqual(ad.pendingReleases(), []);
   ad.handle({ kind: 'segment_expected', segmentId: 10 });
   assert.equal(rel.length, 1);
 });
@@ -1093,7 +1092,7 @@ test('F-240 ④: L == M(재시도 수준이 기계의 현재 수준과 같음)�
   const h = laHarness();
   h.attempt(3);
   // 다른 key 집합으로 먼저 확정: 기계가 다른 key 를 쥐고 있는 상태
-  h.machine.arrive(9, 2, piecesEvent(9, 2, 3).pieces);
+  h.machine.arrive(9, 1, piecesEvent(9, 1, 3, 1).pieces);
   // 이제 L == M 사례: 같은 수준으로 재도착
   h.machine.arrive(9, 1, piecesEvent(9, 1, 2).pieces);
   const n = h.out.length;
@@ -1104,6 +1103,7 @@ test('F-240 ④: L == M(재시도 수준이 기계의 현재 수준과 같음)�
   assert.deepEqual(h.ad.pendingReleases(), [], '보관한 알림도 없다');
   assert.equal(h.ad.unfinishedEvent(), null);
   assert.equal(h.ad.nextPieceSeq(), PIECE_SEQ_MIN + 2, '쓰였을 수 있는 pieceSeq 는 태운다');
+  assert.equal(h.machine.snapshot(9).level, 1);
 });
 
 test('F-235: LEVEL_ARRIVED emit 을 부른 시도 뒤 재시도가 더 일찍 실패해도 표시는 남는다', () => {

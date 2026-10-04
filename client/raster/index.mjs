@@ -11,10 +11,15 @@
 //   형식 2 는 법선이 없어 셰이딩하지 않는다(u_shade = false, 법선 속성은 상수 (0,0)).
 // 그리기 규칙(계약 ④): 올린 조각은 받는 것만으로 그리지 않는다. 호출자가 setArrived(arrived) 로 LEVEL_ARRIVED 완료 집합을
 //   넘기면 상주 key 를 selectDrawable 로 나눠 draw 에 든 조각만 그린다. setArrived 를 한 번도 부르지 않으면 아무것도 그리지 않는다.
-//   setArrived 는 계약 인터페이스 밖의 추가 메서드다(계약 Renderer 에 도착 정보를 넘길 메서드가 없어서). 결과의 discard 는
+//   setArrived 는 계약 Renderer 에 올라 있는 도착 입력 메서드다(결정 0034). 결과의 discard 는
 //   호출자가 releasePiece 로 해제한다(해제 근거). 렌더러는 discard 를 스스로 해제하지 않는다.
+//   재계산 주기(F-246 ⑦, 계약 '프레임마다 부르지 않는다'): selectDrawable 은 setArrived 때만 돈다. 업로드가 끝난 key 가 직전
+//   선택에 없으면(도착 집합에 없는 새 key) 직전 선택에서 pending 으로 보고 다시 돌지 않는다. 도착 집합에 든 key 가 올라오면
+//   다음 draw 에서 프레임당 최대 1회 다시 돈다. 해제·퇴출은 선택을 건드리지 않는다(draw 가 상주하지 않는 key 를 건너뛴다).
 // 메모리(계약 ④·머리 주석 끝): maxResidentBytes 를 넘게 될 업로드는 그리지 않는 상주 조각(pending·discard)을 오래된 것부터
 //   해제해 자리를 만든다(onEvict 로 알린다). 그려도 모자라면 그리는 조각은 건드리지 않고 ClientRasterError('memory').
+// GPU 평면: 복호 결과에 Worker 가 만든 gpu({format,count,planes,origin})가 있으면 toGpuPlanes 를 다시 돌리지 않고 가벼운 검증만
+//   하고 쓴다(F-244 ②). 없으면 toGpuPlanes. 잘못된 gpu 는 'piece'.
 // 컨텍스트 소실: GPU 자원(버퍼·프로그램·VAO)을 모두 버린다(상주량 0). 원본 바이트는 보관하지 않는다(도착하지 않은 것을
 //   만들지 않으려면 다시 받은 바이트만 쓴다). 복구되면 프로그램을 다시 만들고 onContextRestored 콜백에 소실 당시 상주(또는
 //   올리는 중)였던 key 목록을 넘겨 호출자가 uploadPiece 로 다시 올리게 한다. 소실 중 uploadPiece 는 'context' 로 거부하고,
@@ -109,6 +114,39 @@ export function toGpuPlanes(decoded, origin = [0, 0, 0]) {
 }
 
 /**
+ * Worker 가 만든 gpu 평면의 가벼운 검증(값 전수 검사는 하지 않는다): 형식·점 수·원점·평면 이름·타입·길이.
+ * origin 은 헤더 bboxMin 과 같아야 한다(렌더러가 쓰는 원점 규약). 어기면 ClientRasterError('piece').
+ * @param {any} decoded {header, planes, gpu}
+ * @returns {{format: number, count: number, planes: Record<string, ArrayBufferView>, origin: number[]}}
+ */
+export function checkGpuPlanes(decoded) {
+  const h = decoded && decoded.header;
+  const g = decoded && decoded.gpu;
+  const bad = (m) => new ClientRasterError('piece', `gpu 평면이 틀림: ${m}`);
+  if (!h || typeof h !== 'object') throw bad('header 가 없음');
+  if (g === null || typeof g !== 'object') throw bad('gpu 가 객체가 아님');
+  const format = h.format;
+  if (format !== FORMAT_POINT27 && format !== FORMAT_GAUSS56) throw new ClientRasterError('piece', `모르는 format ${String(format)}`);
+  const n = h.pointCount;
+  if (!Number.isSafeInteger(n) || n < 1) throw new ClientRasterError('piece', `pointCount 가 틀림: ${String(n)}`);
+  if (g.format !== format) throw bad(`format ${String(g.format)} != 헤더 ${format}`);
+  if (g.count !== n) throw bad(`count ${String(g.count)} != 헤더 pointCount ${n}`);
+  if (!Array.isArray(h.bboxMin) || h.bboxMin.length !== 3) throw bad('헤더 bboxMin 이 틀림');
+  if (!Array.isArray(g.origin) || g.origin.length !== 3 || !g.origin.every((v, a) => v === h.bboxMin[a])) throw bad('origin 이 헤더 bboxMin 과 다름');
+  const p = g.planes;
+  if (p === null || typeof p !== 'object') throw bad('planes 가 없음');
+  const want = format === FORMAT_POINT27 ? ['position', 'color', 'normalOct'] : ['position', 'color'];
+  const names = Object.keys(p);
+  if (names.length !== want.length || !want.every((w) => names.includes(w))) throw bad(`평면 이름이 ${want.join(',')} 이 아님: ${names.join(',')}`);
+  const spec = { position: [Float32Array, 3], color: [Uint8Array, 3], normalOct: [Int8Array, 2] };
+  for (const name of want) {
+    const [Type, k] = spec[name];
+    if (!(p[name] instanceof Type) || p[name].length !== k * n) throw bad(`평면 ${name} 이 ${Type.name}[${k * n}] 이 아님`);
+  }
+  return { format, count: n, planes: p, origin: [g.origin[0], g.origin[1], g.origin[2]] };
+}
+
+/**
  * 렌더러를 만든다.
  * @param {Object} options
  * @param {any} options.canvas  getContext·addEventListener 를 가진 캔버스
@@ -119,6 +157,7 @@ export function toGpuPlanes(decoded, origin = [0, 0, 0]) {
  * @param {() => number} [options.now]  draw 의 drawMs 용 시계(기본 performance.now)
  * @param {(keys: string[]) => void} [options.onEvict]  메모리 한도 때문에 해제한 그리지 않는 조각 key 알림
  * @param {object} [options.contextAttributes]  getContext 속성(createContext 기본값 위에 덮어씀)
+ * @param {{selectDrawable?: Function, toGpuPlanes?: Function}} [options.testHooks]  시험 전용: 호출 횟수 계측용 대체 함수(운영 코드는 쓰지 않는다)
  */
 export function createRenderer(options) {
   if (options === null || typeof options !== 'object') throw new ClientRasterError('context', 'options 가 객체가 아님');
@@ -127,6 +166,8 @@ export function createRenderer(options) {
   if (typeof decode !== 'function') throw new ClientRasterError('context', 'decode 는 함수여야 함');
   const now = options.now ?? (() => (globalThis.performance ? globalThis.performance.now() : Date.now()));
   const onEvict = options.onEvict;
+  const select = options.testHooks?.selectDrawable ?? selectDrawable;
+  const toPlanes = options.testHooks?.toGpuPlanes ?? toGpuPlanes;
   const shading = { ...DEFAULT_SHADING, ...(options.shading ?? {}) };
   // 셰이딩 옵션은 만들 때 한 번 검사한다(PointShaderError 를 'view' 로 바꾼다)
   try {
@@ -158,7 +199,10 @@ export function createRenderer(options) {
   let gpu = null; // {program, uniforms, vao, maxPointSize}
   let view = null; // {cam, values}
   let arrived = null; // 마지막 setArrived 입력(없으면 아무것도 그리지 않음)
-  let selection = null; // selectDrawable 결과 캐시(상주 key·arrived 가 바뀌면 무효)
+  let selection = null; // 마지막 selectDrawable 결과(setArrived 가 채운다)
+  let arrivedKeys = new Set(); // 마지막 setArrived 의 도착 key 전체(새로 올라온 key 가 재계산을 요하는지 가린다)
+  let selectionStale = false; // 도착 집합에 든 key 가 선택 뒤에 올라옴 → 다음 draw 에서 한 번 다시 돈다
+  const fresh = new Set(); // 선택 뒤에 올라온 도착 집합 key(다시 돌기 전까지 퇴출에서 보호)
   let droppedFrames = 0;
   let lostKeys = new Set();
   const lostCbs = new Set();
@@ -178,11 +222,13 @@ export function createRenderer(options) {
     throw new ClientRasterError('context', `점 프로그램 생성 실패: ${e.message}`);
   }
 
-  function invalidate() { selection = null; }
-
   function currentSelection() {
     if (arrived === null) return { draw: [], pending: meta.size ? [...meta.keys()] : [], discard: [] };
-    if (selection === null) selection = selectDrawable([...meta.keys()], arrived);
+    if (selectionStale) {
+      selection = select([...meta.keys()], arrived);
+      selectionStale = false;
+      fresh.clear();
+    }
     return selection;
   }
 
@@ -192,10 +238,10 @@ export function createRenderer(options) {
     meta.delete(key);
   }
 
-  function fire(set, arg) {
+  function fire(set, ...args) {
     let first = null;
     for (const cb of [...set]) {
-      try { cb(arg); } catch (e) { if (first === null) first = e; }
+      try { cb(...args); } catch (e) { if (first === null) first = e; }
     }
     if (first !== null) throw first;
   }
@@ -204,13 +250,13 @@ export function createRenderer(options) {
     lost = true;
     generation += 1;
     // 소실 당시 상주·업로드 중이던 key 를 복구 목록으로 남긴다(원본 바이트는 보관하지 않는다)
-    lostKeys = new Set([...meta.keys(), ...inflight.keys()]);
+    lostKeys = new Set([...lostKeys, ...meta.keys(), ...inflight.keys()]); // 앞선 복구가 실패해 남은 목록도 잇는다
     inflight.clear();
     pool.clear(); // 소실된 문맥의 deleteBuffer 는 아무것도 하지 않는다. 참조만 버린다
     meter.reset();
     meta.clear();
     gpu = null;
-    invalidate();
+    fresh.clear(); // 선택은 그대로 둔다: 복구 뒤 다시 올라온 key 가 같은 도착 집합으로 바로 그려진다
     fire(lostCbs);
   });
   ctx.onRestored(() => {
@@ -221,11 +267,13 @@ export function createRenderer(options) {
       failure = null;
       if (view) view = makeView(view.input);
     } catch (e) {
-      failure = e;
+      failure = new ClientRasterError('context', `복구 중 프로그램 재생성 실패: ${e && e.message ? e.message : String(e)}`);
     }
-    const keys = [...lostKeys];
-    lostKeys = new Set();
-    fire(restoredCbs, keys);
+    // 실패하면 다시 올릴 수 없으므로 key 목록은 비우고(소실 목록은 다음 복구를 위해 남긴다) 둘째 인자로 오류를 알린다.
+    // 계약의 콜백 인자는 key 배열 하나이고 둘째 인자 error 는 구현 확장이다. 실패 중 draw 는 건너뛰고 uploadPiece 는 'context' 로 거부한다.
+    const keys = failure ? [] : [...lostKeys];
+    if (!failure) lostKeys = new Set();
+    fire(restoredCbs, keys, failure ?? undefined);
   });
 
   function assertAlive() {
@@ -243,23 +291,24 @@ export function createRenderer(options) {
 
   // 그리지 않는 상주 조각을 오래된 것부터 해제해 need 바이트를 만든다. 모자라면 'memory'.
   function makeRoom(key, bytes) {
-    const sizes = meter.byKey();
-    const resident = pool.residentBytes() - (sizes[key] ?? 0);
+    // 한도 여유가 있으면 크기 표·선택을 만들지 않고 돌아간다(F-246 ⑦). key 별 크기는 meta 에 둔다
+    const resident = pool.residentBytes() - (meta.get(key)?.bytes ?? 0);
     if (resident + bytes <= maxResidentBytes) return;
-    const drawing = new Set(currentSelection().draw);
+    // 선택을 다시 돌지 않는다: 직전 선택의 draw 와, 그 뒤 올라온 도착 집합 key(fresh)를 그리는 조각으로 보호한다
+    const drawing = new Set(arrived === null ? [] : selection.draw);
+    for (const k of fresh) drawing.add(k);
     const victims = [];
     let free = 0;
-    for (const k of meta.keys()) {
+    for (const [k, info] of meta) {
       if (resident + bytes - free <= maxResidentBytes) break;
       if (k === key || drawing.has(k)) continue;
       victims.push(k);
-      free += sizes[k];
+      free += info.bytes;
     }
     if (resident + bytes - free > maxResidentBytes) {
       throw new ClientRasterError('memory', `조각 ${bytes} B 를 올리면 상주가 maxResidentBytes ${maxResidentBytes} 를 넘음(그리는 조각은 해제하지 않음)`);
     }
     for (const k of victims) dropPiece(k);
-    invalidate();
     if (victims.length && typeof onEvict === 'function') {
       // 알림 콜백의 예외가 업로드를 막지 않게 한다(희생 조각은 이미 해제됨)
       try { onEvict(victims); } catch { /* 호출자 콜백 오류는 렌더러 상태와 무관 */ }
@@ -271,6 +320,7 @@ export function createRenderer(options) {
     const pk = parsePieceKey(key);
     if (!(bytes instanceof Uint8Array)) throw new ClientRasterError('piece', 'bytes 는 Uint8Array 여야 함');
     if (lost) throw new ClientRasterError('context', `문맥 소실 중: ${key} 는 복구 뒤 다시 올려야 함`);
+    if (failure) throw new ClientRasterError('context', `복구 실패 상태(${failure.message}): ${key} 를 올릴 수 없음`);
     const token = nextToken++;
     const gen = generation;
     // 같은 key 의 앞선 업로드가 아직 진행 중이면 그 토큰들을 무효로 한다(늦게 끝나도 새 업로드를 덮지 않게)
@@ -287,7 +337,10 @@ export function createRenderer(options) {
         if (e instanceof ClientRasterError) throw e;
         throw new ClientRasterError('piece', `복호 실패(${key}): ${e && e.message ? e.message : String(e)}`);
       }
-      gpuPiece = toGpuPlanes(decoded, decoded && decoded.header ? decoded.header.bboxMin : undefined);
+      // Worker 가 origin = bboxMin 으로 만든 gpu 가 있으면 가벼운 검증만 하고 쓴다(toGpuPlanes 를 다시 돌리지 않는다)
+      gpuPiece = decoded && typeof decoded === 'object' && decoded.gpu !== undefined
+        ? checkGpuPlanes(decoded)
+        : toPlanes(decoded, decoded && decoded.header ? decoded.header.bboxMin : undefined);
       for (const f of KEY_FIELDS) {
         if (decoded.header[f] !== pk[f]) throw new ClientRasterError('piece', `헤더 ${f}=${decoded.header[f]} 가 key ${key} 와 다름`);
       }
@@ -311,8 +364,12 @@ export function createRenderer(options) {
     meter.remove(key); // 삽입 순서를 최신으로
     meter.add(key, bytesTotal);
     meta.delete(key);
-    meta.set(key, { format: gpuPiece.format, count: gpuPiece.count, origin: gpuPiece.origin });
-    invalidate();
+    meta.set(key, { format: gpuPiece.format, count: gpuPiece.count, origin: gpuPiece.origin, bytes: bytesTotal });
+    // 도착 집합에 없는 새 key 는 직전 선택에서 pending 이라 다시 돌지 않는다. 도착 집합에 든 key 만 다음 draw 에서 1회 다시 돈다
+    if (arrived !== null && arrivedKeys.has(key)) {
+      selectionStale = true;
+      fresh.add(key);
+    }
   }
 
   // 업로드 시작 뒤 releasePiece 나 같은 key 의 새 uploadPiece 가 있었는가
@@ -331,17 +388,19 @@ export function createRenderer(options) {
     if (active.get(key)) superseded.set(key, nextToken - 1); // 진행 중일 때만 기록(누수 방지)
     inflight.delete(key);
     lostKeys.delete(key);
-    if (meta.has(key)) {
-      dropPiece(key);
-      invalidate();
-    }
+    if (meta.has(key)) dropPiece(key); // 선택은 그대로 둔다: draw 가 상주하지 않는 key 를 건너뛴다
+    fresh.delete(key);
   }
 
   function setArrived(list) {
     assertAlive();
-    const res = selectDrawable([...meta.keys()], list); // 입력 검사 겸 결과
+    const res = select([...meta.keys()], list); // 입력 검사 겸 결과(도착 이벤트마다 한 번)
     arrived = list.map((a) => ({ segmentId: a.segmentId, level: a.level, keys: [...a.keys] }));
+    arrivedKeys = new Set();
+    for (const a of arrived) for (const k of a.keys) arrivedKeys.add(k);
     selection = res;
+    selectionStale = false;
+    fresh.clear();
     return { draw: [...res.draw], pending: [...res.pending], discard: [...res.discard] };
   }
 
@@ -350,8 +409,25 @@ export function createRenderer(options) {
     view = makeView(v);
   }
 
+  // 조각별 VAO 캐시: 속성 배선(bindBuffer·vertexAttribPointer)은 만들 때 한 번만 하고 프레임에서는 bindVertexArray 만 부른다
+  const pieceVaos = new Map(); // key → {bufs, format, vao}
+  let vaoOwner = null; // 이 캐시가 만들어진 gpu(복구 때 gpu 가 바뀌면 옛 문맥의 VAO 는 버린다)
+
+  function deletePieceVao(entry) {
+    if (!lost) gl.deleteVertexArray(entry.vao);
+  }
+
   function bindPiece(key, info) {
     const bufs = pool.get(key);
+    let e = pieceVaos.get(key);
+    if (e && e.bufs === bufs && e.format === info.format) {
+      gl.bindVertexArray(e.vao);
+      return;
+    }
+    if (e) deletePieceVao(e); // 같은 key 를 다시 올려 버퍼가 바뀐 경우
+    e = { bufs, format: info.format, vao: gl.createVertexArray() };
+    pieceVaos.set(key, e);
+    gl.bindVertexArray(e.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, bufs.position);
     gl.enableVertexAttribArray(ATTRIB.position);
     gl.vertexAttribPointer(ATTRIB.position, 3, gl.FLOAT, false, 0, 0);
@@ -364,7 +440,6 @@ export function createRenderer(options) {
       gl.vertexAttribPointer(ATTRIB.normalOct, 2, gl.BYTE, false, 0, 0);
     } else {
       gl.disableVertexAttribArray(ATTRIB.normalOct);
-      gl.vertexAttrib2f(ATTRIB.normalOct, 0, 0);
     }
   }
 
@@ -386,16 +461,23 @@ export function createRenderer(options) {
     gl.depthFunc(gl.LESS);
     gl.useProgram(gpu.program);
     applyPointUniforms(gl, gpu.uniforms, values);
-    gl.bindVertexArray(gpu.vao);
+    if (vaoOwner !== gpu) { pieceVaos.clear(); vaoOwner = gpu; }
+    if (pieceVaos.size > meta.size) { // 해제된 조각의 VAO 정리(드물게만 돈다)
+      for (const [k, e] of pieceVaos) if (!meta.has(k)) { deletePieceVao(e); pieceVaos.delete(k); }
+    }
+    gl.vertexAttrib2f(ATTRIB.normalOct, 0, 0); // 법선 배열이 꺼진 조각(형식 2)의 상수 법선: 프레임에 한 번
     let drawnPoints = 0;
     let drawnPieces = 0;
+    // u_shade 는 프레임 시작(applyPointUniforms)에서 올린 값에서 바뀔 때만 다시 올린다
+    const hasShade = gpu.uniforms.u_shade !== null && gpu.uniforms.u_shade !== undefined;
+    let shadeNow = values.u_shade ? 1 : 0;
     for (const key of currentSelection().draw) {
       const info = meta.get(key);
       if (!info) continue;
       bindPiece(key, info);
       applyPieceOrigin(gl, gpu.uniforms, values, info.origin); // 조각 원점 기준 u_tgl(f64 계산)
-      const shade = info.format === FORMAT_POINT27;
-      if (gpu.uniforms.u_shade !== null && gpu.uniforms.u_shade !== undefined) gl.uniform1i(gpu.uniforms.u_shade, shade && values.u_shade ? 1 : 0);
+      const shade = info.format === FORMAT_POINT27 && values.u_shade ? 1 : 0;
+      if (hasShade && shade !== shadeNow) { gl.uniform1i(gpu.uniforms.u_shade, shade); shadeNow = shade; }
       gl.drawArrays(gl.POINTS, 0, info.count);
       drawnPoints += info.count;
       drawnPieces += 1;
@@ -416,11 +498,13 @@ export function createRenderer(options) {
     if (!lost) {
       pool.clear();
       if (gpu) {
+        for (const e of pieceVaos.values()) gl.deleteVertexArray(e.vao);
         gl.deleteVertexArray(gpu.vao);
         gl.deleteProgram(gpu.program);
       }
     }
     gpu = null;
+    pieceVaos.clear();
     meta.clear();
     meter.reset();
     lostKeys = new Set();
@@ -444,15 +528,17 @@ export function createRenderer(options) {
     draw,
     memoryBytes,
     dispose,
-    /** 소실 알림. 콜백은 인자 없이 불린다. 구독 해제 함수를 돌려준다(계약은 void, 추가 반환). */
+    /** 소실 알림. 콜백은 인자 없이 불린다. 구독 해제 함수를 돌려준다(계약 typedef 와 API 표 모두 구독 해제 함수 반환). */
     onContextLost: (cb) => subscribe(lostCbs, cb),
-    /** 복구 알림. 콜백 인자는 다시 올려야 할 key 배열(소실 당시 상주·업로드 중이던 것 중 그 뒤 해제되지 않은 것). */
+    /** 복구 알림. 콜백 인자는 다시 올려야 할 key 배열(소실 당시 상주·업로드 중이던 것 중 그 뒤 해제되지 않은 것).
+     *  프로그램 재생성이 실패하면 key 배열은 비고 둘째 인자로 ClientRasterError('context')를 준다(구현 확장). */
     onContextRestored: (cb) => subscribe(restoredCbs, cb),
-    // ---- 계약 밖의 추가 메서드 ----
+    // ---- 계약 Renderer 에 올라 있는 도착·관측 메서드(결정 0034) ----
     setArrived,
     residentKeys: () => [...meta.keys()],
     isContextLost: () => lost,
-    /** 업로드 장부 크기(시험·관측용): 진행 중 업로드가 있는 key 수와 무효 기록 수 */
+    // ---- 계약 밖 시험 전용 확장(운영 코드는 부르지 않는다. 이름은 api.test 의 허용 목록이 참조하므로 바꾸지 않는다) ----
+    /** 시험 전용: 업로드 장부 크기(관측용). 진행 중 업로드가 있는 key 수와 무효 기록 수 */
     uploadBookkeeping: () => ({ active: active.size, superseded: superseded.size }),
   };
 }

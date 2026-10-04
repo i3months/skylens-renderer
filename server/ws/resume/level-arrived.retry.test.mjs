@@ -287,3 +287,27 @@ test('F-241 무작위: 같은 값 재시도 예외 0, 다른 값은 기억한 �
   assert.ok(rejects > 0, `rejects ${rejects}`);
   assert.ok(rememberedBelow > 0, `지평 아래에서 기억한 기록 ${rememberedBelow}`); // F-241 ⑨ 의 자리를 지났는지
 });
+
+test('F-247 ⑥: 기록 사이 틈을 덮는 다른 값은 지평이 오르면 RangeError 에서 true 로 바뀐다(대가로 고정, maxEntries 3)', () => {
+  const st = mk(3); // 묘비 상한 4
+  const sid = st.open({ sessionId: 0 }).sessionId;
+  for (let n = 1; n <= 3; n++) sent(st, sid, key(n, 0, 0), n);
+  // 창 1..1·3..3: 순번 2 는 어떤 창에도 들지 않은 틈.
+  for (const n of [1, 3]) assert.equal(st.recordLevelArrived(sid, la(n, 0, n, 1)), true);
+  assert.equal(st.levelStats(sid).horizon, 0);
+  const GAP = la(7, 2, 2, 1);
+  assert.throws(() => st.recordLevelArrived(sid, GAP), OVERLAP, '지평 0: 창 끝 2 > 0');
+  assert.throws(() => st.recordLevelArrived(sid, GAP), /지평\(0\)을 넘는 순서 위반/, '실제 이유 문구');
+  // ack 가 진행되며 묘비가 쌓여 상한 4 를 넘으면 1..1·3..3 을 잊는다.
+  st.ack(sid, 3);
+  for (let n = 4; n <= 8; n++) {
+    sent(st, sid, key(n, 0, 0), n);
+    assert.equal(st.recordLevelArrived(sid, la(n, 0, n, 1)), true);
+    st.ack(sid, n);
+  }
+  assert.equal(st.levelStats(sid).horizon, 3);
+  const b0 = st.levelStats(sid).blind;
+  assert.equal(st.recordLevelArrived(sid, GAP), true, 'ack 진행 뒤: 지평 3 >= 2 라 대조 없이 true');
+  assert.equal(st.levelStats(sid).blind, b0 + 1);
+  assert.throws(() => st.recordLevelArrived(sid, la(7, 2, 8, 1)), /기억한 기록 8\.\.8 과 값이 다르다/, '기억한 기록과 겹치는 다른 값은 그대로 RangeError');
+});

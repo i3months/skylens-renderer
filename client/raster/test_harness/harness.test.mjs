@@ -96,7 +96,7 @@ test('재현성: 8시점 캡처가 같은 입력에서 같은 해시, 입력이 
   let diffViews = 0;
   for (let i = 0; i < 8; i++) if (hashRgba(changed[i], W, H) !== run1[i]) { diffViews++; assert.ok(ssim(base[i], changed[i], W, H) < 1); }
   assert.ok(diffViews >= 1, `바뀐 시점 ${diffViews}`);
-  // 고정 해시(회귀 감시): 8시점 전부
+  // 서버 참조 회귀 고정: 8시점 전부의 해시를 고정
   assert.deepEqual(run1, PINNED);
 });
 
@@ -124,6 +124,7 @@ test('decodePngRgba: 서명이 틀리면 던짐', () => {
   assert.throws(() => decodePngRgba(Buffer.from('not a png at all')));
 });
 
+// 서버 참조 회귀 고정: 8시점 CPU 참조 래스터러 출력 해시
 const PINNED = [
   '2d25a371b501c4ee23fe2778cc84b88cb06a05b56c5d854ba818106848429a2c',
   'b5810be27406d2680282ba740453f2e64e14006e5240d5903fd8126707d57675',
