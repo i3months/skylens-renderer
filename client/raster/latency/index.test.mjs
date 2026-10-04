@@ -113,21 +113,30 @@ test('createLatencyProbe: 여러 프레임 격리', (t) => {
 });
 
 test('createLatencyProbe: 기본 now 함수', (t) => {
-  const probe = createLatencyProbe();
+  // globalThis.performance 를 대체해 기본 now 배선 확인
+  let time = 0;
+  const originalNow = globalThis.performance.now;
+  globalThis.performance.now = () => time;
 
-  const start = performance.now();
-  probe.mark('a');
-  // 작은 지연
-  let sum = 0;
-  for (let i = 0; i < 1000000; i++) sum += i;
-  probe.mark('b');
-  const end = performance.now();
+  try {
+    const probe = createLatencyProbe();
 
-  const measured = probe.measure('a', 'b');
-  // 측정된 시간이 대략 실제 경과 시간과 맞아야 함 (오차 범위 내)
-  const actual = end - start;
-  assert.ok(measured > 0);
-  assert.ok(measured <= actual + 1); // 약간의 오차 허용
+    time = 100;
+    probe.mark('a');
+    time = 105;
+    probe.mark('b');
+
+    const measured = probe.measure('a', 'b');
+    // 기본 now 함수가 globalThis.performance.now 로 배선되는지 확인
+    assert.equal(measured, 5);
+
+    const { marks } = probe.events();
+    assert.equal(marks.length, 2);
+    assert.equal(marks[0].time, 100);
+    assert.equal(marks[1].time, 105);
+  } finally {
+    globalThis.performance.now = originalNow;
+  }
 });
 
 test('createLatencyProbe: 파이프라인 입력→setView→draw→present', (t) => {

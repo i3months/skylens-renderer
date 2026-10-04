@@ -178,8 +178,9 @@ test('재시도 skip(F-235): LEVEL_ARRIVED 가 쓰였으면 완료, 안 쓰였�
     assert.deepEqual(msgs.map((m) => [m.type, m.pieceSeq]), wire, f.where);
     const { keys, arrived } = collectArrivals(msgs);
     const sel = selectDrawable(keys, arrived);
-    assert.deepEqual(sel, { draw, pending, discard: [] }, f.where);
+    // 서로소 검사: discard 와 pending 이 draw 와 겹치지 않아야 함
     for (const k of [...sel.discard, ...sel.pending]) assert.ok(!sel.draw.includes(k), f.where);
+    assert.deepEqual(sel, { draw, pending, discard: [] }, f.where);
     // 어댑터가 알린 abandoned 는 고정 배열이다: 'before'(LEVEL_ARRIVED 안 쓰임)는 두 key 전부, 'after'(쓰임)는 빈 배열(F-235).
     assert.deepEqual((r.abandoned ?? []).map(pieceKeyToString), abandoned, f.where);
   }
@@ -190,10 +191,10 @@ test('빈 keys 항목은 던진다: 변환 결과의 keys 를 비우면 selectDr
   h.run(event(7, 0, [0]));
   const { keys, arrived } = collectArrivals(h.decoded());
   assert.deepEqual(selectDrawable(keys, arrived).draw, ['7.0.1.-2.0.0']);
-  assert.throws(() => selectDrawable(keys, [{ ...arrived[0], keys: [] }]), isPiece);
-  assert.throws(() => selectDrawable(keys, [{ segmentId: 7, level: 0 }]), isPiece);
+  assert.throws(() => selectDrawable(keys, [{ ...arrived[0], keys: [] }]), (e) => isPiece(e) && /keys 는 비지 않은 배열이어야 함/.test(e.message));
+  assert.throws(() => selectDrawable(keys, [{ segmentId: 7, level: 0 }]), (e) => isPiece(e) && /keys 는 비지 않은 배열이어야 함/.test(e.message));
   // 복호한 LEVEL_ARRIVED 를 그대로 넘기는 것(keys 없음)도 거부한다
-  assert.throws(() => selectDrawable(keys, [h.decoded()[1]]), isPiece);
+  assert.throws(() => selectDrawable(keys, [h.decoded()[1]]), (e) => isPiece(e) && /keys 는 비지 않은 배열이어야 함/.test(e.message));
 });
 
 test('이상 입력은 ClientRasterError(piece)', () => {
@@ -223,7 +224,7 @@ test('이상 입력은 ClientRasterError(piece)', () => {
     ['collectArrivals 에서 모자람', () => collectArrivals([P(1, 7, 0, 0), LA(7, 0, 2)]), /pieceCount 2 만큼 조각을 받지 못함\(받은 조각 1\)/],
   ]) assert.throws(f, (e) => isPiece(e) && re.test(e.message), name);
   // collectArrivals 는 LEVEL_ARRIVED 시점까지의 PIECE 만 본다(뒤 PIECE 로 앞 창을 채우지 않는다)
-  assert.throws(() => collectArrivals([P(1, 7, 0, 0), LA(7, 0, 2), P(2, 7, 0, 1)]), isPiece);
+  assert.throws(() => collectArrivals([P(1, 7, 0, 0), LA(7, 0, 2), P(2, 7, 0, 1)]), (e) => isPiece(e) && /pieceCount 2 만큼 조각을 받지 못함/.test(e.message));
   // 다른 종류는 건너뛴다
   assert.deepEqual(collectArrivals([{ type: 'MISSING', segmentId: 3 }, P(1, 7, 0, 0), LA(7, 0, 1)]).arrived, [{ segmentId: 7, level: 0, keys: ['7.0.0.0.0.0'] }]);
 });
