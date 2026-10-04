@@ -222,9 +222,10 @@ export function createRenderer(options) {
     }
     clear() { metaGen += 1; super.clear(); roomCache = null; }
   })();
-  // makeRoom 전용 캐시(selection 계열 상태와 무관). setArrived 두 경로·dispose 에서 null 로 돌려 도착 입력 사본을 붙잡지 않는다.
+  // makeRoom 전용 캐시(selection 계열 상태와 무관). setArrived 두 경로·dispose·meta.clear(위 clear())에서 null 로 돌려 도착 입력 사본을 붙잡지 않는다.
   // {tiles: 도착 입력의 타일 표, gen: key·drawing 을 만든 metaGen, resident: 타일 → 상주 도착 key(meta 변경마다 그 key 의 타일 하나만 증분 갱신),
-  //  base: 새 key 를 넣지 않은 보호 Set(같이 증분 갱신), key·drawing: 직전 거부/판정의 올리는 key 와 보호 집합}
+  //  base: 새 key 를 넣지 않은 보호 Set(같이 증분 갱신), cand: base 밖 meta key 를 meta 순서로 둔 희생 후보 Set(makeRoom 이 처음 쓸 때 한 번 만들고
+  //  roomResidentChange 가 증분 갱신, 보호에서 빠진 key 가 돌아오면 null 로 버려 다시 만든다), key·drawing: 직전 거부/판정의 올리는 key 와 보호 집합}
   let roomCache = null;
   /** @type {Map<string, number>} 올리는 중인 key → 토큰(해제·소실 뒤 늦게 끝난 업로드를 버린다) */
   const inflight = new Map();
@@ -369,7 +370,7 @@ export function createRenderer(options) {
   }
   function roomProtection(key) {
     let rc = roomCache;
-    if (rc === null) rc = { tiles: buildRoomTiles(), gen: -1, resident: null, base: null, key: null, drawing: null };
+    if (rc === null) rc = { tiles: buildRoomTiles(), gen: -1, resident: null, base: null, key: null, drawing: null, cand: null };
     if (rc.resident === null) { // 처음 한 번만 meta 전체를 돈다. 이후 상주 변경은 roomResidentChange 가 그 key 의 타일만 고친다
       const resident = new Map(); // 타일 → {have, ks: Map(key → lod), chosen}
       for (const k of meta.keys()) {
@@ -388,7 +389,7 @@ export function createRenderer(options) {
         e.chosen = chooseLod(e.have, rc.tiles.get(id).need);
         for (const [k, lod] of e.ks) if (lod === e.chosen) base.add(k);
       }
-      rc = { tiles: rc.tiles, gen: metaGen, resident, base, key: null, drawing: null };
+      rc = { tiles: rc.tiles, gen: metaGen, resident, base, key: null, drawing: null, cand: null };
       roomCache = rc; // 증분 갱신이 이 객체를 본다
     }
     // key 를 더했을 때 같은 타일의 보호 집합이 달라지는가
@@ -418,6 +419,11 @@ export function createRenderer(options) {
   // roomCache 가 없거나 resident 를 아직 안 만들었으면 할 일이 없다(만들 때 meta 를 돈다).
   function roomResidentChange(k, added) {
     const rc = roomCache;
+    // 희생 후보 목록(rc.cand) 갱신: 새 key 는 일단 후보로 뒤에 넣고(meta 순서와 같다) base 에 들어가면 아래에서 뺀다. 나간 key 는 뺀다
+    if (rc !== null && rc.cand !== null) {
+      if (added) rc.cand.add(k);
+      else rc.cand.delete(k);
+    }
     if (rc === null || rc.resident === null || !arrivedKeys.has(k)) return;
     const id = keyTile(k);
     const t = rc.tiles.get(id);
@@ -440,11 +446,18 @@ export function createRenderer(options) {
     e.chosen = chosen;
     if (chosen !== old) {
       for (const [bk, l] of e.ks) {
-        if (l === old) rc.base.delete(bk);
-        else if (l === chosen) rc.base.add(bk);
+        if (l === old) {
+          rc.base.delete(bk);
+          // 보호에서 빠진 key 가 meta 에 남아 있으면 원래 meta 위치로 후보에 돌아와야 한다. Set 은 뒤에 붙이므로 목록을 버리고 다시 만든다(드문 경로)
+          if (bk !== k || !added) rc.cand = null;
+        } else if (l === chosen) {
+          rc.base.add(bk);
+          if (rc.cand !== null) rc.cand.delete(bk);
+        }
       }
     } else if (added && lod === chosen) {
       rc.base.add(k);
+      if (rc.cand !== null) rc.cand.delete(k);
     }
   }
 
@@ -468,11 +481,28 @@ export function createRenderer(options) {
     }
     const victims = [];
     let free = 0;
-    for (const [k, info] of meta) {
-      if (resident + bytes - free <= maxResidentBytes) break;
-      if (k === key || drawing.has(k)) continue;
-      victims.push(k);
-      free += info.bytes;
+    const rc = roomCache;
+    if (rc !== null && drawing === rc.base && rc.gen === metaGen && rc.key === key) {
+      // 보호 집합이 base 그대로면 base 밖 후보만 meta 순서로 돈다(보호 key 가 앞쪽에 몰려도 건너뛰지 않는다, F-269).
+      // 후보 목록이 없으면(처음·보호에서 빠진 key 가 돌아온 뒤) meta 를 한 번 돌아 만든다
+      if (rc.cand === null) {
+        const cand = new Set();
+        for (const k of meta.keys()) if (!rc.base.has(k)) cand.add(k);
+        rc.cand = cand;
+      }
+      for (const k of rc.cand) {
+        if (resident + bytes - free <= maxResidentBytes) break;
+        if (k === key) continue;
+        victims.push(k);
+        free += meta.get(k).bytes;
+      }
+    } else {
+      for (const [k, info] of meta) {
+        if (resident + bytes - free <= maxResidentBytes) break;
+        if (k === key || drawing.has(k)) continue;
+        victims.push(k);
+        free += info.bytes;
+      }
     }
     if (resident + bytes - free > maxResidentBytes) {
       throw new ClientRasterError('memory', `조각 ${bytes} B 를 올리면 상주가 maxResidentBytes ${maxResidentBytes} 를 넘음(그리는 조각은 해제하지 않음)`);
