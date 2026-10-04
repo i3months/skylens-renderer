@@ -239,7 +239,8 @@ function render(meshes, view) {
 }
 
 // 8×8 겹치지 않는 블록 SSIM(가우시안 창 대신 균등 블록 창). L = 255, C1 = (0.01L)², C2 = (0.03L)².
-// mean = 전체 블록 평균(단언 대상), buildingMean = 두 영상 중 하나라도 건물 픽셀이 있는 블록만의 평균(기록용, 더 엄격).
+// buildingMean = 두 영상 중 하나라도 건물 픽셀이 있는 블록만의 평균(건물 영역, 단언 대상).
+// mean = 전체 블록 평균(진단용). 먼 시점은 하늘·지면 블록(SSIM 1)이 대부분이라 전체 평균은 건물 LOD 결함을 가린다.
 function blockSsim(A, B) {
   const C1 = (0.01 * 255) ** 2, C2 = (0.03 * 255) ** 2;
   let sum = 0, n = 0, bsum = 0, bn = 0;
@@ -297,13 +298,14 @@ test('먼 곳: 동 보존(모든 id 가 정확히 한 그룹), 면 수 감소, �
       }
     }
   }
-  // 충분히 멀면 실제로 합쳐진다(다동 그룹 존재, 면 수 절반 이하).
+  // 충분히 멀면 실제로 합쳐진다(다동 그룹 존재, 면 수 감소).
+  // 합성 도시의 2/3 는 회전 직사각형·다각 원통이라 상자 후보에서 빠지므로(음영 보존) 감소 폭은 작다.
   const far = buildBuildingLod(CITY, 10000);
   assert.ok(far.some((g) => g.ids.length > 1));
-  assert.ok(triCount(far.map((g) => g.mesh)) <= triCount(CITY.map((b) => b.mesh)) / 2);
+  assert.ok(triCount(far.map((g) => g.mesh)) < triCount(CITY.map((b) => b.mesh)));
 });
 
-test('허용 오차를 넘는 건물은 먼 곳이어도 원본 유지', () => {
+test('허용 오차를 넘는 건물·벽이 축과 맞지 않는 건물은 먼 곳이어도 원본 유지', () => {
   // 반지름 15 m 원통: AABB 모서리 오차 ≈ 15(√2 − 1) ≈ 6.2 m. 500 m 에서 tol ≈ 0.97 m → 원본 유지.
   const ring = [];
   for (let i = 0; i < 24; i++) ring.push([15 * Math.cos((2 * Math.PI * i) / 24), 15 * Math.sin((2 * Math.PI * i) / 24)]);
@@ -311,8 +313,14 @@ test('허용 오차를 넘는 건물은 먼 곳이어도 원본 유지', () => {
   const near = buildBuildingLod([b], BUILDING_LOD_FAR_DIST_M);
   assert.equal(near[0].mesh, b.mesh);
   const tolNeeded = 15 * (Math.SQRT2 - 1);
+  // 다각 원통은 벽 법선이 축과 맞지 않아 아무리 멀어도 상자로 바꾸지 않는다(음영 보존).
   const far = buildBuildingLod([b], (tolNeeded * 1.01) / BUILDING_LOD_MAX_ANGLE_RAD);
-  assert.equal(far[0].mesh.indices.length / 3, 10);
+  assert.equal(far[0].mesh, b.mesh);
+  // 축 정렬 L 자: 홈 대각선 오차 미만 거리에서는 원본, 표본 상한 여유(≤ tol/(2√2))를 더해도 넘는 거리에서는 상자.
+  const L = { id: 8, mesh: prism([[0, 0], [30, 0], [30, 10], [20, 10], [20, 20], [0, 20]], 4) };
+  const need = 10; // 홈 모서리 (30,20) 에서 가장 가까운 L 점은 (30,10)·(20,20), 거리 10 m
+  assert.equal(buildBuildingLod([L], (need * 0.99) / BUILDING_LOD_MAX_ANGLE_RAD)[0].mesh, L.mesh);
+  assert.equal(buildBuildingLod([L], (need * 1.6) / BUILDING_LOD_MAX_ANGLE_RAD)[0].mesh.indices.length / 3, 10);
 });
 
 test('결정적: 같은 입력 → 같은 바이트', () => {
@@ -334,7 +342,7 @@ test('잘못된 입력은 TowerAssetError', () => {
   assert.throws(() => buildBuildingLod([{ id: 1, mesh: { positions: new Float32Array(3), indices: Uint32Array.of(0, 1, 0) } }], 1000), TowerAssetError);
 });
 
-test(`8시점 렌더 SSIM ≥ ${BUILDING_LOD_MIN_SSIM} (원본 vs LOD), 면 수 감소율 기록`, (t) => {
+test(`8시점 렌더 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM} (원본 vs LOD), 면 수 감소율 기록`, (t) => {
   const origMeshes = CITY.map((b) => b.mesh);
   const origTris = triCount(origMeshes);
   const rows = [];
@@ -351,5 +359,104 @@ test(`8시점 렌더 SSIM ≥ ${BUILDING_LOD_MIN_SSIM} (원본 vs LOD), 면 수 
     rows.push({ view: view.name, ssim: s.mean, ssimBuildingBlocks: s.buildingMean, origTris, lodTris, reduction });
     t.diagnostic(`${view.name}: SSIM ${s.mean.toFixed(4)} (건물 블록만 ${s.buildingMean.toFixed(4)}), 삼각형 ${origTris} → ${lodTris}, 감소율 ${(reduction * 100).toFixed(1)}%, 건물 화소 비율 ${(coverage * 100).toFixed(1)}%`);
   }
-  for (const r of rows) assert.ok(r.ssim >= BUILDING_LOD_MIN_SSIM, `${r.view}: SSIM ${r.ssim} < ${BUILDING_LOD_MIN_SSIM}`);
+  for (const r of rows) {
+    assert.ok(r.ssimBuildingBlocks >= BUILDING_LOD_MIN_SSIM, `${r.view}: 건물 영역 SSIM ${r.ssimBuildingBlocks} < ${BUILDING_LOD_MIN_SSIM}`);
+  }
+});
+
+// ───────── 군집 오차 직접 검사 ─────────
+
+// 축 정렬 직사각형 프리즘.
+const rectPrism = (x0, y0, x1, y1, floors) => prism([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], floors);
+
+// 점에서 원본 건물들의 xy 투영까지 거리(촘촘한 격자로 상자 위 최댓값을 잰다, 시험용 독립 구현: 축 정렬 직사각형 합집합 가정 없이 삼각형 거리).
+function segD(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  let t = l2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(ax + t * dx - px, ay + t * dy - py);
+}
+function distToMeshes(px, py, meshes) {
+  let best = Infinity;
+  for (const m of meshes) {
+    const p = m.positions, idx = m.indices;
+    for (let t = 0; t < idx.length; t += 3) {
+      const [a, b, c] = [idx[t] * 3, idx[t + 1] * 3, idx[t + 2] * 3];
+      const ax = p[a], ay = p[a + 1], bx = p[b], by = p[b + 1], cx = p[c], cy = p[c + 1];
+      const area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+      if (Math.abs(area) > 1e-9) {
+        const s = Math.sign(area);
+        if (((bx - ax) * (py - ay) - (px - ax) * (by - ay)) * s >= 0 && ((cx - bx) * (py - by) - (px - bx) * (cy - by)) * s >= 0
+          && ((ax - cx) * (py - cy) - (px - cx) * (ay - cy)) * s >= 0) return 0;
+      }
+      best = Math.min(best, segD(px, py, ax, ay, bx, by), segD(px, py, bx, by, cx, cy), segD(px, py, cx, cy, ax, ay));
+    }
+  }
+  return best;
+}
+
+// LOD 그룹 메시를 상자(정점 8개, 삼각형 10개)로 나눠, 각 상자 위 촘촘한 격자(1 m 이하 간격)에서
+// 상자 안에 든 원본 건물까지 최대 거리 + 높이 차를 잰다.
+function boxErrors(group, byId) {
+  const p = group.mesh.positions;
+  if (group.ids.length === 1 && group.mesh === byId.get(group.ids[0])) return []; // 원본 유지 그룹
+  const errs = [];
+  for (let o = 0; o < p.length; o += 24) {
+    const box = { minX: p[o], minY: p[o + 1], maxX: p[o + 6], maxY: p[o + 7], maxZ: p[o + 14] };
+    const inside = group.ids.map((id) => byId.get(id)).filter((b) => {
+      const bb = meshBounds(b);
+      return bb.minX >= box.minX - 1e-3 && bb.maxX <= box.maxX + 1e-3 && bb.minY >= box.minY - 1e-3 && bb.maxY <= box.maxY + 1e-3;
+    });
+    let err = 0;
+    for (const b of inside) err = Math.max(err, box.maxZ - meshBounds(b).maxZ);
+    const nx = Math.max(2, Math.ceil(box.maxX - box.minX) * 2 + 1), ny = Math.max(2, Math.ceil(box.maxY - box.minY) * 2 + 1);
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const x = box.minX + ((box.maxX - box.minX) * i) / (nx - 1), y = box.minY + ((box.maxY - box.minY) * j) / (ny - 1);
+      err = Math.max(err, distToMeshes(x, y, inside));
+    }
+    errs.push(err);
+  }
+  return errs;
+}
+
+test('군집 상자마다 오차 ≤ tol (독립 촘촘 표본으로 직접 확인)', () => {
+  const byId = new Map(CITY.map((b) => [b.id, b.mesh]));
+  // 축 정렬 건물만 있는 밀집 도시(틈이 좁아 합쳐지기 쉽다)도 함께 본다.
+  const rnd = mulberry32(7);
+  const dense = [];
+  for (let i = 0; i < 24; i++) {
+    const x0 = (i % 6) * 20 + rnd() * 4, y0 = Math.floor(i / 6) * 20 + rnd() * 4;
+    dense.push({ id: 5000 + i, mesh: rectPrism(x0, y0, x0 + 10 + rnd() * 6, y0 + 10 + rnd() * 6, 3 + Math.floor(rnd() * 2)) });
+  }
+  for (const b of dense) byId.set(b.id, b.mesh);
+  for (const dist of [BUILDING_LOD_FAR_DIST_M, 1500, 2200, 3000, 6000]) {
+    const tol = dist * BUILDING_LOD_MAX_ANGLE_RAD;
+    for (const set of [CITY, dense]) {
+      for (const g of buildBuildingLod(set, dist)) {
+        for (const e of boxErrors(g, byId)) assert.ok(e <= tol + 1e-3, `${dist} m: 상자 오차 ${e} > tol ${tol}`);
+      }
+    }
+  }
+});
+
+test('틈 사례: x∈[0,32]·[44,72] 두 상자는 틈 6 m 가 tol 이 되는 거리(≈3094 m) 미만에서 합쳐지지 않는다', () => {
+  const a = { id: 1, mesh: rectPrism(0, 0, 32, 20, 5) }, b = { id: 2, mesh: rectPrism(44, 0, 72, 20, 5) };
+  const boxes = (d) => buildBuildingLod([a, b], d)[0].mesh.indices.length / 3 / 10;
+  for (const d of [2200, 3000, 3089]) assert.equal(boxes(d), 2, `${d} m 에서 합쳐짐`);
+  // 충분히 멀면(표본 상한 여유 포함) 합쳐진다.
+  assert.equal(boxes(10000), 1);
+});
+
+test('먼 곳 기준 경계: 축 정렬 직사각형(오차 0)은 499 m 원본, 500 m 상자', () => {
+  const b = { id: 3, mesh: rectPrism(0, 0, 20, 10, 4) };
+  // 원본과 구분되도록 꼭짓점을 하나 더 넣는다(같은 직사각형, 오차 0, 원본 삼각형 수 ≠ 10).
+  const b2 = { id: 4, mesh: prism([[0, 0], [10, 0], [20, 0], [20, 10], [0, 10]], 4) };
+  for (const x of [b, b2]) {
+    const near = buildBuildingLod([x], BUILDING_LOD_FAR_DIST_M - 1);
+    assert.equal(near[0].mesh, x.mesh);
+    const far = buildBuildingLod([x], BUILDING_LOD_FAR_DIST_M);
+    assert.notEqual(far[0].mesh, x.mesh);
+    assert.equal(far[0].mesh.indices.length / 3, 10);
+  }
+  assert.equal(BUILDING_LOD_FAR_DIST_M, 500);
 });

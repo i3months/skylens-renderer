@@ -4,6 +4,7 @@
 // 동작 요약
 //  1) cameraDistM < BUILDING_LOD_FAR_DIST_M 이면 가까운 곳: 모든 건물을 원본 메시 그대로 한 동 한 그룹으로 돌려준다.
 //  2) 먼 곳이면 허용 오차 tol = cameraDistM × BUILDING_LOD_MAX_ANGLE_RAD (m) 를 정하고,
+//     - 벽 방향이 x·y 축과 평행한 건물만 상자 후보가 된다(회전·다각형 벽은 상자로 바꾸면 법선이 바뀌어 음영이 달라진다).
 //     - 건물마다 "자기 AABB 로 바꿨을 때의 기하 오차"가 tol 이하인 것만 상자 후보가 된다(넘으면 원본 유지).
 //     - 상자 후보는 BUILDING_LOD_CELL_M 격자 칸(이웃 단위) 안에서, 합친 AABB 의 오차가 tol 이하인 쌍을
 //       오차가 작은 순으로 탐욕적으로 합친다(응집 군집).
@@ -11,7 +12,8 @@
 //  3) 모든 입력 id 는 정확히 한 출력 그룹에 속한다(동 보존). 출력 순서는 그룹의 첫 건물 입력 순서. 결정적.
 //
 // 오차 정의(수평): 상자 윗면(xy 직사각형) 위 표본점에서 원본 건물들의 xy 투영(삼각형 합집합)까지 거리의 최댓값.
-//   표본은 직사각형 위 (ERROR_SAMPLES × ERROR_SAMPLES) 균등 격자(모서리 포함)라 정확한 하우스도르프 거리의 근사다.
+//   표본은 직사각형 위 (ERROR_SAMPLES × ERROR_SAMPLES) 균등 격자(모서리 포함)에 구성 AABB 경계 좌표와 그 사이 중점을 더한
+//   격자라 정확한 하우스도르프 거리의 근사다(축 정렬 구성 상자 사이 틈의 최대 오차는 이 표본에 들어간다).
 //   볼록 다각형과 L 자형처럼 최댓값이 직사각형 모서리에서 나는 경우에는 정확하다.
 // 오차 정의(수직): 군집 안 건물 꼭대기 높이의 최대 − 최소(상자는 최대 높이를 쓴다).
 import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
@@ -32,6 +34,8 @@ export const BUILDING_LOD_FAR_DIST_M = 500;
 export const BUILDING_LOD_CELL_M = 64;
 
 const ERROR_SAMPLES = 9;
+/** 한 축 균등 표본 수 상한(계산량 제한). 넘으면 칸이 커져 상한 추정이 더 보수적이 될 뿐 과소평가는 없다. */
+const MAX_GRID = 129;
 
 function fail(msg) { throw new TowerAssetError(`buildBuildingLod: ${msg}`); }
 
@@ -65,7 +69,20 @@ function summarize(b, index) {
       tris[t * 6 + k * 2 + 1] = p[v * 3 + 1];
     }
   }
-  return { order: index, id, mesh, empty: idx.length === 0, minX, minY, minZ, maxX, maxY, maxZ, tris };
+  // 벽 방향 검사: xy 투영이 선분으로 눌린 삼각형(벽)의 방향이 x 축 또는 y 축과 평행한지.
+  // 회전 직사각형·다각 원통을 축 정렬 상자로 바꾸면 벽 법선이 바뀌어 음영이 크게 달라지므로 상자 후보에서 뺀다.
+  let axisAligned = true;
+  for (let o = 0; o < tris.length && axisAligned; o += 6) {
+    const ax = tris[o], ay = tris[o + 1], bx = tris[o + 2], by = tris[o + 3], cx = tris[o + 4], cy = tris[o + 5];
+    const area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+    if (Math.abs(area) > 1e-6) continue; // 지붕·바닥 삼각형
+    for (const [ux, uy, vx, vy] of [[ax, ay, bx, by], [bx, by, cx, cy], [cx, cy, ax, ay]]) {
+      const dx = Math.abs(vx - ux), dy = Math.abs(vy - uy);
+      if (Math.hypot(dx, dy) < 1e-6) continue;
+      if (Math.min(dx, dy) > 1e-4 * Math.max(dx, dy)) { axisAligned = false; break; }
+    }
+  }
+  return { order: index, id, mesh, empty: idx.length === 0, minX, minY, minZ, maxX, maxY, maxZ, tris, axisAligned };
 }
 
 function segDist2(px, py, ax, ay, bx, by) {
@@ -102,16 +119,33 @@ function clusterBox(members) {
   return { minX, minY, minZ, maxX, maxY, maxZ, minTop };
 }
 
+// 한 축의 표본 좌표: 균등 격자(ERROR_SAMPLES) + 구성 건물 AABB 경계 + 이웃 좌표 사이 중점.
+// 군집 사이 틈의 최대 오차는 틈 한가운데(경계 사이 중점)에서 나므로 균등 격자만으로는 놓칠 수 있다.
+function sampleCoords(lo, hi, members, kLo, kHi, n) {
+  const uniq = (a) => a.sort((p, q) => p - q).filter((x, i) => i === 0 || x !== a[i - 1]);
+  // 경계 좌표끼리의 중점(틈 한가운데). 균등 격자와 섞기 전에 따로 구해야 틈 중점이 빠지지 않는다.
+  const edges = uniq([lo, hi, ...members.flatMap((m) => [m[kLo], m[kHi]])]);
+  const v = [...edges];
+  for (let i = 1; i < edges.length; i++) v.push((edges[i - 1] + edges[i]) / 2);
+  for (let i = 0; i < n; i++) v.push(lo + ((hi - lo) * i) / (n - 1));
+  return uniq(v);
+}
+
 // 군집을 AABB 하나로 바꿀 때의 오차(m). limit 를 넘는 순간 일찍 끝낸다(그때 결과는 "limit 초과"라는 뜻만 있다).
-function clusterError(members, limit) {
+function clusterError(members, limit, tol) {
   const b = clusterBox(members);
   let err = b.maxZ - b.minTop;
   if (err > limit) return err;
-  const n = ERROR_SAMPLES;
-  for (let j = 0; j < n; j++) {
-    const y = b.minY + ((b.maxY - b.minY) * j) / (n - 1);
-    for (let i = 0; i < n; i++) {
-      const x = b.minX + ((b.maxX - b.minX) * i) / (n - 1);
+  // 균등 격자 간격을 tol/2 이하(상한 MAX_GRID 칸)로 잡고, 거리 함수가 1-립시츠라는 성질로
+  // "표본 최댓값 + 격자 칸 반대각선"을 참 오차의 상한으로 쓴다(표본이 틈을 놓쳐도 과소평가하지 않는다).
+  const nOf = (ext) => Math.min(MAX_GRID, Math.max(ERROR_SAMPLES, Math.ceil(ext / (tol / 2)) + 1));
+  const nx = nOf(b.maxX - b.minX), ny = nOf(b.maxY - b.minY);
+  const h = 0.5 * Math.hypot((b.maxX - b.minX) / (nx - 1), (b.maxY - b.minY) / (ny - 1));
+  if (h > limit) return h;
+  const xs = sampleCoords(b.minX, b.maxX, members, 'minX', 'maxX', nx);
+  const ys = sampleCoords(b.minY, b.maxY, members, 'minY', 'maxY', ny);
+  for (const y of ys) {
+    for (const x of xs) {
       let best = Infinity;
       for (const m of members) {
         // 건물 AABB 까지 거리가 이미 찾은 최솟값 이상이면 그 건물은 볼 필요가 없다.
@@ -124,7 +158,7 @@ function clusterError(members, limit) {
         }
         if (best === 0) break;
       }
-      const d = Math.sqrt(best);
+      const d = Math.sqrt(best) + h;
       if (d > err) { err = d; if (err > limit) return err; }
     }
   }
@@ -179,7 +213,7 @@ export function buildBuildingLod(buildings, cameraDistM) {
   const groups = []; // { order, ids, mesh }
   const cells = new Map(); // 칸 키 → 상자 후보 목록(입력 순서)
   for (const it of items) {
-    if (it.empty || clusterError([it], tol) > tol) { groups.push({ order: it.order, ids: [it.id], mesh: it.mesh }); continue; }
+    if (it.empty || !it.axisAligned || clusterError([it], tol, tol) > tol) { groups.push({ order: it.order, ids: [it.id], mesh: it.mesh }); continue; }
     const cx = Math.floor((it.minX + it.maxX) / 2 / BUILDING_LOD_CELL_M);
     const cy = Math.floor((it.minY + it.maxY) / 2 / BUILDING_LOD_CELL_M);
     const key = `${cx},${cy}`;
@@ -195,7 +229,7 @@ export function buildBuildingLod(buildings, cameraDistM) {
       let bestErr = Infinity, bi = -1, bj = -1;
       for (let i = 0; i < clusters.length; i++) {
         for (let j = i + 1; j < clusters.length; j++) {
-          const e = clusterError(clusters[i].concat(clusters[j]), Math.min(tol, bestErr));
+          const e = clusterError(clusters[i].concat(clusters[j]), Math.min(tol, bestErr), tol);
           if (e <= tol && e < bestErr) { bestErr = e; bi = i; bj = j; }
         }
       }
