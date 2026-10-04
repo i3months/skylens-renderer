@@ -114,9 +114,13 @@ test('도우미: 0번 픽셀도 센다(루프 시작 i=0)', () => {
   assert.deepEqual(compareWithReference(m(3, 3, [0]), m(3, 3, [])).filled, [0]);
   assert.deepEqual(compareWithReference(m(3, 3, []), m(3, 3, [0])).lost, [0]);
   assert.throws(() => assertNoFilled(m(3, 3, [0]), m(3, 3, [])), /^Error: missing:/);
-  assert.deepEqual(nonEmptyValuesInEmpty(Object.assign(emptyResult(3, 3), {}), [0]), []);
+  // nonEmptyValuesInEmpty 는 이제 유효한 RenderResult 만 받아들임
+  assert.deepEqual(nonEmptyValuesInEmpty(emptyResult(3, 3), [0]), []);
+  // 칠해진 픽셀을 빈 것으로 표시하면 감지됨
   const z = emptyResult(3, 3);
   z.index[0] = 1;
+  z.depth[0] = 1;  // depth 도 설정해야 함
+  // z는 이제 픽셀 0이 칠해진 유효한 RenderResult 이고, 픽셀 0을 빈 것으로 표시하면 감지됨
   assert.deepEqual(nonEmptyValuesInEmpty(z, [0]), [0]);
 });
 
@@ -128,16 +132,29 @@ test('도우미: filled 는 메운 픽셀 전부를 오름차순으로 돌려준
 
 test('도우미: nonEmptyValuesInEmpty 는 번호·깊이·색 중 하나라도 어긋나면 잡는다', () => {
   const mk = () => emptyResult(3, 3);
+  // 빈 결과는 검출하지 않음
   assert.deepEqual(nonEmptyValuesInEmpty(mk(), [0, 1, 2]), []);
-  const a = mk(); a.index[1] = 3;
+
+  // 픽셀 1을 칠하면(번호 설정) 감지됨
+  const a = mk(); a.index[1] = 3; a.depth[1] = 5;
   assert.deepEqual(nonEmptyValuesInEmpty(a, [0, 1, 2]), [1]);
-  const b = mk(); b.depth[2] = 4;
+
+  // 픽셀 2의 깊이를 설정하면(하지만 빈 번호는 유지) 감지됨
+  // 유효한 RenderResult 를 위해 색도 설정하고 깊이를 설정할 때는 색이 0 이어야 함
+  const b = mk(); b.depth[2] = 4; b.index[2] = 0;  // 칠한 픽셀로 만들기
   assert.deepEqual(nonEmptyValuesInEmpty(b, [0, 1, 2]), [2]);
+
+  // 색이 0이 아닌 픽셀 0을 설정하면 감지됨
   for (const c of [0, 1, 2]) {
-    const d = mk(); d.color[c] = 7;
+    const d = mk(); d.index[0] = 1; d.depth[0] = 1; d.color[c] = 7;
     assert.deepEqual(nonEmptyValuesInEmpty(d, [0, 1]), [0], `색 채널 ${c}`);
   }
-  const e = mk(); e.index[0] = 1; e.depth[1] = 2; e.color[6] = 3;
+
+  // 여러 픽셀이 칠해져 있으면 모두 감지됨
+  const e = mk();
+  e.index[0] = 1; e.depth[0] = 1;  // 픽셀 0 칠함
+  e.index[1] = 2; e.depth[1] = 2;  // 픽셀 1 칠함
+  e.index[2] = 3; e.depth[2] = 3;  // 픽셀 2 칠함
   assert.deepEqual(nonEmptyValuesInEmpty(e, [0, 1, 2]), [0, 1, 2]);
 });
 
