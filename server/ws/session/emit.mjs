@@ -128,8 +128,13 @@ export function createRecordingEmit(options) {
     send(bytes); // ③ 반환값은 보지 않는다. 던지면 그대로 전파
     if (type === 'LEVEL_ARRIVED' && sentKeys !== null && sentKeys.size > 0) {
       // 이벤트가 끝났다: 그 창 끝 이하 순번은 재시도로 다시 오지 않는다.
+      // Map 은 순번 오름차순으로 삽입된다(새 순번은 언제나 앞 순번보다 크고, 재시도의 set 은 기존 자리를 유지한다).
+      // 그래서 첫 seq > last 에서 멈춘다 — LEVEL_ARRIVED 마다 Map 전체를 돌지 않는다(F-277 ④).
       const last = message.firstPieceSeq + message.pieceCount - 1;
-      for (const seq of sentKeys.keys()) if (seq <= last) sentKeys.delete(seq);
+      for (const seq of sentKeys.keys()) {
+        if (seq > last) break;
+        sentKeys.delete(seq);
+      }
     }
   };
 }

@@ -1,5 +1,12 @@
 // 접속 배선(T12.U S4). 접속 객체 하나를 받아 HELLO(첫 메시지)·ACK 를 처리하고 닫힘을 알린다. 계약: ./contract.mjs
 // 세션은 접속이 닫혀도 저장소에 남는다(이어받기). 그래서 닫힘에서 store.close 를 부르지 않는다.
+// 재전송 정지 정책(F-275, 정책 (a)): replay 가 loadPiece 로 바이트를 얻지 못해 재전송을 멈추면(stoppedAt !== null)
+//   이 접속에서는 생방송 송출을 허용하지 않는다. onSession·makeEmit 을 부르지 않고 ERROR(UNAVAILABLE) 를 보낸 뒤
+//   close(1011) 로 닫는다. 반환 api 의 emit 은 닫는 중과 같이 던진다. 세션은 저장소에서 지우지 않는다(호출자 판단).
+//   근거: 같은 접속에서 생방송이 이어져 클라이언트가 빠진 순번 너머를 ACK 하면, 누적 ACK 가 ackedUpTo 를 빠진 순번 너머로
+//   올려 빠진 조각과 그 창의 LEVEL_ARRIVED 기록, 뒤의 재전송 후보가 영구히 지워진다.
+//   대가: 영구히 얻을 수 없는 바이트가 있으면 재접속해도 같은 정지가 반복된다. 호출자는 그 세션을 닫고(store.close)
+//   클라이언트가 새 세션으로 처음부터 받게 해야 한다.
 import { decodeMessage, encodeMessage } from '../../proto/codec/index.mjs';
 import { ERR_CODES } from '../../../contracts/proto/index.mjs';
 import { createRecordingEmit } from './emit.mjs';
@@ -13,7 +20,8 @@ const CLOSE_INTERNAL_ERROR = 1011;
  * @param {{send:Function,onMessage:Function,onClose:Function,close:Function,bufferedAmount?:Function}} o.conn 접속 객체
  * @param {object} o.store 이어받기 저장소(ack 를 쓴다)
  * @param {Function} o.loadPiece (key) => Uint8Array | null
- * @param {(sessionId:number, info:{resumed:boolean,nextPieceSeq:number}) => void} [o.onSession] WELCOME 직후 한 번.
+ * @param {(sessionId:number, info:{resumed:boolean,nextPieceSeq:number}) => void} [o.onSession] WELCOME 과 재전송이 끝난 뒤 한 번
+ *   (재전송 정지가 없을 때만 — 정지하면 부르지 않는다, F-275).
  *   nextPieceSeq 는 store.open 이 돌려준 값이다. 이 접속에서 새로 매길 pieceSeq 는 이 값 이상이어야 한다(F-270) —
  *   어댑터를 만들 때 firstPieceSeq 로 넘긴다. emit 도 이 값을 하한(minPieceSeq)으로 검사한다.
  * @param {(message:object) => unknown} [o.onMessage] HELLO 뒤 ACK 외의 클라이언트 메시지(기본은 무시)
@@ -23,8 +31,9 @@ const CLOSE_INTERNAL_ERROR = 1011;
  * @param {Function} [o.replay] 기본 replayAfterHello
  * @param {Function} [o.makeEmit] 기본 createRecordingEmit
  * @returns {{emit:(message:object)=>void, sessionId:()=>number}}
- *   emit 은 HELLO 처리 전이거나 접속이 닫히는 중(닫힘·close 호출 뒤, onSession·replay 예외의 close(1011) 포함)이면
- *   보내지 않고 던진다(F-270 ③, F-274 ①).
+ *   emit 은 HELLO 처리 전이거나 접속이 닫히는 중(닫힘·close 호출 뒤, onSession·replay 예외의 close(1011), 재전송 정지의
+ *   close(1011) 포함)이면 보내지 않고 던진다(F-270 ③, F-274 ①, F-275).
+ *   HELLO 뒤 메시지의 복호가 실패하거나 null 이면 ERROR(BAD_MESSAGE) + close(1002) 로 닫는다(F-277 ②).
  *   둘째 HELLO 는 프로토콜 위반으로 ERROR(BAD_MESSAGE) + close(1002) 로 거부한다(F-274 ⑦).
  */
 export function attachConnection({
@@ -53,7 +62,17 @@ export function attachConnection({
   async function handleHello(hello) {
     try {
       const result = await replay({ store, hello, send, loadPiece, encode });
+      // replay 를 기다리는 동안 접속이 닫혔으면 송출 배선을 만들지 않는다(F-277 ①).
+      if (closing) return;
       sessionId = result.sessionId;
+      if (result.stoppedAt !== null && result.stoppedAt !== undefined) {
+        // 재전송 정지: 이 접속에서는 생방송을 허용하지 않는다(F-275, 머리 주석의 정책 (a)). emitFn 은 null 로 남는다.
+        try {
+          conn.send(encode({ type: 'ERROR', code: ERR_CODES.UNAVAILABLE, text: `조각 ${result.stoppedAt} 의 바이트가 없어 재전송을 멈췄다` }));
+        } catch { /* 보내지 못해도 닫는다 */ }
+        closeWith(CLOSE_INTERNAL_ERROR);
+        return;
+      }
       // 이어받기 전 연결이 이미 쓴 순번을 새 key 로 다시 쓰지 않게 open 의 nextPieceSeq 를 하한으로 준다(F-270).
       emitFn = makeEmit({ store, sessionId, send, encode, minPieceSeq: result.nextPieceSeq });
       if (onSession) onSession(sessionId, { resumed: result.resumed, nextPieceSeq: result.nextPieceSeq });
@@ -71,8 +90,10 @@ export function attachConnection({
       helloSeen = true;
       return handleHello(message);
     }
+    // 복호 결과가 null 이면 클라이언트의 잘못된 메시지다(내부 오류 1011 이 아니다, F-277 ②).
+    if (!message || typeof message !== 'object') return protocolError('복호 결과 없음');
     // 둘째 HELLO 는 세션을 바꿀 수 없다. 조용히 무시하면 클라이언트가 이어받기됐다고 오해하므로 거부한다(F-274 ⑦).
-    if (message && message.type === 'HELLO') return protocolError('HELLO 는 접속당 한 번');
+    if (message.type === 'HELLO') return protocolError('HELLO 는 접속당 한 번');
     if (!emitFn) return; // 이어받기 처리 중이던 replay 가 실패해 닫는 중
     try {
       if (message.type === 'ACK') store.ack(sessionId, message.upToPieceSeq);
@@ -94,9 +115,10 @@ export function attachConnection({
 
   return {
     emit(message) {
-      if (!emitFn) throw new Error('HELLO 처리 전에는 emit 할 수 없음');
       // 닫는 중이면 보내지 않는다(onSession 이 던져 close(1011) 한 뒤에도 계속 송출하지 않게, F-274 ①).
+      // 재전송 정지로 닫는 중이면 emitFn 이 없으므로 이 판정을 먼저 한다(F-275).
       if (closing) throw new Error('접속이 닫히는 중이라 emit 할 수 없음');
+      if (!emitFn) throw new Error('HELLO 처리 전에는 emit 할 수 없음');
       emitFn(message);
     },
     sessionId: () => {
