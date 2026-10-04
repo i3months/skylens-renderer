@@ -7,7 +7,6 @@
 //   - 순서: 상자까지의 거리가 가까운 순(같으면 입력 순서). 예산(≤ 15 MB(15,000,000 B))을 넘기는 항목은 건너뛰고 다음 것을 계속 본다.
 //   - droppedCount: 위 조건을 모두 만족했지만 예산 때문에 빠진 항목 수. 시야 밖·수준 0 아님·덜 거친 lod 는 세지 않는다.
 export const INITIAL_BUDGET_BYTES = 15_000_000;
-const MAX_CHUNK_BYTES = 3_000_000; // 구간당 ≤ 3 MB(3,000,000 B)
 const ASPECT_GUARD = 2;
 
 function forwardOf(q) {
@@ -69,9 +68,7 @@ export function buildInitialBundle({ pose, catalog, budgetBytes = INITIAL_BUDGET
   let totalBytes = 0;
   let droppedCount = 0;
   for (const { it } of cand) {
-    if (it.bytes > MAX_CHUNK_BYTES) {
-      droppedCount++;
-    } else if (totalBytes + it.bytes <= budgetBytes) {
+    if (totalBytes + it.bytes <= budgetBytes) {
       items.push(it);
       totalBytes += it.bytes;
     } else droppedCount++;

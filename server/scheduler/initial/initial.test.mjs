@@ -104,19 +104,6 @@ test('경계: 3MB 정확히 + 가용 예산 (3,000,000 B)', () => {
   assert.equal(r.droppedCount, 0);
 });
 
-test('경계: 3MB 초과 (3,000,001 B)', () => {
-  // 3MB 초과 항목이 시야 안에 있어도 버림
-  const cat = [{
-    key: { segmentId: 1, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0 },
-    bytes: 3_000_001,
-    bbox: { min: [45, 0, 0], max: [55, 10, 1] }
-  }];
-  const r = buildInitialBundle({ pose: { ...pose, fovY: 2.0 }, catalog: cat });
-  assert.equal(r.items.length, 0);
-  assert.equal(r.totalBytes, 0);
-  assert.equal(r.droppedCount, 1);
-});
-
 test('타일에서 가장 거친 lod 만', () => {
   const a = grid(10).slice(40, 41)[0];
   const fine = { ...a, key: { ...a.key, lod: 0 } };
