@@ -32,11 +32,11 @@
 // 음영 오차: 상자 벽 법선과 원래 벽 법선의 각 차 ≤ BUILDING_LOD_MAX_WALL_ANGLE_RAD.
 // 지워지는 세부: 틈(상자 사이 거리)과 높이 계단(수직 오차)은 화면에서 옮겨지는 테두리가 아니라 통째로 사라지는 선·면이다.
 //   그래서 2 px 테두리 허용(tol)이 아니라 BUILDING_LOD_MAX_GAP_PX(hideTol = 거리 × 픽셀 각 × px) 이하일 때만 지운다.
-//   틈은 상자 사이 거리(mayMerge)만이 아니라 합친 상자가 새로 덮는 빈 땅 전체로 잰다: the filled-in width of every gap-cell
-//   point, min(2 × distance to the members, distance to the members + distance to the merged box boundary), must be
-//   ≤ hideTol. A gap trapped between buildings is thus limited to width hideTol (1/4 px), an open notch or corner to depth
-//   hideTol. (Until F-334 the rule was "distance to the members ≤ hideTol", which let trapped gaps up to 2 × hideTol
-//   through when the pair was joined via a third building.) 상자 사이 거리만 보면 앞뒤 면이 들쭉날쭉한 줄이나 대각 배치에서 tol(= 8 × hideTol)까지
+//   틈은 상자 사이 거리(mayMerge)만이 아니라 합친 상자가 새로 덮는 빈 땅 전체로 잰다: 메워지는 폭(모든 틈-칸 점의
+//   min(2 × 구성 건물까지 거리, 구성 건물까지 거리 + 합친 상자 경계까지 거리))이
+//   ≤ hideTol. 건물 사이 끼인 틈은 폭이 hideTol(1/4 px) 이하로 제한되고, 열린 홈이나 모서리는 깊이가
+//   hideTol 이하. (F-334 이전엔 "구성 건물까지 거리 ≤ hideTol" 규칙이라 제3 건물을 거쳐 합쳐진 쌍의
+//   끼인 틈이 2 × hideTol 까지 빠져나갔다.) 상자 사이 거리만 보면 앞뒤 면이 들쭉날쭉한 줄이나 대각 배치에서 tol(= 8 × hideTol)까지
 //   빈 땅이 메워져, 줄 사이 틈의 벽 띠가 지붕으로 덮였다(이전 시드 180 top-high 건물 영역 SSIM 0.9496, F-326·F-331).
 // 계산량: 한 칸 k 동에 대해 쌍 선검사 O(k²)(값싼 상자 비교), 오차 평가는 꺼낸 쌍만, 틈 칸만 표본한다.
 import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
@@ -78,9 +78,9 @@ export const BUILDING_LOD_CELL_M = 64;
 const ERROR_SAMPLES = 9;
 /**
  * 한 축 균등 표본 수 상한(계산량 제한). 넘으면 칸이 커져 상한 추정이 더 보수적이 될 뿐 과소평가는 없다.
- * Used only by singleError (one building against its own box, limit tol). A side longer than (MAX_GRID − 1) × tol/2
- * gets spacing above tol/2 and a larger Lipschitz margin, so very long buildings may stay original (safe side).
- * Gap cells do not use this grid (gapCellError).
+ * singleError 에서만 씀(한 건물을 자기 상자와 비교, 한계 tol). (MAX_GRID − 1) × tol/2 보다 긴 변은
+ * tol/2 이상의 간격을 가지고 더 큰 립시츠 여유를 가져서 매우 긴 건물은 원본으로 유지될 수 있다(안전한 쪽).
+ * 틈 칸은 이 격자를 쓰지 않는다(gapCellError).
  */
 const MAX_GRID = 129;
 const QUARTER = Math.PI / 2;
@@ -340,35 +340,34 @@ function makeCluster(members, err, left = null, right = null, gaps = []) {
 }
 
 // 두 군집을 합칠 후보인지(값싼 조건): 두 상자 사이 틈 ≤ hideTol 이고 높이 차(계단) ≤ hideTol.
-// The height-step limit lives only here. mergeError does not repeat it: agglomerate calls mergeError only for pairs that
-// passed mayMerge, and reframe replays an already accepted merge tree in another frame, where maxZ and minTop do not
-// depend on the frame, so the step is the same value that passed here.
+// 높이 계단 한계는 여기에만 있다. mergeError 는 이를 반복하지 않는다: agglomerate 는 mayMerge 를 통과한 쌍에 대해서만 mergeError 를 호출하고, reframe 은 이미 받아들여진 병합 트리를 다른 프레임에서 다시 밟으므로 maxZ 와 minTop 은
+// 프레임에 무관하고, 계단은 여기를 통과한 것과 같은 값이다.
 function mayMerge(A, B, hideTol) {
   const gx = Math.max(0, A.minX - B.maxX, B.minX - A.maxX), gy = Math.max(0, A.minY - B.maxY, B.minY - A.maxY);
   if (gx * gx + gy * gy > hideTol * hideTol) return false;
   return Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop) <= hideTol;
 }
 
-/** Cell budget of one gap-cell branch-and-bound call. Running out rejects the merge (safe side: keep two boxes). */
+/** 한 번의 틈-칸 분기-한계 호출의 칸 예산. 부족하면 병합을 거부한다(안전한 쪽: 두 상자 유지). */
 const GAP_MAX_CELLS = 1 << 14;
 
-// Gap-cell measure for the empty rectangle [x0,x1]×[y0,y1] that the merged box `box` (minX..maxY) newly covers.
-// For an empty point p let e(p) = distance to the members' xy union and x(p) = distance to the merged box boundary.
-// The filled-in width at p is w(p) = min(2·e(p), e(p) + x(p)):
-//  - in a gap trapped between buildings (x ≥ e) the point is e from the nearer side, so the gap there is at least 2·e wide;
-//    a gap of width w has w(p) = w on its centre line (F-334: the old limit e ≤ hideTol let trapped gaps up to 2·hideTol through);
-//  - in an open notch or corner (the empty land reaches the box boundary) the land that turns into roof is e + x deep,
-//    which equals the old "distance to the members" at the boundary, so staggered and diagonal pairs keep their old limit.
-// The merge is accepted only when max w(p) ≤ limit (= hideTol). The maximum is found by branch and bound on sub-rectangles:
-//  - upper bound of e on a cell: min over member edges S of max over the four cell corners of dist(corner, S)
-//    (distance to one segment is convex, so its maximum on a rectangle is at a corner, and e ≤ distance to any edge),
-//    and also e(centre) + half diagonal (1-Lipschitz);
-//  - upper bound of x on a cell: the minimum over the four box sides of the largest distance of the cell to that side;
-//  - lower bound: w(centre) exactly. Above the limit means reject.
-// Because the edge bound does not grow with the cell length along a wall, a long thin gap needs only a few cells along its
-// length; precision is set by the cell width across the gap, not by a fixed sample cap (F-335: the old uniform grid capped
-// at MAX_GRID samples per axis lost precision on gap cells longer than 16·hideTol and rejected small real gaps).
-// Returns { e, w } upper bounds (e feeds the geometric error), or null when the limit is exceeded or the budget runs out.
+// 합친 상자 `box`(minX..maxY)가 새로 덮는 빈 직사각형 [x0,x1]×[y0,y1]에 대한 틈-칸 측도.
+// 빈 점 p에서 e(p) = 구성 건물의 xy 합집합까지 거리, x(p) = 합친 상자 경계까지 거리라 하면,
+// p 에서의 메워지는 폭은 w(p) = min(2·e(p), e(p) + x(p)):
+//  - 건물 사이 끼인 틈(x ≥ e)에선 점이 가까운 쪽에서 e만큼 떨어져 있어 그곳 틈의 폭이 최소 2·e 이상;
+//    폭이 w 인 틈은 중심선에서 w(p) = w (F-334: 예전 한계 e ≤ hideTol 은 끼인 틈이 2·hideTol 까지 통과하게 함);
+//  - 열린 홈이나 모서리(빈 땅이 상자 경계에 닿음)에선 지붕이 될 땅이 e + x 깊이이고,
+//    이는 경계에서의 예전 "구성 건물까지 거리"와 같아서 엇갈리고 대각선 배치인 쌍은 예전 한계를 지킨다.
+// 병합은 max w(p) ≤ 한계(= hideTol) 일 때만 받아들여진다. 최댓값은 부분 직사각형에서 분기-한계로 구한다:
+//  - 칸 위의 e 상한: 구성 건물 변 S 에 대해 네 칸 꼭짓점에서 dist(꼭짓점, S)의 최댓값의 최솟값
+//    (한 선분까지 거리는 볼록이라 직사각형 위의 최댓값은 꼭짓점에서 나타나고, e ≤ 어느 변까지 거리),
+//    그리고 e(중심) + 반대각선(1-립시츠);
+//  - 칸 위의 x 상한: 네 상자 변에 대해 그 변까지 칸의 최대 거리의 최솟값;
+//  - 하한: w(중심) 정확히. 한계 초과는 거부를 뜻한다.
+// 변 한계는 벽을 따라 칸 길이가 늘어나도 커지지 않아서, 길쭉한 틈은 길이를 따라 몇 칸만 필요;
+// 정밀도는 틈을 가로지르는 칸 폭이 정하고(F-335: 예전 균등 격자는 축당 MAX_GRID 표본으로 한계를 두어 16·hideTol 보다 긴 틈 칸의 정밀도를 잃고 작은 실제 틈을 거부했음),
+// 고정 표본 상한이 아니다.
+// 한계를 넘거나 예산을 소진했을 때 null, 아니면 { e, w } 상한(e 는 기하 오차에 쓰임)을 돌려준다.
 export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
   const near = [];
   for (const m of members) {
@@ -389,8 +388,8 @@ export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
     const eC = Math.sqrt(c2);
     const xC = Math.min(mx - box.minX, box.maxX - mx, my - box.minY, box.maxY - my);
     if (Math.min(2 * eC, eC + xC) > limit) return null;
-    // Edge bound: min over edges of the farthest corner distance. A member whose AABB is farther from the cell than the
-    // current bound cannot lower it.
+    // 변 한계: 변에 대한 가장 먼 꼭짓점 거리의 최솟값. AABB 가 칸보다 현재 한계 이상 먼 구성 건물은
+    // 한계를 낮출 수 없다.
     let eUb2 = (eC + half) * (eC + half);
     for (const m of near) {
       const ox = Math.max(m.minX - cx1, 0, cx0 - m.maxX), oy = Math.max(m.minY - cy1, 0, cy0 - m.maxY);
@@ -423,16 +422,12 @@ export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
 }
 
 // 같은 φ 좌표계의 두 군집 A, B 를 상자 하나로 합칠 때의 오차 상한(m). tol 초과면 tol 초과라는 뜻만 있다.
-// Precondition: the height step max(maxZ) − min(minTop) ≤ hideTol was already checked by mayMerge (see there); it still
-// enters the error as the vertical part.
+// 전제조건: 높이 계단 max(maxZ) − min(minTop) ≤ hideTol 은 이미 mayMerge 에서 검사했다(그곳 참고); 수직 부분으로 오차에 여전히
+// 들어간다.
 // 틈 칸(A·B 어느 상자에도 들지 않는 칸)은 어느 구성 건물에도 속하지 않는 빈 땅이라, 메우면 테두리가 옮겨지는 것이 아니라
 // 그 땅(과 그 너머로 보이던 벽)이 통째로 지붕이 된다. 그래서 틈 칸은 tol 이 아니라 hideTol 로 잰다: 메워지는 폭
 // w(p) = min(2·e, e + x) (gapCellError) 가 hideTol 이하여야 한다(넘으면 Infinity, 합치지 않는다).
-// Scope of the invariant: the new gap cells and the gap cells carried by A and B (empty land inside the earlier cluster
-// boxes, A.gaps / B.gaps) are measured against the merged box (F-338: an open notch of an earlier box can become a
-// trapped gap after a later merge). A carried cell whose e bound satisfies 2·e ≤ hideTol cannot exceed the limit for any
-// box (w ≤ 2·e), so only the others are measured again. Empty land inside a member's own box (an L-shaped building's
-// notch) is bounded by singleError at tol, not by hideTol.
+// 불변식 범위: 새 틈 칸과 A·B 가 가진 틈 칸(앞선 군집 상자 안의 빈 땅, A.gaps / B.gaps)을 합친 상자 기준으로 잰다(F-338: 앞선 상자의 열린 홈이 뒤의 병합 뒤 끼인 틈이 될 수 있음). e 한계가 2·e ≤ hideTol 을 만족하는 가진 칸은 어느 상자에 대해서도 한계를 넘을 수 없어(w ≤ 2·e) 나머지만 다시 잰다. 구성 건물 자신의 상자 안의 빈 땅(L자 건물의 홈)은 hideTol 이 아니라 tol 에서 singleError 로 한계를 잡는다.
 // gapsOut (선택): 합친 상자의 틈 칸 목록(이어받은 칸 + 새 칸)을 여기에 채운다(makeCluster 의 gaps).
 function mergeError(A, B, tol, hideTol, gapsOut = null) {
   const step = Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop);
