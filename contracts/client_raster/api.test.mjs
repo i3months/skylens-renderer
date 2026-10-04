@@ -320,24 +320,28 @@ test('CONTRACT: setView-uploadPiece-setArrived-draw-dispose 시퀀스 중 option
 
   const accessLog = { get: new Set(), has: new Set(), ownKeys: [] };
   const canvas = fakeCanvas();
+  const evictedKeys = [];
   const baseOptions = {
     canvas,
     maxPieceBytes: 1 << 20,
-    maxResidentBytes: 1 << 20,
-    decode: (bytes) => ({
-      header: {
-        format: 1, pointCount: 1, bboxMin: [0, 0, 0], quantExp: 0,
-        segmentId: 1, level: 0, tileX: 0, tileY: 0, lod: 0, chunkIndex: 0,
-      },
-      planes: {
-        pos_e: new Float32Array(1), pos_n: new Float32Array(1), pos_u: new Float32Array(1),
-        color_r: new Uint8Array(1), color_g: new Uint8Array(1), color_b: new Uint8Array(1),
-        normal_oct_x: new Int8Array(1), normal_oct_y: new Int8Array(1),
-      },
-    }),
+    maxResidentBytes: 30,
+    decode: (bytes) => {
+      const chunkIndex = bytes[0] ?? 0;
+      return {
+        header: {
+          format: 1, pointCount: 1, bboxMin: [0, 0, 0], quantExp: 0,
+          segmentId: 1, level: 0, tileX: 0, tileY: 0, lod: 0, chunkIndex,
+        },
+        planes: {
+          pos_e: new Float32Array(1), pos_n: new Float32Array(1), pos_u: new Float32Array(1),
+          color_r: new Uint8Array(1), color_g: new Uint8Array(1), color_b: new Uint8Array(1),
+          normal_oct_x: new Int8Array(1), normal_oct_y: new Int8Array(1),
+        },
+      };
+    },
     shading: { lightDirWorld: [0, 0, 1] },
     contextAttributes: {},
-    onEvict: () => {},
+    onEvict: (keys) => { evictedKeys.push(...keys); },
     now: () => 0,
     testHooks: {},
   };
@@ -377,13 +381,24 @@ test('CONTRACT: setView-uploadPiece-setArrived-draw-dispose 시퀀스 중 option
   // setView 호출
   renderer.setView({ R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0], K: { fx: 1, fy: 1, cx: 0, cy: 0 }, width: 300, height: 150, devicePixelRatio: 1 });
 
-  // uploadPiece 호출
-  const key = '1.0.0.0.0.0';
-  const bytes = new Uint8Array(100);
-  await renderer.uploadPiece(key, bytes);
+  // uploadPiece 호출 (첫 번째 조각)
+  const key1 = '1.0.0.0.0.0';
+  const bytes1 = new Uint8Array(100);
+  bytes1[0] = 0;
+  await renderer.uploadPiece(key1, bytes1);
+
+  // uploadPiece 호출 (두 번째 조각 - 메모리 한도 초과로 첫 조각 퇴출)
+  const key2 = '1.0.0.0.0.1';
+  const bytes2 = new Uint8Array(100);
+  bytes2[0] = 1;
+  await renderer.uploadPiece(key2, bytes2);
+
+  // onEvict 호출 확인 (메모리 한도로 인한 퇴출)
+  assert.ok(evictedKeys.length > 0, 'onEvict 가 호출되어야 함 (메모리 한도 초과)');
+  assert.deepEqual(evictedKeys, [key1], `첫 조각 ${key1} 이 퇴출되어야 함`);
 
   // setArrived 호출 (지연 경로, 선택은 다음 draw 에서)
-  renderer.setArrived([{ segmentId: 1, level: 0, keys: [key] }], { deferResult: true });
+  renderer.setArrived([{ segmentId: 1, level: 0, keys: [key2] }], { deferResult: true });
 
   // draw 호출 (GL 경로 포함)
   renderer.draw();
