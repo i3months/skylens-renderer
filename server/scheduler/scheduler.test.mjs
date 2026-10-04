@@ -100,7 +100,7 @@ function rng(seed) {
   };
 }
 
-// 시드별 손으로 적은 기대값(독립 모델과 별개로 고정): [나간 항목 수, 나간 고유 key 수]
+// 회귀 스냅숏(구현 출력을 고정한 값이며 손계산이 아니다. 정답 판정은 아래 독립 모델의 전체 순서 대조가 맡는다): [나간 항목 수, 나간 고유 key 수]
 const EXPECTED = new Map([
   [20240611, [3973, 2616]],
   [1, [3921, 2615]],
@@ -120,6 +120,7 @@ for (const [SEED, [EXPECT_SENT, EXPECT_UNIQUE]] of EXPECTED) test(`합성 1만 �
   let cancelledSent = 0;
   const cancelled = new Set();
   const live = new Map(); // 독립 모델: 큐에 있었고 아직 안 나가고 취소 안 된 것(스케줄러가 버린 것도 포함)
+  let ordCounter = 0; // 독립 모델의 '처음 들어온 순서'(스케줄러 seq 와 별개로 센다)
   let enqueued = 0;
   let budgetViolations = 0;
   let orderViolations = 0;
@@ -130,6 +131,9 @@ for (const [SEED, [EXPECT_SENT, EXPECT_UNIQUE]] of EXPECTED) test(`합성 1만 �
 
   const drain = () => {
     const before = s.pending();
+    // 독립 모델이 예측한 전체 대기 순서(priority 내림, level 내림, 처음 들어온 순서)와 pending() 의 전체 순서·집합이 같아야 한다
+    const expectedOrder = [...live.values()].sort((a, b) => b.priority - a.priority || b.level - a.level || a.ord - b.ord).map((m) => id(m.key));
+    assert.deepEqual(before.map((p) => id(p.key)), expectedOrder);
     const batch = s.nextBatch();
     const sum = batch.reduce((a, b) => a + b.bytes, 0);
     if (batch.length > 1 && sum > BUDGET) budgetViolations++;
@@ -174,7 +178,9 @@ for (const [SEED, [EXPECT_SENT, EXPECT_UNIQUE]] of EXPECTED) test(`합성 1만 �
     if (!rejected) cancelled.delete(id(key)); // 다시 받아들여진 key 는 더 이상 취소 상태가 아니다
     if (!rejected) {
       for (const m of [...live.values()]) if (grp(m.key) === grp(key) && m.level < key.level) live.delete(id(m.key));
-      if (!live.has(id(key)) || live.get(id(key)).priority < item.priority) live.set(id(key), item);
+      const prev = live.get(id(key));
+      if (!prev) live.set(id(key), { ...item, ord: ordCounter++ });
+      else if (prev.priority < item.priority) live.set(id(key), { ...item, ord: prev.ord }); // 순번은 처음 것
     }
     const r = rand();
     if (r < 0.05) {
@@ -259,46 +265,147 @@ test('F-193 ③ oversize: 숫자로 고정(예산 100)', () => {
   assert.equal(s.nextBatch().oversize, false); // 빈 배치
 });
 
-// F-208 성능. 코드 목표: 100000 오름차순 enqueue 0.3 s 이하, 한 묶음 20000 개 enqueue 합계 50 ms 이하.
-// CI 잡음을 감안해 묶음 테스트의 임계값은 목표의 3배(150 ms)로 둔다.
-// 다른 프로세스가 CPU 를 나눠 쓰는 CI 에서 벽시계는 흔들리므로, 이 프로세스가 실제로 쓴 CPU 시간(user+system)으로 잰다.
-function cpuNow() {
+test('모델 순서: 같은 priority·level 은 들어온 순서 그대로(전체 순서 단언, FIFO 뒤집기 변이 검출)', () => {
+  const s = createScheduler({ budgetBytesPerTick: 1e9 });
+  const order = [];
+  for (let i = 0; i < 50; i++) {
+    const key = K(i, 0);
+    order.push(i);
+    s.enqueue(I(key, 1, i % 3 === 0 ? 5 : 2));
+  }
+  const expected = [...order.filter((i) => i % 3 === 0), ...order.filter((i) => i % 3 !== 0)];
+  assert.deepEqual(s.pending().map((p) => p.key.segmentId), expected);
+  assert.deepEqual(s.nextBatch().map((p) => p.key.segmentId), expected);
+});
+
+test('F-220 ③: chunkIndex 범위 밖(65536, -1)은 enqueue 가 거부한다, 경계 65535·0 은 받는다', () => {
+  const s = createScheduler({ budgetBytesPerTick: 1000 });
+  assert.throws(() => s.enqueue(I(K(1, 0, 0, 65536), 1, 1)), RangeError);
+  assert.throws(() => s.enqueue(I(K(1, 0, 0, -1), 1, 1)), RangeError);
+  assert.equal(s.enqueue(I(K(1, 0, 0, 65535), 1, 1)), true);
+  assert.equal(s.enqueue(I(K(1, 0, 0, 0), 1, 1)), true);
+  assert.equal(s.pending().length, 2);
+  assert.throws(() => s.cancel(K(1, 0, 0, 65536)), RangeError);
+});
+
+// ---- F-208·F-213·F-217 ② 성능 ----
+// 목표: 100000 오름차순 priority enqueue 0.3 s 이하, 한 묶음 20000 개 enqueue 50 ms 이하.
+// 1차 판정은 결정적 연산 수(힙 비교 + 힙 밖 순회 칸 수)가 n log2 n 의 상수배 이하인 것, 2차는 같은 프로세스의 선형 기준선과의 비 이다.
+// 절대 시간 목표는 npm test 가 아니라 bench/scheduler/index.mjs 에서 CPU 시간(user+system)으로 잰다.
+const cpuNow = () => {
   const u = process.cpuUsage();
   return (u.user + u.system) / 1000;
+};
+const perfKey = (i, extra = {}) => ({ segmentId: i, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0, ...extra });
+// 변이·회귀로 느려져도 파일이 멈추지 않게, 반복 안에서 경과가 한도를 넘으면 바로 던진다(F-217 ①과 같은 방식).
+const GUARD_MS = 4000;
+function guard(t0, i) {
+  if ((i & 1023) === 0 && cpuNow() - t0 > GUARD_MS) throw new Error(`enqueue 가 ${GUARD_MS} ms 를 넘겨 중단(i=${i})`);
 }
+const best = (n, fn) => Math.min(...Array.from({ length: n }, fn));
 
-function perfKey(i, extra = {}) {
-  return { segmentId: i, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0, ...extra };
+function ascending(n) {
+  const s = createScheduler({ budgetBytesPerTick: 1e9, maxPending: Math.max(n, 100000) });
+  const t0 = cpuNow();
+  for (let i = 0; i < n; i++) {
+    guard(t0, i);
+    if (!s.enqueue({ key: perfKey(i), bytes: 1, priority: i, level: 0 })) throw new Error('rejected');
+  }
+  return [cpuNow() - t0, s];
 }
+function oneGroup(n) {
+  const s = createScheduler({ budgetBytesPerTick: 1e9 });
+  const t0 = cpuNow();
+  for (let i = 0; i < n; i++) {
+    guard(t0, i);
+    if (!s.enqueue({ key: perfKey(1, { chunkIndex: i }), bytes: 1, priority: i % 7, level: 0 })) throw new Error('rejected');
+  }
+  return [cpuNow() - t0, s];
+}
+const ops = (s) => { const c = s.counters(); return c.compares + c.steps; };
+const nlogn = (n) => n * Math.log2(n);
 
-test('F-208: maxPending 100000 오름차순 priority enqueue 가 0.3 s 이하(내림차순과 같은 규모)', () => {
-  const run = (prio) => {
-    const s = createScheduler({ budgetBytesPerTick: 1e9, maxPending: 100000 });
+test('F-208 결정적: 100k 오름차순 enqueue 연산 수 <= 2 n log2 n, 2배 크기에서 증가율 <= 2.3', () => {
+  const [, s1] = ascending(50000);
+  const [, s2] = ascending(100000);
+  console.log(`# ops asc 50k=${ops(s1)} 100k=${ops(s2)} (n log2 n = ${nlogn(100000) | 0})`);
+  assert.ok(ops(s2) <= 2 * nlogn(100000), `ops ${ops(s2)}`);
+  assert.ok(ops(s2) / ops(s1) <= 2.3, `ratio ${ops(s2) / ops(s1)}`);
+});
+
+test('F-208 결정적: 한 묶음 20000 개 enqueue 연산 수 <= 2 n log2 n, 2배 크기에서 증가율 <= 2.3', () => {
+  const [, s1] = oneGroup(10000);
+  const [, s2] = oneGroup(20000);
+  console.log(`# ops group 10k=${ops(s1)} 20k=${ops(s2)}`);
+  assert.ok(ops(s2) <= 2 * nlogn(20000), `ops ${ops(s2)}`);
+  assert.ok(ops(s2) / ops(s1) <= 2.3, `ratio ${ops(s2) / ops(s1)}`);
+});
+
+// 보조 시험이다. 판정은 위의 결정적 연산 수 시험이 한다. 아래 상한(12 * base + 20)은 위로 열린 상대 조건이라 판정 근거가 아니라 참고용이다.
+test('F-208 선형 기준선(보조): 같은 프로세스의 Map 100k 삽입(키 문자열·객체 포함)의 k 배 이내이고 n 4배에서 시간비 <= 8', () => {
+  const baseline = (n) => best(3, () => {
+    const m = new Map();
     const t0 = cpuNow();
-    for (let i = 0; i < 100000; i++) assert.equal(s.enqueue({ key: perfKey(i), bytes: 1, priority: prio(i), level: 0 }), true);
-    return [cpuNow() - t0, s];
-  };
-  const [desc] = run((i) => -i); // 옛 구현에서도 빨랐던 쪽: 이 기계의 속도 기준
-  const [ms, s] = run((i) => i);
-  console.log(`# 100k enqueue: ascending ${ms.toFixed(1)} ms, descending ${desc.toFixed(1)} ms`);
-  // 0.3 s 가 목표. 느린 CI 에서는 같은 기계의 내림차순 시간의 3배까지 허용한다(옛 구현의 오름차순은 내림차순의 약 35배였다).
-  assert.ok(ms <= 300 || ms <= 3 * desc, `${ms} ms (descending ${desc} ms)`);
-  const t1 = cpuNow();
+    for (let i = 0; i < n; i++) { const k = `${i}:0:0:0:0:0`; m.set(k, { id: k, a: i, b: 1, c: 0, d: i, e: null }); m.get(`${i}:0:0:0`); }
+    return cpuNow() - t0;
+  });
+  const base = baseline(100000);
+  const t100 = best(3, () => ascending(100000)[0]);
+  const t25 = best(3, () => ascending(25000)[0]);
+  console.log(`# asc 100k ${t100.toFixed(1)} ms, baseline ${base.toFixed(1)} ms (x${(t100 / base).toFixed(1)}), 25k ${t25.toFixed(1)} ms (x${(t100 / t25).toFixed(1)})`);
+  assert.ok(t100 <= 12 * base + 20, `asc ${t100} vs baseline ${base}`);
+  assert.ok(t100 / t25 <= 8, `growth ${t100 / t25}`);
+});
+
+// 절대 시간 목표(0.3 s / 50 ms)는 기계 속도에 좌우되므로 npm test 의 문턱으로 두지 않는다. bench/scheduler/index.mjs 가 측정값을 목표와 견주어 달성/미달을 그대로 보고한다.
+// 여기서는 대량 enqueue 뒤 nextBatch 가 모두 올바른 순서로 나오는지만 확인한다.
+test('F-208 정확성: 100k 오름차순 enqueue 후 nextBatch 는 100000 개를 priority 내림차순으로 비운다', () => {
+  const [, s] = ascending(100000);
   const batch = s.nextBatch();
-  console.log(`# 100k nextBatch drain: ${(cpuNow() - t1).toFixed(1)} ms`);
   assert.equal(batch.length, 100000);
   assert.equal(batch[0].priority, 99999);
   assert.equal(batch[99999].priority, 0);
+  for (let i = 1; i < batch.length; i++) assert.ok(batch[i - 1].priority > batch[i].priority);
+  assert.equal(oneGroup(20000)[1].pending().length, 20000);
 });
 
-test('F-208: 한 묶음 20000 개 enqueue 합계 150 ms 이하(코드 목표 50 ms, 임계값 3배)', () => {
-  const s = createScheduler({ budgetBytesPerTick: 1e9 });
+// F-213: 상한에 닿은 뒤 교체가 계속돼도 한 번당 비용이 상한 크기에 비례하지 않아야 한다.
+function replacements(cap, n) {
+  const s = createScheduler({ budgetBytesPerTick: 1e9, maxSentGroups: cap });
   const t0 = cpuNow();
-  for (let i = 0; i < 20000; i++) {
-    assert.equal(s.enqueue({ key: perfKey(1, { chunkIndex: i }), bytes: 1, priority: i % 7, level: 0 }), true);
+  for (let i = 0; i < n; i++) {
+    guard(t0, i);
+    s.enqueue({ key: perfKey(i), bytes: 1, priority: 0, level: 0 });
+    s.nextBatch();
   }
-  const ms = cpuNow() - t0;
-  console.log(`# 20k one-bundle enqueue: ${ms.toFixed(1)} ms`);
-  assert.ok(ms <= 150, `${ms} ms`);
-  assert.equal(s.pending().length, 20000);
+  return [cpuNow() - t0, s];
+}
+
+test('F-213: maxSentGroups 65536 에서 25만 회 교체의 회당 시간이 상한 1000 일 때의 2배 이내(같은 프로세스)', () => {
+  const N = 250000;
+  const small = best(3, () => replacements(1000, N)[0]);
+  const big = best(3, () => replacements(65536, N)[0]);
+  console.log(`# replacements: cap1000 ${(small / N * 1000).toFixed(2)} us/op, cap65536 ${(big / N * 1000).toFixed(2)} us/op (x${(big / small).toFixed(2)})`);
+  assert.ok(big <= 2 * small, `cap65536 ${big} ms vs cap1000 ${small} ms`);
+});
+
+test('F-213 결정적: 교체 25만 회의 힙 밖 순회 칸 수가 회당 상수(<= 4)이고 상한 이후 기억 묶음 수는 상한', () => {
+  const [, s] = replacements(65536, 250000);
+  assert.ok(s.counters().steps <= 4 * 250000, `steps ${s.counters().steps}`);
+  // 기억 묶음 수가 상한을 넘지 않는다: 가장 오래된 65536 개 이전 묶음은 낮은 level 이 다시 들어올 수 있다
+  const t = createScheduler({ budgetBytesPerTick: 1e9, maxSentGroups: 4 });
+  for (let i = 0; i < 10; i++) { t.enqueue(I(K(i, 3), 1, 0)); t.nextBatch(); }
+  const accepted = [];
+  for (let i = 0; i < 10; i++) accepted.push(t.enqueue(I(K(i, 1), 1, 0)));
+  assert.deepEqual(accepted, [true, true, true, true, true, true, false, false, false, false]);
+});
+
+test('F-213: 같은 묶음만 계속 쓰여도 큐가 무한히 자라지 않고 LRU 순서가 맞다', () => {
+  const s = createScheduler({ budgetBytesPerTick: 1e9, maxSentGroups: 3 });
+  for (const seg of [1, 2, 3]) { s.enqueue(I(K(seg, 3), 1, 0)); s.nextBatch(); }
+  for (let i = 0; i < 100000; i++) { s.enqueue(I(K(1, 3, 0, i % 5), 1, 0)); s.nextBatch(); } // 묶음 1 만 계속 최신으로
+  s.enqueue(I(K(4, 3), 1, 0)); s.nextBatch(); // 묶음 2 가 가장 오래됨 -> 축출
+  assert.equal(s.enqueue(I(K(2, 1), 1, 0)), true);
+  assert.equal(s.enqueue(I(K(1, 1), 1, 0)), false);
+  assert.equal(s.enqueue(I(K(3, 1), 1, 0)), false);
 });

@@ -1,0 +1,38 @@
+// Scheduler absolute-time bench (F-208). Not part of `npm test`: absolute times depend on the machine.
+// Usage: node bench/scheduler/index.mjs
+// Prints the best-of-N CPU time (user+system) against the targets and reports met/missed as measured.
+import { createScheduler } from '../../server/scheduler/index.mjs';
+
+const cpuNow = () => {
+  const u = process.cpuUsage();
+  return (u.user + u.system) / 1000;
+};
+const perfKey = (i, extra = {}) => ({ segmentId: i, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0, ...extra });
+const best = (n, fn) => Math.min(...Array.from({ length: n }, fn));
+
+function ascending(n) {
+  const s = createScheduler({ budgetBytesPerTick: 1e9, maxPending: Math.max(n, 100000) });
+  const t0 = cpuNow();
+  for (let i = 0; i < n; i++) if (!s.enqueue({ key: perfKey(i), bytes: 1, priority: i, level: 0 })) throw new Error('rejected');
+  return cpuNow() - t0;
+}
+function oneGroup(n) {
+  const s = createScheduler({ budgetBytesPerTick: 1e9 });
+  const t0 = cpuNow();
+  for (let i = 0; i < n; i++) if (!s.enqueue({ key: perfKey(1, { chunkIndex: i }), bytes: 1, priority: i % 7, level: 0 })) throw new Error('rejected');
+  return cpuNow() - t0;
+}
+
+const cases = [
+  { name: '100k ascending enqueue', targetMs: 300, runs: 5, fn: () => ascending(100000) },
+  { name: '20k one-group enqueue', targetMs: 50, runs: 5, fn: () => oneGroup(20000) },
+];
+let missed = 0;
+for (const c of cases) {
+  c.fn(); // warm-up
+  const ms = best(c.runs, c.fn);
+  const met = ms <= c.targetMs;
+  if (!met) missed++;
+  console.log(`${c.name}: ${ms.toFixed(1)} ms CPU (best of ${c.runs}), target ${c.targetMs} ms -> ${met ? 'MET' : 'MISSED'}`);
+}
+console.log(missed === 0 ? 'all targets met' : `${missed} target(s) missed`);

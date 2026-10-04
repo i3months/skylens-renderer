@@ -1,8 +1,9 @@
 import { execSync } from 'child_process';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "fs";
 import { gzipSync } from 'zlib';
 import { resolve } from 'path';
 
+import { tmpdir } from 'os';
 const modules = [
   'client/proto',
   'client/codec',
@@ -16,12 +17,12 @@ async function checkEsbuild() {
   try {
     const nodeModulesPath = resolve('./node_modules/.bin/esbuild');
     try {
-      execSync(`${nodeModulesPath} --version`, { stdio: 'ignore' });
+      execSync(`${nodeModulesPath} --version`, { stdio: 'ignore', timeout: 20000 });
       return { available: true, command: nodeModulesPath, source: 'node_modules' };
     } catch {
       // Fall back to npx
       try {
-        execSync('npx esbuild --version', { stdio: 'ignore' });
+        execSync('npx esbuild --version', { stdio: 'ignore', timeout: 20000 });
         return { available: true, command: 'npx esbuild', source: 'npx' };
       } catch {
         return { available: false, source: null };
@@ -34,13 +35,17 @@ async function checkEsbuild() {
 
 async function bundleWithEsbuild(modulePath, esbuildCmd) {
   const entryPath = resolve(modulePath, 'index.mjs');
-  const outputPath = `/tmp/bundle-${modulePath.replace(/\//g, '-')}.mjs`;
+  const tempDir = mkdtempSync(resolve(tmpdir(), 'bundle-'));
+  const outputPath = resolve(tempDir, `${modulePath.replace(/\//g, '-')}.mjs`);
 
   try {
     const cmd = `${esbuildCmd} ${entryPath} --bundle --minify --format=esm --outfile=${outputPath}`;
-    execSync(cmd, { stdio: 'ignore' });
-    return readFileSync(outputPath, 'utf8');
+    execSync(cmd, { stdio: 'ignore', timeout: 20000 });
+    const result = readFileSync(outputPath, 'utf8');
+    rmSync(tempDir, { recursive: true, force: true });
+    return result;
   } catch (error) {
+    rmSync(tempDir, { recursive: true, force: true });
     throw new Error(`Failed to bundle ${modulePath}: ${error.message}`);
   }
 }

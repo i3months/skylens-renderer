@@ -210,7 +210,7 @@ test('pieceSeq·nextPieceSeq 0 은 field, 1 은 왕복(부호화)', () => {
   assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 0xffffffff, key: KEY, chunk: Uint8Array.of(1) })), null);
   assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 2 ** 32, key: KEY, chunk: Uint8Array.of(1) })), 'field');
 });
-test('서버 복호: pieceSeq 0 프레임은 s2c 라 direction(1 도 동일)', () => {
+test('서버 복호: s2c 프레임(WELCOME)은 nextPieceSeq 값(0·1)과 무관하게 direction (F-198)', () => {
   const w = (seq) => { const e = encodeMessage({ type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 1 }); new DataView(e.buffer).setUint32(13, seq, true); return e; };
   assert.equal(code(() => decodeMessage(w(0))), 'direction');
   assert.equal(code(() => decodeMessage(w(1))), 'direction');
