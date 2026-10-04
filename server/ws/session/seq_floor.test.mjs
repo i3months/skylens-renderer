@@ -140,6 +140,25 @@ test('(3) 이 emit 이 보낸 같은 (seq,key) 재시도는 하한 미만이어�
   assert.equal(sent.length, 2);
 });
 
+test('(3c) 조각 3개 창: LEVEL_ARRIVED 전 세 순번 재시도는 통과, 그 뒤엔 창 전체 순번이 모두 거부된다', () => {
+  const store = newStore();
+  const { sessionId } = store.open({ sessionId: 0, lastPieceSeq: 0 });
+  let floor = 1;
+  const sent = [];
+  const emit = createRecordingEmit({ store, sessionId, minPieceSeq: () => floor, send: (b) => sent.push(b) });
+  const pieces = piecesOf(NEW_SEGMENT, 3);
+  const msgs = pieces.map((p, i) => ({ type: 'PIECE', pieceSeq: i + 1, key: p.key, chunk: p.bytes }));
+  for (const m of msgs) emit(m);
+  assert.equal(sent.length, 3);
+  floor = 4; // 하한이 창 끝을 넘었다
+  for (const m of msgs) emit(m); // LEVEL_ARRIVED 전: 같은 (seq,key) 재시도는 모두 통과
+  assert.equal(sent.length, 6);
+  emit({ type: 'LEVEL_ARRIVED', segmentId: NEW_SEGMENT, level: LEVEL, firstPieceSeq: 1, pieceCount: 3 });
+  assert.equal(sent.length, 7);
+  for (const m of msgs) assert.throws(() => emit(m), SeqFloorError, `pieceSeq ${m.pieceSeq}`);
+  assert.equal(sent.length, 7);
+});
+
 test('(3b) 정수 하한: 하한 미만 PIECE 는 이 emit 이 보낸 적 없으므로 거부, 하한 이상은 통과', () => {
   const store = newStore();
   const { sessionId } = store.open({ sessionId: 0, lastPieceSeq: 0 });

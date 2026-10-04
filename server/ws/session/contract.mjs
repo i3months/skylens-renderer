@@ -28,14 +28,33 @@
  *   WELCOME 을 보내고 재전송한 메시지 수(replayed)와 재전송한 메시지의 부호화 바이트 합(replayedBytes, WELCOME 은 제외)을 돌려준다. 재전송 중 loadPiece 가 바이트를 못 주면(null) 거기서 재전송을 멈춘다:
  *   그 순번 뒤는 보내지 않고 LEVEL_ARRIVED 도 보내지 않으며, 반환의 stoppedAt 에 빠진 순번이 들어 있다(멈춘 곳이 없으면 null).
  *
- * attachConnection({ conn, store, loadPiece, onSession?, onMessage?, onClose?, replay?, makeEmit?, encode?, decode? })
+ * attachConnection({ conn, store, loadPiece, onSession?, onMessage?, onClose?, onStopped?, replay?, makeEmit?, encode?, decode? })
  *     -> { emit: (message) => void, sessionId: () => number }
  *   conn: server/ws 접속 객체. 첫 메시지가 HELLO 가 아니면 ERROR(BAD_MESSAGE) 후 close(1002). 둘째 HELLO 도 ERROR(BAD_MESSAGE) + close(1002).
  *   emit 은 HELLO 처리 전에는 던지고, 닫는 중에도 던진다. 첫 메시지 또는 HELLO 뒤에 복호가 실패해도 ERROR(BAD_MESSAGE) 후 close(1002).
  *   정지 정책: replayAfterHello 가 stoppedAt !== null 을 돌려주면 onSession·makeEmit 없이 ERROR(UNAVAILABLE) 후 close(1011) 로 닫고,
  *   이 연결에서는 생방송 송출을 허용하지 않는다(같은 연결에서 생방송이 이어지면 누적 ACK 가 빠진 조각과 그 창의 LEVEL_ARRIVED 기록을 지운다).
  *   대가: 영구히 못 얻는 바이트가 있으면 재접속해도 같은 멈춤이 반복되므로, 호출자가 그 세션을 닫고 새 세션으로 받게 해야 한다.
- *   onSession(sessionId, { resumed, nextPieceSeq }) 는 WELCOME 과 재전송이 끝난 뒤 한 번(정지가 없을 때만) 불린다(WELCOME 직후가 아니다).
+ *   정지 알림(F-279): 정지하면 close(1011, 'replay-stopped')(CLOSE_REASON_REPLAY_STOPPED) 로 닫는다. 그 밖의 1011(onSession·replay·
+ *   onMessage 예외)은 사유 'internal-error'(CLOSE_REASON_INTERNAL) 다. 닫은 뒤 onStopped(sessionId, { stoppedAt }) 를 한 번 부르고,
+ *   정지 뒤에도 api.sessionId() 는 값을 돌려준다. 호출자는 onStopped 에서 store.close(sessionId) 를 불러야 한다.
+ *   방식 선택: attachConnection 이 store.close 를 직접 부르지 않고 알린다. 저장소 수명은 호출자가 쥐고(같은 세션을 다른
+ *   접속이 쓰는지 등은 호출자만 안다), '연결은 세션을 지우지 않는다' 는 한 가지 규칙을 지킨다. 알리지 않으면 TTL 보다 짧은
+ *   간격으로 같은 sessionId 를 HELLO 할 때마다 open 이 TTL 을 갱신해 세션이 만료되지 않고 정지가 끝없이 반복된다.
+ *   replay 가 끝나기 전에 접속이 닫혔더라도 replay 가 정지를 보고하면 onStopped 는 부른다(ERROR·close 는 보내지 않는다, F-285 ③).
+ *   서버 쪽 정지 판별은 onStopped 로만 하고 onClose 의 reason 은 믿지 않는다: 실제 서버는 피어 close 에코가 reason 을 덮어
+ *   {code:1011, reason:""} 로 알린다. onStopped 와 onClose 의 호출 순서는 보장하지 않는다(F-285 ②).
+ *   onStopped 가 던지거나 거부해도 무시한다.
+ *   클라이언트 규약: ERROR(UNAVAILABLE) 를 받으면(뒤이어 1011 'replay-stopped' 로 닫힌다) 같은 sessionId 로 다시 HELLO 하지
+ *   않는다. HELLO{sessionId:0, lastPieceSeq:0} 으로 새 세션을 연다. 새 세션은 이후 새로 도착하는 것만 받는다
+ *   (이전 세션의 미도착분은 메우지 않는다; resumed=false 면 재전송 0). 이전 세션의 도착·상주 상태는 클라이언트가 버리거나
+ *   새로 도착하는 것과 섞지 않고 따로 처리해야 한다. 같은 sessionId 로 다시 와도 서버가 세션을
+ *   닫았으면 WELCOME{resumed:false}(저장소 reason 'UNKNOWN_SESSION')로 새 세션이 열린다.
+ *   비동기 콜백(F-282): onSession 이 thenable 을 돌려주고 거부하면 동기 예외와 같이 close(1011, 'internal-error') 1회로 닫고 그 뒤
+ *   emit 은 던진다(onSession 은 기다리지 않는다). onClose 의 반환은 Promise.resolve(r).catch(() => {}) 로 삼킨다.
+ *   onSession(sessionId, { resumed, nextPieceSeq }) 는 WELCOME 과 재전송이 끝난 뒤 한 번 불린다(WELCOME 직후가 아니다).
+ *   부르지 않는 경우(F-281): 재전송 정지(stoppedAt !== null), replay 를 기다리는 중 접속이 닫힌 경우(replay 가 정지를 보고했어도
+ *   onSession 은 안 부르고 onStopped 만 부른다), replay·onSession 의 예외.
  *   어댑터는 이어받기 뒤 firstPieceSeq 를 nextPieceSeq 이상으로 만들어야 한다. 어기면 emit 이 minPieceSeq 하한으로 send 없이 던진다.
  *   createRecordingEmit 에는 minPieceSeq 옵션(정수 또는 함수)이 있다.
  */

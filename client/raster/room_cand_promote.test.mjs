@@ -82,63 +82,97 @@ async function countMetaReads(body) {
 const N = 4000; // 상주 key 수(= 한도)
 const TILES = 100; // 보호 타일 수
 
-// 상주: 보호 밖 key 가 meta 앞쪽, 뒤쪽에 보호 타일마다 lod1 key 하나(그 타일의 고른 LOD 는 1).
-// 승격 업로드는 앞쪽의 보호 밖 key 를 희생으로 고르고, 보호에서 빠진 옛 lod1 key 는 meta 에 남아 후보로 돌아온다.
 // 도착 입력: 보호 타일마다 lod0·lod1 key, 그리고 비승격 도착 key 용 타일 EXTRA 개(lod0 하나).
+// 상주 배치는 시험마다 다르다(아래 layout). 둘 다 상주 수 = 한도 N 이라 업로드마다 희생이 하나 나간다.
 const EXTRA = 40;
-function setup() {
-  const resident = [...Array.from({ length: N - TILES }, (_, i) => free(i)), ...Array.from({ length: TILES }, (_, i) => lodKey(i, 1))];
-  const arrivedKeys = [
-    ...Array.from({ length: TILES }, (_, i) => [lodKey(i, 0), lodKey(i, 1)]).flat(),
-    ...Array.from({ length: EXTRA }, (_, i) => lodKey(1000 + i, 0)),
-    lodKey(900, 0), // 계측 전 준비 업로드용 도착 key
+const PREFIX = 12; // ① 의 맨 앞 보호 밖 key 수: 앞선 승격 업로드의 희생을 여기서 받아 lod1 key 가 살아남게 한다
+// tiles: 보호 타일 수, xb: 비승격 도착 key 타일 번호의 시작(보호 타일 번호와 겹치지 않게 한다)
+function arrivedList(tiles = TILES, xb = 1000) {
+  return [
+    ...Array.from({ length: tiles }, (_, i) => [lodKey(i, 0), lodKey(i, 1)]).flat(),
+    ...Array.from({ length: EXTRA }, (_, i) => lodKey(xb + i, 0)),
+    lodKey(xb + 900, 0), // 계측 전 준비 업로드용 도착 key
   ];
-  return { resident, arrivedKeys };
 }
-async function build() {
-  const { resident, arrivedKeys } = setup();
+// ① 배치: [앞 free PREFIX][L1_i, F_i, F'_i (타일마다)][나머지 free]. 승격으로 보호에서 빠진 L1_i 가 복귀 소집합(back)에 들어가
+// cand 의 free 사이(meta 원래 위치)에 끼어야 하므로 free 가 L1 앞에 몰려 있지 않게 섞는다
+function layoutInterleaved() {
+  const pre = Array.from({ length: PREFIX }, (_, i) => `4.1.${5000 + i}.0.0.0`);
+  const mid = Array.from({ length: TILES }, (_, i) => [lodKey(i, 1), free(2 * i), free(2 * i + 1)]).flat();
+  const rest = Array.from({ length: N - PREFIX - 3 * TILES }, (_, i) => free(1000 + i));
+  return [...pre, ...mid, ...rest];
+}
+// ② 배치: 보호 key(타일마다 lod1 하나) PROT2 개가 meta 앞쪽(N 의 대부분), 보호 밖 key 가 뒤쪽.
+// 경로 1(base 밖 후보 목록)을 끄면 업로드마다 앞쪽 보호 key 를 건너뛰어 읽기가 20×PROT2 ≥ 3×N 이 된다
+const PROT2 = 3600;
+const XB2 = 100000;
+function layoutProtectedFront() {
+  return [...Array.from({ length: PROT2 }, (_, i) => lodKey(i, 1)), ...Array.from({ length: N - PROT2 }, (_, i) => free(i))];
+}
+async function build(resident, tiles = TILES, xb = 1000) {
+  const arrivedKeys = arrivedList(tiles, xb);
   const { r, evicted, up } = make(N);
   for (const k of resident) await up(k);
   r.setArrived(arrivedOf(arrivedKeys), { deferResult: true });
   r.draw();
   // 첫 도착 key 업로드 한 번은 보호 표·후보 목록을 처음 만들므로 계측 밖에 둔다(rc 경로)
-  await up(lodKey(900, 0));
-  return { r, evicted, up, arrivedKeys, order: [...resident.filter((k) => k !== free(0)), lodKey(900, 0)] };
+  evicted.length = 0;
+  await up(lodKey(xb + 900, 0));
+  const order = resident.filter((k) => k !== evicted[0]);
+  order.push(lodKey(xb + 900, 0));
+  return { r, evicted, up, arrivedKeys, order };
 }
 
-test('희생 탐색 커서 ①(F-271): LOD 승격 업로드와 비승격 도착 업로드 교대 40회의 meta 읽기 총합이 4×N 미만이고 희생 순서가 원본과 같다', async () => {
-  const { r, evicted, up, arrivedKeys, order } = await build();
-  const ups = Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? lodKey(i / 2, 0) : lodKey(1000 + (i - 1) / 2, 0)));
+test('희생 탐색 커서 ①(F-271): back 이 cand 사이에 끼는 배치에서 섞인 승격·재보호 뒤 희생 순서가 selectDrawable 원본과 같고 meta 읽기 총합이 4×N 미만이다', async () => {
+  const { r, evicted, up, arrivedKeys, order } = await build(layoutInterleaved());
+  const N1 = (j) => lodKey(1000 + j, 0); // 비승격 도착 key
+  // 승격 타일 순서를 뒤섞어 back 에 meta 순번과 다른 순서로 들어가게 한다. rel = releasePiece(승격 lod0): 그 타일이 lod1 로 돌아가 L1 이 다시 보호된다
+  const ops = [];
+  const P = (i) => ops.push({ up: lodKey(i, 0) });
+  const U = (j) => ops.push({ up: N1(j) });
+  const R = (i) => ops.push({ rel: lodKey(i, 0) });
+  P(2); P(0); U(0); P(1); R(1); P(4); U(1); P(3); R(3); U(2);
+  for (let j = 3; j < 25; j++) { U(j); if (j === 8) P(6); if (j === 14) P(5); }
+  for (let j = 25; j < 36; j++) U(j);
   const removed = [];
+  let releases = 0;
   const reads = await countMetaReads(async () => {
-    for (const x of ups) {
+    for (const op of ops) {
       evicted.length = 0;
-      await up(x);
-      removed.push([...evicted]);
+      if (op.rel !== undefined) { r.releasePiece(op.rel); removed.push({ rel: op.rel }); releases++; } else { await up(op.up); removed.push({ up: op.up, victims: [...evicted] }); }
     }
   });
   // 희생 순서: 매 업로드마다 selectDrawable 원본이 고르는 첫 보호 밖 key(meta 순서)와 맞댄다(계측 밖)
-  ups.forEach((x, i) => {
-    const draw = new Set(selectDrawable([...order, x], arrivedOf(arrivedKeys)).draw);
-    const want = order.find((k) => k !== x && !draw.has(k));
-    assert.ok(want !== undefined, `업로드 ${i}: 기대 희생이 없음(시험 구성 오류)`);
-    assert.deepEqual(removed[i], [want], `업로드 ${i}: 희생 key 가 원본과 다름`);
-    order.splice(order.indexOf(want), 1);
+  ops.forEach((op, i) => {
+    if (op.rel !== undefined) {
+      order.splice(order.indexOf(op.rel), 1);
+      return;
+    }
+    const x = op.up;
+    let want = [];
+    if (order.length + 1 > N) {
+      const draw = new Set(selectDrawable([...order, x], arrivedOf(arrivedKeys)).draw);
+      const w = order.find((k) => k !== x && !draw.has(k));
+      assert.ok(w !== undefined, `단계 ${i}: 기대 희생이 없음(시험 구성 오류)`);
+      want = [w];
+      order.splice(order.indexOf(w), 1);
+    }
+    assert.deepEqual(removed[i].victims, want, `단계 ${i}(${x}): 희생 key 가 원본과 다름`);
     order.push(x);
   });
+  assert.equal(releases, 2);
   assert.deepEqual(r.residentKeys(), order);
   r.dispose();
-  // 현재 구현은 승격 업로드마다 후보 목록을 버려 다음 업로드가 meta 전체를 다시 돈다(20 × N 이상). 기준: 4 × N 미만
-  assert.ok(reads < 4 * N, `업로드 40회의 meta 읽기 ${reads} (${4 * N} 미만이어야 함)`);
+  assert.ok(reads < 4 * N, `meta 읽기 ${reads} (${4 * N} 미만이어야 함)`);
 });
 
-test('희생 탐색 커서 ②(F-274 ⑩): 도착 key 업로드(rc 경로) 20회의 meta 읽기 총합이 N 미만이다', async () => {
-  const { r, evicted, up } = await build();
+test('희생 탐색 커서 ②(F-274 ⑩): 보호 key 가 meta 앞쪽일 때 새 타일 도착 key 업로드(rc 경로) 20회의 meta 읽기 총합이 3×N 미만이다', async () => {
+  const { r, evicted, up } = await build(layoutProtectedFront(), PROT2, XB2);
   const removed = [];
   const reads = await countMetaReads(async () => {
     for (let i = 0; i < 20; i++) {
       evicted.length = 0;
-      await up(lodKey(1000 + i, 0)); // 새 타일의 도착 key: 보호가 늘 뿐 고른 LOD 는 바뀌지 않는다
+      await up(lodKey(XB2 + i, 0)); // 새 타일의 도착 key: 보호가 늘 뿐 고른 LOD 는 바뀌지 않는다
       removed.push(...evicted);
     }
   });
@@ -146,5 +180,5 @@ test('희생 탐색 커서 ②(F-274 ⑩): 도착 key 업로드(rc 경로) 20회
   assert.ok(removed.every((k) => k.startsWith('4.')), '보호 key 를 희생으로 고름');
   assert.equal(r.residentKeys().length, N);
   r.dispose();
-  assert.ok(reads < N, `도착 key 업로드 20회의 meta 읽기 ${reads} (${N} 미만이어야 함)`);
+  assert.ok(reads < 3 * N, `도착 key 업로드 20회의 meta 읽기 ${reads} (${3 * N} 미만이어야 함)`);
 });

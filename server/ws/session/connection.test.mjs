@@ -1,15 +1,15 @@
 // attachConnection 시험. 가짜 접속 객체·가짜 store 를 주입하고 replay·makeEmit 도 덮어써 다른 모듈을 거치지 않는다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attachConnection } from './connection.mjs';
+import { attachConnection, CLOSE_REASON_INTERNAL } from './index.mjs';
 import { encodeMessage, decodeMessage } from '../../proto/codec/index.mjs';
 
 function fakeConn() {
-  const c = { sent: [], closes: [], msgCb: null, closeCb: null };
+  const c = { sent: [], closes: [], closeInfo: [], msgCb: null, closeCb: null };
   c.send = (b) => { c.sent.push(b); return true; };
   c.onMessage = (cb) => { c.msgCb = cb; };
   c.onClose = (cb) => { c.closeCb = cb; };
-  c.close = (code) => { c.closes.push(code); };
+  c.close = (code, reason) => { c.closes.push(code); c.closeInfo.push({ code, reason }); };
   c.bufferedAmount = () => 0;
   return c;
 }
@@ -36,7 +36,7 @@ const setup = (extra = {}) => {
 
 test('HELLO 전 emit 은 던진다', () => {
   const { api } = setup();
-  assert.throws(() => api.emit({ type: 'MISSING' }));
+  assert.throws(() => api.emit({ type: 'MISSING' }), /HELLO 처리 전/);
 });
 
 test('잘못된 첫 메시지: ERROR code 1 한 번, close(1002) 한 번', async () => {
@@ -109,15 +109,25 @@ test('(a) onMessage 옵션이 던지면 conn.close(1011) 1회', async () => {
   await conn.msgCb(hello());
   await conn.msgCb(encodeMessage({ type: 'VIEW_UPDATE', viewSeq: 1, pos: [0, 0, 0], quat: [0, 0, 0, 1], fovY: 1, width: 640, height: 480 }));
   assert.deepEqual(conn.closes, [1011]);
+  assert.deepEqual(conn.closeInfo, [{ code: 1011, reason: CLOSE_REASON_INTERNAL }]);
 });
 
-test('(a2) 닫힘 처리는 멱등: onMessage 예외 뒤 메시지가 더 와도 conn.close 1회', async () => {
-  const { conn } = setup({ onMessage: () => { throw new Error('처리 실패'); } });
+test('(a1) 동기 onSession 예외도 close(1011, internal-error) 1회', async () => {
+  const { conn } = setup({ onSession: () => { throw new Error('세션 실패'); } });
+  await conn.msgCb(hello());
+  assert.deepEqual(conn.closeInfo, [{ code: 1011, reason: CLOSE_REASON_INTERNAL }]);
+});
+
+test('(a2) onMessage 예외로 닫은 뒤 더 온 메시지는 처리하지 않음: onMessage 1회, conn.close 1회', async () => {
+  let calls = 0;
+  const { conn, store } = setup({ onMessage: () => { calls += 1; throw new Error('처리 실패'); } });
   await conn.msgCb(hello());
   const view = encodeMessage({ type: 'VIEW_UPDATE', viewSeq: 1, pos: [0, 0, 0], quat: [0, 0, 0, 1], fovY: 1, width: 640, height: 480 });
   await conn.msgCb(view);
   await conn.msgCb(view);
   await conn.msgCb(ack(1));
+  assert.equal(calls, 1, '닫은 뒤의 메시지는 onMessage 로 가지 않는다');
+  assert.deepEqual(store.acks, [], '닫은 뒤의 ACK 는 store.ack 를 부르지 않는다');
   assert.deepEqual(conn.closes, [1011]);
 });
 
