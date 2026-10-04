@@ -35,7 +35,7 @@ function makeSequence(seed) {
   const segIds = [];
   const used = new Set();
   while (segIds.length < segCount) {
-    const id = rng() < 0.5 ? randInt(rng, 0, 15) : randInt(rng, 0, 0xffffffff);
+    const id = rng() < 0.5 ? randInt(rng, 0, 15) : randInt(rng, 0, (2 ** 30 - 1));
     if (!used.has(id)) { used.add(id); segIds.push(id); }
   }
   const arrivals = randInt(rng, 1, 40);

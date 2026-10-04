@@ -130,7 +130,7 @@ export const CASES = Object.freeze([
   {
     name: '아주 큰 구간 번호와 0 번 구간은 서로 독립이다',
     source: ESTIMATED,
-    arrivals: [[0xffffffff, 2], [0, 0], [0xffffffff, 1]],
-    expect: { 0: L(0), [0xffffffff]: L(2), 1: NONE_STATE },
+    arrivals: [[(2 ** 30 - 1), 2], [0, 0], [(2 ** 30 - 1), 1]],
+    expect: { 0: L(0), [(2 ** 30 - 1)]: L(2), 1: NONE_STATE },
   },
 ]);

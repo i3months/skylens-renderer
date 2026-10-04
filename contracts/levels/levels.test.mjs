@@ -42,7 +42,7 @@ test('입력 검사', () => {
   assert.throws(() => decideArrival(7, 1), RangeError);
   assert.throws(() => assertLevel('1'), TypeError);
   assert.throws(() => assertSegmentId(-1), RangeError);
-  assert.throws(() => assertSegmentId(2 ** 32), RangeError);
+  assert.throws(() => assertSegmentId(2 ** 30), RangeError);
   assert.throws(() => assertSegmentId(NaN), TypeError);
-  assertSegmentId(0); assertSegmentId(0xffffffff);
+  assertSegmentId(0); assertSegmentId(2 ** 30 - 1);
 });
