@@ -183,25 +183,41 @@ test('CONTRACT: createRenderer 옵션이 계약 또는 시험 전용 확장에�
   const testOnlyExtensions = new Set(['testHooks']);
   const allowedKeys = new Set([...contractOptionKeys, ...testOnlyExtensions]);
 
-  // 구현 소스에서 추출한 옵션 키
-  const implPath = resolve(__dirname, '../../client/raster/index.mjs');
-  const implSource = readFileSync(implPath, 'utf8');
-  // options.<이름> 패턴으로 접근하는 모든 키를 추출 (구조분해 및 .연산자 포함)
-  const optionsPattern = /options\.([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
-  const implOptionKeysFound = new Set();
-  let match;
-  while ((match = optionsPattern.exec(implSource)) !== null) {
-    implOptionKeysFound.add(match[1]);
+  // Proxy 로 createRenderer 가 읽는 옵션 키를 추적한다
+  const readKeys = new Set();
+  const canvas = fakeCanvas();
+  const baseOptions = {
+    canvas,
+    maxPieceBytes: 1 << 20,
+    maxResidentBytes: 1 << 20,
+    decode: (bytes) => ({ header: { format: 3, pointCount: 1, bboxMin: [0, 0, 0], quantExp: 0 }, planes: { pos_e: new Float32Array(1), pos_n: new Float32Array(1), pos_u: new Float32Array(1), color_r: new Uint8Array(1), color_g: new Uint8Array(1), color_b: new Uint8Array(1), normal_oct_x: new Int8Array(1), normal_oct_y: new Int8Array(1) } }),
+    shading: { lightDirWorld: [0, 0, 1] },
+    contextAttributes: {},
+    onEvict: () => {},
+    now: () => 0,
+    testHooks: {},
+  };
+
+  const proxiedOptions = new Proxy(baseOptions, {
+    get(target, key) {
+      if (typeof key === 'string' && key !== 'toJSON' && key !== 'constructor') {
+        readKeys.add(key);
+      }
+      return target[key];
+    },
+  });
+
+  // createRenderer 호출해 읽힌 옵션 추적
+  const renderer = createRenderer(proxiedOptions);
+  if (renderer) renderer.dispose?.();
+
+  // 읽힌 옵션이 모두 허용된 것인지 확인
+  for (const key of readKeys) {
+    assert.ok(allowedKeys.has(key), `createRenderer 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함`);
   }
 
-  // 구현이 실제로 읽는 옵션 키들
-  const implOptionKeys = implOptionKeysFound;
-
-  for (const key of implOptionKeys) {
-    assert.ok(allowedKeys.has(key), `구현 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함`);
-  }
-
-  for (const key of allowedKeys) {
-    assert.ok(implOptionKeys.has(key), `계약 옵션 '${key}' 가 구현에 지원되어야 함 (또는 선택 사항)` );
+  // 계약 옵션이 모두 읽혀야 함
+  for (const key of contractOptionKeys) {
+    assert.ok(readKeys.has(key), `계약 옵션 '${key}' 가 createRenderer 에서 읽혀야 함`);
   }
 });
