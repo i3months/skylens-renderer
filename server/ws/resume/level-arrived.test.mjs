@@ -167,3 +167,114 @@ test('recordLevelArrived 입력 검사', () => {
     { type: 'PIECE', pieceSeq: 1, key: key(9, 0, 0) }, { type: 'PIECE', pieceSeq: 2, key: key(9, 0, 1) }, la(9, 0, 1, 2),
   ]);
 });
+
+// 구간 10 수준 0 (조각 seq 3·4·5) → LEVEL_ARRIVED(first 3, n 3). 구간 9 와 묶음이 달라 추월하지 않는다(F-238 시험용).
+const SEG10 = [piece(3, key(10, 0, 0)), piece(4, key(10, 0, 1)), piece(5, key(10, 0, 2)), la(10, 0, 3, 3)];
+const SEG10_KEYS = ['10.0.1.-2.0.0', '10.0.1.-2.0.1', '10.0.1.-2.0.2'];
+
+/** 이어받기 재전송: resendPlan 의 메시지를 어댑터처럼 다시 내보내며 기록한다(PIECE 는 recordSent, LEVEL_ARRIVED 는 recordLevelArrived). */
+function rerecord(st, sid, plan) {
+  for (const m of plan) {
+    if (m.type === 'PIECE') assert.equal(st.recordSent(sid, m.key, m.pieceSeq, chunkOf(m.pieceSeq)), true, `PIECE ${m.pieceSeq}`);
+    else assert.equal(st.recordLevelArrived(sid, m), true, `LEVEL_ARRIVED ${m.segmentId}.${m.level}`);
+  }
+}
+
+test('F-238 ① 감독 재현: LEVEL_ARRIVED 2개 → open(lastPieceSeq=0) → resendPlan 재기록이 모두 멱등 true', () => {
+  const st = store();
+  const sid = st.open({ sessionId: 0 }).sessionId;
+  send(st, sid, [...LEVEL0, ...SEG10]); // 서로 다른 묶음이라 추월 없음
+  assert.equal(st.open({ sessionId: sid, lastPieceSeq: 0 }).resumed, true);
+  const plan = st.resendPlan(sid);
+  assert.deepEqual(plan, [
+    { type: 'PIECE', pieceSeq: 1, key: key(9, 0, 0) }, { type: 'PIECE', pieceSeq: 2, key: key(9, 0, 1) }, la(9, 0, 1, 2),
+    { type: 'PIECE', pieceSeq: 3, key: key(10, 0, 0) }, { type: 'PIECE', pieceSeq: 4, key: key(10, 0, 1) }, { type: 'PIECE', pieceSeq: 5, key: key(10, 0, 2) },
+    la(10, 0, 3, 3),
+  ]);
+  rerecord(st, sid, plan); // 고치기 전: 첫 LEVEL_ARRIVED 에서 RangeError
+  assert.equal(st.stats(sid).levels, 2);
+  // 재기록은 아무것도 바꾸지 않는다: 같은 계획이 다시 나오고, 한 번 더 재기록해도 멱등.
+  st.open({ sessionId: sid, lastPieceSeq: 0 });
+  assert.deepEqual(st.resendPlan(sid), plan);
+  rerecord(st, sid, st.resendPlan(sid));
+  // 다시 내보낸 계획을 클라이언트가 받으면 두 수준 모두 완료.
+  const client = [{ type: 'WELCOME', sessionId: 77, resumed: true, nextPieceSeq: 6 }, ...resendFrames(plan).map(decodeMessage)];
+  const r = collectArrivals(client);
+  assert.deepEqual(selectDrawable(r.keys, r.arrived), { draw: [...L0_KEYS, ...SEG10_KEYS], pending: [], discard: [] });
+  // 창 끝 == ackedUpTo 로 남은 기록(lastPieceSeq=2)도 재기록 멱등.
+  st.open({ sessionId: sid, lastPieceSeq: 2 });
+  const plan2 = st.resendPlan(sid);
+  assert.deepEqual(plan2.filter((m) => m.type === 'LEVEL_ARRIVED'), [la(9, 0, 1, 2), la(10, 0, 3, 3)]);
+  rerecord(st, sid, plan2);
+  assert.deepEqual(st.resendPlan(sid), plan2);
+});
+
+test('F-238 ①③: 남은 기록과 네 값 중 하나라도 다르면 멱등이 아니라 겹치는 창 RangeError', () => {
+  const st = store();
+  const sid = st.open({ sessionId: 0 }).sessionId;
+  send(st, sid, [...LEVEL0, ...SEG10]);
+  const OVERLAP = /LEVEL_ARRIVED 창 \d+\.\.\d+ 이 앞선 기록의 창과 겹친다: 창 시작은 앞선 기록의 창 끝\(5\)보다 커야 한다/;
+  assert.throws(() => st.recordLevelArrived(sid, la(9, 0, 1, 1)), OVERLAP, 'pieceCount 다름');
+  assert.throws(() => st.recordLevelArrived(sid, la(8, 0, 1, 2)), OVERLAP, 'segmentId 다름');
+  assert.throws(() => st.recordLevelArrived(sid, la(9, 2, 1, 2)), OVERLAP, 'level 다름');
+  assert.throws(() => st.recordLevelArrived(sid, la(9, 0, 2, 1)), OVERLAP, 'firstPieceSeq 다름');
+  assert.equal(st.stats(sid).levels, 2);
+});
+
+test('F-238 ③: 앞 기록과 겹치는 창은 RangeError(창 끝이 더 커도), 바로 뒤에 붙는 창은 받는다', () => {
+  const st = store();
+  const sid = st.open({ sessionId: 0 }).sessionId;
+  send(st, sid, [piece(1, key(9, 0, 0)), piece(2, key(9, 0, 1)), la(9, 0, 1, 2), piece(3, key(10, 0, 0)), piece(4, key(10, 0, 1))]);
+  const OVERLAP = /LEVEL_ARRIVED 창 (\d+)\.\.(\d+) 이 앞선 기록의 창과 겹친다: 창 시작은 앞선 기록의 창 끝\(2\)보다 커야 한다/;
+  assert.throws(() => st.recordLevelArrived(sid, la(10, 0, 2, 2)), OVERLAP, '창 2..3 은 앞 창 1..2 와 겹친다');
+  assert.throws(() => st.recordLevelArrived(sid, la(10, 0, 1, 4)), OVERLAP, '창 1..4 는 앞 창을 덮는다');
+  assert.throws(() => st.recordLevelArrived(sid, la(10, 0, 2, 3)), OVERLAP, '창 2..4');
+  assert.equal(st.stats(sid).levels, 1, '거부된 기록은 남지 않는다');
+  assert.equal(st.recordLevelArrived(sid, la(10, 0, 3, 2)), true, '창 3..4 는 겹치지 않는다');
+  st.open({ sessionId: sid, lastPieceSeq: 0 });
+  assert.deepEqual(st.resendPlan(sid).filter((m) => m.type === 'LEVEL_ARRIVED'), [la(9, 0, 1, 2), la(10, 0, 3, 2)]);
+});
+
+test('F-238 ②: 같은 key 를 새 순번으로 1만 회 대체하며 기록해도 levels ≤ maxEntries, 죽은 창의 기록은 정리된다', () => {
+  const MAX = 64;
+  const st = createSessionStore({ maxSessions: 1, ttlMs: 60_000, now: () => T0, randomId: () => 5, maxEntriesPerSession: MAX });
+  const sid = st.open({ sessionId: 0 }).sessionId;
+  const k = key(3, 1, 0);
+  const N = 10_000;
+  for (let seq = 1; seq <= N; seq++) {
+    assert.equal(st.recordSent(sid, k, seq, 1), true);
+    assert.equal(st.recordLevelArrived(sid, la(3, 1, seq, 1)), true);
+  }
+  const s = st.stats(sid);
+  assert.ok(Object.hasOwn(s, 'levels'), 'stats().levels 노출');
+  assert.ok(s.levels <= MAX, `levels=${s.levels}`);
+  // 앞의 창(seq 1..N−1)은 조각이 대체로 죽어 다시 보낼 수 없으므로 지워지고 마지막 하나만 남는다.
+  assert.deepEqual(s, { entries: 1, retainedBytes: 1, unacked: 1, groups: 1, levels: 1 });
+  st.open({ sessionId: sid, lastPieceSeq: 0 });
+  assert.deepEqual(st.resendPlan(sid), [{ type: 'PIECE', pieceSeq: N, key: k }, la(3, 1, N, 1)]);
+});
+
+test('F-238 ②: 기록 때 창 안 미확인 순번이 이미 죽었거나 기록된 적 없으면 보관하지 않는다', () => {
+  const st = store();
+  const sid = st.open({ sessionId: 0 }).sessionId;
+  send(st, sid, [piece(1, key(9, 0, 0)), piece(2, key(9, 0, 0))]); // seq 1 은 seq 2 로 대체돼 죽었다
+  assert.equal(st.recordLevelArrived(sid, la(9, 0, 1, 1)), true);
+  assert.equal(st.stats(sid).levels, 0);
+  send(st, sid, [piece(4, key(10, 0, 0))]); // seq 3 은 기록된 적 없다
+  assert.equal(st.recordLevelArrived(sid, la(10, 0, 3, 2)), true);
+  assert.equal(st.stats(sid).levels, 0);
+  assert.equal(st.recordLevelArrived(sid, la(10, 0, 3, 2)), true, '마지막 기록 재기록은 멱등');
+  st.open({ sessionId: sid, lastPieceSeq: 0 });
+  assert.deepEqual(st.resendPlan(sid), [{ type: 'PIECE', pieceSeq: 2, key: key(9, 0, 0) }, { type: 'PIECE', pieceSeq: 4, key: key(10, 0, 0) }]);
+});
+
+test('F-238 ②: levels 는 maxEntries 를 넘지 않는다 — 넘으면 창 끝이 가장 작은 기록부터 지운다', () => {
+  const st = createSessionStore({ maxSessions: 1, ttlMs: 60_000, now: () => T0, randomId: () => 5, maxEntriesPerSession: 2 });
+  const sid = st.open({ sessionId: 0 }).sessionId;
+  send(st, sid, [piece(1, key(9, 0, 0)), la(9, 0, 1, 1), piece(2, key(10, 0, 0)), la(10, 0, 2, 1)]);
+  st.ack(sid, 1); // 창 1..1 은 창 끝 == ackedUpTo 라 남는다(완료 표시 수신 미상)
+  assert.equal(st.stats(sid).levels, 2);
+  send(st, sid, [piece(3, key(11, 0, 0)), la(11, 0, 3, 1)]); // 조각 1 은 항목 상한으로 축출, 기록은 3개가 되려 한다
+  assert.deepEqual(st.stats(sid), { entries: 2, retainedBytes: 4, unacked: 2, groups: 2, levels: 2 });
+  assert.deepEqual(st.resendPlan(sid).filter((m) => m.type === 'LEVEL_ARRIVED'), [la(10, 0, 2, 1), la(11, 0, 3, 1)]);
+});
