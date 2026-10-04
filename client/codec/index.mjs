@@ -109,7 +109,8 @@ function rangeDecode(bytes, off, rawLen) {
  * @param {number} maxRaw 이 스트림이 가질 수 있는 원바이트 상한(streamRawBounds), 초과는 'limit'
  */
 function entropyDecodeClient(bytes, minRaw, maxRaw) {
-  if (bytes.length < 2) throw new CodecError('stream', 'entropy 컨테이너가 너무 짧다');
+  // 서버 entropyDecode 와 같은 순서(F-182): 빈 입력은 'stream', 그다음 mode 검사('mode'), 길이 1 은 rawLen 이 잘려 'stream'.
+  if (bytes.length < 1) throw new CodecError('stream', 'entropy 컨테이너가 비었다');
   const mode = bytes[0];
   if (mode !== ENTROPY_MODE.STORED && mode !== ENTROPY_MODE.RANGE) throw new CodecError('mode', `알 수 없는 entropy 모드 ${mode}`);
   let rawLen = 0, mul = 1, pos = 1;
@@ -226,6 +227,8 @@ function decodeColor(raw, n, bodyMode) {
  * 그 함수가 보지 않는 규칙(lod·bbox 순서·span·타일 포함·anchor·reserved)을 여기서 직접 본다. 서버 decodeChunk 와 같은 집합이다.
  */
 function checkHeaderSemantics(h) {
+  // 아래 pointCount·tileSizeM·quantExp·bbox 유한성 검사는 readHeaderClient 가 이미 같은 code 로 거부하므로 도달할 수 없다(F-177).
+  // 서버 checkHeaderSemantics 와 검사 집합을 같게 유지하려고(헤더 읽기가 바뀌어도 구멍이 안 생기게) 방어용으로 남긴다.
   if (h.pointCount < 1) throw new AssetFormatError('field', 'pointCount must be >= 1');
   if (h.tileSizeM !== TILE_SIZE_M) throw new AssetFormatError('field', `tileSizeM ${h.tileSizeM}`);
   if (h.lod > LOD_MAX) throw new AssetFormatError('field', `lod ${h.lod}`);
@@ -270,6 +273,7 @@ export function decodeChunkClient(fileBytes) {
   if (u8.length <= OFFSETS.codec || u8[OFFSETS.codec] !== CODEC_SKLC1) {
     // 짧은 입력·모르는 codec 은 헤더 읽기가 AssetFormatError 로 거부한다
     readHeaderClient(u8);
+    // 도달 불가(F-177): 위 분기가 codec 0·1 을 이미 처리했으므로 readHeaderClient 는 다른 codec 에서 항상 먼저 던진다. 방어용 종결.
     throw new AssetFormatError('codec', `unknown codec ${u8[OFFSETS.codec]}`);
   }
   const dv0 = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);

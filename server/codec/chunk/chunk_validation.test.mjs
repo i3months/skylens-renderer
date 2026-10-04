@@ -145,8 +145,7 @@ test('F-169 pos rawLen 경계: n=1 에서 [1,7] 안은 통과(다른 검사로 �
     const s = new Uint8Array([0, ...LEB(rawLen), ...new Uint8Array(rawLen)]); // 저장 모드
     const r = code(() => decodeChunk(withPosStream(enc, s)));
     assert.equal(r, 'CodecError:limit', `rawLen ${rawLen}`);
-    // 클라이언트의 min 미달 코드는 다른 하위 작업이 맞춘다(현재 'stream'). 상한 초과만 클라이언트와 비교한다.
-    if (rawLen > 7) assert.equal(code(() => decodeChunkClient(withPosStream(enc, s))), 'CodecError:limit');
+    assert.equal(code(() => decodeChunkClient(withPosStream(enc, s))), 'CodecError:limit', `client rawLen ${rawLen}`);
   }
   const ok = new Uint8Array([0, ...LEB(7), ...new Uint8Array(7)]); // 범위 안: limit 이 아닌 코드(위치 스트림 형식 오류 가능)
   assert.notEqual(code(() => decodeChunk(withPosStream(enc, ok))), 'CodecError:limit');
