@@ -211,16 +211,16 @@ export function createRenderer(options) {
       // had 가드: 유일한 호출부(uploadPiece 끝, meta.delete(key) 직후 meta.set)에서는 항상 false 다. 덮어쓰기에 대비한 방어일 뿐이다
       const had = super.has(k);
       super.set(k, v);
-      if (!had) roomResidentChange(k, true); // 같은 key 를 덮어쓰면 상주 목록은 그대로다
+      if (!had) { roomResidentChange(k, true); drawingCandChange(k, true); } // 같은 key 를 덮어쓰면 상주 목록은 그대로다
       return this;
     }
     delete(k) {
       metaGen += 1;
       const had = super.delete(k);
-      if (had) roomResidentChange(k, false);
+      if (had) { roomResidentChange(k, false); drawingCandChange(k, false); }
       return had;
     }
-    clear() { metaGen += 1; super.clear(); roomCache = null; }
+    clear() { metaGen += 1; super.clear(); roomCache = null; if (drawingCache !== null) drawingCache.cand = null; }
   })();
   // makeRoom 전용 캐시(selection 계열 상태와 무관). setArrived 두 경로·dispose·meta.clear(위 clear())에서 null 로 돌려 도착 입력 사본을 붙잡지 않는다.
   // {tiles: 도착 입력의 타일 표, gen: key·drawing 을 만든 metaGen, resident: 타일 → 상주 도착 key(meta 변경마다 그 key 의 타일 하나만 증분 갱신),
@@ -268,11 +268,20 @@ export function createRenderer(options) {
     return selection;
   }
 
-  // 선택 객체별 draw 크기 Set 캐시(F-249 ⑨): 한도 초과 업로드마다 Set 을 새로 만들지 않고 선택이 바뀔 때만 만든다
-  let drawingCache = null; // {sel, set}
+  // 선택 객체별 draw 크기 Set 캐시(F-249 ⑨): 한도 초과 업로드마다 Set 을 새로 만들지 않고 선택이 바뀔 때만 만든다.
+  // cand: 그 선택의 draw 밖 meta key 를 meta 순서로 둔 희생 후보 Set(makeRoom 이 처음 쓸 때 한 번 만들고 meta set/delete 마다
+  // drawingCandChange 가 증분 갱신). 도착 집합 밖 key 를 올릴 때(선택 기반 보호) 앞쪽 보호 key 를 매번 다시 건너뛰지 않게 한다(F-269)
+  let drawingCache = null; // {sel, set, cand}
   function drawingSet(sel) {
-    if (drawingCache === null || drawingCache.sel !== sel) drawingCache = { sel, set: new Set(sel.draw) };
+    if (drawingCache === null || drawingCache.sel !== sel) drawingCache = { sel, set: new Set(sel.draw), cand: null };
     return drawingCache.set;
+  }
+  // 선택의 draw Set 은 선택이 바뀌기 전까지 고정이므로, 새 key 는 draw 밖이면 뒤에 붙이고(meta 도 뒤에 붙는다) 나간 key 는 뺀다
+  function drawingCandChange(k, added) {
+    const dc = drawingCache;
+    if (dc === null || dc.cand === null) return;
+    if (!added) dc.cand.delete(k);
+    else if (!dc.set.has(k)) dc.cand.add(k);
   }
 
   function dropPiece(key) {
@@ -491,6 +500,20 @@ export function createRenderer(options) {
         rc.cand = cand;
       }
       for (const k of rc.cand) {
+        if (resident + bytes - free <= maxResidentBytes) break;
+        if (k === key) continue;
+        victims.push(k);
+        free += meta.get(k).bytes;
+      }
+    } else if (drawingCache !== null && drawing === drawingCache.set) {
+      // 선택 기반 보호: 그 선택의 draw 밖 후보만 meta 순서로 돈다. 후보 목록이 없으면(처음·선택이 바뀐 뒤) meta 를 한 번 돌아 만든다
+      const dc = drawingCache;
+      if (dc.cand === null) {
+        const cand = new Set();
+        for (const k of meta.keys()) if (!dc.set.has(k)) cand.add(k);
+        dc.cand = cand;
+      }
+      for (const k of dc.cand) {
         if (resident + bytes - free <= maxResidentBytes) break;
         if (k === key) continue;
         victims.push(k);
