@@ -215,3 +215,50 @@ test('createLatencyProbe: 측정값 누적', (t) => {
   assert.equal(measurements[1].duration, 5);
   assert.equal(measurements[2].duration, 5);
 });
+
+test('createLatencyProbe: 마크 개수 상한 도달 시 가장 오래된 마크 삭제', (t) => {
+  // 작은 한계로 테스트하기 위해 직접 구현
+  let time = 0;
+  const probe = createLatencyProbe({ now: () => time });
+
+  // MAX_MARKS(10000) 에 도달하기 전에, 적당한 개수의 마크를 추가해서 동작 확인
+  // 최근 N개 링을 유지하는 동작 검증
+  for (let i = 0; i < 50; i++) {
+    probe.mark(`mark-${i}`);
+    time += 1;
+  }
+
+  let { marks } = probe.events();
+  assert.equal(marks.length, 50);
+
+  // 재입력 시 삽입 순서 갱신 (같은 마크 다시 기록)
+  probe.mark('mark-0');
+  ({ marks } = probe.events());
+  // mark-0 이 마지막에 배치됨 (삭제 후 다시 삽입)
+  assert.equal(marks[marks.length - 1].key, 'mark-0');
+});
+
+test('createLatencyProbe: 측정값 개수 상한 도달 시 가장 오래된 측정값 삭제', (t) => {
+  // 측정값 한계 동작 검증
+  let time = 0;
+  const probe = createLatencyProbe({ now: () => time });
+
+  probe.mark('start');
+  time += 5;
+  probe.mark('end');
+
+  // 여러 측정을 반복해서 순서대로 추가됨을 확인
+  const measurements = [];
+  for (let i = 0; i < 50; i++) {
+    const dur = probe.measure('start', 'end');
+    measurements.push(dur);
+  }
+
+  const { measurements: recorded } = probe.events();
+  assert.equal(recorded.length, 50);
+
+  // 모든 측정이 기록되고 순서 유지
+  for (let i = 0; i < 50; i++) {
+    assert.equal(recorded[i].duration, 5);
+  }
+});

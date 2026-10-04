@@ -207,6 +207,28 @@ test('메모리 한도: 그리지 않는 조각부터 오래된 순으로 해제
   r.dispose();
 });
 
+test('메모리 한도: 선택이 낡았으면 희생을 고르기 전에 다시 돌아, 막 완전해진 성긴 LOD 의 기존 chunk 를 퇴출하지 않는다', async () => {
+  const evicted = [];
+  const { r } = make({ maxResidentBytes: 51, maxPieceBytes: 40, onEvict: (keys) => evicted.push(...keys) });
+  const lod2c0 = '3.1.0.0.2.0';
+  const lod2c1 = '3.1.0.0.2.1';
+  const lod0c0 = '3.1.0.0.0.0';
+  const lod0c1 = '3.1.0.0.0.1';
+  const other = '3.2.0.0.0.0'; // 도착 집합 밖: pending
+  await r.uploadPiece(lod2c0, piece1(lod2c0, [0.5, 0.5, 5]));
+  await r.uploadPiece(lod0c0, piece1(lod0c0, [0.5, 0.5, 5]));
+  const sel = r.setArrived([{ segmentId: 3, level: 1, keys: [lod2c0, lod2c1, lod0c0, lod0c1] }]);
+  assert.deepEqual([sel.draw, sel.pending], [[lod0c0], [lod2c0]]);
+  await r.uploadPiece(lod2c1, piece1(lod2c1, [1, 1, 5])); // lod2 가 완전해짐(선택은 아직 낡음)
+  assert.equal(r.memoryBytes(), 51);
+  await r.uploadPiece(other, piece1(other, [1, 1, 5])); // 넘침 → 다시 돈 선택에서 pending 인 lod0.c0 만 해제
+  assert.deepEqual(evicted, [lod0c0]);
+  assert.deepEqual(r.residentKeys(), [lod2c0, lod2c1, other]);
+  r.setView(VIEW);
+  assert.equal(r.draw().drawnPieces, 2);
+  r.dispose();
+});
+
 test('컨텍스트 소실: GPU 자원을 버리고 그리기를 건너뛰며, 복구 때 다시 올릴 key 를 콜백으로 준다', async () => {
   const { r, canvas, calls } = make();
   const k1 = '3.1.0.0.0.0';

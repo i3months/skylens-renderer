@@ -13,6 +13,7 @@
 //   넘기면 상주 key 를 selectDrawable 로 나눠 draw 에 든 조각만 그린다. setArrived 를 한 번도 부르지 않으면 아무것도 그리지 않는다.
 //   setArrived 는 계약 Renderer 에 올라 있는 도착 입력 메서드다(결정 0034). 결과의 discard 는
 //   호출자가 releasePiece 로 해제한다(해제 근거). 렌더러는 discard 를 스스로 해제하지 않는다.
+//   setArrived(list, {deferResult: true}) 는 반환값이 필요 없는 호출자용 지연 경로다(선택은 다음 draw 에서 1회).
 //   재계산 주기(F-246 ⑦, 계약 '프레임마다 부르지 않는다'): selectDrawable 은 setArrived 때만 돈다. 업로드가 끝난 key 가 직전
 //   선택에 없으면(도착 집합에 없는 새 key) 직전 선택에서 pending 으로 보고 다시 돌지 않는다. 도착 집합에 든 key 가 올라오면
 //   다음 draw 에서 프레임당 최대 1회 다시 돈다. 해제·퇴출은 선택을 건드리지 않는다(draw 가 상주하지 않는 key 를 건너뛴다).
@@ -114,8 +115,9 @@ export function toGpuPlanes(decoded, origin = [0, 0, 0]) {
 }
 
 /**
- * Worker 가 만든 gpu 평면의 가벼운 검증(값 전수 검사는 하지 않는다): 형식·점 수·원점·평면 이름·타입·길이.
- * origin 은 헤더 bboxMin 과 같아야 한다(렌더러가 쓰는 원점 규약). 어기면 ClientRasterError('piece').
+ * Worker 가 만든 gpu 평면의 가벼운 검증(O(1)): 형식·점 수·원점·평면 이름·타입·길이.
+ * origin 은 헤더 bboxMin 과 같아야 하고 유한해야 한다(렌더러가 쓰는 원점 규약). 어기면 ClientRasterError('piece').
+ * 평면 값(위치·법선)의 전수 검사는 하지 않는다(Worker 만 만드므로 신뢰됨). F-244 ② O(1) 성능 의도를 지킨다.
  * @param {any} decoded {header, planes, gpu}
  * @returns {{format: number, count: number, planes: Record<string, ArrayBufferView>, origin: number[]}}
  */
@@ -133,6 +135,7 @@ export function checkGpuPlanes(decoded) {
   if (g.count !== n) throw bad(`count ${String(g.count)} != 헤더 pointCount ${n}`);
   if (!Array.isArray(h.bboxMin) || h.bboxMin.length !== 3) throw bad('헤더 bboxMin 이 틀림');
   if (!Array.isArray(g.origin) || g.origin.length !== 3 || !g.origin.every((v, a) => v === h.bboxMin[a])) throw bad('origin 이 헤더 bboxMin 과 다름');
+  if (!g.origin.every(Number.isFinite)) throw bad('origin 이 유한하지 않음');
   const p = g.planes;
   if (p === null || typeof p !== 'object') throw bad('planes 가 없음');
   const want = format === FORMAT_POINT27 ? ['position', 'color', 'normalOct'] : ['position', 'color'];
@@ -294,9 +297,9 @@ export function createRenderer(options) {
     // 한도 여유가 있으면 크기 표·선택을 만들지 않고 돌아간다(F-246 ⑦). key 별 크기는 meta 에 둔다
     const resident = pool.residentBytes() - (meta.get(key)?.bytes ?? 0);
     if (resident + bytes <= maxResidentBytes) return;
-    // 선택을 다시 돌지 않는다: 직전 선택의 draw 와, 그 뒤 올라온 도착 집합 key(fresh)를 그리는 조각으로 보호한다
-    const drawing = new Set(arrived === null ? [] : selection.draw);
-    for (const k of fresh) drawing.add(k);
+    // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 직전 선택에서 pending 이던 LOD 가
+    // 방금 완전해졌다면 그 조각이 새 draw 에 들어 보호된다. 낡지 않았으면 직전 선택을 그대로 쓴다
+    const drawing = new Set(currentSelection().draw);
     const victims = [];
     let free = 0;
     for (const [k, info] of meta) {
@@ -392,8 +395,27 @@ export function createRenderer(options) {
     fresh.delete(key);
   }
 
-  function setArrived(list) {
+  function setArrived(list, opts) {
     assertAlive();
+    if (opts !== undefined && opts !== null && opts.deferResult === true) {
+      // 지연 경로: 반환값이 필요 없는 호출자용. 선택은 다음 draw 에서 프레임당 1회만 돈다(연속 호출은 마지막 입력으로 합쳐진다).
+      // 항목 모양(segmentId·level·keys 배열)만 지금 검사하고 key 해석 오류는 draw 에서 ClientRasterError('piece') 로 난다.
+      if (!Array.isArray(list)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
+      if (list.length === 0) throw new ClientRasterError('piece', 'arrived 는 비지 않은 배열이어야 함');
+      for (const a of list) {
+        if (!a || !Number.isInteger(a.segmentId) || !Number.isInteger(a.level) || !Array.isArray(a.keys) || a.keys.length === 0) {
+          throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
+        }
+      }
+      arrived = list.map((a) => ({ segmentId: a.segmentId, level: a.level, keys: [...a.keys] }));
+      arrivedKeys = new Set();
+      for (const a of arrived) for (const k of a.keys) arrivedKeys.add(k);
+      if (selection === null) selection = { draw: [], pending: [], discard: [] };
+      selectionStale = true;
+      fresh.clear(); // 새 도착 집합에 든 상주 key 는 다시 고르기 전까지 그리는 조각으로 보호한다
+      for (const k of arrivedKeys) if (meta.has(k)) fresh.add(k);
+      return undefined;
+    }
     const res = select([...meta.keys()], list); // 입력 검사 겸 결과(도착 이벤트마다 한 번)
     arrived = list.map((a) => ({ segmentId: a.segmentId, level: a.level, keys: [...a.keys] }));
     arrivedKeys = new Set();

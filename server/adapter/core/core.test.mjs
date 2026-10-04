@@ -1091,8 +1091,8 @@ test('F-239 ⑨: levelArrivedMaybeSent skip 은 기계가 쥐지 않은 key 의 
 test('F-240 ④: L == M(재시도 수준이 기계의 현재 수준과 같음)에서도 levelArrivedMaybeSent skip 이고 서버 내부 해제는 알리지 않는다', () => {
   const h = laHarness();
   h.attempt(3);
-  // 다른 key 집합으로 먼저 확정: 기계가 다른 key 를 쥐고 있는 상태
-  h.machine.arrive(9, 1, piecesEvent(9, 1, 3, 1).pieces);
+  // 기계를 수준 1에 먼저 위치: count=3 으로 3개 key (나중에 count=2 로 교체됨)
+  h.machine.arrive(9, 1, piecesEvent(9, 1, 3, 0).pieces);
   // 이제 L == M 사례: 같은 수준으로 재도착
   h.machine.arrive(9, 1, piecesEvent(9, 1, 2).pieces);
   const n = h.out.length;

@@ -429,7 +429,7 @@ test('CLIENT_RASTER_API 서명은 문자열 전체가 기대값과 같다(순서
     memoryBytes: 'renderer.memoryBytes() -> number',
     dispose: 'renderer.dispose() -> void',
     onContextLost: 'renderer.onContextLost(callback?) -> () => void  컨텍스트 손실 알림, 구독 해제 함수 반환',
-    onContextRestored: 'renderer.onContextRestored(callback?: (keys: string[]) => void) -> () => void  컨텍스트 복구 알림 (인자: 다시 올려야 할 key 배열), 구독 해제 함수 반환',
+    onContextRestored: 'renderer.onContextRestored(callback?: (keys: string[]) => void) -> () => void  컨텍스트 복구 알림 (인자: 다시 올려야 할 key 배열); 둘째 인자 error 는 구현 확장(시험용), 구독 해제 함수 반환',
     setArrived: 'renderer.setArrived(arrived: [{segmentId, level, keys}]) -> {draw: string[], pending: string[], discard: string[]}  LEVEL_ARRIVED 완료 집합으로 그리는 조각 결정',
     residentKeys: 'renderer.residentKeys() -> string[]  현재 GPU 상주 key 배열',
     isContextLost: 'renderer.isContextLost() -> boolean  WebGL 컨텍스트 손실 상태',

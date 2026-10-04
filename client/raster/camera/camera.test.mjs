@@ -172,23 +172,25 @@ test('같은 CSS 화면에서 dpr 만 바꾸면 CSS 위치가 정답(truthCss)�
   assert.ok(worst < 1e-6, `최대 오차 ${worst} CSS px`);
 });
 
-// 정답(버퍼 기준): 기준 영상 픽셀을 bw×bh 장치 버퍼에 중앙 맞춤으로 옮긴다. 유니폼·fitIntrinsics 와 독립인 식.
-function truthDevice(Xw, bw, bh) {
+// 정답(버퍼 기준): 기준 영상 픽셀을 bw×bh 장치 버퍼에 중앙 맞춤으로 옮긴다. fitIntrinsics 식과 독립인 수식.
+function truthDevice(Xw, W, H, dpr) {
   const x = R0[0] * Xw[0] + R0[1] * Xw[1] + R0[2] * Xw[2] + T0[0];
   const y = R0[3] * Xw[0] + R0[4] * Xw[1] + R0[5] * Xw[2] + T0[1];
   const d = R0[6] * Xw[0] + R0[7] * Xw[1] + R0[8] * Xw[2] + T0[2];
   const uR = K_REF.fx * (x / d) + K_REF.cx;
   const vR = K_REF.fy * (y / d) + K_REF.cy;
+  const bw = Math.round(W * dpr);
+  const bh = Math.round(H * dpr);
   const s = Math.min(bw / REF_W, bh / REF_H);
   return [s * uR + (bw - s * REF_W) / 2, s * vR + (bh - s * REF_H) / 2];
 }
 
-function worstVsTruthDevice(K1, U, W, H) {
+function worstVsTruthDevice(K1, U, W, H, dpr) {
   const Ux = { ...U, ...K1 };
   let worst = 0;
   for (const X of POINTS) {
     const p = projectWithUniforms(Ux, X);
-    const [tu, tv] = truthDevice(X, U.bw, U.bh);
+    const [tu, tv] = truthDevice(X, W, H, dpr);
     worst = Math.max(worst, Math.abs(p.u - tu), Math.abs(p.v - tv));
   }
   return worst;
@@ -198,9 +200,10 @@ test('한 단계 fitIntrinsics(…, dpr) 는 정답(truthDevice)과 장치 픽�
   let worst = 0;
   for (const [W, H, dpr] of SCREENS) {
     const U = buildCameraUniforms(viewFor(W, H, dpr));
-    worst = Math.max(worst, worstVsTruthDevice(fitIntrinsics(K_REF, REF_W, REF_H, W, H, dpr), U, W, H));
+    worst = Math.max(worst, worstVsTruthDevice(fitIntrinsics(K_REF, REF_W, REF_H, W, H, dpr), U, W, H, dpr));
   }
   assert.ok(worst < 1e-6, `최대 오차 ${worst} 장치 px`);
+  assert.ok(worst <= 0.5, `fit 대 renderer ≤ 0.5 장치 px`);
 });
 
 test('판별력: fitIntrinsics 자리에 scaleIntrinsics 를 바꿔 써도 정답과의 비교가 잡아낸다(667×375@3 에서 약 0.45 장치 px)', () => {
@@ -208,10 +211,10 @@ test('판별력: fitIntrinsics 자리에 scaleIntrinsics 를 바꿔 써도 정�
   // 같은 구현끼리가 아니라 정답과 1e-6 으로 비교하면 걸린다.
   const [W, H, dpr] = [667, 375, 3];
   const U = buildCameraUniforms(viewFor(W, H, dpr));
-  const sc = worstVsTruthDevice(scaleIntrinsics(K_REF, REF_W, REF_H, W, H, dpr), U, W, H);
+  const sc = worstVsTruthDevice(scaleIntrinsics(K_REF, REF_W, REF_H, W, H, dpr), U, W, H, dpr);
   assert.ok(sc > 0.1 && sc <= 0.5, `scale 대체 오차 ${sc} 장치 px`);
   assert.ok(sc >= 1e-6, '정답 비교 문턱(1e-6)에 걸려야 한다');
-  assert.ok(worstVsTruthDevice(fitIntrinsics(K_REF, REF_W, REF_H, W, H, dpr), U, W, H) < 1e-6);
+  assert.ok(worstVsTruthDevice(fitIntrinsics(K_REF, REF_W, REF_H, W, H, dpr), U, W, H, dpr) < 1e-6);
 });
 
 test('float32 유니폼(GPU 정밀도)으로도 CSS 위치 ≤ 0.5 px', () => {

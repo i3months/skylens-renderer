@@ -154,8 +154,8 @@
  * @property {() => number} memoryBytes  현재 GPU 메모리 사용량(바이트)
  * @property {() => void} dispose  리소스 정리
  * @property {(callback?: () => void) => (() => void)} onContextLost  WebGL 컨텍스트 손실 핸들러. 구독 해제 함수 반환(부르면 그 callback 을 더 부르지 않는다)
- * @property {(callback?: (keys: string[]) => void) => (() => void)} onContextRestored  WebGL 컨텍스트 복구 핸들러. 콜백 인자: 다시 올려야 할 key 배열(소실 당시 상주·업로드 중이던 것). 구독 해제 함수 반환
- * @property {(arrived: {segmentId: number, level: number, keys: string[]}[]) => {draw: string[], pending: string[], discard: string[]}} setArrived  LEVEL_ARRIVED 완료 집합을 넘겨 그리는 조각을 정한다
+ * @property {(callback?: (keys: string[], error?: Error) => void) => (() => void)} onContextRestored  WebGL 컨텍스트 복구 핸들러. 콜백 인자: 다시 올려야 할 key 배열(소실 당시 상주·업로드 중이던 것). 둘째 인자 error 는 구현 확장(시험용, 계약 밖). 구독 해제 함수 반환
+ * @property {(arrived: {segmentId: number, level: number, keys: string[]}[]) => {draw: string[], pending: string[], discard: string[]}} setArrived  LEVEL_ARRIVED 완료 집합을 넘겨 그리는 조각을 정한다. 두 번째 인자 {deferResult: true} 면 반환 없이(undefined) selectDrawable 을 다음 draw 로 미뤄 프레임당 1회로 합친다(F-248 ④: 이벤트 폭주 때 이벤트 수 × 전체를 피한다). 반환값을 쓰면 인자 없이 부르며 그때는 지금처럼 즉시 계산한다. 지연 경로는 key 해석 오류를 draw 에서 낸다
  * @property {() => string[]} residentKeys  현재 상주 key 배열
  * @property {() => boolean} isContextLost  WebGL 컨텍스트 손실 상태
  *
@@ -171,6 +171,9 @@
  *   깊이 범위. 빛 방향은 세계 좌표(①). 빠진 필드는 구현 기본값이고 틀린 값은 만들 때 ClientRasterError('view')
  * @property {() => number} [now]  draw 의 drawMs 를 재는 시계(밀리초, 기본 performance.now). 시험에서 가짜 시계를 넣는 용도
  * @property {Object} [contextAttributes]  canvas.getContext('webgl2', …) 속성. 구현 기본값 위에 덮어쓴다
+ *
+ * 시험 전용 확장(계약 밖이지만 시험·관측용으로 허용):
+ * @property {Object} [testHooks]  시험 전용: 호출 횟수 계측용 대체 함수({selectDrawable?, toGpuPlanes?})
  */
 
 /** 클라이언트 래스터라이저 오류. code: 'context' | 'memory' | 'piece' | 'view' | 'unimplemented'. */
@@ -208,7 +211,7 @@ export const CLIENT_RASTER_API = Object.freeze({
   memoryBytes: { fn: 'renderer.memoryBytes() -> number' },
   dispose: { fn: 'renderer.dispose() -> void' },
   onContextLost: { fn: 'renderer.onContextLost(callback?) -> () => void  컨텍스트 손실 알림, 구독 해제 함수 반환' },
-  onContextRestored: { fn: 'renderer.onContextRestored(callback?: (keys: string[]) => void) -> () => void  컨텍스트 복구 알림 (인자: 다시 올려야 할 key 배열), 구독 해제 함수 반환' },
+  onContextRestored: { fn: 'renderer.onContextRestored(callback?: (keys: string[]) => void) -> () => void  컨텍스트 복구 알림 (인자: 다시 올려야 할 key 배열); 둘째 인자 error 는 구현 확장(시험용), 구독 해제 함수 반환' },
   setArrived: { fn: 'renderer.setArrived(arrived: [{segmentId, level, keys}]) -> {draw: string[], pending: string[], discard: string[]}  LEVEL_ARRIVED 완료 집합으로 그리는 조각 결정' },
   residentKeys: { fn: 'renderer.residentKeys() -> string[]  현재 GPU 상주 key 배열' },
   isContextLost: { fn: 'renderer.isContextLost() -> boolean  WebGL 컨텍스트 손실 상태' },

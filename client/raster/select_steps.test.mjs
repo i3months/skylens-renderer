@@ -93,14 +93,14 @@ test('상주 전에 setArrived 한 key 는 올라온 뒤 다음 draw 에서 그�
   assert.equal(steps.select, 1);
 });
 
-test('makeRoom: 한도 여유가 있으면 선택을 돌지 않고, 한도에 닿아도 다시 돌지 않는다', async () => {
+test('makeRoom: 한도 여유가 있으면 선택을 돌지 않고, 한도에 닿으면 낡은 선택을 한 번만 다시 돈다(F-248 ①)', async () => {
   const { r, steps } = make({ maxResidentBytes: 4 * POINT_BYTES });
   r.setArrived(arrivedOf(0, 1, 2));
   steps.select = 0;
   for (let i = 0; i < 4; i++) await r.uploadPiece(keyOf(i), bytesOf(i)); // 여유 있음: 0,1,2(도착 집합), 3(밖)
   assert.equal(steps.select, 0);
   await r.uploadPiece(keyOf(4), bytesOf(4)); // 한도 도달 → makeRoom 이 희생 선택
-  assert.equal(steps.select, 0, 'makeRoom 이 selectDrawable 을 돌았다');
+  assert.equal(steps.select, 1, '낡은 선택은 희생을 고르기 전에 정확히 한 번 다시 계산');
   // 도착 집합 key(0,1,2: 직전 선택 뒤 올라옴)는 보호되고 도착 집합 밖의 가장 오래된 3 이 퇴출
   assert.deepEqual([...r.residentKeys()].sort(), [keyOf(0), keyOf(1), keyOf(2), keyOf(4)].sort());
   assert.equal(r.draw().drawnPieces, 3);
