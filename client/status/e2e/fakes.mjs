@@ -43,22 +43,26 @@ export const arrival = {
   },
 };
 
-/** levels: createLevelMachine 위에 얹는다. released() 는 누적 목록. */
+/** levels: createLevelMachine 위에 얹는다. released() 는 실제 모듈과 같이 지난 호출 뒤 해제된 key 를 돌려주고 비운다. */
 export const levels = {
   createStatusLevels() {
     const machine = createLevelMachine();
-    const releasedAll = [];
+    let releasedKeys = [];
     return {
       arrive(segmentId, level, pieces) {
         const r = machine.arrive(segmentId, level, pieces);
-        for (const p of r.released) releasedAll.push(p.key);
+        if (r.accepted) for (const p of r.released) releasedKeys.push(p.key);
         return r;
       },
       expect: (segmentId) => machine.expect(segmentId),
       snapshots: () => machine.segments().map((id) => machine.snapshot(id)),
       drawKeys: () => machine.segments().flatMap((id) => machine.snapshot(id).pieces.map((p) => p.key)),
       renderPointCount: () => machine.segments().reduce((a, id) => a + machine.pointCount(id), 0),
-      released: () => releasedAll.slice(),
+      released() {
+        const out = releasedKeys;
+        releasedKeys = [];
+        return out;
+      },
     };
   },
 };
