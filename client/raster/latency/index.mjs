@@ -25,6 +25,15 @@ const DEFAULT_MAX_MEASUREMENTS = 10000;
  * @returns {Object} 계측 객체
  */
 export function createLatencyProbe({ now = () => performance.now(), maxMarks = DEFAULT_MAX_MARKS, maxMeasurements = DEFAULT_MAX_MEASUREMENTS } = {}) {
+  // maxMarks 검증
+  if (!Number.isInteger(maxMarks) || maxMarks < 1) {
+    throw new RangeError(`maxMarks must be an integer >= 1, got ${maxMarks}`);
+  }
+  // maxMeasurements 검증
+  if (!Number.isInteger(maxMeasurements) || maxMeasurements < 1) {
+    throw new RangeError(`maxMeasurements must be an integer >= 1, got ${maxMeasurements}`);
+  }
+
   const marks = new Map(); // name → { time, id }
   const measurements = []; // { name, fromName, toName, id, duration }
 
