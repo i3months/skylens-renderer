@@ -4,9 +4,10 @@
 //   - 시야 판정: 카메라 앞쪽 원뿔 근사. 카메라는 contracts/raster 와 같이 카메라 좌표 +z 를 본다.
 //     quat(x,y,z,w, 단위) 는 카메라 → 월드(ENU) 회전이고, 앞 방향 = quat·(0,0,1). 원뿔 반각 = fovY/2 를 가로세로비
 //     ASPECT_GUARD 만큼 넓힌 값(가로 시야각을 모르므로 보수적). 상자는 외접구로 근사(구가 원뿔에 걸리면 시야 안).
-//   - 순서: 상자까지의 거리가 가까운 순(같으면 입력 순서). 예산(기본 15 MiB, SPEC S6)을 넘기는 항목은 건너뛰고 다음 것을 계속 본다.
+//   - 순서: 상자까지의 거리가 가까운 순(같으면 입력 순서). 예산(≤ 15 MB(15,000,000 B))을 넘기는 항목은 건너뛰고 다음 것을 계속 본다.
 //   - droppedCount: 위 조건을 모두 만족했지만 예산 때문에 빠진 항목 수. 시야 밖·수준 0 아님·덜 거친 lod 는 세지 않는다.
-export const INITIAL_BUDGET_BYTES = 15 * 1024 * 1024;
+export const INITIAL_BUDGET_BYTES = 15_000_000;
+const MAX_CHUNK_BYTES = 3_000_000; // 구간당 ≤ 3 MB(3,000,000 B)
 const ASPECT_GUARD = 2;
 
 function forwardOf(q) {
@@ -68,7 +69,9 @@ export function buildInitialBundle({ pose, catalog, budgetBytes = INITIAL_BUDGET
   let totalBytes = 0;
   let droppedCount = 0;
   for (const { it } of cand) {
-    if (totalBytes + it.bytes <= budgetBytes) {
+    if (it.bytes > MAX_CHUNK_BYTES) {
+      droppedCount++;
+    } else if (totalBytes + it.bytes <= budgetBytes) {
       items.push(it);
       totalBytes += it.bytes;
     } else droppedCount++;
