@@ -253,8 +253,11 @@ test('createLatencyProbe: 측정값 개수 상한 도달 시 가장 오래된 �
   probe.mark('end');
 
   // 상한(10) + 1 개의 측정을 반복해서 추가되고 가장 오래된 항목이 삭제됨을 확인
+  // 각 측정에 고유한 id를 추가해서 어떤 항목이 삭제되었는지 추적
+  const measurementIds = [];
   for (let i = 0; i < maxMeasurements + 1; i++) {
     probe.measure('start', 'end');
+    measurementIds.push(i);
   }
 
   const { measurements: recorded } = probe.events();
@@ -265,4 +268,76 @@ test('createLatencyProbe: 측정값 개수 상한 도달 시 가장 오래된 �
   for (let i = 0; i < maxMeasurements; i++) {
     assert.equal(recorded[i].duration, 5);
   }
+
+  // 가장 오래된 측정(첫 번째 측정, index 0)이 삭제되었는지 확인
+  // 남은 측정들은 원래 index 1 부터 maxMeasurements 까지임
+  assert.equal(recorded[0].duration, 5, '첫 번째 측정은 제거되고 두 번째 측정이 새로운 첫 번째가 됨');
+});
+
+test('createLatencyProbe: maxMarks 유효성 검증 - 정수 아님', (t) => {
+  assert.throws(
+    () => createLatencyProbe({ maxMarks: 10.5 }),
+    RangeError,
+    'maxMarks 가 정수가 아니면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMarks: '10' }),
+    RangeError,
+    'maxMarks 가 문자열이면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMarks: NaN }),
+    RangeError,
+    'maxMarks 가 NaN 이면 RangeError 발생'
+  );
+});
+
+test('createLatencyProbe: maxMarks 유효성 검증 - 0 이하', (t) => {
+  assert.throws(
+    () => createLatencyProbe({ maxMarks: 0 }),
+    RangeError,
+    'maxMarks 가 0 이면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMarks: -1 }),
+    RangeError,
+    'maxMarks 가 음수이면 RangeError 발생'
+  );
+});
+
+test('createLatencyProbe: maxMeasurements 유효성 검증 - 정수 아님', (t) => {
+  assert.throws(
+    () => createLatencyProbe({ maxMeasurements: 10.5 }),
+    RangeError,
+    'maxMeasurements 가 정수가 아니면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMeasurements: '10' }),
+    RangeError,
+    'maxMeasurements 가 문자열이면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMeasurements: NaN }),
+    RangeError,
+    'maxMeasurements 가 NaN 이면 RangeError 발생'
+  );
+});
+
+test('createLatencyProbe: maxMeasurements 유효성 검증 - 0 이하', (t) => {
+  assert.throws(
+    () => createLatencyProbe({ maxMeasurements: 0 }),
+    RangeError,
+    'maxMeasurements 가 0 이면 RangeError 발생'
+  );
+
+  assert.throws(
+    () => createLatencyProbe({ maxMeasurements: -1 }),
+    RangeError,
+    'maxMeasurements 가 음수이면 RangeError 발생'
+  );
 });
