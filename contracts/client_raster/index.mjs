@@ -9,9 +9,10 @@
 //   RECORD_BYTES(27·56)는 원본 레코드 크기로 형식 이름의 근거일 뿐이고 GPU 배치 크기가 아니다. GPU 배치(정점 속성 보폭·패딩)는
 //   구현 몫이며 계약으로 고정하지 않는다(memoryBytes 가 실제 사용량을 센다). 그래서 예전 28 B 패딩 상수는 근거
 //   (renderer_basis §7-4·contracts/points·ASSET_FORMAT 어디에도 없음)가 없어 지웠다.
-//   법선(형식 1 만): 위치와 같은 ENU 축의 세계 좌표 벡터다. 정합 단계에서 카메라 법선 n 을 Rᵀn 으로 올린 값
-//     (renderer_basis §7-1)이고 팔면체 사상 snorm8 로 저장된다(ASSET_FORMAT §5.3). 길이 1 이 보장되지 않으므로 셰이더가
-//     정규화한다. 셰이딩(T12.2)은 contracts/raster shade 의 lambert(normalWorld, lightDirWorld, rgb) 와 같은 식이고
+//   법선(형식 1 만): 위치와 같은 ENU 축의 세계 좌표 벡터다. 합치기(fusion) 단계의 값이다: 사진마다 카메라 법선 n 을
+//     Rᵀn 으로 세계 좌표에 올리고(renderer_basis §7-1), 같은 점으로 판정된 사진들(최소 3장)의 값을 평균해 한 점의 법선으로
+//     저장한다(§7-2, 색도 같은 평균). 팔면체 사상 snorm8 로 저장된다(ASSET_FORMAT §5.3). 평균이라 길이 1 이 보장되지 않으므로
+//     셰이더가 정규화한다. 셰이딩(T12.2)은 contracts/raster shade 의 lambert(normalWorld, lightDirWorld, rgb) 와 같은 식이고
 //     빛 방향도 세계 좌표다. 형식 2 에는 법선이 없어 셰이딩하지 않는다.
 //   색: 점마다 rgb u8 세 개(0..255, 영상 RGB 값).
 //     형식 1 은 원본 r g b(codec 1 QUANT2 는 채널당 ±2 손실), 형식 2 는 c = clamp(round((0.5 + C0·f_dc)·255))(ASSET_FORMAT §5.2).
@@ -21,21 +22,45 @@
 //   깊이 d = X_c.z            카메라는 +z 를 본다(OpenCV 규약: x 오른쪽, y 아래, z 앞)
 //   [u,v,1]ᵀ ∝ K·X_c         u = fx·X_c.x/d + cx, v = fy·X_c.y/d + cy
 //   픽셀 (i,j) 는 [i,i+1)×[j,j+1) 칸이고 정수 좌표 (i,j) 는 칸의 왼쪽 위 모서리다(u=i+0.5 가 중심).
-//   해상도 변환은 축마다 따로 한다(scaleIntrinsics): fx·cx 에 sx, fy·cy 에 sy. 주점은 cx' = cx·sx
-//   (server/raster_ref/intrinsics 의 'basis' 규약, 위 픽셀 규약과 맞는 식).
+//   해상도 변환은 두 가지이고 섞어 쓰지 않는다.
+//   (가) 같은 영상을 다시 표본화(가로세로비가 같은 격자, 그리고 dpr 단계): scaleIntrinsics. fx·cx 에 sx, fy·cy 에 sy.
+//     주점은 cx' = cx·sx(server/raster_ref/intrinsics 의 'basis' 규약, 위 픽셀 규약과 맞는 식). sx ≠ sy 인 격자에 쓰면
+//     장면이 늘어난다(2048×1152 → 375×667@3 이면 fy/fx 가 3.16 배가 된다). 그래서 이 함수는 sx = sy 이거나 버퍼 반올림만큼
+//     다른 경우(dpr 단계)에만 쓴다.
+//   (나) 가로세로비가 다른 화면에 기준 시야를 놓기: fitIntrinsics. 배율은 하나(s)이고 fx·fy 에 함께 곱해 fx/fy 를 지킨다.
+//       bw×bh = drawingBufferSize(W, H, dpr), sx = bw/refW, sy = bh/refH
+//       mode 'contain'(기본): s = min(sx, sy)  기준 시야 전체가 보인다(배율이 작은 축에 맞춤, 남는 축은 시야 밖 띠).
+//                             가로 기준 사진 → 세로 화면(375×667)이면 s = sx, 곧 가로 맞춤(fit-width)
+//       mode 'cover'        : s = max(sx, sy)  화면을 시야로 채운다(배율이 큰 축에 맞춤, 기준 시야의 가장자리가 잘림).
+//                             같은 예에서 s = sy, 곧 세로 맞춤(fit-height)
+//       fx' = s·fx, fy' = s·fy, cx' = s·cx + (bw − s·refW)/2, cy' = s·cy + (bh − s·refH)/2
+//     중앙 맞춤: 기준 영상 중심 (refW/2, refH/2) 은 버퍼 중심 (bw/2, bh/2) 으로 간다(정수 = 칸 모서리 규약이므로 중심은 W/2).
+//     가로세로비가 같으면 s = sx = sy, 덧셈 항 0 이라 scaleIntrinsics 와 같다. 띠 부분은 시야 밖이라 점이 없을 뿐이고
+//     렌더러가 무엇으로 메우지 않는다.
 //   단위: setView 의 width·height 는 CSS 픽셀(캔버스 clientWidth·clientHeight)이고 view.K 도 그 CSS 픽셀 격자
 //   (width×height)에 대한 값이다. devicePixelRatio 는 렌더러 안에서 한 곳, scaleIntrinsics 에서만 적용한다:
 //   그리기 버퍼 = drawingBufferSize(width, height, dpr) = round(width·dpr) × round(height·dpr) 장치 픽셀,
-//   셰이더가 쓰는 K = scaleIntrinsics(view.K, width, height, width, height, dpr)(장치 픽셀).
-//   다른 해상도(예: 원본 사진 2048×1152)에서 보정된 K_ref 는 호출자가 scaleIntrinsics(K_ref, refW, refH, width, height, 1)
-//   로 CSS 픽셀 K 로 바꿔 넘긴다. 두 번 나눠 해도 한 번에 한 결과와 같다(배율의 곱).
+//   셰이더가 쓰는 K = scaleIntrinsics(view.K, width, height, width, height, dpr)(장치 픽셀, (가)의 경우).
+//   다른 해상도(예: 원본 사진 2048×1152)에서 보정된 K_ref 는 호출자가 fitIntrinsics(K_ref, refW, refH, width, height, 1, mode)
+//   로 CSS 픽셀 K 로 바꿔 넘긴다((나)의 경우). 버퍼 반올림이 없으면 두 단계 결과는 fitIntrinsics(…, dpr) 한 단계와 같다.
 //   버퍼 크기를 반올림하므로 같은 점의 CSS 위치는 dpr 에 따라 최대 0.5 장치 픽셀까지 다를 수 있다(화면 안 점, |u/W| ≤ 1).
+//   GL 규약: 셰이더는 OpenCV 카메라 좌표를 diag(1,−1,−1) 로 GL 카메라 좌표(y 위, −z 를 봄)로 바꾼다(contracts/raster 의
+//   tools/render_views 와 같은 변환). R_gl = diag·R, t_gl = diag·t, X_gl = diag·X_c. 깊이 d = X_c.z ≤ 0(카메라 뒤 또는
+//   카메라 평면 위)인 점과 투영이 유한하지 않은 점은 버린다(cameraPointToGl 이 null, contracts/raster project 의 NaN 과 같은 조건).
+//   장치 픽셀 → NDC: pixelToNdc(u, v, bw, bh) = (2u/bw − 1, 1 − 2v/bh). y 는 뒤집힌다(픽셀 v 아래, NDC y 위).
+//   (0,0) 모서리 → (−1, 1), (bw, bh) → (1, −1), 칸 (i,j) 의 중심 u = i+0.5 → 2(i+0.5)/bw − 1.
 //
 // ③ 조각 키(key): format/ASSET_FORMAT §11 의 정규 문자열 `${segmentId}.${level}.${tileX}.${tileY}.${lod}.${chunkIndex}`
 //   (server/asset/ids encodeChunkKey 의 출력, 예: '7.2.1.-2.0.0'). 클라이언트는 PIECE 의 PieceKey 객체를 이 형식으로 바꿔
 //   넘긴다. contracts/proto pieceKeyString 의 `a:b:…`(순서도 다름)은 서버 내부 중복 검사용이라 여기서 쓰지 않는다.
 //
-// 도착하지 않은 조각은 채우지 않는다(skylens 원칙). 프레임 루프는 조각 도착과 분리되어 있다(async uploadPiece, 다음 draw 에 반영).
+// ④ 그리기 규칙(수준 도착, contracts/proto LEVEL_ARRIVED): 조각(PIECE)은 받는 것만으로 그리지 않는다.
+//   - 조각은 그 (segmentId, level) 의 LEVEL_ARRIVED 를 받은 뒤에만 그린다. 뒤따르는 LEVEL_ARRIVED 가 없는 조각은 절대 그리지 않는다.
+//   - 수준은 쌓이지 않고 바뀐다: 한 구간에서 도착한 가장 높은 수준 M 의 조각만 그린다. 더 높은 수준이 도착하면 낮은 수준의
+//     조각은(도착했든 아직 LEVEL_ARRIVED 를 기다리든) 버린다(releasePiece). M 보다 높은 수준의 조각은 자기 LEVEL_ARRIVED 를
+//     기다리며 그리지 않는다.
+//   - 도착하지 않은 것을 그리거나 채우지 않는다(skylens 원칙). 순수 함수 selectDrawable 이 이 규칙의 기준이다.
+// 프레임 루프는 조각 도착과 분리되어 있다(async uploadPiece, 다음 draw 에 반영).
 // 메모리: maxResidentBytes 이내로 GPU 램을 쓴다(GPU 만, 시스템 메모리 아님).
 
 /**
@@ -112,7 +137,12 @@ export const CLIENT_RASTER_API = Object.freeze({
   onContextLost: { fn: 'renderer.onContextLost(callback?) -> void' },
   onContextRestored: { fn: 'renderer.onContextRestored(callback?) -> void' },
   drawingBufferSize: { fn: 'drawingBufferSize(width, height, dpr) -> {width, height}  = round(width·dpr), round(height·dpr)' },
-  scaleIntrinsics: { fn: 'scaleIntrinsics(K, refW, refH, W, H, dpr) -> Intrinsics  sx = round(W·dpr)/refW, sy = round(H·dpr)/refH' },
+  scaleIntrinsics: { fn: 'scaleIntrinsics(K, refW, refH, W, H, dpr) -> Intrinsics  sx = round(W·dpr)/refW, sy = round(H·dpr)/refH  (same aspect / dpr step only)' },
+  fitIntrinsics: { fn: "fitIntrinsics(K, refW, refH, W, H, dpr, mode?) -> Intrinsics  s = min|max(sx, sy) ('contain' default | 'cover'), fx·fy·s, centred" },
+  cvToGlExtrinsics: { fn: 'cvToGlExtrinsics(R, t) -> {R, t}  diag(1,-1,-1)·R, diag(1,-1,-1)·t' },
+  cameraPointToGl: { fn: 'cameraPointToGl(xc) -> [x, -y, -z] | null  null when d = xc[2] <= 0 or not finite' },
+  pixelToNdc: { fn: 'pixelToNdc(u, v, bw, bh) -> [2u/bw - 1, 1 - 2v/bh]' },
+  selectDrawable: { fn: 'selectDrawable(keys, arrived) -> {draw, pending, discard}  arrived: [{segmentId, level}] from LEVEL_ARRIVED' },
 });
 
 function posFinite(n, x) {
@@ -143,6 +173,7 @@ export function drawingBufferSize(width, height, dpr) {
  * 내부 파라미터를 refW×refH 격자에서 그리기 버퍼(round(W·dpr)×round(H·dpr) 장치 픽셀) 격자로 옮긴다. 순수 함수.
  * fx·cx 에 sx = round(W·dpr)/refW, fy·cy 에 sy = round(H·dpr)/refH 를 따로 곱한다(cx' = cx·sx, 정수 좌표 = 칸 모서리 규약).
  * dpr = 1 이면 결과는 W×H CSS 픽셀 격자의 K 다.
+ * 같은 영상을 다시 표본화할 때(가로세로비가 같은 격자, dpr 단계)만 쓴다. 가로세로비가 다르면 장면이 늘어나므로 fitIntrinsics 를 쓴다.
  * @param {Intrinsics} K refW×refH 격자의 K
  * @param {number} refW
  * @param {number} refH
@@ -152,6 +183,13 @@ export function drawingBufferSize(width, height, dpr) {
  * @returns {Intrinsics} 장치 픽셀 K
  */
 export function scaleIntrinsics(K, refW, refH, W, H, dpr) {
+  const buf = checkScaleInputs(K, refW, refH, W, H, dpr);
+  const sx = buf.width / refW;
+  const sy = buf.height / refH;
+  return checkScaled({ fx: K.fx * sx, fy: K.fy * sy, cx: K.cx * sx, cy: K.cy * sy });
+}
+
+function checkScaleInputs(K, refW, refH, W, H, dpr) {
   if (!K || typeof K !== 'object') throw new ClientRasterError('view', 'K 가 객체가 아님');
   posFinite('K.fx', K.fx);
   posFinite('K.fy', K.fy);
@@ -160,12 +198,127 @@ export function scaleIntrinsics(K, refW, refH, W, H, dpr) {
   }
   posFinite('refW', refW);
   posFinite('refH', refH);
-  const buf = drawingBufferSize(W, H, dpr);
-  const sx = buf.width / refW;
-  const sy = buf.height / refH;
-  const out = { fx: K.fx * sx, fy: K.fy * sy, cx: K.cx * sx, cy: K.cy * sy };
+  return drawingBufferSize(W, H, dpr);
+}
+
+function checkScaled(out) {
   for (const n of ['fx', 'fy']) if (!(out[n] > 0) || !Number.isFinite(out[n])) throw new ClientRasterError('view', `배율 결과 ${n} 가 양의 유한 수가 아님: ${out[n]}`);
   for (const n of ['cx', 'cy']) if (!Number.isFinite(out[n])) throw new ClientRasterError('view', `배율 결과 ${n} 가 유한하지 않음: ${out[n]}`);
+  return out;
+}
+
+/** fitIntrinsics 의 mode 값. */
+export const FIT_MODES = Object.freeze(['contain', 'cover']);
+
+/**
+ * 기준 격자 refW×refH 의 K 를 가로세로비가 다를 수 있는 그리기 버퍼(round(W·dpr)×round(H·dpr))로 옮긴다. 순수 함수.
+ * 배율 하나 s 를 fx·fy 에 함께 곱해 fx/fy 를 지키고, 기준 영상 중심이 버퍼 중심에 오도록 cx·cy 에 중앙 맞춤 항을 더한다.
+ *   'contain'(기본): s = min(sx, sy), 'cover': s = max(sx, sy)
+ *   fx' = s·fx, fy' = s·fy, cx' = s·cx + (bw − s·refW)/2, cy' = s·cy + (bh − s·refH)/2
+ * @param {Intrinsics} K refW×refH 격자의 K
+ * @param {number} refW
+ * @param {number} refH
+ * @param {number} W CSS 픽셀
+ * @param {number} H CSS 픽셀
+ * @param {number} dpr
+ * @param {'contain'|'cover'} [mode='contain']
+ * @returns {Intrinsics} 장치 픽셀 K
+ */
+export function fitIntrinsics(K, refW, refH, W, H, dpr, mode = 'contain') {
+  if (!FIT_MODES.includes(mode)) throw new ClientRasterError('view', `mode 는 'contain' 또는 'cover': ${String(mode)}`);
+  const buf = checkScaleInputs(K, refW, refH, W, H, dpr);
+  const sx = buf.width / refW;
+  const sy = buf.height / refH;
+  const s = mode === 'contain' ? Math.min(sx, sy) : Math.max(sx, sy);
+  return checkScaled({
+    fx: K.fx * s,
+    fy: K.fy * s,
+    cx: K.cx * s + (buf.width - s * refW) / 2,
+    cy: K.cy * s + (buf.height - s * refH) / 2,
+  });
+}
+
+function finiteArray(n, a, len) {
+  if (!(Array.isArray(a) || ArrayBuffer.isView(a)) || a.length !== len) throw new ClientRasterError('view', `${n} 는 길이 ${len} 이어야 함`);
+  for (let i = 0; i < len; i += 1) {
+    if (typeof a[i] !== 'number' || !Number.isFinite(a[i])) throw new ClientRasterError('view', `${n}[${i}] 는 유한 수여야 함: ${String(a[i])}`);
+  }
+}
+
+/**
+ * OpenCV 카메라 외부 파라미터(세계→카메라)를 GL 카메라 규약(y 위, −z 를 봄)으로 바꾼다. 순수 함수.
+ * R_gl = diag(1,−1,−1)·R, t_gl = diag(1,−1,−1)·t (tools/render_views 의 역방향과 같은 대각 행렬, 자기 역행렬).
+ * @param {number[]} R 3×3 행 우선 9개
+ * @param {number[]} t 3-벡터
+ * @returns {{R: number[], t: number[]}}
+ */
+export function cvToGlExtrinsics(R, t) {
+  finiteArray('R', R, 9);
+  finiteArray('t', t, 3);
+  return {
+    R: [R[0], R[1], R[2], -R[3], -R[4], -R[5], -R[6], -R[7], -R[8]],
+    t: [t[0], -t[1], -t[2]],
+  };
+}
+
+/**
+ * OpenCV 카메라 좌표 점을 GL 카메라 좌표로 바꾼다. 깊이 d = xc[2] 가 0 이하(카메라 뒤 또는 카메라 평면 위)이거나
+ * 정규화 좌표 x/d, y/d 가 유한하지 않으면 null(그리지 않음). contracts/raster project 가 NaN 을 내는 조건과 같다.
+ * @param {number[]} xc [x, y, d]
+ * @returns {number[] | null} [x, −y, −d]
+ */
+export function cameraPointToGl(xc) {
+  finiteArray('xc', xc, 3);
+  const d = xc[2];
+  if (!(d > 0) || !Number.isFinite(xc[0] / d) || !Number.isFinite(xc[1] / d)) return null;
+  return [xc[0], -xc[1], -d];
+}
+
+/**
+ * 장치 픽셀 좌표 (u, v) 를 NDC 로 바꾼다. 픽셀 규약은 contracts/raster 와 같다(정수 = 칸 모서리, 중심 i+0.5). y 는 뒤집힌다.
+ * @param {number} u 장치 픽셀(오른쪽 +)
+ * @param {number} v 장치 픽셀(아래 +)
+ * @param {number} bw 그리기 버퍼 너비(양의 정수)
+ * @param {number} bh 그리기 버퍼 높이(양의 정수)
+ * @returns {number[]} [x_ndc, y_ndc] = [2u/bw − 1, 1 − 2v/bh]
+ */
+export function pixelToNdc(u, v, bw, bh) {
+  posInt('bw', bw);
+  posInt('bh', bh);
+  finiteArray('[u, v]', [u, v], 2);
+  return [(2 * u) / bw - 1, 1 - (2 * v) / bh];
+}
+
+/**
+ * 그리기 규칙(헤더 ④)의 기준 함수. 순수 함수.
+ * 구간마다 LEVEL_ARRIVED 로 도착한 가장 높은 수준 M 을 구하고 조각 key 를 셋으로 나눈다.
+ *   draw:    level = M 인 조각(그 수준의 LEVEL_ARRIVED 를 받았다)
+ *   discard: level < M 인 조각(더 높은 수준이 도착해 바뀌었다. 도착했든 기다리든 버린다)
+ *   pending: 도착한 수준이 없는 구간의 조각 또는 level > M 인 조각(자기 LEVEL_ARRIVED 를 기다린다. 그리지 않는다)
+ * 결과 배열 순서는 입력 순서를 따른다.
+ * @param {string[]} keys ASSET_FORMAT §11 정규 문자열
+ * @param {{segmentId: number, level: number}[]} arrived 받은 LEVEL_ARRIVED 들
+ * @returns {{draw: string[], pending: string[], discard: string[]}}
+ */
+export function selectDrawable(keys, arrived) {
+  if (!Array.isArray(keys)) throw new ClientRasterError('piece', 'keys 는 배열이어야 함');
+  if (!Array.isArray(arrived)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
+  const top = new Map();
+  for (const a of arrived) {
+    if (!a || !Number.isInteger(a.segmentId) || a.segmentId < 0 || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
+      throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
+    }
+    if (!(top.get(a.segmentId) >= a.level)) top.set(a.segmentId, a.level);
+  }
+  const out = { draw: [], pending: [], discard: [] };
+  for (const key of keys) {
+    if (typeof key !== 'string' || !PIECE_KEY_PATTERN.test(key)) throw new ClientRasterError('piece', `key 형식이 틀림: ${String(key)}`);
+    const [seg, level] = key.split('.').map(Number);
+    const m = top.get(seg);
+    if (m === undefined || level > m) out.pending.push(key);
+    else if (level === m) out.draw.push(key);
+    else out.discard.push(key);
+  }
   return out;
 }
 
