@@ -208,3 +208,13 @@ test('복호: 전체 버퍼 bytes 는 transfer 로 소유권이 넘어가 호출
   const bytes = new Uint8Array([1, 2]); c.decode(bytes);
   assert.equal(bytes.byteLength, 0);
 });
+
+test('복호: onerror 뒤에는 timeoutMs 없이 decode 해도 영구 미결이 되지 않고 reject 한다', async () => {
+  const w = { postMessage() {}, terminate() {} };
+  const c = createDecodeWorkerClient({ spawn: () => w });
+  const a = c.decode(new Uint8Array(1));
+  w.onerror(new Error('boom'));
+  await assert.rejects(a, /boom/);
+  await assert.rejects(c.decode(new Uint8Array(1)), /terminated/);
+  assert.equal(c.stats().pending, 0);
+});

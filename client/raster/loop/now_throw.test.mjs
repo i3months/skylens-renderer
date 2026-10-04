@@ -82,3 +82,16 @@ test('now throws in onmessageerror handler: failAll still executes, all pending 
   await assert.rejects(p2, /messageerror/);
   assert.equal(c.stats().pending, 0);
 });
+
+test('now 의 두 번째(종료 쪽) 호출만 던져도 decode 는 정상이고 대기 항목이 유지되며 통계는 세지 않는다', async () => {
+  const w = fakeWorker();
+  let n = 0;
+  const now = () => { if (++n === 2) throw new Error('clock'); return n; };
+  const c = createDecodeWorkerClient({ spawn: () => w, now });
+  const p = c.decode(new Uint8Array([1]));
+  assert.equal(w.sent.length, 1);
+  assert.equal(c.stats().pending, 1);
+  assert.equal(c.stats().mainThreadEvents, 0);
+  w.reply({ id: w.sent[0].id, result: 'ok' });
+  assert.equal(await p, 'ok');
+});

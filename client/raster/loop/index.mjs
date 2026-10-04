@@ -94,8 +94,15 @@ export function createFrameLoop({ draw, requestFrame, now, onFrame, onError, fra
  * 소유권: decode(bytes) 는 bytes 가 버퍼 전체를 덮으면 그 버퍼를 Worker 로 transfer 하므로 호출 뒤 호출자의 bytes 는
  * detach 된다(길이 0). 일부만 덮는 뷰(subarray)는 그 범위만 복사해 넘기므로 원본은 그대로다. 복사를 피하려는 쪽은
  * 전체 버퍼를 넘기고 이후 쓰지 않는다. 응답 result 는 가공 없이 그대로 돌려준다(그 안의 ArrayBuffer 는 Worker 가 transfer).
- * 오류 경로: onerror·onmessageerror(역직렬화 실패)는 대기 중 전부를 reject 한다. timeoutMs(선택, 기본 없음)를 주면
- * 그 시간 안에 응답이 없는 요청만 reject 한다(setTimeoutFn·clearTimeoutFn 주입으로 가짜 타이머 시험).
+ * 오류 경로: onerror·onmessageerror(역직렬화 실패)는 대기 중 전부를 reject 한다. onerror 는 Worker 가 죽은 것으로 보고
+ * terminated 도 세우므로 이후 decode 는 즉시 reject 한다(onmessageerror 는 세우지 않는다).
+ * timeoutMs(선택, 기본 없음)는 Worker 가 요청을 하나씩 순서대로 처리한다고 보고 맨 앞 요청의 처리 시작부터 잰다.
+ * 맨 앞 요청이 timeoutMs 안에 응답하지 않으면 그 요청은 'timeout' 으로 reject 하고, Worker 가 그 요청을 아직 처리 중이라
+ * 막힌 것으로 보아 그 시점에 대기 중이던 나머지 요청도 전부 reject 한다(failAll, 뒤 요청의 연쇄 오탐 방지). 버려진 id 의
+ * 늦은 응답은 무시한다. 막힌 Worker 를 되살리는 것(terminate 후 새로 만들기)은 호출자 몫이며, 그 전에 들어온 새 요청은
+ * 아직 처리 중인 Worker 뒤에 줄 서므로 같은 시한을 다시 받을 수 있다.
+ * setTimeoutFn 이 던지면 그 요청만 던진 오류로 reject 하고 대기열·pending 에는 남기지 않는다.
+ * (setTimeoutFn·clearTimeoutFn 주입으로 가짜 타이머 시험)
  * @param {{spawn: () => any, now?: () => number, timeoutMs?: number,
  *          setTimeoutFn?: Function, clearTimeoutFn?: Function}} opts
  */
@@ -114,16 +121,28 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
     if (timeoutMs === undefined || entry.timer !== undefined) return;
     entry.timer = setTimeoutFn(() => {
       entry.timer = undefined;
-      if (pending.get(entry.id) === entry) {
-        pending.delete(entry.id); st.errors++; release(entry); entry.reject(new Error('timeout'));
-      }
+      if (pending.get(entry.id) !== entry) return;
+      // 시한을 넘긴 Worker 는 그 요청을 아직 처리 중이므로 막힌 것으로 보고 뒤 요청까지 모두 거부한다.
+      pending.delete(entry.id); st.errors++;
+      entry.reject(new Error('timeout'));
+      failAll(new Error('timeout: worker blocked'));
     }, timeoutMs);
+  }
+  // 맨 앞 요청에 타이머를 건다. setTimeoutFn 이 던지면 그 요청을 거부하고 다음 요청으로 넘어간다.
+  function armHead() {
+    while (order.length > 0) {
+      const e = order[0];
+      try { arm(e); return; } catch (err) {
+        order.shift(); pending.delete(e.id); e.timer = undefined; st.errors++;
+        e.reject(err);
+      }
+    }
   }
   function release(entry) {
     const i = order.indexOf(entry);
     if (i < 0) return;
     order.splice(i, 1);
-    if (i === 0 && order.length > 0) arm(order[0]);
+    if (i === 0) armHead();
   }
   const st = { requests: 0, responses: 0, errors: 0, mainThreadEvents: 0, longTasks: 0, maxMainMs: 0 };
 
@@ -170,11 +189,15 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
     pending.delete(m.id);
     if (p.timer !== undefined) clearTimeoutFn(p.timer);
     p.timer = undefined;
-    release(p);
+    // 먼저 settle 하고 그 뒤에 다음 요청 타이머를 건다(타이머 쪽 오류가 이 요청을 미결로 두지 않게).
     if ('error' in m && m.error !== undefined) { st.errors++; p.reject(toError(m.error)); }
     else { st.responses++; p.resolve(m.result); }
+    release(p);
   });
-  worker.onerror = (e) => measure(() => failAll(toError(e)));
+  worker.onerror = (e) => measure(() => {
+    terminated = true; // 죽은 Worker 로는 응답이 오지 않으니 이후 decode 는 영구 미결 대신 reject 한다
+    failAll(toError(e));
+  });
   // 응답 역직렬화 실패는 어느 요청의 것인지 알 수 없으므로 대기 중 전부를 거부한다.
   worker.onmessageerror = () => measure(() => failAll(new Error('messageerror')));
 
@@ -186,9 +209,10 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
         const id = nextId++;
         const entry = { id, resolve, reject, timer: undefined };
         order.push(entry);
-        if (order.length === 1) arm(entry);
         pending.set(id, entry);
         st.requests++;
+        if (order.length === 1) armHead();
+        if (!pending.has(id)) return; // 타이머 설정이 던져 이미 reject 됨
         try {
           measure(() => {
             let payload = bytes;
