@@ -6,6 +6,7 @@ import { extrudeAll } from '../../server/buildings/extrude/index.mjs';
 import { buildBuildingLod } from '../../server/buildings/lod/index.mjs';
 import { buildTerrainTile, terrainTileToMesh } from '../../server/terrain/mesh_lod/index.mjs';
 import { buildDrapeTile } from '../../server/terrain/drape/index.mjs';
+import { buildAerialUv } from '../../server/buildings/aerial_uv/index.mjs';
 import { PIECE_FRAME_OVERHEAD_BYTES } from '../../server/scheduler/initial/index.mjs';
 import { TERRAIN_LOD_COUNT, DRAPE_MIP_COUNT } from '../../contracts/tower_assets/index.mjs';
 
@@ -136,12 +137,15 @@ function generateImage() {
 // 조각 하나 = 프레임 머리(PIECE 머리 + ws 머리 상한, 초기 묶음과 같은 상수) + 조각 머리 + 본문.
 // 메시 조각 머리 16 B(정점 수 u32, 인덱스 수 u32, tx i32, ty i32), 드레이프 조각 머리 16 B(tx i32, ty i32, 폭 u16, 높이 u16, 밉 u8, 예약 3 B).
 // 본문은 positions(f32) → indices(u32) 또는 rgb(u8) 순으로 이어 쓴다. 실제 Buffer 에 써서 byteLength 로 센다.
-// 드레이프 coverage.mask 는 보내지 않는다(조각에 없음): 영상 밖 픽셀은 rgb 0 으로 오며 이는 알려진 한계다.
+// 드레이프 조각 끝에 coverage.mask(화소당 1 B, 폭×높이)를 붙인다(F-318 ⑤ 결정: 부분 피복 타일도 보내므로 mask 가 있어야
+// 소비자가 '영상 없음(rgb 0)'과 '진짜 검정'을 구분한다). 건물 조각은 indices 뒤에 wallMask(정점당 1 B)를 붙인다.
+// 둘 다 크기에 들어간다. 건물 uv(정점당 f32 2개)는 옵션(실사 항공뷰) 몫이라 초기 묶음 크기에 넣지 않는다.
 const MESH_HEADER_BYTES = 16;
 const DRAPE_HEADER_BYTES = 16;
 
-function serializeMeshPiece(mesh, tx, ty) {
-  const buf = Buffer.alloc(PIECE_FRAME_OVERHEAD_BYTES + MESH_HEADER_BYTES + mesh.positions.byteLength + mesh.indices.byteLength);
+function serializeMeshPiece(mesh, tx, ty, wallMask) {
+  const maskBytes = wallMask ? wallMask.byteLength : 0;
+  const buf = Buffer.alloc(PIECE_FRAME_OVERHEAD_BYTES + MESH_HEADER_BYTES + mesh.positions.byteLength + mesh.indices.byteLength + maskBytes);
   let o = PIECE_FRAME_OVERHEAD_BYTES; // 프레임 머리 영역은 0 으로 비워 두고 길이만 센다
   o = buf.writeUInt32LE(mesh.positions.length / 3, o);
   o = buf.writeUInt32LE(mesh.indices.length, o);
@@ -150,11 +154,14 @@ function serializeMeshPiece(mesh, tx, ty) {
   Buffer.from(mesh.positions.buffer, mesh.positions.byteOffset, mesh.positions.byteLength).copy(buf, o);
   o += mesh.positions.byteLength;
   Buffer.from(mesh.indices.buffer, mesh.indices.byteOffset, mesh.indices.byteLength).copy(buf, o);
+  o += mesh.indices.byteLength;
+  if (wallMask) Buffer.from(wallMask.buffer, wallMask.byteOffset, wallMask.byteLength).copy(buf, o);
   return buf;
 }
 
 function serializeDrapePiece(tile) {
-  const buf = Buffer.alloc(PIECE_FRAME_OVERHEAD_BYTES + DRAPE_HEADER_BYTES + tile.rgb.byteLength);
+  const mask = tile.coverage.mask;
+  const buf = Buffer.alloc(PIECE_FRAME_OVERHEAD_BYTES + DRAPE_HEADER_BYTES + tile.rgb.byteLength + mask.byteLength);
   let o = PIECE_FRAME_OVERHEAD_BYTES;
   o = buf.writeInt32LE(tile.tx, o);
   o = buf.writeInt32LE(tile.ty, o);
@@ -163,6 +170,8 @@ function serializeDrapePiece(tile) {
   o = buf.writeUInt8(tile.mip, o);
   o += 3;
   Buffer.from(tile.rgb.buffer, tile.rgb.byteOffset, tile.rgb.byteLength).copy(buf, o);
+  o += tile.rgb.byteLength;
+  Buffer.from(mask.buffer, mask.byteOffset, mask.byteLength).copy(buf, o);
   return buf;
 }
 
@@ -283,10 +292,19 @@ export function measureTowerAssets() {
   console.log(`[buildings] buildBuildingLod(5km): ${result.buildings.timings.lod5km.toFixed(2)} ms`);
 
   // 건물 직렬화 크기(건물 한 동 = 조각 하나)
-  let serialized = 0;
+  // wallMask 는 메시만의 함수라 영상 내용은 무관하다. 도시 전체를 덮는 1×1 영상으로 계산한다.
+  const maskImage = { width: 1, height: 1, rgb: new Uint8Array(3), bounds: { minX: -HALF - 100, minY: -HALF - 100, maxX: HALF + 100, maxY: HALF + 100 } };
+  let serialized = 0, meshCount = 0, wallMaskBytes = 0;
   for (const b of extruded) {
-    if (b.mesh) serialized += serializeMeshPiece(b.mesh, 0, 0).byteLength;
+    if (!b.mesh) continue;
+    const { wallMask } = buildAerialUv(b.mesh, maskImage);
+    serialized += serializeMeshPiece(b.mesh, 0, 0, wallMask).byteLength;
+    wallMaskBytes += wallMask.byteLength;
+    meshCount++;
   }
+  result.buildings.extrudedCount = extruded.length;
+  result.buildings.meshCount = meshCount;
+  result.buildings.size.wallMask = wallMaskBytes;
   result.buildings.size.serialized = serialized;
   console.log(`[buildings] serialized: ${(serialized / 1e6).toFixed(2)} MB`);
 

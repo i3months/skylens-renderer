@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTileIndex } from './index.mjs';
+import { buildTileIndex, TILE_INDEX_MAX_TILES } from './index.mjs';
 import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 
 // 시드 고정 PRNG(mulberry32)
@@ -117,4 +117,23 @@ test('입력 검증: id 중복·누락·null 항목·items 아님', () => {
   assert.throws(() => buildTileIndex(ROOT, [null]), TowerAssetError);
   assert.throws(() => buildTileIndex(ROOT, [{ id: 1, bounds: null }]), TowerAssetError);
   assert.throws(() => buildTileIndex(ROOT, null), TowerAssetError);
+});
+
+// F-319 ④: 타일 수 상한. 예전에는 tilesIn 이 2,442,969 개 타일을 그대로 돌려줬다.
+test('타일 수 상한: 질의·항목이 상한을 넘으면 TowerAssetError, 상한 이하는 통과', () => {
+  assert.equal(TILE_INDEX_MAX_TILES, 65536);
+  const BIG = { minX: 0, minY: 0, maxX: 64 * 1563, maxY: 64 * 1563 }; // 1563² = 2,442,969 타일
+  const idx = buildTileIndex(BIG, []);
+  assert.throws(() => idx.tilesIn(BIG), TowerAssetError);
+  assert.throws(() => idx.tilesIn(BIG), /상한/);
+  // 한 변이 상한을 넘는 가는 띠도 던진다.
+  const wide = { minX: 0, minY: 0, maxX: 64 * 65536, maxY: 1 };
+  assert.throws(() => buildTileIndex(wide, []).tilesIn(wide), TowerAssetError);
+  // 경계: 256×256 = 65536 개는 허용, 256×257 은 거부.
+  const ok = { minX: 0, minY: 0, maxX: 64 * 256 - 1, maxY: 64 * 256 - 1 };
+  assert.equal(buildTileIndex(BIG, []).tilesIn(ok).length, 65536);
+  assert.throws(() => idx.tilesIn({ minX: 0, minY: 0, maxX: 64 * 256 - 1, maxY: 64 * 257 - 1 }), TowerAssetError);
+  // 항목 하나가 상한보다 많은 타일을 덮는 경우도 색인을 만들다 말고 던진다(배열을 만들기 전에).
+  assert.throws(() => buildTileIndex(BIG, [{ id: 1, bounds: BIG }]), TowerAssetError);
+  assert.doesNotThrow(() => buildTileIndex(BIG, [{ id: 1, bounds: ok }]));
 });

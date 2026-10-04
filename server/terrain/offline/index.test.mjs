@@ -219,3 +219,134 @@ test('자산 경로에 fetch 를 심으면 계수된다', async () => {
   });
   assert.strictEqual(networkCalls, 1);
 });
+
+// ---- 차단 자체의 단언(F-318 ⑥) : 센 것뿐 아니라 실제로 막혔는지 ----
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('fetch 는 Network access blocked 로 거부된다', async () => {
+  await runOffline(async () => {
+    await assert.rejects(() => globalThis.fetch('https://example.com'), /Network access blocked/);
+  });
+});
+
+test('dns.lookup 은 원본에 위임하지 않고 콜백에 blocked 오류를 준다', async () => {
+  const { result } = await runOffline(() => new Promise((resolve) => {
+    dns.lookup('localhost', (err, address) => resolve({ err, address }));
+  }));
+  assert.ok(result.err instanceof Error);
+  assert.match(result.err.message, /blocked/);
+  assert.strictEqual(result.address, undefined);
+});
+
+test('dns.lookup 옵션 인자 형태도 blocked 오류', async () => {
+  const { result } = await runOffline(() => new Promise((resolve) => {
+    dns.lookup('localhost', { all: true }, (err) => resolve(err));
+  }));
+  assert.match(result.message, /blocked/);
+});
+
+test('dns.promises.lookup 은 blocked 로 거부된다', async () => {
+  await runOffline(async () => {
+    await assert.rejects(() => dns.promises.lookup('localhost'), /blocked/);
+  });
+});
+
+// ---- F-319 ③ : http/https/net 스텁은 'error' 를 내서 기다리는 쪽이 끝난다 ----
+for (const [name, mod] of [['http', http], ['https', https]]) {
+  for (const method of ['get', 'request']) {
+    test(`${name}.${method} 은 Network access blocked 'error' 를 낸다`, async () => {
+      const before = snapshot();
+      const { result, networkCalls } = await runOffline(() => new Promise((resolve) => {
+        const req = mod[method](`${name}://example.com`, () => resolve('응답이 오면 안 된다'));
+        req.on('error', (e) => resolve(e));
+        req.end?.();
+      }));
+      assert.ok(result instanceof Error, String(result));
+      assert.match(result.message, /Network access blocked/);
+      assert.strictEqual(networkCalls, 1);
+      assertRestored(before);
+    });
+  }
+}
+
+test('이슈 재현: new Promise(res => http.get(url, res).on("error", rej)) 가 거부로 끝나고 스텁이 남지 않는다', async () => {
+  const before = snapshot();
+  await assert.rejects(
+    runOffline(() => new Promise((res, rej) => { http.get('http://example.com', res).on('error', rej); })),
+    /Network access blocked/,
+  );
+  assertRestored(before);
+});
+
+test('net.Socket connect 도 error 를 낸다', async () => {
+  const before = snapshot();
+  const { result } = await runOffline(() => new Promise((resolve) => {
+    const s = new net.Socket();
+    s.on('error', resolve);
+    s.connect(80, 'example.com');
+  }));
+  assert.match(result.message, /Network access blocked/);
+  assertRestored(before);
+});
+
+test('듣는 쪽이 없으면 error 는 조용히 버려진다(프로세스가 죽지 않는다)', async () => {
+  await runOffline(async () => { http.get('http://example.com'); await sleepMs(5); });
+});
+
+// ---- F-319 ② : 끝난 뒤 붙들린 스텁 ----
+test('끝난 뒤 붙들린 fetch 스텁은 TypeError 가 아니라 Network access blocked 로 거부된다', async () => {
+  let held;
+  await runOffline(() => { held = globalThis.fetch; });
+  await assert.rejects(() => held('https://example.com'), (e) => {
+    assert.ok(!(e instanceof TypeError), `TypeError: ${e.message}`);
+    assert.match(e.message, /^Network access blocked$/);
+    return true;
+  });
+  // 원본은 복원돼 있다.
+  assert.notStrictEqual(globalThis.fetch, held);
+});
+
+test('끝난 뒤 붙들린 http/dns 스텁도 던지지 않는다', async () => {
+  let h;
+  await runOffline(() => { h = { get: http.get, lookup: dns.lookup, plookup: dns.promises.lookup }; });
+  assert.doesNotThrow(() => h.get('http://example.com'));
+  await assert.rejects(() => h.plookup('localhost'), /blocked/);
+  const err = await new Promise((resolve) => h.lookup('localhost', (e) => resolve(e)));
+  assert.match(err.message, /blocked/);
+});
+
+// ---- F-319 ⑥ : 동시 호출 계수 귀속 ----
+test('동시 호출은 각자 자기 호출만 센다(나중 시작한 쪽으로 쏠리지 않는다)', async () => {
+  const before = snapshot();
+  const swallow = (p) => p.catch(() => {});
+  const a = runOffline(async () => {
+    await sleepMs(30); // b 가 시작한 뒤에 호출
+    await swallow(globalThis.fetch('https://a/1'));
+    await swallow(globalThis.fetch('https://a/2'));
+    return 'a';
+  });
+  const b = runOffline(async () => {
+    await sleepMs(5);
+    await swallow(globalThis.fetch('https://b/1'));
+    await sleepMs(60); // a 가 끝난 뒤에도 남는다
+    return 'b';
+  });
+  const [ra, rb] = await Promise.all([a, b]);
+  assert.strictEqual(ra.networkCalls, 2);
+  assert.strictEqual(rb.networkCalls, 1);
+  assertRestored(before);
+});
+
+test('중첩 호출: 안쪽 호출은 안쪽에, 바깥 호출은 바깥에 센다', async () => {
+  const { networkCalls, result } = await runOffline(async () => {
+    await globalThis.fetch('https://o/1').catch(() => {});
+    const inner = await runOffline(async () => {
+      await globalThis.fetch('https://i/1').catch(() => {});
+      await globalThis.fetch('https://i/2').catch(() => {});
+    });
+    await globalThis.fetch('https://o/2').catch(() => {});
+    return inner.networkCalls;
+  });
+  assert.strictEqual(result, 2);
+  assert.strictEqual(networkCalls, 2);
+});
