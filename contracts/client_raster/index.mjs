@@ -10,7 +10,8 @@
 //   구현 몫이며 계약으로 고정하지 않는다(memoryBytes 가 실제 사용량을 센다). 그래서 예전 28 B 패딩 상수는 근거
 //   (renderer_basis §7-4·contracts/points·ASSET_FORMAT 어디에도 없음)가 없어 지웠다.
 //   법선(형식 1 만): 위치와 같은 ENU 축의 세계 좌표 벡터다. 합치기(fusion) 단계의 값이다: 사진마다 카메라 법선 n 을
-//     Rᵀn 으로 세계 좌표에 올리고(renderer_basis §7-1), 같은 점으로 판정된 사진들(최소 3장)의 값을 평균해 한 점의 법선으로
+//     Rᵀn 으로 세계 좌표에 올리고(renderer_basis §7-1), 같은 점으로 판정된 사진들(최소 3장 — renderer_basis §7-3 의
+//     -number-views-fuse 설정 값이 근거다)의 값을 평균해 한 점의 법선으로
 //     저장한다(§7-2, 색도 같은 평균). 팔면체 사상 snorm8 로 저장된다(ASSET_FORMAT §5.3). 평균이라 길이 1 이 보장되지 않으므로
 //     셰이더가 정규화한다. 셰이딩(T12.2)은 contracts/raster shade 의 lambert(normalWorld, lightDirWorld, rgb) 와 같은 식이고
 //     빛 방향도 세계 좌표다. 형식 2 에는 법선이 없어 셰이딩하지 않는다.
@@ -43,10 +44,18 @@
 //   셰이더가 쓰는 K = scaleIntrinsics(view.K, width, height, width, height, dpr)(장치 픽셀, (가)의 경우).
 //   다른 해상도(예: 원본 사진 2048×1152)에서 보정된 K_ref 는 호출자가 fitIntrinsics(K_ref, refW, refH, width, height, 1, mode)
 //   로 CSS 픽셀 K 로 바꿔 넘긴다((나)의 경우). 버퍼 반올림이 없으면 두 단계 결과는 fitIntrinsics(…, dpr) 한 단계와 같다.
+//   dpr 규칙(명시): 호출자는 fitIntrinsics 에 dpr = 1 을 넘긴다. dpr 은 scaleIntrinsics(와 그리기 버퍼 크기)에서만 적용한다.
+//   fitIntrinsics 가 dpr 인자를 받는 것은 "한 단계로 장치 픽셀 K 를 바로 얻는" 용도(시험의 기준값 등)이고, 렌더러 경로에서
+//   dpr ≠ 1 을 넘긴 뒤 scaleIntrinsics 에 또 dpr 을 주면 dpr 이 두 번 곱해진다.
+//   두 단계의 반올림 차이: 둘째 단계(scaleIntrinsics)는 반올림한 버퍼로 sx, sy 를 따로 구하므로 dpr 이 버퍼를 정수로 만들지
+//   못하면 첫 단계에서 같던 fx, fy 가 조금 달라진다(333×222@1.25: 버퍼 416×278, sx = 416/333, sy = 278/222 이므로
+//   fx = 203.125, fy ≈ 203.61 로 fy/fx ≠ 1). 같은 값을 한 단계 fitIntrinsics(…, 1.25) 로 구하면 s 하나라 fx = fy 다.
+//   이 차이는 버퍼 반올림(축마다 ≤ 0.5 장치 픽셀)에서만 오고 dpr 이 정수이거나 버퍼가 정수가 되면 없다.
 //   버퍼 크기를 반올림하므로 같은 점의 CSS 위치는 dpr 에 따라 최대 0.5 장치 픽셀까지 다를 수 있다(화면 안 점, |u/W| ≤ 1).
 //   GL 규약: 셰이더는 OpenCV 카메라 좌표를 diag(1,−1,−1) 로 GL 카메라 좌표(y 위, −z 를 봄)로 바꾼다(contracts/raster 의
 //   tools/render_views 와 같은 변환). R_gl = diag·R, t_gl = diag·t, X_gl = diag·X_c. 깊이 d = X_c.z ≤ 0(카메라 뒤 또는
-//   카메라 평면 위)인 점과 투영이 유한하지 않은 점은 버린다(cameraPointToGl 이 null, contracts/raster project 의 NaN 과 같은 조건).
+//   카메라 평면 위)인 점과 정규화 좌표 x/d, y/d 가 유한하지 않은 점은 버린다(cameraPointToGl 이 null. contracts/raster project 는
+//   K 를 곱한 뒤의 u, v 유한성을 보므로 조건이 완전히 같지는 않다, cameraPointToGl 설명 참조).
 //   장치 픽셀 → NDC: pixelToNdc(u, v, bw, bh) = (2u/bw − 1, 1 − 2v/bh). y 는 뒤집힌다(픽셀 v 아래, NDC y 위).
 //   (0,0) 모서리 → (−1, 1), (bw, bh) → (1, −1), 칸 (i,j) 의 중심 u = i+0.5 → 2(i+0.5)/bw − 1.
 //
@@ -59,6 +68,8 @@
 //   - 수준은 쌓이지 않고 바뀐다: 한 구간에서 도착한 가장 높은 수준 M 의 조각만 그린다. 더 높은 수준이 도착하면 낮은 수준의
 //     조각은(도착했든 아직 LEVEL_ARRIVED 를 기다리든) 버린다(releasePiece). M 보다 높은 수준의 조각은 자기 LEVEL_ARRIVED 를
 //     기다리며 그리지 않는다.
+//   - 자기 LEVEL_ARRIVED 가 끝내 오지 않는 pending 조각: 계속 그리지 않는다. 그 구간의 시도(attempt)가 새 시도로 대체되거나
+//     끝나면 포기(abandoned)로 보고 releasePiece 로 해제한다(selectDrawable 은 순수 함수라 해제는 호출자 몫이고 pending 은 그대로 돌려준다).
 //   - 도착하지 않은 것을 그리거나 채우지 않는다(skylens 원칙). 순수 함수 selectDrawable 이 이 규칙의 기준이다.
 // 프레임 루프는 조각 도착과 분리되어 있다(async uploadPiece, 다음 draw 에 반영).
 // 메모리: maxResidentBytes 이내로 GPU 램을 쓴다(GPU 만, 시스템 메모리 아님).
@@ -153,18 +164,33 @@ function posInt(n, x) {
   if (!Number.isInteger(x) || x <= 0) throw new ClientRasterError('view', `${n} 는 양의 정수여야 함: ${String(x)}`);
 }
 
+/** 그리기 버퍼 한 변의 기본 상한(장치 픽셀). 일반 WebGL2 MAX_TEXTURE_SIZE/렌더버퍼 한도 안쪽의 보수적 값이다. */
+export const MAX_BUFFER_DIMENSION = 16384;
+
+/** segmentId 상한(배타). server/asset/ids 의 segmentId < 2^30 과 같다. */
+export const SEGMENT_ID_LIMIT = 2 ** 30;
+
 /**
- * CSS 픽셀 크기와 dpr 로 그리기 버퍼(장치 픽셀) 크기를 정한다. 반올림 결과가 0 이면 거부한다.
+ * CSS 픽셀 크기와 dpr 로 그리기 버퍼(장치 픽셀) 크기를 정한다. 반올림 결과가 0 이거나 유한 안전 정수가 아니거나
+ * maxDimension(기본 16384, options 로 주입)을 넘으면 ClientRasterError('view') 로 거부한다(곱셈 뒤에 검사한다).
  * @param {number} width CSS 픽셀(양의 정수)
  * @param {number} height CSS 픽셀(양의 정수)
  * @param {number} dpr devicePixelRatio(양의 유한 수)
+ * @param {{maxDimension?: number}} [options]
  * @returns {{width: number, height: number}}
  */
-export function drawingBufferSize(width, height, dpr) {
+export function drawingBufferSize(width, height, dpr, options = {}) {
   posInt('width', width);
   posInt('height', height);
   posFinite('devicePixelRatio', dpr);
+  const maxDimension = options.maxDimension ?? MAX_BUFFER_DIMENSION;
+  posInt('maxDimension', maxDimension);
   const out = { width: Math.round(width * dpr), height: Math.round(height * dpr) };
+  for (const n of ['width', 'height']) {
+    if (!Number.isFinite(out[n]) || !Number.isSafeInteger(out[n]) || out[n] > maxDimension) {
+      throw new ClientRasterError('view', `그리기 버퍼 ${n} 가 범위 밖(유한 안전 정수 ≤ ${maxDimension} 이어야 함): ${out[n]}`);
+    }
+  }
   if (out.width <= 0 || out.height <= 0) throw new ClientRasterError('view', `그리기 버퍼 크기가 0: ${out.width}×${out.height}`);
   return out;
 }
@@ -263,7 +289,10 @@ export function cvToGlExtrinsics(R, t) {
 
 /**
  * OpenCV 카메라 좌표 점을 GL 카메라 좌표로 바꾼다. 깊이 d = xc[2] 가 0 이하(카메라 뒤 또는 카메라 평면 위)이거나
- * 정규화 좌표 x/d, y/d 가 유한하지 않으면 null(그리지 않음). contracts/raster project 가 NaN 을 내는 조건과 같다.
+ * 정규화 좌표 x/d, y/d 가 유한하지 않으면 null(그리지 않음).
+ * contracts/raster project 와의 차이: project 는 d ≤ 0 을 먼저 거르고, K 를 곱한 뒤(u = fx·x/d + cx) 결과가 유한한지로
+ * NaN 을 판정한다. 여기는 K 를 모르므로 K 곱하기 전의 x/d, y/d 가 유한한지만 본다. 그래서 K 곱셈에서 넘치는 경우
+ * (x/d 가 유한하지만 fx·x/d 가 Infinity)는 여기서 null 이 아니고 project 는 NaN 이다. 그런 점은 셰이더/클립이 걸러낸다.
  * @param {number[]} xc [x, y, d]
  * @returns {number[] | null} [x, −y, −d]
  */
@@ -297,7 +326,7 @@ export function pixelToNdc(u, v, bw, bh) {
  *   pending: 도착한 수준이 없는 구간의 조각 또는 level > M 인 조각(자기 LEVEL_ARRIVED 를 기다린다. 그리지 않는다)
  * 결과 배열 순서는 입력 순서를 따른다.
  * @param {string[]} keys ASSET_FORMAT §11 정규 문자열
- * @param {{segmentId: number, level: number}[]} arrived 받은 LEVEL_ARRIVED 들
+ * @param {{segmentId: number, level: number}[]} arrived 받은 LEVEL_ARRIVED 들(segmentId < SEGMENT_ID_LIMIT = 2^30)
  * @returns {{draw: string[], pending: string[], discard: string[]}}
  */
 export function selectDrawable(keys, arrived) {
@@ -305,7 +334,7 @@ export function selectDrawable(keys, arrived) {
   if (!Array.isArray(arrived)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
   const top = new Map();
   for (const a of arrived) {
-    if (!a || !Number.isInteger(a.segmentId) || a.segmentId < 0 || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
+    if (!a || !Number.isInteger(a.segmentId) || a.segmentId < 0 || a.segmentId >= SEGMENT_ID_LIMIT || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
       throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
     }
     if (!(top.get(a.segmentId) >= a.level)) top.set(a.segmentId, a.level);

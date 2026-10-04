@@ -155,20 +155,31 @@ test('scaleIntrinsics: 버퍼 반올림이 있는 dpr 에서 CSS 위치 차이 �
   assert(Math.abs(ue - uce * 1.25) <= 0.5 + 1e-9 && Math.abs(ve - vce * 1.25) <= 0.5 + 1e-9);
 });
 
-test('변이 증명: 버퍼 반올림을 빼면 결과가 달라진다(이 파일의 시험이 잡는다)', () => {
-  // 반올림 없는 변이체: sx = W·dpr/refW. 333×222@1.25 에서 cy 가 139 대신 138.75 가 된다
-  const mutant = (K, refW, refH, W, H, dpr) => {
-    const sx = (W * dpr) / refW;
-    const sy = (H * dpr) / refH;
-    return { fx: K.fx * sx, fy: K.fy * sy, cx: K.cx * sx, cy: K.cy * sy };
-  };
+test('버퍼 반올림 공식의 예: 반올림이 없으면 333×222@1.25 에서 cy 가 139 대신 138.75 가 된다(기대 식의 예시)', () => {
+  // 이 시험은 실제 코드를 시험하지 않는 예시 식이다(변이 시험이 아니다). 실제 반올림은 위 시험의 deepEqual 이 고정한다.
   const Kc = fitIntrinsics(K_REF, REF_W, REF_H, 333, 222, 1);
-  const m = mutant(Kc, 333, 222, 333, 222, 1.25);
-  const real = scaleIntrinsics(Kc, 333, 222, 333, 222, 1.25);
-  assert(near(m.cy, 138.75) && near(real.cy, 139));
-  assert(Math.abs(m.cy - real.cy) > 1e-3 && Math.abs(m.cx - real.cx) > 1e-3);
-  // 반올림이 없으면 버퍼가 416.25×277.5 라 위 시험의 deepEqual({416, 278}) 이 실패한다
+  const unrounded = (Kc.cy * (222 * 1.25)) / 222; // 반올림 없는 sy
+  assert(near(unrounded, 138.75));
+  assert(near(scaleIntrinsics(Kc, 333, 222, 333, 222, 1.25).cy, 139));
   assert.notDeepEqual({ width: 333 * 1.25, height: 222 * 1.25 }, drawingBufferSize(333, 222, 1.25));
+});
+
+test('fitIntrinsics: sx > sy 화면(가로 화면 844×390@3)에서 contain·cover 손계산', () => {
+  // 버퍼 = 2532×1170. sx = 2532/2048 = 1.236328125, sy = 1170/1152 = 1.015625 (sx > sy)
+  // contain: s = min = sy = 1.015625 (세로 맞춤)
+  //   fx = fy = 1000·1.015625 = 1015.625
+  //   cx = 1024·1.015625 + (2532 − 2048·1.015625)/2 = 1040 + (2532 − 2080)/2 = 1040 + 226 = 1266
+  //   cy = 576·1.015625 + (1170 − 1152·1.015625)/2 = 585 + 0 = 585
+  // cover: s = max = sx = 1.236328125 (가로 맞춤)
+  //   fx = fy = 1236.328125
+  //   cx = 1024·1.236328125 + (2532 − 2048·1.236328125)/2 = 1266 + 0 = 1266
+  //   cy = 576·1.236328125 + (1170 − 1152·1.236328125)/2 = 712.125 + (1170 − 1424.25)/2 = 712.125 − 127.125 = 585
+  assert.deepEqual(drawingBufferSize(844, 390, 3), { width: 2532, height: 1170 });
+  const Kc = fitIntrinsics(K_REF, REF_W, REF_H, 844, 390, 3, 'contain');
+  assert.deepEqual(Kc, { fx: 1015.625, fy: 1015.625, cx: 1266, cy: 585 });
+  assert.deepEqual(fitIntrinsics(K_REF, REF_W, REF_H, 844, 390, 3), Kc);
+  const Kv = fitIntrinsics(K_REF, REF_W, REF_H, 844, 390, 3, 'cover');
+  assert.deepEqual(Kv, { fx: 1236.328125, fy: 1236.328125, cx: 1266, cy: 585 });
 });
 
 test('scaleIntrinsics: 픽셀 규약은 contracts/raster 와 같다(정수 = 칸 모서리, 중심 u=i+0.5, cx·sx)', () => {
@@ -192,6 +203,11 @@ test('scaleIntrinsics·drawingBufferSize 는 잘못된 입력을 ClientRasterErr
     () => scaleIntrinsics(K_REF, REF_W, REF_H, 960, 540, 0),
     () => scaleIntrinsics(K_REF, REF_W, REF_H, 960, 540, Infinity),
     () => drawingBufferSize(1, 1, 0.1),
+    () => drawingBufferSize(1920, 1080, 1e300),
+    () => drawingBufferSize(1e10, 1e10, 1e300),
+    () => drawingBufferSize(3000, 2000, 1e6),
+    () => drawingBufferSize(2 ** 53, 1, 1),
+    () => drawingBufferSize(1920, 1080, 2, { maxDimension: 2000 }),
     () => fitIntrinsics(K_REF, REF_W, REF_H, 375, 667, 3, 'stretch'),
     () => fitIntrinsics({ ...K_REF, fy: -1 }, REF_W, REF_H, 375, 667, 3),
     () => fitIntrinsics(K_REF, REF_W, 0, 375, 667, 3),
@@ -209,6 +225,13 @@ test('scaleIntrinsics·drawingBufferSize 는 잘못된 입력을 ClientRasterErr
   scaleIntrinsics(K, REF_W, REF_H, 800, 600, 1.5);
   fitIntrinsics(K, REF_W, REF_H, 375, 667, 3, 'cover');
   assert.deepEqual(K, K_REF);
+});
+
+test('drawingBufferSize: 상한 안의 값은 통과하고 maxDimension 은 주입할 수 있다', () => {
+  assert.deepEqual(drawingBufferSize(1920, 1080, 2), { width: 3840, height: 2160 });
+  assert.deepEqual(drawingBufferSize(16384, 1, 1), { width: 16384, height: 1 });
+  assert.throws(() => drawingBufferSize(16385, 1, 1), (e) => e instanceof ClientRasterError && e.code === 'view');
+  assert.deepEqual(drawingBufferSize(1920, 1080, 2, { maxDimension: 4000 }), { width: 3840, height: 2160 });
 });
 
 test('GL 변환 diag(1,-1,-1): 외부 파라미터·점, 카메라 뒤 점은 버린다', () => {
@@ -284,12 +307,16 @@ test('selectDrawable: LEVEL_ARRIVED 없는 조각은 그리지 않고, 높은 �
   assert.deepEqual(selectDrawable(keys, [...arrived].reverse()), want);
   // 수준 3 조각은 아직 대기
   assert.deepEqual(selectDrawable([k(7, 3)], arrived), { draw: [], pending: [k(7, 3)], discard: [] });
+  // segmentId 상한(2^30 배타): 2^30 − 1 은 받는다
+  assert.deepEqual(selectDrawable([`${2 ** 30 - 1}.0.0.0.0.0`], [{ segmentId: 2 ** 30 - 1, level: 0 }]).draw, [`${2 ** 30 - 1}.0.0.0.0.0`]);
   // 잘못된 입력은 ClientRasterError(piece)
   for (const f of [
     () => selectDrawable('7.0.0.0.0.0', []),
     () => selectDrawable(['7:0:0:0:0:0'], []),
     () => selectDrawable([], [{ segmentId: 7, level: 4 }]),
     () => selectDrawable([], [{ segmentId: -1, level: 0 }]),
+    () => selectDrawable([], [{ segmentId: 2 ** 30, level: 0 }]),
+    () => selectDrawable([], [{ segmentId: 2 ** 53, level: 0 }]),
     () => selectDrawable([], null),
   ]) assert.throws(f, (e) => e instanceof ClientRasterError && e.code === 'piece');
 });
