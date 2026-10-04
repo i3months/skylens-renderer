@@ -126,6 +126,9 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
     const canvas = document.createElement('canvas');
     const renderer = createRenderer({ canvas, maxPieceBytes: 1 << 26, maxResidentBytes: 1 << 28, decode: (b) => client.decode(b) });
     out.webgl2 = !!canvas.getContext('webgl2');
+    // Worker 생성·createRenderer·getContext·셰이더 컴파일은 t0 전에 일어나므로 버린다
+    await take();
+    await sleep(100);
     const t0 = performance.now();
     await renderer.uploadPiece(key, bytes.slice()); // 전송(transfer)되므로 사본을 보낸다
     const t1 = performance.now();
@@ -136,7 +139,7 @@ test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long
     out.uploadMs = t1 - t0;
     out.drawMs = t2 - t1;
     out.drawnPoints = stats.drawnPoints;
-    out.realPathTasks = (await take()).map((x) => Math.round(x.duration));
+    out.realPathTasks = (await take()).filter((x) => x.start >= t0).map((x) => Math.round(x.duration));
     out.clientStats = client.stats();
     renderer.dispose();
     client.terminate();
