@@ -81,21 +81,22 @@ f64 필드는 모두 8바이트 정렬 위치에 있다. 헤더 128 B 는 점 �
 ### 3.2 필드 규칙 (엄격 읽기·검증기가 검사)
 1. magic 일치, version_major = 1 (§9).
 2. header_size ≥ 128, 4의 배수, 파일 길이 이하.
-3. format ∈ {1, 2}, codec 은 읽는 쪽이 아는 값(0, 1). codec 1 은 format 1 만.
+3. format ∈ {1, 2}. parseHeader 는 format 을 검사하고 codec 을 읽지만 유효성을 검사하지 않는다. codec 0 과 1 만 사용하고, codec 1 은 format 1 만(§4.3).
 4. level = seg_level & 3 은 자동으로 0..3, segment_id = seg_level >>> 2 는 0..2^30−1.
 5. point_count ≥ 1. 점이 없는 조각은 만들지 않는다("없음"은 전송 규약이 알린다, T11).
 6. tile_size_m = 64, lod ≤ 7, quant_exp ∈ {8, 9, 10}.
-7. chunk_index ∈ 0..65535. 칸은 u32 이지만 contracts/proto PieceKey u16 과 같은 상한을 쓴다(F-193).
-8. bbox_min·bbox_max 유한, 축마다 min ≤ max, (max − min)·2^quant_exp ≤ 65535.
-9. bbox 의 e·n 범위가 (tile_x, tile_y) 타일 안(§1.2).
-10. anchor 세 값 유한.
-11. codec 0: body_bytes ≥ 필수 평면 합(§4). codec 1: body_bytes ≥ 16 이고 §4.3 본문 길이 규칙. 둘 다 header_size + body_bytes = 파일 길이.
-12. version_minor = 0 이면 reserved 12바이트가 모두 0. version_minor > 0 이면 reserved 를 검사하지 않는다(상위 부 버전이 쓸 수 있다).
-13. checksum 일치(§7).
+7. bbox_min·bbox_max 유한, 축마다 min ≤ max, (max − min)·2^quant_exp ≤ 65535.
+8. bbox 의 e·n 범위가 (tile_x, tile_y) 타일 안(§1.2).
+9. anchor 세 값 유한.
+10. codec 0: body_bytes ≥ 필수 평면 합(§4). codec 1: body_bytes ≥ 16 이고 §4.3 본문 길이 규칙. 둘 다 header_size + body_bytes = 파일 길이.
+11. version_minor = 0 이면 reserved 12바이트가 모두 0. version_minor > 0 이면 reserved 를 검사하지 않는다(상위 부 버전이 쓸 수 있다).
+12. checksum 일치(§7).
+13. chunk_index ∈ 0..65535. 칸은 u32 이지만 contracts/proto PieceKey u16 과 같은 상한을 쓴다(F-193).
+14. 미래 확장: reserved 영역(version_minor ≥ 1 일 때) 또는 새 필드.
 
-`parseHeader`(계약)는 1·2·3·7 을 본다(최소 검사). 나머지는 T03.1 `readHeaderStrict` 와 T03.6 `validateAsset` 이 한다.
+`parseHeader`(계약)는 1·2·3 을 본다(최소 검사). 나머지는 T03.1 `readHeaderStrict` 와 T03.6 `validateAsset` 이 한다.
 
-**codec 1 검증**: codec 1 형식의 엄격한 검증(헤더 필드 규칙 4·11 외에도 본문 배치·stream 길이·엔트로피 복호 검사)은 `server/codec/chunk` 모듈의 `decodeChunk` 함수가 담당한다. `server/asset/header` 의 `readHeaderStrict` 함수는 codec 0 만 검증하고, codec 1 파일은 `decodeChunk` 를 통해 손상을 검증한다.
+**codec 1 검증**: codec 1 형식의 엄격한 검증(헤더 필드 규칙 4·10 외에도 본문 배치·stream 길이·엔트로피 복호 검사)은 `server/codec/chunk` 모듈의 `decodeChunk` 함수가 담당한다. `server/asset/header` 의 `readHeaderStrict` 함수는 codec 0 만 검증하고, codec 1 파일은 `decodeChunk` 를 통해 손상을 검증한다.
 
 ## 4. 본문 배치 — 필드별 평면 배열(SoA)
 
