@@ -121,6 +121,28 @@ test('교차: 전 종류 왕복·바이트 일치', () => {
   }
 });
 
+// PIECE.pieceSeq·WELCOME.nextPieceSeq 는 >= 1 이다. 생성기는 유효 메시지만 만들므로 seq 0 은 따로 못 박는다(양쪽 부호화·복호).
+test('교차: seq 0 은 부호화·복호 모두 field (PIECE.pieceSeq, WELCOME.nextPieceSeq)', () => {
+  const r = rng(20260104);
+  const g = gen(r);
+  for (let i = 0; i < 20; i++) {
+    for (const [t, field, off] of [['PIECE', 'pieceSeq', 8], ['WELCOME', 'nextPieceSeq', 13]]) {
+      const m = g[t]();
+      const bytes = client.encodeMessage(m); // seq >= 1
+      for (const seq of [0, 1]) {
+        const z = { ...m, [field]: seq };
+        const want = seq === 0 ? 'field' : 'ok';
+        assert.equal(sig(outcome(() => client.encodeMessage(z))), want, `${t} 클라이언트 부호화 seq ${seq}`);
+        assert.equal(sig(outcome(() => server.encodeMessage(z))), want, `${t} 서버 부호화 seq ${seq}`);
+        const f = bytes.slice(); new DataView(f.buffer).setUint32(off, seq, true);
+        assert.equal(sig(outcome(() => client.decodeMessage(f))), want, `${t} 클라이언트 복호 seq ${seq}`);
+        assert.equal(sig(outcome(() => makeRefDecoder('s2c')(f))), want, `${t} 기준 복호 seq ${seq}`);
+        assert.equal(sig(outcome(() => server.decodeMessage(f))), 'direction', `${t} 서버 복호는 방향 거부`);
+      }
+    }
+  }
+});
+
 test('교차: 부호화 오류 입력 1,000개의 (성공/실패, code) 가 같다', () => {
   const r = rng(20260102);
   const g = gen(r);
