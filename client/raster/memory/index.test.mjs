@@ -165,7 +165,7 @@ test('실제 조각 키 형식 테스트', () => {
   }
 });
 
-test('0 바이트와 음수 처리', () => {
+test('0 바이트 허용, 음수·NaN·무한·소수는 거부하고 기존 값을 건드리지 않음', () => {
   const meter = createMemoryMeter();
 
   // 0 바이트 (메모리 해제로 이미 제거된 경우)
@@ -175,10 +175,17 @@ test('0 바이트와 음수 처리', () => {
   // byKey에 0도 포함
   assert.deepEqual(meter.byKey(), { key1: 0 });
 
-  // 음수 (회계상 특수 경우)
   meter.add('key2', 100);
-  meter.add('key3', -50);
-  assert.equal(meter.total(), 50);
+  for (const bad of [-50, -1, NaN, Infinity, -Infinity, 1.5, '7', null, undefined]) {
+    assert.throws(() => meter.add('key3', bad), (e) => e.code === 'memory', String(bad));
+    assert.throws(() => meter.add('key2', bad), (e) => e.code === 'memory', String(bad));
+  }
+  assert.equal(meter.total(), 100);
+  assert.deepEqual(meter.byKey(), { key1: 0, key2: 100 });
+
+  // 같은 key 를 다시 넣으면 삽입 순서가 최신으로 간다
+  meter.add('key1', 5);
+  assert.deepEqual(Object.keys(meter.byKey()), ['key2', 'key1']);
 });
 
 test('동일 키의 여러 전송 시나리오', () => {
