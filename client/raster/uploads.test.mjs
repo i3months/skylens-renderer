@@ -93,11 +93,15 @@ test('F-243 ⑥: 서로 다른 key 10만 회 releasePiece 뒤 장부 크기 ≤ 
 
 test('F-243 ⑦: onEvict 가 던져도 새 조각이 올라간다', async () => {
   const decode = (bytes) => decoded(keyOf(bytes[1]), bytes[0]);
+  const evicted = [];
   const r = make({
     decode, maxResidentBytes: 10 * POINT_BYTES,
-    onEvict: () => { throw new Error('호출자 오류'); },
+    onEvict: (keys) => { evicted.push(keys); throw new Error('호출자 오류'); },
   });
   await r.uploadPiece(keyOf(1), Uint8Array.of(8, 1));
   await r.uploadPiece(keyOf(2), Uint8Array.of(8, 2)); // keyOf(1) 퇴출 → onEvict 던짐
   assert.deepEqual(r.residentKeys(), [keyOf(2)]);
+  assert.deepEqual(evicted, [[keyOf(1)]], 'onEvict 는 퇴출 한 번에 정확히 한 번, 희생 key 만 알린다');
+  await r.uploadPiece(keyOf(2), Uint8Array.of(8, 2)); // 같은 key 교체: 퇴출 없음
+  assert.equal(evicted.length, 1);
 });
