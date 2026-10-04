@@ -7,7 +7,7 @@ import {
 } from '../../../contracts/tower_assets/index.mjs';
 import * as stubs from '../../../contracts/tower_assets/stubs.mjs';
 import {
-  buildDrapeTile, measureDrapeAlignment, drapeTileSize, tilePixelToEnu, enuToTilePixel,
+  buildDrapeTile, measureDrapeAlignment, drapeTileSize, tilePixelToEnu, enuToTilePixel, MAX_DRAPE_TILE_PX, ALIGN_BLOCK_PX,
 } from './index.mjs';
 
 /** 합성 영상: 각 픽셀 중심 ENU 로 색을 정한다. 행 0 = 북. */
@@ -130,7 +130,7 @@ test('좌표 정합: 특징점 무게중심이 원본 ENU 와 1 px 이내 (밉 0
     errs.push(worst);
     assert.ok(worst <= ALIGN_TOLERANCE_PX, `mip ${mip} 특징점 오차 ${worst} px`);
   }
-  // 밉별 최대 특징점 오차(타일 px). 밉이 오를수록 uint8 반올림·흐림으로 조금 커진다.
+  // 실측 고정(회귀용): 밉별 최대 특징점 오차(타일 px). 밉이 오를수록 uint8 반올림·흐림으로 조금 커진다.
   assert.deepEqual(errs.map((e) => Math.round(e * 1e4) / 1e4), [0, 0.0014, 0.1768, 0.4419]);
 });
 
@@ -153,6 +153,55 @@ test('좌표 정합: measureDrapeAlignment 는 정상 타일에서 1 px 이내, 
   const flipped = { ...t, rgb: new Uint8Array(t.rgb.length) };
   for (let j = 0; j < t.height; j++) flipped.rgb.set(t.rgb.subarray(j * t.width * 3, (j + 1) * t.width * 3), (t.height - 1 - j) * t.width * 3);
   assert.ok(measureDrapeAlignment(imgA, flipped).rms > 20);
+});
+
+/** 영상 bounds 를 영상 중심 기준으로 f 만큼 늘린 영상(내용은 그대로) → 그 영상으로 만든 타일은 축척이 1+f 배 틀린다. */
+function scaledImage(img, f) {
+  const b = img.bounds;
+  const cx = (b.minX + b.maxX) / 2, cy = (b.minY + b.maxY) / 2;
+  const hx = (b.maxX - b.minX) / 2 * (1 + f), hy = (b.maxY - b.minY) / 2 * (1 + f);
+  return { ...img, bounds: { minX: cx - hx, maxX: cx + hx, minY: cy - hy, maxY: cy + hy } };
+}
+
+test('좌표 정합: 축척 오류(전역 이동 0) 타일을 블록 이동량·가장자리 변위로 검출', () => {
+  // 영상 A 중심 (31.75, 31.75). 타일 (1,0) 의 ENU 는 중심에서 x 32.25..96.25 m, y −31.75..32.25 m 떨어져 있다.
+  // 축척 f 의 실제 변위(타일 px, 0.5 m/px) = f·거리/0.5: 2% → x 1.29..3.85 px, 4% → x 2.57..7.70 px.
+  const fx2 = 0.02 * 96.25 / 0.5, fy2 = 0.02 * 32.25 / 0.5;
+  assert.ok(Math.hypot(fx2, fy2) >= 2); // 해석값: 모서리 실제 변위 4.06 px
+  const m2 = measureDrapeAlignment(imgA, buildDrapeTile(scaledImage(imgA, 0.02), 1, 0, 0));
+  assert.ok(m2.maxMisalignPx >= 2, `2%: ${m2.maxMisalignPx}`);
+  assert.ok(m2.maxMisalignPx > ALIGN_TOLERANCE_PX);
+  assert.ok(m2.scaleX < 0 && m2.scaleY < 0, `축척 기울기 ${m2.scaleX}, ${m2.scaleY}`);
+  const m4 = measureDrapeAlignment(imgA, buildDrapeTile(scaledImage(imgA, 0.04), 1, 0, 0));
+  assert.ok(m4.maxMisalignPx >= 4, `4%: ${m4.maxMisalignPx}`);
+  assert.ok(m4.maxMisalignPx > m2.maxMisalignPx);
+  // 중심과 거의 겹친 타일 (0,0): 2% 의 모서리 실제 변위 = hypot(0.02·32.25/0.5, 0.02·32.25/0.5) ≈ 1.82 px → 1 px 초과로 실패.
+  const c2 = measureDrapeAlignment(imgA, buildDrapeTile(scaledImage(imgA, 0.02), 0, 0, 0));
+  assert.ok(c2.maxMisalignPx > ALIGN_TOLERANCE_PX, `(0,0) 2%: ${c2.maxMisalignPx}`);
+  // 전역 이동량은 축척 오류를 거의 못 본다(중심 근처 타일에서 0 근처) — 블록 측정이 필요한 이유.
+  assert.ok(Math.hypot(c2.dxPx, c2.dyPx) < ALIGN_TOLERANCE_PX, `전역 ${c2.dxPx}, ${c2.dyPx}`);
+  // 블록 수: 128 px 타일 / 16 px 블록 = 8×8.
+  assert.equal(c2.blocks.length, (128 / ALIGN_BLOCK_PX) ** 2);
+  // 정상 타일은 블록·가장자리 모두 0.
+  const ok = measureDrapeAlignment(imgA, buildDrapeTile(imgA, 1, 0, 0));
+  assert.deepEqual([ok.maxMisalignPx, ok.blockMaxPx, ok.edgeMaxPx], [0, 0, 0]);
+});
+
+test('입력 검증: 타일 한 변 픽셀 상한, tile.tx/ty NaN', () => {
+  // 10×10 영상이 0.01 m 범위를 덮으면 밉 0 한 변 = 64000 px → 상한 초과 오류(메모리 폭주 대신).
+  const tiny = makeImage({ minX: 0, minY: 0, maxX: 0.01, maxY: 0.01 }, 10, 10, () => [1, 2, 3]);
+  assert.throws(() => drapeTileSize(tiny, 0), TowerAssetError);
+  assert.throws(() => buildDrapeTile(tiny, 0, 0, 3), TowerAssetError);
+  assert.equal(MAX_DRAPE_TILE_PX, 4096);
+  // 상한 경계: 64 / 4096 m/px 는 통과.
+  const edge = { width: 1, height: 1, rgb: new Uint8Array(3), bounds: { minX: 0, minY: 0, maxX: 64 / 4096, maxY: 64 / 4096 } };
+  assert.deepEqual(drapeTileSize(edge, 0), { width: 4096, height: 4096 });
+  const t = buildDrapeTile(imgA, 0, 0, 3);
+  for (const bad of [{ ...t, tx: NaN }, { ...t, ty: NaN }, { ...t, tx: 0.5 }, { ...t, tx: undefined }]) {
+    assert.throws(() => measureDrapeAlignment(imgA, bad), TowerAssetError);
+    assert.throws(() => tilePixelToEnu(bad, 0, 0), TowerAssetError);
+    assert.throws(() => enuToTilePixel(bad, 0, 0), TowerAssetError);
+  }
 });
 
 test('영상 밖: 부분 피복은 coverage 로 명시, 밖은 0 으로 두고 꾸미지 않음, 전부 밖이면 오류', () => {
@@ -208,4 +257,5 @@ test('결정적: 같은 입력 → 같은 바이트', () => {
   assert.deepEqual(first, HASHES);
 });
 
+// 실측 고정(회귀용): 밉 0..3 의 rgb+mask sha256 앞 16자.
 const HASHES = ['0fae29d8703f8e5e', '5fdc0825c64459be', '175a0aba3df4db8c', '00fcf0fe71e8140a'];
