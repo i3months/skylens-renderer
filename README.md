@@ -62,6 +62,9 @@ node tools/baseline_report/cli.mjs --status summary.json
 ### 압축 codec (T09)
 헤더 codec 값 1(SKLC1)은 27 B 점 조각을 압축한다. 양자화 값은 그대로 두고 점을 모턴 순으로 재배치한 뒤 위치 키 차분·법선 차분·색(무손실 차분/팔레트/하위 2 비트 손실)을 필드별 스트림으로 만들어 적응형 범위 부호화로 누른다. 명세는 `format/ASSET_FORMAT.md` §4.3, 계약은 `contracts/codec/`. 서버 부호화·복호화는 `server/codec/chunk/`(`encodeChunk`·`decodeChunk`), 클라이언트 복호기는 `client/codec/`(`decodeChunkClient`), 점당 바이트 측정은 `bench/codec/cli.mjs`, 클라이언트 복호 속도는 `bench/codec_client/cli.mjs`.
 
+### 수준 상태 기계 (T10)
+딜레이 패턴 4수준(스텝 250·1,000·3,500·7,000)은 구간마다 교체된다. 새 수준이 도착하면 같은 구간의 낮은 수준 조각을 내보내고(누적 없음), 이미 더 높은 수준이 온 구간에 늦게 온 낮거나 같은 수준은 건너뛴다. 도착하지 않은 구간은 "없음"(렌더 점 0)이며 시간이 흘러도 상태는 도착 이벤트로만 바뀐다. 계약은 `contracts/levels/`(`decideArrival`), 서버 기계는 `server/levels/state/`(`createLevelMachine`), 클라이언트 기계는 `client/levels/`, 없음 표시는 `client/levels/missing/`.
+
 ### 점 입력과 좌표 (T04)
 27 B 점과 56 B 가우시안 PLY 를 읽고 쓴다. 계약 `contracts/points/`·`contracts/geo/`, 서버 모듈 `server/points/`(PLY 읽기·쓰기·스트리밍·손상 입력 거부·법선 정규화·구간 파일 식별)와 `server/geo/`(GPS↔ENU, ENU↔씬 좌표 x=동, y=위, z=−북), 클라이언트 변환 `client/geo/`, 점 통계 `tools/points_stat/`. GPS↔ENU 는 skylens `geo.ts` 와 같은 등장방형 근사(R = 6378137 m)이며, geo.ts 를 옮긴 기준 함수와 1 mm 이내로 일치함을 테스트한다. 경도 차이(|Δλ|)가 180°를 넘으면 360° − |Δλ|를 쓴다.
 
@@ -166,6 +169,9 @@ One chunk is one file (128 B header + per-field planar body, little-endian, coor
 
 ### Compression codec (T09)
 Header codec value 1 (SKLC1) compresses 27 B point chunks. Quantized values stay as they are; points are reordered along a Morton curve, then position-key deltas, normal deltas and colour (lossless delta / palette / lossy low 2 bits) become per-field streams squeezed by an adaptive range coder. The spec is `format/ASSET_FORMAT.md` §4.3 and the contract is `contracts/codec/`. Server encode/decode is `server/codec/chunk/` (`encodeChunk`, `decodeChunk`), the client decoder is `client/codec/` (`decodeChunkClient`), bytes per point are measured by `bench/codec/cli.mjs`, and client decode speed by `bench/codec_client/cli.mjs`.
+
+### Level state machine (T10)
+The four delay-pattern levels (steps 250, 1,000, 3,500, 7,000) are replaced per segment. A new level releases the lower-level pieces of the same segment (no accumulation), and a lower or equal level arriving after a higher one is skipped. A segment that has not arrived is "missing" (zero render points), and state changes only on arrival events, never with time. The contract is `contracts/levels/` (`decideArrival`), the server machine is `server/levels/state/` (`createLevelMachine`), the client machine is `client/levels/`, and the missing-segment display is `client/levels/missing/`.
 
 ### Point input and coordinates (T04)
 Reads and writes 27 B point and 56 B Gaussian PLY files. Contracts live in `contracts/points/` and `contracts/geo/`; server modules in `server/points/` (PLY read/write/streaming, rejection of corrupt input, normal normalization, segment file identification) and `server/geo/` (GPS↔ENU, ENU↔scene axes x=east, y=up, z=−north); the client conversion in `client/geo/`; point statistics in `tools/points_stat/`. GPS↔ENU uses the same equirectangular approximation as skylens `geo.ts` (R = 6378137 m) and is tested against a transcribed reference function to within 1 mm. When longitude difference |Δλ| exceeds 180°, use 360° − |Δλ|.

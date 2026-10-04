@@ -140,6 +140,26 @@ test('손실 색 모드 검증(10k 점, 손실)', async (t) => {
 
   // 손실 모드에서 색 모드가 1 인지 확인
   assert.equal(colorMode, 1, '손실 모드 복호: 본문 색 스트림 첫 바이트(colorMode) === 1');
+
+  // 복호 색을 원본 raw 파일 기준(복호 경로와 공유하지 않음)과 비교한다.
+  // 복원 규칙: 복원 = ((v>>2)<<2)+2 이므로 v&3 = 0,1,2,3 에서 오차는 +2,+1,0,-1 이다.
+  // 따라서 채널별 |Δ| ≤ 2 가 이론 상한이고, 10k 점 실측 최대 Δ 도 2 였다.
+  const originalPlanes = extractOriginalPlanes(pointsPerChunk, 43);
+  const { planes: decodedPlanes } = decodeChunkClient(chunk);
+  // 복호 점 순서는 morton 순이라 위치(u16 3축)를 키로 원본 점과 짝짓는다(10k 점에서 키는 유일함).
+  const key = (p, i) => `${p.pos_e[i]},${p.pos_n[i]},${p.pos_u[i]}`;
+  const byPos = new Map();
+  for (let i = 0; i < pointsPerChunk; i++) byPos.set(key(originalPlanes, i), i);
+  assert.equal(byPos.size, pointsPerChunk, '원본 위치 키 유일');
+  let maxDelta = 0;
+  for (let i = 0; i < pointsPerChunk; i++) {
+    const j = byPos.get(key(decodedPlanes, i));
+    assert.notEqual(j, undefined, `복호 점 ${i} 에 대응하는 원본 점 존재`);
+    for (const ch of ['color_r', 'color_g', 'color_b']) {
+      maxDelta = Math.max(maxDelta, Math.abs(decodedPlanes[ch][i] - originalPlanes[ch][j]));
+    }
+  }
+  assert.ok(maxDelta <= 2, `손실 색 채널별 최대 |Δ| ${maxDelta} ≤ 2`);
 });
 
 test('여러 조각 복호', async (t) => {

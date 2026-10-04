@@ -176,34 +176,45 @@ test("스트림 길이 합이 body_bytes 와 다르면 양쪽 'length'", () => {
 });
 test('스트림 길이가 u32 최댓값이어도 양쪽 같다', () => same(build(3, { lens: [0xffffffff, 0xffffffff, 0xffffffff] })));
 /**
- * 케이스 하나를 독립 test 로 등록한다. looseClass 면 헤더 경로의 오류 분류 차이(클라이언트 readHeaderClient 의 AssetFormatError
- * vs 서버 parseHeader 의 CodecError)를 허용하고, 양쪽이 계약이 허용한 오류 클래스(CodecError·AssetFormatError)로 거부하는지만 단언한다.
+ * 헤더 경로에서 서버 decodeChunk 와 클라이언트 decodeChunkClient 가 서로 다른 (클래스, code) 로 거부하는 알려진 차이의 대응표.
+ * 항목: [서버 클래스, 서버 code, 클라이언트 클래스, 클라이언트 code]. 표에 없는 케이스는 same() 으로 클래스·code 가 모두 같아야 한다.
+ * 어느 한쪽이 표와 다른 code 로 거부하면 실패한다(클래스만 보고 통과시키지 않는다).
  */
-function each(name, make, expect, looseClass) {
+const DIV = {
+  bodyShort: ['CodecError', 'length', 'AssetFormatError', 'body'], // 본문 길이 불일치: 서버는 length, 클라이언트는 헤더 body_bytes 검사로 body
+  pointZero: ['CodecError', 'limit', 'AssetFormatError', 'field'], // 점 개수 0: 서버는 rawLen 한도(limit), 클라이언트는 헤더 field
+  codecRaw: ['CodecError', 'mode', 'AssetFormatError', 'body'], // codec=0: 서버는 mode, 클라이언트는 본문 길이 검사(body)
+  codecUnknown: ['CodecError', 'mode', 'AssetFormatError', 'codec'], // codec=2: 서버는 mode, 클라이언트는 codec
+  headerSize64: ['AssetFormatError', 'header_size', 'AssetFormatError', 'short'], // headerSize=64: 서버는 header_size, 클라이언트는 short
+};
+/** 케이스 하나를 독립 test 로 등록한다. div 가 있으면 대응표대로 (클래스, code) 를 양쪽 각각 단언한다. */
+function each(name, make, expect, div) {
   test(name, () => {
-    if (!looseClass) return same(make(), expect);
+    if (!div) return same(make(), expect);
     const f = make();
-    for (const dec of [decodeChunk, decodeChunkClient]) {
-      assert.throws(() => dec(f), (e) => e instanceof Error && /^(CodecError|AssetFormatError)$/.test(e.constructor.name));
-    }
+    const [sCls, sCode, cCls, cCode] = div;
+    const s = run(decodeChunk, f), c = run(decodeChunkClient, f);
+    assert.equal(s.threw, true, `서버가 던져야 한다: ${show(s)}`);
+    assert.equal(c.threw, true, `클라이언트가 던져야 한다: ${show(c)}`);
+    assert.deepEqual([s.ctorName, s.code], [sCls, sCode], `서버 대응표 불일치: ${show(s)}`);
+    assert.deepEqual([c.ctorName, c.code], [cCls, cCode], `클라이언트 대응표 불일치: ${show(c)}`);
   });
 }
-const DIV = true;
 const TRUNC = () => build(3);
-each('body_bytes=15 (16 미만)', () => build(3, { bodyBytes: 15 }), undefined, DIV);
-each('body_bytes=0', () => build(3, { bodyBytes: 0 }), undefined, DIV);
-each('body_bytes 가 실제보다 1 큼', () => build(3, { bodyBytes: build(3).length - 128 + 1 }), undefined, DIV);
-each('파일 끝 1 바이트 잘림', () => { const f = build(3); return f.subarray(0, f.length - 1); }, undefined, DIV);
-each('파일 끝에 1 바이트 덧붙임', () => Uint8Array.from([...build(3), 0]), undefined, DIV);
+each('body_bytes=15 (16 미만)', () => build(3, { bodyBytes: 15 }), undefined, DIV.bodyShort);
+each('body_bytes=0', () => build(3, { bodyBytes: 0 }), undefined, DIV.bodyShort);
+each('body_bytes 가 실제보다 1 큼', () => build(3, { bodyBytes: build(3).length - 128 + 1 }), undefined, DIV.bodyShort);
+each('파일 끝 1 바이트 잘림', () => { const f = build(3); return f.subarray(0, f.length - 1); }, undefined, DIV.bodyShort);
+each('파일 끝에 1 바이트 덧붙임', () => Uint8Array.from([...build(3), 0]), undefined, DIV.bodyShort);
 each('파일이 100 바이트(헤더 도중)에서 잘림', () => build(3).subarray(0, 100));
 each('빈 입력', () => new Uint8Array(0));
-each('점 개수 0', () => build(3, { hdr: { pointCount: 0 } }), undefined, DIV);
+each('점 개수 0', () => build(3, { hdr: { pointCount: 0 } }), undefined, DIV.pointZero);
 each('점 개수 2^32-1', () => build(3, { hdr: { pointCount: 2 ** 32 - 1 } }));
 each('점 개수 2^24+1', () => build(3, { hdr: { pointCount: 2 ** 24 + 1 } }));
-each('codec=0(raw)로 둔 조각', () => build(3, { hdr: { codec: 0 } }), undefined, DIV);
-each('codec=2', () => build(3, { hdr: { codec: 2 } }), undefined, DIV);
+each('codec=0(raw)로 둔 조각', () => build(3, { hdr: { codec: 0 } }), undefined, DIV.codecRaw);
+each('codec=2', () => build(3, { hdr: { codec: 2 } }), undefined, DIV.codecUnknown);
 each('format=2', () => build(3, { hdr: { format: 2 } }));
-each('headerSize=64', () => build(3, { mut: u16At(OFFSETS.headerSize, 64) }), undefined, DIV);
+each('headerSize=64', () => build(3, { mut: u16At(OFFSETS.headerSize, 64) }), undefined, DIV.headerSize64);
 each('headerSize=130(4 의 배수 아님)', () => build(3, { mut: u16At(OFFSETS.headerSize, 130) }));
 each('versionMajor=2', () => build(3, { mut: u16At(OFFSETS.versionMajor, 2) }));
 each('매직 바이트 변조', () => build(3, { mut: (f) => { f[0] ^= 0xff; } }));
@@ -245,16 +256,15 @@ test('버전 1.0 에서 예약 바이트가 0 이 아니면 양쪽 같다', () =
   same(build(3, { mut: (f) => { f[127] = 1; } }));
 });
 
-// ---- 순서 정렬 대기(클라이언트 검사 순서를 서버와 맞추는 중. 통합 전에는 아래 3 건이 실패할 수 있다) ----
-// mode 1 · rawLen=0 스트림: 서버는 rawLen 하한을 먼저 보아 'limit', 클라이언트는 컨테이너 비정규 검사로 'stream' 을 던진다.
-test('[순서 정렬 대기] mode 1 · rawLen=0 normal 스트림은 양쪽 같다(서버 limit)', () => {
+// ---- mode 1 · rawLen=0 스트림(서버는 rawLen 하한을 먼저 보아 'limit', 클라이언트도 같은 순서로 맞춰져 있다) ----
+test('mode 1 · rawLen=0 normal 스트림은 양쪽 같다(서버 limit)', () => {
   same(withNrm(1, Uint8Array.from([1, 0])));
   same(withNrm(1, Uint8Array.from([1, 0, 0, 0, 0, 0, 0])), 'limit');
 });
-test('[순서 정렬 대기] mode 1 · rawLen=0 pos 스트림은 양쪽 같다(서버 limit)', () => {
+test('mode 1 · rawLen=0 pos 스트림은 양쪽 같다(서버 limit)', () => {
   same(withPos(1, Uint8Array.from([1, 0])));
   same(withPos(1, Uint8Array.from([1, 0, 0, 0, 0, 0, 0])), 'limit');
 });
-test('[순서 정렬 대기] mode 1 · rawLen=0 color 스트림은 양쪽 같다(서버 limit)', () => {
+test('mode 1 · rawLen=0 color 스트림은 양쪽 같다(서버 limit)', () => {
   same(withCol(1, Uint8Array.from([1, 0, 0, 0, 0, 0, 0])), 'limit');
 });
