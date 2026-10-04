@@ -34,7 +34,7 @@
 //   → payloadLength > MAX_PAYLOAD_BYTES 'limit' → 프레임 길이 불일치 'length' → 본문 값 범위 'field'.
 // 방향 검사는 프레임 길이 검사 다음, 고정 크기 검사 앞이다. 서버 복호는 c→s 종류만, 클라이언트 복호는 s→c 종류만 받는다. 반대 방향 type 은 'direction'.
 
-/** Decision 0032: Increase when external clients appear. */
+/** 결정 0032: 외부 클라이언트가 생기면 올린다(그 전까지 1 유지). */
 export const PROTO_VERSION = 1;
 export const FRAME_HEADER_BYTES = 8;
 export const PIECE_KEY_BYTES = 16;
