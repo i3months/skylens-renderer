@@ -1,8 +1,10 @@
 // 헤드리스 Chromium(SwiftShader) 실제 WebGL2 초기화·소실·복구 시험. 브라우저나 playwright 가 없으면 skip 하고 이유를 남긴다.
+// 단 SKYLENS_REQUIRE_GL=1 이면 skip 하지 않고 실패한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createContext } from './index.mjs';
+import { glSkip, findChromium } from '../shader/gl_harness.mjs';
 
 process.env.PLAYWRIGHT_BROWSERS_PATH ??= '/opt/pw-browsers';
 
@@ -19,13 +21,15 @@ try {
 
 let browser = null;
 if (!skipReason) {
+  const exe = findChromium(); // SKYLENS_CHROMIUM 이 틀린 경로면 여기서 던져(try 밖) 파일 전체가 실패한다
   try {
-    browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
+    browser = await chromium.launch({ ...(process.env.SKYLENS_CHROMIUM ? { executablePath: exe } : {}), args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   } catch (e) { skipReason = `Chromium 실행 실패: ${e.message.split('\n')[0]}`; }
 }
 if (skipReason) console.log(`# browser 시험 skip: ${skipReason}`);
 
-test('헤드리스 소프트웨어 렌더에서 초기화·소실·복구', { skip: skipReason ?? false }, async (t) => {
+test('헤드리스 소프트웨어 렌더에서 초기화·소실·복구', { skip: glSkip(skipReason) }, async (t) => {
+  assert.ok(!skipReason, `실제 GL 을 쓸 수 없음(SKYLENS_REQUIRE_GL=1): ${skipReason}`);
   t.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto('about:blank');

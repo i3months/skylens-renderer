@@ -1,5 +1,6 @@
 // 메모리 집계. GPU 메모리 사용량을 key 별로 추적한다.
 // 협약: contracts/client_raster/index.mjs 헤더 참조 (좌표·투영, 메모리 관리).
+import { ClientRasterError } from '../../../contracts/client_raster/index.mjs';
 
 /**
  * 메모리 미터를 생성한다. GPU 버퍼 할당을 추적하고 총량을 계산한다.
@@ -17,11 +18,16 @@ export function createMemoryMeter() {
   return {
     /**
      * key의 메모리 크기를 등록하거나 갱신한다.
-     * 같은 key의 중복 호출 시 덮어쓴다.
+     * 같은 key의 중복 호출 시 덮어쓰고 그 key 를 가장 최근 삽입으로 옮긴다.
+     * bytes 는 0 이상의 안전한 정수여야 한다(음수·NaN·Infinity·소수는 ClientRasterError 'memory').
      * @param {string} key - 조각 키 (e.g., '7.2.1.-2.0.0')
      * @param {number} bytes - 메모리 크기 (바이트)
      */
     add(key, bytes) {
+      if (!Number.isSafeInteger(bytes) || bytes < 0) {
+        throw new ClientRasterError('memory', `bytes 는 0 이상의 정수여야 함: ${String(bytes)}`);
+      }
+      store.delete(key); // 삽입 순서를 최신으로
       store.set(key, bytes);
     },
 

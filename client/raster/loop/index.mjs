@@ -10,15 +10,34 @@ export const DEFAULT_FRAME_MS = 1000 / 60;
 /**
  * @param {{draw: () => any, requestFrame: (cb: () => void) => any, now: () => number,
  *          onFrame?: (info: {drawn: boolean, skipped: number, coalesced: number, drawMs: number}) => void,
+ *          onError?: (err: any, where: 'draw'|'onFrame'|'requestFrame') => void,
  *          frameMs?: number}} opts
  */
-export function createFrameLoop({ draw, requestFrame, now, onFrame, frameMs = DEFAULT_FRAME_MS }) {
+export function createFrameLoop({ draw, requestFrame, now, onFrame, onError, frameMs = DEFAULT_FRAME_MS }) {
+  // frameMs 가 0·음수·NaN·Infinity 이면 droppedFrames 가 Infinity·NaN 이 되므로 만들 때 거부한다.
+  if (typeof frameMs !== 'number' || !Number.isFinite(frameMs) || frameMs <= 0) {
+    throw new RangeError('frameMs 는 0 보다 큰 유한한 수여야 한다');
+  }
   let running = false;
   let dirty = false;        // 마지막 그리기 뒤 도착이 있었는가
   let pendingArrivals = 0;  // 이번 프레임에 합쳐질 도착 수
   let lastFrameAt = null;   // 직전 프레임 콜백 시각
   let token = 0;            // stop 뒤 늦게 오는 콜백을 무시하는 세대 번호
-  const s = { frames: 0, draws: 0, arrivals: 0, coalescedArrivals: 0, droppedFrames: 0, longTasks: 0, lastDrawMs: 0, maxDrawMs: 0 };
+  const s = { frames: 0, draws: 0, arrivals: 0, coalescedArrivals: 0, droppedFrames: 0, longTasks: 0, lastDrawMs: 0, maxDrawMs: 0, errors: 0 };
+
+  // 예외는 세어서 알린다. 알림 콜백이 던져도 루프는 계속 돈다.
+  function report(err, where) {
+    s.errors++;
+    if (onError) { try { onError(err, where); } catch { /* 알림 실패는 무시 */ } }
+  }
+
+  // 다음 프레임 예약. 예약 자체가 던지면 running=false 로 내려 start() 로 다시 켤 수 있게 한다.
+  function schedule(gen) {
+    try { requestFrame(() => tick(gen)); } catch (e) {
+      if (gen === token) running = false;
+      report(e, 'requestFrame');
+    }
+  }
 
   function tick(gen) {
     if (!running || gen !== token) return;
@@ -38,7 +57,8 @@ export function createFrameLoop({ draw, requestFrame, now, onFrame, frameMs = DE
       dirty = false;
       s.coalescedArrivals += coalesced;
       pendingArrivals = 0;
-      draw();
+      // draw 예외 한 번에 루프가 멈추지 않게 한다(다음 프레임은 아래에서 항상 예약한다).
+      try { draw(); } catch (e) { report(e, 'draw'); }
       drawn = true;
       s.draws++;
       drawMs = now() - t0;
@@ -46,8 +66,8 @@ export function createFrameLoop({ draw, requestFrame, now, onFrame, frameMs = DE
       if (drawMs > s.maxDrawMs) s.maxDrawMs = drawMs;
       if (drawMs > LONG_TASK_MS) s.longTasks++;
     }
-    if (onFrame) onFrame({ drawn, skipped, coalesced, drawMs });
-    if (running && gen === token) requestFrame(() => tick(gen));
+    if (onFrame) { try { onFrame({ drawn, skipped, coalesced, drawMs }); } catch (e) { report(e, 'onFrame'); } }
+    if (running && gen === token) schedule(gen);
   }
 
   return {
@@ -57,7 +77,7 @@ export function createFrameLoop({ draw, requestFrame, now, onFrame, frameMs = DE
       dirty = true; // 시작 직후 첫 프레임에 한 번 그린다
       lastFrameAt = null;
       const gen = ++token;
-      requestFrame(() => tick(gen));
+      schedule(gen);
     },
     stop() { running = false; token++; },
     notifyArrival() { s.arrivals++; pendingArrivals++; dirty = true; },
@@ -75,6 +95,7 @@ export function createDecodeWorkerClient({ spawn, now = () => 0 }) {
   const worker = spawn();
   const pending = new Map();
   let nextId = 1;
+  let terminated = false;
   const st = { requests: 0, responses: 0, errors: 0, mainThreadEvents: 0, longTasks: 0, maxMainMs: 0 };
 
   function measure(fn) {
@@ -93,6 +114,7 @@ export function createDecodeWorkerClient({ spawn, now = () => 0 }) {
 
   worker.onmessage = (ev) => measure(() => {
     const m = ev && ev.data !== undefined ? ev.data : ev;
+    if (m === null || typeof m !== 'object') return; // data 가 null 이거나 객체가 아니면 버린다
     const p = pending.get(m.id);
     if (!p) return; // 알 수 없는 응답은 버린다
     pending.delete(m.id);
@@ -104,13 +126,33 @@ export function createDecodeWorkerClient({ spawn, now = () => 0 }) {
   return {
     decode(bytes) {
       return new Promise((resolve, reject) => {
+        // terminate 뒤에는 응답이 올 수 없으니 영원히 미결로 두지 않고 즉시 거부한다.
+        if (terminated) { reject(new Error('terminated')); return; }
         const id = nextId++;
         pending.set(id, { resolve, reject });
         st.requests++;
-        measure(() => worker.postMessage({ id, bytes }, bytes && bytes.buffer ? [bytes.buffer] : []));
+        try {
+          measure(() => {
+            let payload = bytes;
+            let transfer = [];
+            if (bytes && bytes.buffer) {
+              // 부분 뷰(subarray)면 버퍼 전체가 넘어가 호출자의 다른 뷰가 깨지므로 뷰 범위만 복사해 그 사본을 넘긴다.
+              const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
+              payload = whole ? bytes : bytes.slice();
+              transfer = [payload.buffer];
+            }
+            worker.postMessage({ id, bytes: payload }, transfer);
+          });
+        } catch (e) {
+          pending.delete(id); // postMessage 실패 시 대기 항목이 새지 않게 한다
+          reject(e);
+        }
       });
     },
-    terminate() { if (worker.terminate) worker.terminate(); failAll(new Error('terminated')); },
+    terminate() {
+      terminated = true;
+      try { if (worker.terminate) worker.terminate(); } finally { failAll(new Error('terminated')); }
+    },
     stats() { return { ...st, pending: pending.size }; },
   };
 }

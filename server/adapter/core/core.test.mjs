@@ -917,7 +917,6 @@ test('F-231 ⑥: skip 의 onRelease 가 같은 어댑터 handle 을 불러도 �
   assert.deepEqual(r, { action: 'skip', emitted: 0, released: [], abandoned: keys });
   assert.deepEqual(rel, [keys], 'key 당 1 번(2 번 이하)');
   assert.deepEqual(inner, [{ action: 'expect', emitted: 1, released: [] }]);
-  assert.ok(!('releaseDropped' in inner[0]));
   assert.deepEqual(ad.pendingReleases(), []);
   ad.handle({ kind: 'segment_expected', segmentId: 10 });
   assert.equal(rel.length, 1);
@@ -1093,6 +1092,9 @@ test('F-239 ⑨: levelArrivedMaybeSent skip 은 기계가 쥐지 않은 key 의 
 test('F-240 ④: L == M(재시도 수준이 기계의 현재 수준과 같음)에서도 levelArrivedMaybeSent skip 이고 서버 내부 해제는 알리지 않는다', () => {
   const h = laHarness();
   h.attempt(3);
+  // 다른 key 집합으로 먼저 확정: 기계가 다른 key 를 쥐고 있는 상태
+  h.machine.arrive(9, 2, piecesEvent(9, 2, 3).pieces);
+  // 이제 L == M 사례: 같은 수준으로 재도착
   h.machine.arrive(9, 1, piecesEvent(9, 1, 2).pieces);
   const n = h.out.length;
   const r = h.retry();

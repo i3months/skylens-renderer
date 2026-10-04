@@ -1,7 +1,48 @@
 // T12.2 점 셰이더 CPU 모사. index.mjs 의 GLSL 정점·조각 셰이더와 GL 점 래스터(클립·점 사각형·깊이 LESS·24 비트 깊이)를
 // 같은 순서·같은 식으로 JS 에 옮겼다. 실제 GL 을 쓸 수 없는 환경에서 셰이더 수식을 수치로 검증하는 용도다.
-// highp float 는 Math.fround 로 단계마다 f32 로 맞춘다(구현마다 연산 순서·FMA 가 달라 비트까지 같지는 않다).
+// 정점 변환·점 크기·창 좌표는 Math.fround 로 단계마다 f32 로 맞춘다(구현마다 연산 순서·FMA 가 달라 비트까지 같지는 않다).
+// 단, 셰이딩(shaderOctDecode·shaderShade)은 f64 로 계산한다. GPU 의 f32 와는 반올림 경계(.5) 근처에서 ±1 단계 다를 수 있고,
+// 그 차이는 SSIM 기준에 영향이 없다(정수 일치는 shader.test.mjs 가 f64 참조와 비교해 확인한다).
+// 조각 원점(RTE): pts.origin 이 있으면 렌더러처럼 u_tgl 대신 t'_gl = R_gl·o + t_gl(f64 계산 뒤 f32)을 쓴다(F-243 ③).
+import { pieceTglValue } from './index.mjs';
+
 const f = Math.fround;
+
+/**
+ * 셰이더 `u_Rgl * a_position + u_tgl` 의 한 행을 f32 로 계산한다.
+ * order 'seq': 곱마다·합마다 f32 반올림, ((r0·x + r1·y) + r2·z) + t (GLSL 의 행렬·벡터 곱 뒤 덧셈 순서).
+ * order 'fma': 각 곱셈·덧셈을 반올림 한 번으로 계산한다(f(r·x + acc), f32 두 수의 곱은 f64 에서 정확해 융합 곱셈·덧셈의 근사다).
+ */
+function rowF32(r0, r1, r2, tk, X, Y, Z, order) {
+  if (order === 'fma') return f(f(f(f(r0 * X) + r1 * Y) + r2 * Z) + tk);
+  return f(f(f(f(r0 * X) + f(r1 * Y)) + f(r2 * Z)) + tk);
+}
+
+/**
+ * 정점 셰이더의 투영 단계만 f32 로 모사한다(시험용). X 는 버퍼에 올린 f32 위치(원점이 있으면 상대 좌표).
+ * @param {Record<string, any>} U pointUniformValues 결과
+ * @param {ArrayLike<number>} X 3-벡터(f32 로 반올림해 쓴다)
+ * @param {{origin?: number[], order?: 'seq'|'fma'}} [opts]
+ * @returns {{u:number, v:number, d:number, xn:number, yn:number} | null} u·v 장치 픽셀, xn·yn NDC. 카메라 뒤면 null
+ */
+export function emulateProjectVertex(U, X, opts) {
+  const R = U.u_Rgl.map(f);
+  const t = (opts?.origin ? pieceTglValue(U, opts.origin) : U.u_tgl).map(f);
+  const order = opts?.order ?? 'seq';
+  const [x0, y0, z0] = [f(X[0]), f(X[1]), f(X[2])];
+  const xg = rowF32(R[0], R[1], R[2], t[0], x0, y0, z0, order);
+  const yg = rowF32(R[3], R[4], R[5], t[1], x0, y0, z0, order);
+  const zg = rowF32(R[6], R[7], R[8], t[2], x0, y0, z0, order);
+  const d = -zg;
+  const x = f(xg / d);
+  const y = f(-yg / d);
+  if (!(d > 0) || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const u = f(f(f(U.u_fx) * x) + f(U.u_cx));
+  const v = f(f(f(U.u_fy) * y) + f(U.u_cy));
+  const xn = f(f(f(2 * u) / U.u_bw) - 1);
+  const yn = f(1 - f(f(2 * v) / U.u_bh));
+  return { u, v, d, xn, yn };
+}
 
 /** 깊이 버퍼 비트 수(WebGL 기본 그리기 버퍼의 흔한 값). */
 export const DEPTH_BITS = 24;
@@ -36,7 +77,8 @@ export function shaderShade(qx, qy, lightDir, ambient, rgb) {
 /**
  * 셰이더 경로를 CPU 로 그린다.
  * @param {Record<string, any>} U pointUniformValues 결과
- * @param {{positions: Float32Array, colors: Uint8Array, normalOct?: Int8Array}} pts normalOct 는 [qx, qy] 쌍(2n)
+ * @param {{positions: Float32Array, colors: Uint8Array, normalOct?: Int8Array, origin?: number[]}} pts normalOct 는 [qx, qy] 쌍(2n).
+ *   origin 이 있으면 positions 는 그 원점 기준 상대 좌표이고 u_tgl 대신 조각별 t'_gl 을 쓴다(렌더러와 같음)
  * @param {{clipPointCenter?: boolean}} [opts] clipPointCenter: 중심이 화면 밖인 점을 통째로 버린다(명세 문자 그대로의 구현)
  * @returns {{width:number, height:number, color: Uint8Array, depth: Uint32Array, drawn: Uint8Array}}
  *   color 는 3·w·h rgb(위에서 아래 행). depth 는 양자화 깊이(빈 칸 DEPTH_MAX + 1). drawn 은 칸마다 0/1.
@@ -50,7 +92,7 @@ export function emulatePointRender(U, pts, opts) {
   const depth = new Uint32Array(bw * bh).fill(DEPTH_MAX + 1);
   const drawn = new Uint8Array(bw * bh);
   const R = U.u_Rgl.map(f);
-  const t = U.u_tgl.map(f);
+  const t = (pts.origin ? pieceTglValue(U, pts.origin) : U.u_tgl).map(f);
   const [fx, fy, cx, cy] = [f(U.u_fx), f(U.u_fy), f(U.u_cx), f(U.u_cy)];
   const near = f(U.u_near);
   const far = f(U.u_far);
@@ -60,9 +102,9 @@ export function emulatePointRender(U, pts, opts) {
   for (let k = 0; k < n; k += 1) {
     // 정점 셰이더
     const X = P[3 * k], Y = P[3 * k + 1], Z = P[3 * k + 2];
-    const xg = f(f(f(R[0] * X) + f(R[1] * Y)) + f(f(R[2] * Z) + t[0]));
-    const yg = f(f(f(R[3] * X) + f(R[4] * Y)) + f(f(R[5] * Z) + t[1]));
-    const zg = f(f(f(R[6] * X) + f(R[7] * Y)) + f(f(R[8] * Z) + t[2]));
+    const xg = rowF32(R[0], R[1], R[2], t[0], X, Y, Z, 'seq');
+    const yg = rowF32(R[3], R[4], R[5], t[1], X, Y, Z, 'seq');
+    const zg = rowF32(R[6], R[7], R[8], t[2], X, Y, Z, 'seq');
     const d = -zg;
     const x = f(xg / d);
     const y = f(-yg / d);

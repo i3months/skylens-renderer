@@ -82,3 +82,25 @@ test('여러 조각 올리고 일부 해제 -> 상주량 정확, 전부 해제 �
   p.clear(); p.clear();
   assert.equal(gl.created, 30); assert.equal(gl.deleted, 30);
 });
+
+test('교체 중 createBuffer 실패 -> 기존 조각(버퍼·상주량·key)이 그대로, 새로 만든 버퍼만 회수', () => {
+  const gl = fakeGl({ failCreateAt: 5 }); const p = createBufferPool({ gl, maxPieceBytes: 16, maxResidentBytes: 16 });
+  const first = p.upload('a', piece()); // 버퍼 1~3
+  const before = [...gl.live];
+  assert.throws(() => p.upload('a', piece()), isCode('memory')); // 두 번째 평면(5번째 생성)에서 실패
+  assert.equal(p.residentBytes(), 16); assert.deepEqual(p.keys(), ['a']);
+  assert.equal(p.get('a'), first.buffers);
+  assert.deepEqual([...gl.live], before); // 기존 3 개만 살아 있다
+  assert.equal(gl.deleted, 1); // 실패한 교체가 만든 버퍼 하나만 지웠다(기존 것은 지우지 않음)
+  p.release('a'); assert.equal(gl.live.size, 0);
+});
+
+test('교체 중 bufferData 가 던져도 기존 조각 유지', () => {
+  const gl = fakeGl(); const p = createBufferPool({ gl, maxPieceBytes: 16, maxResidentBytes: 16 });
+  const first = p.upload('a', piece());
+  const orig = gl.bufferData; let n = 0;
+  gl.bufferData = (...a) => { if (++n === 2) throw new Error('OUT_OF_MEMORY'); orig(...a); };
+  assert.throws(() => p.upload('a', piece()), /OUT_OF_MEMORY/);
+  assert.equal(p.get('a'), first.buffers); assert.equal(p.residentBytes(), 16);
+  assert.equal(gl.live.size, 3);
+});

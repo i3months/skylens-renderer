@@ -8,6 +8,10 @@
 //   probe.measure('input-to-draw', 'input', 'draw');
 //   const events = probe.events();
 
+/** marks·measurements 개수 상한(메모리 누적 방지) */
+const MAX_MARKS = 10000;
+const MAX_MEASUREMENTS = 10000;
+
 /**
  * 입력→setView→draw→present 파이프라인의 지연을 계측한다.
  *
@@ -29,6 +33,12 @@ export function createLatencyProbe({ now = () => performance.now() } = {}) {
     mark(name, id) {
       const time = now();
       const key = id !== undefined ? `${name}:${id}` : name;
+      // 이미 존재하지 않으면 개수 확인
+      if (!marks.has(key) && marks.size >= MAX_MARKS) {
+        // 상한 도달: 가장 오래된 것(삽입 순서의 첫 항목)을 버린다
+        const first = marks.keys().next().value;
+        marks.delete(first);
+      }
       marks.set(key, { time, id });
     },
 
@@ -53,6 +63,12 @@ export function createLatencyProbe({ now = () => performance.now() } = {}) {
       }
 
       const duration = to.time - from.time;
+
+      // 측정 개수 상한 확인
+      if (measurements.length >= MAX_MEASUREMENTS) {
+        // 상한 도달: 가장 오래된 것(배열의 첫 항목)을 버린다
+        measurements.shift();
+      }
 
       // 측정 기록
       measurements.push({
