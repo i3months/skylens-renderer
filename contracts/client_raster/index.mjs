@@ -389,6 +389,11 @@ export function parsePieceKey(key) {
  * keys 에 같은 key 가 여러 번 있으면 첫 등장만 남기고 나머지는 버린다(draw·pending·discard 어디에도 한 번만 나온다).
  * 호출 주기: LEVEL_ARRIVED 도착 이벤트마다 부르며 프레임마다 부르지 않는다(결과는 다음 도착까지 재사용한다).
  * 비용: key 는 한 번만 해석한다(arrived.keys 에서 해석한 결과를 keys 처리에서 재사용한다).
+ * 비용: key 당 Map get 1회·set 1회가 더 든다. 중복 key 제거(EMITTED 표시)와 해석 결과 재사용을 한 Map 이 겸하므로 key 마다 get(조회)과
+ *   set(처리 표시)이 필요하고, 중복 없는 10만 key 에서 해석 한 번만 하는 단순 구현(약 45~47 ms) 대비 약 1.6배(약 71~80 ms)다.
+ *   중복 제거를 포기하지 않는 한 key 당 get·set 을 더 줄일 수 없어 그대로 두었다(F-237 ⑤). 도착 이벤트마다 한 번 부르는 주기에서는 감수한다.
+ * completedKeys(./arrival.mjs) 주의: completedKeys 는 호출마다 pieces 전체로 색인을 다시 만든다(n=100k 한 번에 약 105 ms).
+ *   도착 이벤트마다 부르면 O(n·k) 이므로 이벤트마다 호출하지 않는다. 이벤트를 따라가는 증분 경로는 collectArrivals 다(F-237 ④).
  * @param {string[]} keys ASSET_FORMAT §11 정규 문자열
  * @param {{segmentId: number, level: number, keys: string[]}[]} arrived 받은 LEVEL_ARRIVED 마다 completedKeys 로 만든 항목
  *   (segmentId < SEGMENT_ID_LIMIT = 2^30, -0 은 거부). keys 는 그 수준의 완료 key 집합이고 모두 (segmentId, level) 의 key 여야 한다.

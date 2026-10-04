@@ -13,6 +13,8 @@ const K = Object.freeze({ fx: 1000, fy: 1000, cx: 100, cy: 100 });
 
 describe('selectDrawable: 해석 횟수', () => {
   test('key 마다 한 번만 해석한다(String.prototype.split 호출 횟수로 관측)', () => {
+    // 결합 주의: 이 계수는 parsePieceKey 가 key.split('.') 로 해석한다는 구현에 묶여 있다. parsePieceKey 가 정규식 exec 등
+    // 다른 방식으로 바뀌면 n 이 0 이 되어 이 시험이 깨진다. 그때는 계수 방식을 새 구현에 맞추되 '한 key 한 번 해석' 의미는 유지한다.
     const keys = [];
     for (let i = 0; i < 50; i++) keys.push(`7.1.${i}.0.0.0`);
     const orig = String.prototype.split;
