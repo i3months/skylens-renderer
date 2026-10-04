@@ -1,10 +1,12 @@
 // T12.5 '60만 점 구간 복호 중 메인 스레드 long task 0' 실측(헤드리스 Chromium). 기본 npm test 에 들어 있다.
 // 단언은 long task 개수(벽시계 시간 단언 아님)다. Chromium·playwright 가 없으면 이유를 출력하고 skip 하며,
-// SKYLENS_REQUIRE_GL=1 이면 skip 대신 실패한다(glSkip 규칙).
-// 방법: 60만 점 codec 1 조각을 만들어 로컬 http 로 내려주고, 페이지에서 실제 복호 Worker(worker.mjs)를 createDecodeWorkerClient 로 띄워
-// 복호 → 메인 소비(decoded.gpu 검증: 길이·origin, uploadPiece 가 하는 일) 까지 걸리는 동안 PerformanceObserver longtask 를 센다.
-// 기준은 0 이다(낮추지 않는다). 아직 0 이 아닌 동안은 todo 로 표시해 미달이 출력에 보이게 하고, 0 이 되면 todo 없이 정상 단언이 된다.
-// 측정이 유효한지 보려고 같은 조각을 메인 스레드에서 동기 복호하는 대조도 재서 보고한다(대조가 0 이면 계측이 못 잡는 것).
+// SKYLENS_REQUIRE_GL=1 이면 skip 대신 실패한다(glSkip 규칙). Chromium 은 SKYLENS_CHROMIUM 또는 기설치 Playwright Chromium 을 쓴다.
+// 방법: 60만 점 codec 1 조각을 만들어 로컬 http 로 내려주고, 페이지에서 실제 createRenderer(webgl2 canvas,
+// decode = 복호 Worker 의 client.decode)를 만들어 uploadPiece → setArrived·setView → 첫 draw 까지 걸리는 동안
+// PerformanceObserver longtask 를 센다. count·origin·길이 검사는 페이지가 흉내 내지 않고 렌더러(uploadPiece)가 한다.
+// 기준은 0 이다(낮추지 않는다). 헤드리스 Chromium 은 SwiftShader(소프트웨어 GL)로 그리므로 GPU 시간은 실제 장치와 다르다.
+// 그래서 시간 값은 출력만 하고 단언하지 않으며, long task 개수만 단언한다.
+// 측정이 유효한지 보려고 같은 조각을 메인 스레드에서 동기 복호하는 대조도 재서 long task 가 1 개 이상 잡히는지 단언한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -15,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { packChunk } from '../../../server/asset/pack/index.mjs';
 import { encodeChunk } from '../../../server/codec/chunk/index.mjs';
 import { FORMAT_POINT27 } from '../../../contracts/asset/index.mjs';
+import { decodeChunkClient } from '../../codec/index.mjs';
 import { glSkip, findChromium } from '../shader/gl_harness.mjs';
 
 const POINTS = 600_000;
@@ -88,9 +91,11 @@ function serve(chunk) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
-test('T12.5 60만 점 구간 Worker 복호 중 메인 스레드 long task 0(헤드리스 Chromium 실측)', { skip: glSkip(skipReason), timeout: 300000 }, async (t) => {
+test('T12.5 60만 점 조각 uploadPiece→첫 draw 구간 메인 스레드 long task 0(실제 createRenderer, 헤드리스 Chromium 실측)', { skip: glSkip(skipReason), timeout: 300000 }, async (t) => {
   assert.ok(!skipReason, `실제 Chromium 을 쓸 수 없음(SKYLENS_REQUIRE_GL=1): ${skipReason}`);
   const chunk = makeChunk(POINTS);
+  const h = decodeChunkClient(chunk.slice()).header;
+  const KEY = [h.segmentId, h.level, h.tileX, h.tileY, h.lod, h.chunkIndex].join('.');
   const server = await serve(chunk);
   t.after(() => { server.close(); return browser.close(); });
   const page = await browser.newPage();
@@ -98,85 +103,64 @@ test('T12.5 60만 점 구간 Worker 복호 중 메인 스레드 long task 0(헤�
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
 
-  const r = await page.evaluate(async (limitMs) => {
+  const r = await page.evaluate(async ({ key, segmentId, level }) => {
     const { createDecodeWorkerClient } = await import('/client/raster/loop/index.mjs');
-    const { toGpuPlanes } = await import('/client/raster/index.mjs');
+    const { createRenderer, toGpuPlanes } = await import('/client/raster/index.mjs');
     const { decodeChunkClient } = await import('/client/codec/index.mjs');
     const bytes = new Uint8Array(await (await fetch('/__chunk.bin')).arrayBuffer());
     const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
-    // long task 수집기. 구간마다 새로 만든다(buffered 로 이전 항목이 섞이지 않게 take 로 비운다).
+    // long task 수집기. take 가 구간마다 비운다(앞 구간 항목이 섞이지 않게 100 ms 기다린 뒤 가져온다).
     const tasks = [];
     const po = new PerformanceObserver((list) => { for (const e of list.getEntries()) tasks.push({ start: e.startTime, duration: e.duration }); });
     po.observe({ entryTypes: ['longtask'] });
-    const take = async () => { await sleep(100); po.takeRecords().forEach((e) => tasks.push({ start: e.startTime, duration: e.duration })); const o = tasks.splice(0); return o; };
+    const take = async () => { await sleep(100); po.takeRecords().forEach((e) => tasks.push({ start: e.startTime, duration: e.duration })); return tasks.splice(0); };
 
-    // 메인 스레드 생존 확인용 틱: 복호 중에도 타이머가 제때 도는지(최대 간격)
-    let maxGap = 0; let last = performance.now();
-    const ticker = setInterval(() => { const n = performance.now(); maxGap = Math.max(maxGap, n - last); last = n; }, 5);
-
-    const out = { points: 0, workerMs: 0, toGpuPlanesMs: 0 };
-    // 유휴 기준선(계측이 아무것도 안 하는 동안 long task 가 없는지)
+    const out = {};
     await sleep(300);
-    out.idleTasks = (await take()).length;
+    out.idleTasks = (await take()).length; // 유휴 기준선
 
-    // 본 측정: Worker 복호(전송 포함) + 메인에서 하는 toGpuPlanes
+    // 본 측정: 실제 렌더러(decode = Worker client.decode)로 uploadPiece 부터 첫 draw 까지
     const worker = new Worker('/client/raster/loop/worker.mjs', { type: 'module' });
     const client = createDecodeWorkerClient({ spawn: () => worker, now: () => performance.now() });
-    // 첫 요청이 모듈 로드를 기다리는 시간은 복호가 아니므로 작은 요청 하나로 Worker 를 먼저 깨운다는 가정은 쓰지 않는다: 그대로 잰다.
-    const copy = bytes.slice(); // 전송(transfer)되므로 사본을 보낸다
-    maxGap = 0; last = performance.now();
+    const canvas = document.createElement('canvas');
+    const renderer = createRenderer({ canvas, maxPieceBytes: 1 << 26, maxResidentBytes: 1 << 28, decode: (b) => client.decode(b) });
+    out.webgl2 = !!canvas.getContext('webgl2');
     const t0 = performance.now();
-    const decoded = await client.decode(copy);
+    await renderer.uploadPiece(key, bytes.slice()); // 전송(transfer)되므로 사본을 보낸다
     const t1 = performance.now();
-    out.decodePhaseTasks = (await take()).map((x) => Math.round(x.duration)); // Worker 복호·전송·응답 배달 구간만
-    // 메인 소비(uploadPiece 와 같은 일): Worker 가 gpu 를 만들었으면 길이·origin 만 검증하고 다시 계산하지 않는다.
-    // (메인 쪽 소비가 없는 통합 전 상태에서도 시험이 유효하도록 여기서 얇게 흉내 낸다. gpu 가 없으면 예전 방식으로 메인이 계산한다.)
-    const tc = performance.now();
-    let gpu = decoded.gpu;
-    if (gpu) {
-      const h = decoded.header;
-      if (gpu.count !== h.pointCount) throw new Error('gpu.count 가 pointCount 와 다름');
-      if (JSON.stringify(gpu.origin) !== JSON.stringify(h.bboxMin)) throw new Error('gpu.origin 이 bboxMin 과 다름');
-      const per = { position: 3, color: 3, normalOct: 2 };
-      for (const [k, v] of Object.entries(gpu.planes)) if (v.length !== per[k] * h.pointCount) throw new Error(`gpu 평면 ${k} 길이가 틀림`);
-    } else {
-      gpu = toGpuPlanes(decoded, decoded.header.bboxMin);
-    }
-    out.usedWorkerGpu = !!decoded.gpu;
+    renderer.setArrived([{ segmentId, level, keys: [key] }]);
+    renderer.setView({ R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [-96, 96, -40], K: { fx: 400, fy: 400, cx: 320, cy: 240 }, width: 640, height: 480, devicePixelRatio: 1 });
+    const stats = renderer.draw();
     const t2 = performance.now();
-    out.workerMs = t1 - t0; out.toGpuPlanesMs = t2 - tc; out.points = gpu.count;
-    out.workerPhaseMaxTimerGap = maxGap;
-    // 구간 분리: 위 take() 가 100 ms 기다리므로 toGpuPlanes 는 그 뒤에 시작한다(구간이 섞이지 않는다).
-    out.toGpuPlanesTasks = (await take()).map((x) => Math.round(x.duration));
-    out.workerPathTasks = [...out.decodePhaseTasks, ...out.toGpuPlanesTasks];
+    out.uploadMs = t1 - t0;
+    out.drawMs = t2 - t1;
+    out.drawnPoints = stats.drawnPoints;
+    out.realPathTasks = (await take()).map((x) => Math.round(x.duration));
     out.clientStats = client.stats();
+    renderer.dispose();
     client.terminate();
 
     // 대조: 같은 조각을 메인 스레드에서 동기 복호(기존 기본 decode). 계측이 실제 long task 를 잡는지 확인한다.
-    maxGap = 0; last = performance.now();
     await sleep(20);
     const c0 = performance.now();
-    const d = decodeChunkClient(bytes.slice());
-    toGpuPlanes(d);
+    toGpuPlanes(decodeChunkClient(bytes.slice()));
     out.controlMs = performance.now() - c0;
     out.controlTasks = (await take()).map((x) => Math.round(x.duration));
-    clearInterval(ticker); po.disconnect();
-    out.limitMs = limitMs;
+    po.disconnect();
     out.supportsLongtask = PerformanceObserver.supportedEntryTypes.includes('longtask');
     return out;
-  }, 50);
+  }, { key: KEY, segmentId: h.segmentId, level: h.level });
 
   assert.deepEqual(errors, [], `페이지 오류: ${errors.join('; ')}`);
-  console.log(`# T12.5 측정 points=${r.points} chunkBytes=${chunk.length} workerRoundTripMs=${r.workerMs.toFixed(1)} mainConsumeMs=${r.toGpuPlanesMs.toFixed(1)}`);
-  console.log(`# T12.5 측정 Worker 경로 long task 수=${r.workerPathTasks.length} 길이(ms)=[${r.workerPathTasks}] 유휴 long task=${r.idleTasks} 최대 타이머 간격=${r.workerPhaseMaxTimerGap.toFixed(1)}ms`);
-  console.log(`# T12.5 구간별 long task 복호·전송 구간=[${r.decodePhaseTasks}] 메인 소비 구간(gpu 검증, workerGpu=${r.usedWorkerGpu})=[${r.toGpuPlanesTasks}]`);
+  console.log(`# T12.5 측정(SwiftShader) chunkBytes=${chunk.length} uploadPiece ms=${r.uploadMs.toFixed(1)} setArrived·setView·draw ms=${r.drawMs.toFixed(1)} drawnPoints=${r.drawnPoints}`);
+  console.log(`# T12.5 측정 실제 경로(uploadPiece→첫 draw) long task 수=${r.realPathTasks.length} 길이(ms)=[${r.realPathTasks}] 유휴 long task=${r.idleTasks}`);
   console.log(`# T12.5 대조(메인 동기 복호) ms=${r.controlMs.toFixed(1)} long task 수=${r.controlTasks.length} 길이(ms)=[${r.controlTasks}]`);
   assert.equal(r.supportsLongtask, true, 'longtask 관찰자를 지원하지 않는 브라우저');
-  assert.equal(r.points, POINTS);
+  assert.equal(r.webgl2, true, 'webgl2 컨텍스트를 얻지 못함');
+  assert.equal(r.drawnPoints, POINTS);
   assert.equal(r.clientStats.responses, 1);
+  assert.equal(r.idleTasks, 0, `유휴 구간에 long task ${r.idleTasks} 개: 계측 기준선이 오염됨`);
   assert.ok(r.controlTasks.length > 0, '대조(메인 스레드 동기 복호)에서 long task 가 잡히지 않아 계측이 유효하지 않음');
-  // 기준 미달인 동안은 todo 로 표시한다(미달이 출력에 남고 스위트는 막지 않음). 0 이면 todo 없이 통과해야 하는 정상 단언이다.
-  if (r.workerPathTasks.length > LONG_TASK_LIMIT) t.todo(`T12.5 미달: Worker 경로 long task ${r.workerPathTasks.length} 개 [${r.workerPathTasks}] ms`);
-  assert.equal(r.workerPathTasks.length, LONG_TASK_LIMIT, `Worker 복호 경로 long task ${r.workerPathTasks.length} 개(기준 ${LONG_TASK_LIMIT})`);
+  assert.equal(r.realPathTasks.length, LONG_TASK_LIMIT, `uploadPiece→첫 draw long task ${r.realPathTasks.length} 개 [${r.realPathTasks}] ms (기준 ${LONG_TASK_LIMIT})`);
 });
