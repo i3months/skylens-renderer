@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { createRenderer, toGpuPlanes } from './index.mjs';
 import { createDecodeWorkerClient, createFrameLoop } from './loop/index.mjs';
 import { computeCoverage } from './missing/index.mjs';
-import { findChromium } from './shader/gl_harness.mjs';
+import { findChromium, glSkip } from './shader/gl_harness.mjs';
 import { decodeChunkClient } from '../codec/index.mjs';
 import { packChunk } from '../../server/asset/pack/index.mjs';
 import { ClientRasterError, FORMAT_POINT27, FORMAT_GAUSS56 } from '../../contracts/client_raster/index.mjs';
@@ -312,7 +312,7 @@ test('주입 복호: loop createDecodeWorkerClient(가짜 Worker)로 복호하�
 const CHROME = findChromium();
 const RENDERER_URL = new URL('./index.mjs', import.meta.url).href;
 
-test('실제 WebGL2: .skla 조각을 올려 그리면 알려진 4픽셀이 정답 색이고 도착 전 조각·빈 칸은 검다', { skip: CHROME ? false : 'Chromium 없음' }, () => {
+test('실제 WebGL2: .skla 조각을 올려 그리면 알려진 4픽셀이 정답 색이고 도착 전 조각·빈 칸은 검다', { skip: glSkip(CHROME ? null : 'Chromium 없음') }, () => {
   // 32×24, fx = fy = 20, cx = 16.5, cy = 12.5, R = I, t = (−1, −1, 0): 세계 (e, n, 5) → u = 4(e − 1) + 16.5, v = 4(n − 1) + 12.5
   // 점 지름 0.05 m → 반경 0.1 px 이라 중심 칸 하나만 칠한다. 법선 (0,0,1) 과 빛 (0,0,1) 이라 I = 1, 색 그대로.
   const kDraw = '3.1.0.0.0.0';
