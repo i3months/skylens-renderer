@@ -9,12 +9,22 @@ export const POINT_MIN_PER_BUILDING = 8;
 export const POINT_MAX_PER_BUILDING = 2000;
 /** 위를 향한 삼각형(지붕) 판정 문턱: 법선 z 성분 비율이 이 값보다 크면 지붕. */
 export const ROOF_NORMAL_Z_MIN = 0.5;
+/** 아래를 향한 삼각형(바닥 덮개) 판정 문턱: 법선 z 성분 비율이 -이 값보다 작으면 바닥. 바닥은 보이지 않으므로 표본을 뿌리지 않는다. */
+export const FLOOR_NORMAL_Z_MAX = 0.5;
 
 export const DEFAULT_POINT_RULE = Object.freeze({
   density: POINT_DENSITY_PER_M2,
   min: POINT_MIN_PER_BUILDING,
   max: POINT_MAX_PER_BUILDING,
 });
+
+// 규칙 검증: density 는 0 이상 유한수, min·max 는 0 이상 정수이고 min <= max. 빈 객체·NaN 은 조용히 0점이 되므로 던진다.
+function checkRule(rule) {
+  if (!rule || !Number.isFinite(rule.density) || rule.density < 0
+    || !Number.isInteger(rule.min) || !Number.isInteger(rule.max) || rule.min < 0 || rule.min > rule.max) {
+    throw new TowerAssetError('points: rule 은 {density>=0 유한, min<=max 인 0 이상 정수} 여야 한다');
+  }
+}
 
 /**
  * 동별 표본 수 = clamp(ceil((지붕 넓이 + 벽 넓이) × 밀도), 최소, 최대).
@@ -24,6 +34,7 @@ export const DEFAULT_POINT_RULE = Object.freeze({
  * @param {{density:number,min:number,max:number}} [rule]
  */
 export function samplesFor(areaM2, heightM, rule = DEFAULT_POINT_RULE) {
+  checkRule(rule);
   if (!(areaM2 >= 0) || !(heightM >= 0) || !Number.isFinite(areaM2) || !Number.isFinite(heightM)) {
     throw new TowerAssetError('samplesFor: 넓이·높이는 0 이상의 유한수여야 한다');
   }
@@ -62,8 +73,15 @@ function seedOf(id) {
 export function sampleBuildingPoints(mesh, id, rule = DEFAULT_POINT_RULE) {
   if (!mesh || !mesh.positions || !mesh.indices) throw new TowerAssetError('sampleBuildingPoints: mesh 가 필요하다');
   const p = mesh.positions, idx = mesh.indices;
+  checkRule(rule);
   const tris = idx.length / 3;
   if (!Number.isInteger(tris) || tris < 1) throw new TowerAssetError('sampleBuildingPoints: 삼각형이 없다');
+  for (let i = 0; i < p.length; i++) {
+    if (!Number.isFinite(p[i])) throw new TowerAssetError('sampleBuildingPoints: 정점 좌표가 유한하지 않다');
+  }
+  for (let i = 0; i < idx.length; i++) {
+    if (!(idx[i] * 3 + 2 < p.length)) throw new TowerAssetError('sampleBuildingPoints: 인덱스가 정점 범위 밖이다');
+  }
   const cum = new Float64Array(tris);
   let total = 0, roof = 0, zMin = Infinity, zMax = -Infinity;
   for (let t = 0; t < tris; t++) {
@@ -72,7 +90,9 @@ export function sampleBuildingPoints(mesh, id, rule = DEFAULT_POINT_RULE) {
     const vx = p[c] - p[a], vy = p[c + 1] - p[a + 1], vz = p[c + 2] - p[a + 2];
     const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
     const len = Math.hypot(nx, ny, nz);
-    const area = len / 2;
+    // 아래 향 삼각형(바닥 덮개)은 넓이를 0 으로 세어 cum 에서 뺀다. 이진 탐색은 구간 폭 0 칸을 고르지 않는다.
+    const down = len > 0 && nz / len < -FLOOR_NORMAL_Z_MAX;
+    const area = down ? 0 : len / 2;
     if (len > 0 && nz / len > ROOF_NORMAL_Z_MIN) roof += area;
     total += area;
     cum[t] = total;

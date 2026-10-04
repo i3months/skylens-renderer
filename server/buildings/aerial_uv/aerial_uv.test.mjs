@@ -55,6 +55,7 @@ function sampleDecoded(img, u, v) {
 }
 
 // 정답 픽셀: 정점 ENU 위치에서 독립적으로 계산(행 0 = 북쪽 끝).
+// 구현식과 대수적으로 같은 식이라 이 함수만으로는 관례 오류를 못 잡는다 — 아래 '픽셀 중심' 시험이 반대 방향(픽셀 → ENU)으로 독립 검증한다.
 function truthPixel(img, x, y) {
   const { minX, minY, maxX, maxY } = img.bounds;
   const col = Math.min(Math.floor(((x - minX) / (maxX - minX)) * img.width), img.width - 1);
@@ -96,19 +97,27 @@ test('기준 숫자: 지붕·벽 UV 리터럴', () => {
   assert.deepEqual(aerialUvOf(100, 0, img.bounds), [1, 1]);
 });
 
-test('벽은 바닥 외곽 위치를 수직으로 늘려 샘플: 위·아래 정점 UV 동일, 지붕 모서리와도 동일', () => {
+test('벽·바닥 정점은 영상 UV 를 쓰지 않는다: wallMask 1, 지붕 정점은 0', () => {
   const bounds = { minX: -40, minY: 10, maxX: 60, maxY: 90 };
   const img = codedImage(8, 8, bounds);
   const ring = [[-10, 20], [30, 25], [20, 70], [-5, 60]];
-  const { mesh } = prism(ring, 15);
-  const { uv } = buildAerialUv(mesh, img);
-  for (let e = 0; e < ring.length; e++) {
-    const b = e * 4;
-    assert.deepEqual([uv[2 * b], uv[2 * b + 1]], [uv[2 * (b + 3)], uv[2 * (b + 3) + 1]]);
-    assert.deepEqual([uv[2 * (b + 1)], uv[2 * (b + 1) + 1]], [uv[2 * (b + 2)], uv[2 * (b + 2) + 1]]);
-    const r = ring.length * 4 + e;
-    assert.deepEqual([uv[2 * b], uv[2 * b + 1]], [uv[2 * r], uv[2 * r + 1]]);
-  }
+  const { mesh, kind } = prism(ring, 15);
+  const { uv, wallMask } = buildAerialUv(mesh, img);
+  assert.ok(wallMask instanceof Uint8Array);
+  assert.equal(wallMask.length, uv.length / 2);
+  kind.forEach((k, i) => assert.equal(wallMask[i], k === 'wall' ? 1 : 0, `정점 ${i} (${k})`));
+  // 지붕 정점 UV 는 그대로 평면 투영
+  const r = ring.length * 4;
+  assert.deepEqual([uv[2 * r], uv[2 * r + 1]], aerialUvOf(ring[0][0], ring[0][1], bounds).map(Math.fround));
+});
+
+test('지붕과 벽이 정점을 공유하면 지붕으로 친다(mask 0), 아래 향 면만 쓰는 정점은 mask 1', () => {
+  const img = codedImage(4, 4, { minX: 0, minY: 0, maxX: 10, maxY: 10 });
+  // 정점 0..2 = 지붕(z=5, 위 향), 정점 3 = 바닥 z=0. 벽 삼각형 (0,1,3) 은 수직이 아니어도 위 향이 아니면 mask 에 기여 안 함.
+  const positions = new Float32Array([1, 1, 5, 6, 1, 5, 1, 6, 5, 1, 1, 0, 6, 1, 0, 1, 6, 0]);
+  const indices = new Uint32Array([0, 1, 2, 3, 5, 4]); // 지붕(위), 바닥(아래)
+  const { wallMask } = buildAerialUv({ positions, indices }, img);
+  assert.deepEqual([...wallMask], [0, 0, 0, 1, 1, 1]);
 });
 
 test('알려진 색 블록: 지붕·벽 정점이 자기 블록 색을 샘플', () => {
@@ -190,4 +199,39 @@ test('결정적: 같은 입력 → 같은 바이트', () => {
   const [{ mesh }] = randomPrisms(ALIGN_BOUNDS, 1, 42);
   const a = buildAerialUv(mesh, img).uv, b = buildAerialUv(mesh, img).uv;
   assert.deepEqual(Buffer.from(a.buffer), Buffer.from(b.buffer));
+});
+
+test('독립 정답: 픽셀 (col, row) 중심의 ENU 위치에 선 정점은 그 픽셀을 샘플한다(행 0 = 북)', () => {
+  // 영상 5×3 px, 폭 50 m × 높이 30 m → 픽셀 한 변 10 m. 픽셀 중심 ENU 는 구현식과 무관하게 손으로 만든다:
+  //   동쪽으로 col 이 늘고(x = minX + 10·col + 5), 남쪽으로 row 가 는다(y = maxY − 10·row − 5). 행 0 = 북쪽 끝.
+  const bounds = { minX: 100, minY: -20, maxX: 150, maxY: 10 };
+  const img = codedImage(5, 3, bounds);
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 5; col++) {
+    const x = 100 + 10 * col + 5, y = 10 - 10 * row - 5;
+    const { uv } = buildAerialUv({ positions: new Float32Array([x, y, 0]), indices: new Uint32Array(0) }, img);
+    assert.deepEqual(sampleDecoded(img, uv[0], uv[1]), { col, row }, `픽셀 (${col},${row})`);
+  }
+  // 북쪽 끝 y = maxY 는 행 0, 남쪽 끝 y = minY 는 마지막 행
+  assert.equal(aerialUvOf(125, 10, bounds)[1], 0);
+  assert.equal(aerialUvOf(125, -20, bounds)[1], 1);
+});
+
+test('Float32 정점이 double 경계 밖으로 반올림돼도 fround(경계)까지는 허용', () => {
+  // fround(0.1) > 0.1, fround(-0.1) < -0.1
+  assert.ok(Math.fround(0.1) > 0.1 && Math.fround(-0.1) < -0.1);
+  const img = codedImage(4, 4, { minX: -0.1, minY: -0.1, maxX: 0.1, maxY: 0.1 });
+  const tri = (x, y) => ({ positions: new Float32Array([x, y, 0, 0, 0, 0, 0, 0, 0]), indices: new Uint32Array(0) });
+  for (const [x, y] of [[0.1, 0.1], [-0.1, -0.1], [0.1, -0.1], [-0.1, 0.1]]) {
+    const { uv } = buildAerialUv(tri(x, y), img);
+    for (const c of uv) assert.ok(c >= 0 && c <= 1);
+  }
+  // 한 Float32 단계 더 밖은 여전히 거부
+  assert.throws(() => buildAerialUv(tri(Math.fround(0.1) * 1.001, 0), img), TowerAssetError);
+});
+
+test('aerialUvOf: bounds 검증', () => {
+  assert.throws(() => aerialUvOf(0, 0, undefined), TowerAssetError);
+  assert.throws(() => aerialUvOf(0, 0, { minX: 0, minY: 0, maxX: 0, maxY: 1 }), TowerAssetError);
+  assert.throws(() => aerialUvOf(0, 0, { minX: 0, minY: 0, maxX: NaN, maxY: 1 }), TowerAssetError);
+  assert.throws(() => aerialUvOf(0, 0, { minX: 0, minY: 1, maxX: 1, maxY: 0 }), TowerAssetError);
 });
