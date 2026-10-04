@@ -5,7 +5,7 @@
 export const TERRAIN_TILE_SIZE_M = 64;
 /** 지형 LOD 단계 수. 0 = 원본 DEM 격자, 단계가 오를 때마다 한 변 셀 수가 절반. */
 export const TERRAIN_LOD_COUNT = 4;
-/** 지형 LOD 단계별 높이 오차 상한(m): 원본 DEM 대비 |LOD 높이 − 원본 높이| 의 최댓값이 이 값 이하다. */
+/** 지형 LOD 단계별 높이 오차 상한(m): 내보내는 삼각형 메시 표면과 원본 DEM 표본의 높이 차 최댓값이 이 값 이하다(메시 표면 기준, 결정 0044 §5). */
 export const TERRAIN_LOD_MAX_ERROR_M = Object.freeze([0, 0.5, 1, 2]);
 /** 드레이프 밉 단계 수. 0 = 가장 세밀. */
 export const DRAPE_MIP_COUNT = 4;
@@ -38,8 +38,10 @@ export function buildingHeightM(floors) {
  * @typedef {{ positions:Float32Array, indices:Uint32Array }} Mesh  positions = xyz 연속, indices = 삼각형(반시계, 위에서 볼 때).
  * @typedef {{ id:number, ring:Array<[number,number]>, floors?:number|null }} Footprint
  *   id 는 안정 식별자(u32). ring = 외곽 ENU xy, 닫지 않은 단순 다각형(첫 점 반복 없음), 방향은 임의.
- * @typedef {{ tx:number, ty:number, mip:number, width:number, height:number, rgb:Uint8Array }} DrapeTile
- *   rgb = width·height·3, 행 우선 위에서 아래(북 → 남). 타일 범위는 지형 타일과 같다.
+ * @typedef {{ complete:boolean, fraction:number, mask:Uint8Array, bounds:Bounds }} DrapeCoverage
+ *   영상이 덮은 부분. mask 는 화소별 0(자료 없음)~255(완전히 덮임). mask 0 인 화소의 rgb 는 영상이 아니다(채우지 않는다, 결정 0044 §2).
+ * @typedef {{ tx:number, ty:number, mip:number, width:number, height:number, rgb:Uint8Array, coverage:DrapeCoverage }} DrapeTile
+ *   rgb = width·height·3, 행 우선 위에서 아래(북 → 남, 행 0 = 북). 타일 범위는 지형 타일과 같다.
  * @typedef {{ minX:number, minY:number, maxX:number, maxY:number }} Bounds
  */
 
