@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createStatusView, loadDefaultModules } from './index.mjs';
-import { createMockRenderServer, SCENARIO_EVENTS, COUNTS, countOfTestChunk, pieceKeyOf, feed } from './mock_server.mjs';
+import { createMockRenderServer, SCENARIO_EVENTS, COUNTS, countOfTestChunk, pieceKeyOf, feed, testChunk } from './mock_server.mjs';
 
 test('실제 모듈 조립: 3구간 × 4수준 재생의 그림·노출·안내·해제·폴백·카메라', async () => {
   const modules = await loadDefaultModules();
@@ -154,7 +154,7 @@ test('실제 모듈 조립: 받은 조각은 요청에 0 건, 요청은 MISSING 
   assert.equal(made.planners.length, 3);
 });
 
-test('실제 모듈 조립: 교체 N 번 + frame() 뒤 levels 의 해제 누적이 비어 있고 해제된 수준의 pieceSeq 색인이 없다', async () => {
+test('실제 모듈 조립: 교체 N 번 + frame() 뒤 levels 의 해제 누적이 비어 있고 해제된 수준의 재전송 창은 무시된다', async () => {
   const { modules, made } = await spiedModules();
   const view = createStatusView({ modules, countOf: countOfTestChunk });
   const server = createMockRenderServer();
@@ -169,8 +169,9 @@ test('실제 모듈 조립: 교체 N 번 + frame() 뒤 levels 의 해제 누적�
   // 생성 때 하나, 첫 WELCOME(resumed=false) 때 하나
   assert.equal(made.levels.length, 2);
   assert.equal(made.levels[1].released().length, 0);
-  // 해제된 창(구간 0 수준 0 = pieceSeq 1..2)의 LEVEL_ARRIVED 를 다시 보내면 색인이 없어 모자란 창(TypeError)
-  assert.throws(() => view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 2, firstPieceSeq: 1 }), TypeError);
+  // 해제된 창(구간 0 수준 0 = pieceSeq 1..2)의 LEVEL_ARRIVED 재전송은 끝난 창이라 조용히 무시한다(그림·해제 불변)
+  view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 2, firstPieceSeq: 1 });
+  assert.deepEqual(view.frame().releasedKeys, []);
   // 그리는 수준(구간 0 수준 3)의 창은 남아 있다. 손 계산: 앞선 이벤트 조각 수 2+1+2+2+1+3+2+3+1 = 17 → 첫 pieceSeq 18
   let first03 = 1;
   for (const [seg, level] of SCENARIO_EVENTS) {
@@ -180,9 +181,152 @@ test('실제 모듈 조립: 교체 N 번 + frame() 뒤 levels 의 해제 누적�
   assert.equal(first03, 18);
   view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 3, pieceCount: 2, firstPieceSeq: 18 });
   assert.equal(view.frame().reveal.renderPointCount, 1250);
-  // 새 세션으로 넘어가면 앞 levels 인스턴스는 버려지고 새 인스턴스도 누적이 비어 있다
-  feed(view, createMockRenderServer({ sessionId: 9 }).welcome(false));
+  // 새 세션으로 넘어가면 앞 levels 인스턴스는 버려진다. 새 인스턴스에서 교체 1 번 + frame() 뒤에도 누적이 비어 있다
+  const b = createMockRenderServer({ sessionId: 9 });
+  feed(view, b.welcome(false));
   view.frame();
   assert.equal(made.levels.length, 3);
+  feed(view, b.levelArrival(0, 0));
+  feed(view, b.levelArrival(0, 1)); // 0:0→1 교체
+  assert.deepEqual(view.frame().releasedKeys, ['0.0.0.0.0.0', '0.0.0.0.0.1']);
   assert.equal(made.levels[2].released().length, 0);
+});
+
+// 구간 0 만 쓰는 점 수 표: 수준마다 조각 1 개
+const SEG0 = [[[5], [6], [7], [8]]];
+
+test('실제 모듈 조립: 이어받기 재전송(F-295) — 해제된 조각의 PIECE·LEVEL_ARRIVED 는 조용히 무시, 다른 key 는 TypeError', async () => {
+  const modules = await loadDefaultModules();
+  const view = createStatusView({ modules, countOf: countOfTestChunk });
+  const a = createMockRenderServer({ sessionId: 1, counts: SEG0 });
+  feed(view, a.welcome(false));
+  const l0 = a.levelArrival(0, 0); // PIECE 1, LEVEL_ARRIVED(0,0)
+  const l1 = a.levelArrival(0, 1); // PIECE 2, LEVEL_ARRIVED(0,1) → 0.0 해제
+  feed(view, [...l0, ...l1]);
+  let f = view.frame();
+  assert.deepEqual(f.drawKeys, ['0.1.0.0.0.0']);
+  assert.deepEqual(f.releasedKeys, ['0.0.0.0.0.0']);
+  // ACK 전에 끊겨 이어받기: 같은 네 메시지가 다시 온다
+  feed(view, a.welcome(true));
+  feed(view, [...l0, ...l1]);
+  f = view.frame();
+  assert.deepEqual(f.drawKeys, ['0.1.0.0.0.0']);
+  assert.deepEqual(f.releasedKeys, []);
+  assert.deepEqual(f.reveal, { visible: [0], hidden: [], renderPointCount: 6 });
+  // 재전송 LEVEL_ARRIVED(0,0) 만 한 번 더 와도 상태 불변
+  feed(view, [l0[1]]);
+  f = view.frame();
+  assert.deepEqual(f.drawKeys, ['0.1.0.0.0.0']);
+  assert.deepEqual(f.releasedKeys, []);
+  // 해제된 pieceSeq 1 이 다른 key 로 오면 여전히 TypeError, 그 뒤에도 상태 불변
+  assert.throws(() => view.handle({ type: 'PIECE', pieceSeq: 1, key: pieceKeyOf(0, 0, 3), chunk: testChunk(1) }), TypeError);
+  assert.throws(() => view.handle({ type: 'PIECE', pieceSeq: 2, key: pieceKeyOf(0, 1, 3), chunk: testChunk(1) }), TypeError);
+  // 이어서 수준 2 가 오면 0.1 만 해제되고 0.0 은 다시 나오지 않는다
+  feed(view, a.levelArrival(0, 2));
+  f = view.frame();
+  assert.deepEqual(f.drawKeys, ['0.2.0.0.0.0']);
+  assert.deepEqual(f.releasedKeys, ['0.1.0.0.0.0']);
+});
+
+test('실제 모듈 조립: 건너뛴(skip) 창은 장부에서 끝나 재전송이 levels 로 다시 가지 않는다(F-296 ③)', async () => {
+  const { modules, made } = await spiedModules();
+  let arriveCalls = 0;
+  const realCreate = modules.levels.createStatusLevels;
+  const levels = {
+    createStatusLevels: () => {
+      const l = realCreate();
+      const arrive = l.arrive;
+      return { ...l, arrive: (...args) => { arriveCalls += 1; return arrive(...args); } };
+    },
+  };
+  const view = createStatusView({ modules: { ...modules, levels }, countOf: countOfTestChunk });
+  const a = createMockRenderServer({ sessionId: 3, counts: SEG0 });
+  feed(view, a.welcome(false));
+  feed(view, a.levelArrival(0, 3)); // pieceSeq 1
+  const late = a.levelArrival(0, 1); // pieceSeq 2, 추월당해 skip
+  feed(view, late);
+  assert.equal(arriveCalls, 2);
+  assert.equal(made.levels.length, 2);
+  // skip 된 창(pieceSeq 2)의 재전송: PIECE·LEVEL_ARRIVED 모두 levels 를 부르지 않고 상태 불변
+  feed(view, late);
+  feed(view, a.welcome(true));
+  feed(view, late);
+  assert.equal(arriveCalls, 2);
+  const f = view.frame();
+  assert.deepEqual(f.drawKeys, ['0.3.0.0.0.0']);
+  assert.deepEqual(f.releasedKeys, []);
+  assert.throws(() => view.handle({ type: 'PIECE', pieceSeq: 2, key: pieceKeyOf(0, 1, 1), chunk: testChunk(1) }), TypeError);
+});
+
+test('실제 모듈 조립: 새 세션 전후 같은 key 가 두 번 해제돼도 releasedKeys 에는 한 번만(F-296 ①)', async () => {
+  const modules = await loadDefaultModules();
+  const view = createStatusView({ modules, countOf: countOfTestChunk });
+  const a = createMockRenderServer({ sessionId: 1 });
+  feed(view, a.welcome(false));
+  feed(view, a.levelArrival(0, 0));
+  assert.deepEqual(view.frame().drawKeys, ['0.0.0.0.0.0', '0.0.0.0.0.1']);
+  const b = createMockRenderServer({ sessionId: 2 });
+  feed(view, b.welcome(false)); // 앞 세션 0.0.* 해제 대기
+  feed(view, b.levelArrival(0, 0)); // 새 세션이 같은 key 를 다시 도착
+  feed(view, b.levelArrival(0, 1)); // frame() 없이 교체 → 0.0.* 해제가 또 생긴다
+  const f = view.frame();
+  assert.deepEqual(f.drawKeys, ['0.1.0.0.0.0', '0.1.0.0.0.1']);
+  assert.equal(f.releasedKeys.length, 2);
+  assert.equal(new Set(f.releasedKeys).size, 2);
+  assert.deepEqual(f.releasedKeys, ['0.0.0.0.0.0', '0.0.0.0.0.1']);
+});
+
+test('실제 모듈 조립: MISSING → 조각 도착 → requests() 에 받은 key 0 건(F-291)', async () => {
+  const index = (seg) => [0, 1].flatMap((lv) => [pieceKeyOf(seg, lv, 0), pieceKeyOf(seg, lv, 1)]);
+  const modules = await loadDefaultModules();
+  const view = createStatusView({ modules, countOf: countOfTestChunk, pieceIndex: index });
+  const server = createMockRenderServer();
+  feed(view, server.welcome(false));
+  // 구간 0: MISSING 뒤 수준 0 조각 두 개만 도착(LEVEL_ARRIVED 전) → 받은 0.0.* 는 빼고 0.1.* 만
+  feed(view, server.missing(0));
+  const l00 = server.levelArrival(0, 0);
+  feed(view, l00.slice(0, 2));
+  let req = view.requests();
+  const items = req.flatMap((r) => r.items);
+  assert.deepEqual(items, [pieceKeyOf(0, 1, 0), pieceKeyOf(0, 1, 1)]);
+  assert.equal(req[0].reqId, 0);
+  // 구간 2: MISSING 뒤 수준 1 이 통째로 도착 → 구간이 도착했으니 요청 0 건
+  feed(view, server.missing(2));
+  feed(view, server.levelArrival(2, 1));
+  assert.deepEqual(view.requests(), []);
+  // 구간 1: MISSING 뒤 색인 key 를 모두 받음 → 요청 0 건
+  const idx1 = createStatusView({ modules, countOf: countOfTestChunk, pieceIndex: (seg) => [pieceKeyOf(seg, 0, 0)] });
+  const s1 = createMockRenderServer();
+  feed(idx1, s1.welcome(false));
+  feed(idx1, s1.missing(1));
+  feed(idx1, s1.levelArrival(1, 0).slice(0, 1));
+  assert.deepEqual(idx1.requests(), []);
+  // 다음 요청은 reqId 가 이어진다(planner 에 빈 요청을 넣지 않는다)
+  feed(view, l00.slice(2));
+  feed(view, server.missing(1));
+  req = view.requests();
+  assert.deepEqual(req.map((r) => r.reqId), [1]);
+  assert.deepEqual(req[0].items, index(1));
+});
+
+function timeMissing(modules, n) {
+  const view = createStatusView({ modules, countOf: countOfTestChunk, pieceIndex: (seg) => [pieceKeyOf(seg, 0, 0)] });
+  feed(view, createMockRenderServer().welcome(false));
+  const msgs = [];
+  for (let s = 0; s < n; s += 1) msgs.push({ type: 'MISSING', segmentId: s });
+  const t0 = performance.now();
+  for (const m of msgs) view.handle(m);
+  const ms = performance.now() - t0;
+  assert.equal(view.requests().reduce((a, r) => a + r.items.length, 0), n);
+  return ms;
+}
+
+test('실제 모듈 조립: 4000 구간 MISSING 4000 건이 100 ms 안(구간당 O(1) 도착 질의, F-296 ②)', async () => {
+  const modules = await loadDefaultModules();
+  timeMissing(modules, 1000); // 데우기
+  const t1000 = Math.min(timeMissing(modules, 1000), timeMissing(modules, 1000));
+  const t4000 = Math.min(timeMissing(modules, 4000), timeMissing(modules, 4000));
+  assert.ok(t4000 < 100, `4000 건 ${t4000.toFixed(1)} ms`);
+  // 선형이면 ≈ 4, 구간마다 전체 복사(제곱)면 ≈ 16. 잡음을 감안해 8 미만
+  assert.ok(t4000 / Math.max(t1000, 1) < 8, `시간비 ${(t4000 / t1000).toFixed(2)} (1000 건 ${t1000.toFixed(1)} ms, 4000 건 ${t4000.toFixed(1)} ms)`);
 });

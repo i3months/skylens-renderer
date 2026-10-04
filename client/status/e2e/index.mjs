@@ -13,14 +13,17 @@
 //      않은 칸은 비운다. 이전 세션 데이터로 채우거나 보간하지 않는다). 앞 세션에서 알던 구간은 도착 전(hidden·'없음')으로 남고,
 //      앞 세션이 그리던 key 는 모두 다음 frame().releasedKeys 로 나가 호출자가 해제한다. resumed=true 는 같은 세션의 이어받기라
 //      색인·수준 상태·요청 계획을 그대로 잇는다(앞 sessionId 와 다르면 거부).
-//   ③ 해제: levels 의 해제 누적은 교체가 받아들여질 때마다 levels.released() 로 비워 frame() 의 releasedKeys 로 한 번씩 낸다.
-//      해제된 key 의 pieceSeq 색인은 그때 지운다. releasedKeys 는 같은 frame 의 drawKeys 와 겹치지 않는다(새 세션이 같은 key 를
-//      다시 도착시켰으면 해제하지 않는다).
+//   ③ 해제: levels 의 해제 누적은 교체가 받아들여질 때마다 levels.released() 로 비워 frame() 의 releasedKeys 로 한 번씩 낸다
+//      (같은 key 는 frame 하나에 한 번). releasedKeys 는 같은 frame 의 drawKeys 와 겹치지 않는다(새 세션이 같은 key 를 다시
+//      도착시켰으면 해제하지 않는다). 해제된 key 와 건너뛴(skip) 창의 pieceSeq 는 무거운 색인에서 빼고 'pieceSeq → key' 만 남긴다.
 //   ④ 요청: 조각 요청(requests())은 아직 받지 않은 PieceKey 만 낸다. 입력은 호출자가 넘기는 자산 색인 options.pieceIndex 이고,
-//      MISSING(구간) 을 받았을 때 그 구간이 아직 도착 전이면 색인의 key 중 이 세션에서 받지 않은 것을 planner 에 넣는다.
-//      pieceIndex 가 없으면 요청은 없다(이미 받은 조각을 다시 요청하지 않는다).
+//      MISSING(구간) 을 받았을 때 그 구간이 아직 도착 전이면 색인의 key 중 이 세션에서 받지 않은 것을 후보로 모은다. 후보는
+//      requests() 때 다시 걸러(그 사이 받은 key·도착한 구간은 뺀다) planner 에 넣는다. pieceIndex 가 없으면 요청은 없다.
+//   ⑤ 재전송: 해제·건너뜀으로 끝난 pieceSeq 의 PIECE(같은 key)와 끝난 조각이 든 창의 LEVEL_ARRIVED 는 이어받기(resumed=true)
+//      재전송으로 보고 조용히 무시한다(다시 그리지도, releasedKeys 에 다시 내지도 않는다). 같은 pieceSeq 다른 key 는 여전히 TypeError.
 // 위반은 모두 TypeError/RangeError 이고 던질 때 상태는 바뀌지 않는다(검사를 모두 끝낸 뒤에 바꾼다).
-// 원칙: 도착한 것만 그린다. 그림 목록은 levels.drawKeys 뿐이고, 도착 전 구간은 reveal.hidden·notices 로만 나타난다.
+// 원칙: 도착한 것만 그린다. 그림 목록은 levels.snapshots() 의 조각 key(= levels.drawKeys) 뿐이고, 도착 전 구간은
+// reveal.hidden·notices 로만 나타난다.
 import { pieceKeyToString } from '../../../contracts/client_raster/arrival.mjs';
 import { STATUS_INPUT_MESSAGES } from '../../../contracts/statusview/index.mjs';
 
@@ -94,12 +97,18 @@ export function createStatusView(options) {
   let levels = modules.levels.createStatusLevels();
   const fallback = modules.fallback.createFallbackController();
 
-  // 받은 조각 색인(한 세션): pieceSeq -> {key, pieceKey, segmentId, level, count}
-  let bySeq = new Map();
-  let seqsByKey = new Map(); // key -> 그 key 를 가진 pieceSeq 목록(해제 때 bySeq 항목을 지우려고)
+  // 받은 조각 장부(한 세션). 받은 pieceSeq 는 둘 중 하나에만 있다.
+  //   live    : pieceSeq -> {key, count}  아직 창이 오지 않았거나 그리는 수준의 조각
+  //   retired : pieceSeq -> key  해제·건너뜀으로 끝난 조각(재전송을 알아보고 다른 key 를 거부하려고 key 만 남긴다)
+  let live = new Map();
+  let retired = new Map();
+  let liveSeqsByKey = new Map(); // key -> 그 key 를 가진 live pieceSeq 목록(해제 때 live 항목을 옮기려고)
+  let receivedKeys = new Set(); // 이 세션에서 받은 key(요청에서 뺀다)
+  let arrivedSegments = new Set(); // 이 세션에서 LEVEL_ARRIVED 가 받아진 구간(MISSING 요청 판단, O(1))
+  let pendingAsks = []; // MISSING 때 모은 요청 후보 [{segmentId, keys}] — requests() 때 다시 걸러 planner 에 넣는다
   let maxSeq = 0;
   let sessionId; // 앞서 본 WELCOME 의 sessionId
-  let pendingReleased = []; // frame() 이 아직 내주지 않은 해제 key
+  let pendingReleased = new Set(); // frame() 이 아직 내주지 않은 해제 key(같은 key 는 한 번만)
   let view = null;
   let markers = [];
   let viewSeq = 0;
@@ -113,16 +122,22 @@ export function createStatusView(options) {
     }
     if (!m.resumed) {
       // 새 세션: 앞 세션의 그림은 모두 해제하고, 알던 구간은 도착 전 칸으로 비운다.
-      const known = levels.snapshots().map((s) => s.segmentId);
-      const out = pendingReleased.concat(levels.released(), levels.drawKeys());
+      const states = levels.snapshots();
+      const out = new Set(pendingReleased);
+      for (const k of levels.released()) out.add(k);
+      for (const s of states) for (const p of s.pieces) out.add(p.key);
       const nextLevels = modules.levels.createStatusLevels();
-      for (const id of known) nextLevels.expect(id);
+      for (const s of states) nextLevels.expect(s.segmentId);
       const nextPlanner = modules.arrival.createArrivalPlanner();
       levels = nextLevels;
       planner = nextPlanner;
       pendingReleased = out;
-      bySeq = new Map();
-      seqsByKey = new Map();
+      live = new Map();
+      retired = new Map();
+      liveSeqsByKey = new Map();
+      receivedKeys = new Set();
+      arrivedSegments = new Set();
+      pendingAsks = [];
       maxSeq = 0;
     }
     fallback.handle({ kind: 'connected' });
@@ -134,22 +149,37 @@ export function createStatusView(options) {
     if (!isObject(m.key)) throw new TypeError('PIECE key 는 PieceKey 객체여야 한다');
     const key = keyString(m.key);
     if (!(m.chunk instanceof Uint8Array)) throw new TypeError('PIECE chunk 는 Uint8Array 여야 한다');
-    const prev = bySeq.get(seq);
+    const prev = live.has(seq) ? live.get(seq).key : retired.get(seq);
     if (prev !== undefined) {
-      if (prev.key !== key) throw new TypeError(`pieceSeq ${seq} 가 두 key 에 쓰였다: ${prev.key}, ${key}`);
-      return; // 재전송: 한 조각
+      if (prev !== key) throw new TypeError(`pieceSeq ${seq} 가 두 key 에 쓰였다: ${prev}, ${key}`);
+      return; // 재전송: 한 조각(해제·건너뜀으로 끝난 조각이면 다시 그리지도 해제하지도 않는다)
     }
     if (seq <= maxSeq) throw new RangeError(`pieceSeq ${seq} 가 재전송이 아닌데 받은 가장 큰 pieceSeq ${maxSeq} 이하`);
     if (typeof countOf !== 'function') throw new TypeError('PIECE 의 점 수를 셀 countOf 가 주입되지 않았다');
     const count = countOf(m.chunk);
     if (!Number.isSafeInteger(count) || count < 0) throw new TypeError(`countOf 결과는 0 이상 안전 정수여야 한다: ${String(count)}`);
-    bySeq.set(seq, { key, pieceKey: copyKey(m.key), segmentId: m.key.segmentId, level: m.key.level, count: count === 0 ? 0 : count });
-    const seqs = seqsByKey.get(key);
-    if (seqs === undefined) seqsByKey.set(key, [seq]);
+    live.set(seq, { key, count: count === 0 ? 0 : count });
+    const seqs = liveSeqsByKey.get(key);
+    if (seqs === undefined) liveSeqsByKey.set(key, [seq]);
     else seqs.push(seq);
+    receivedKeys.add(key);
     maxSeq = seq;
   }
 
+  /** live pieceSeq 하나를 retired 로 옮긴다(key 만 남긴다). */
+  function retireSeq(seq) {
+    const p = live.get(seq);
+    if (p === undefined) return;
+    live.delete(seq);
+    retired.set(seq, p.key);
+    const seqs = liveSeqsByKey.get(p.key);
+    if (seqs === undefined) return;
+    const i = seqs.indexOf(seq);
+    if (i >= 0) seqs.splice(i, 1);
+    if (seqs.length === 0) liveSeqsByKey.delete(p.key);
+  }
+
+  /** 창의 조각을 검사한다. 돌려주는 값: {pieces: live 항목 목록, seqs, done: 창에 이미 끝난(retired) 조각이 있는가}. */
   function windowPieces(m) {
     const { segmentId, level } = m;
     if (!Number.isInteger(segmentId) || Object.is(segmentId, -0) || segmentId < 0) throw new TypeError(`LEVEL_ARRIVED segmentId 가 틀림: ${String(segmentId)}`);
@@ -157,44 +187,58 @@ export function createStatusView(options) {
     const n = u32(m.pieceCount, 'pieceCount', 1);
     const first = u32(m.firstPieceSeq, 'firstPieceSeq', 1);
     if (first + n - 1 > U32_MAX) throw new RangeError(`창 끝이 u32 밖: ${first}+${n}-1`);
-    const out = [];
+    const pieces = [];
+    const seqs = [];
     const seen = new Set();
+    const prefix = `${segmentId}.${level}.`;
+    let done = false;
     for (let s = first; s < first + n; s += 1) {
-      const p = bySeq.get(s);
-      if (p === undefined) throw new TypeError(`LEVEL_ARRIVED(${segmentId}, ${level}) 창 ${first}..${first + n - 1} 의 pieceSeq ${s} 조각을 받지 못했다`);
-      if (p.segmentId !== segmentId || p.level !== level) throw new TypeError(`LEVEL_ARRIVED(${segmentId}, ${level}) 창에 다른 구간·수준 조각: ${p.key}`);
-      if (seen.has(p.key)) throw new TypeError(`LEVEL_ARRIVED(${segmentId}, ${level}) 창에 같은 key 가 두 번: ${p.key}`);
-      seen.add(p.key);
-      out.push(p);
+      const p = live.get(s);
+      const key = p !== undefined ? p.key : retired.get(s);
+      if (key === undefined) throw new TypeError(`LEVEL_ARRIVED(${segmentId}, ${level}) 창 ${first}..${first + n - 1} 의 pieceSeq ${s} 조각을 받지 못했다`);
+      if (!key.startsWith(prefix)) throw new TypeError(`LEVEL_ARRIVED(${segmentId}, ${level}) 창에 다른 구간·수준 조각: ${key}`);
+      if (seen.has(key)) throw new TypeError(`LEVEL_ARRIVED(${segmentId}, ${level}) 창에 같은 key 가 두 번: ${key}`);
+      seen.add(key);
+      seqs.push(s);
+      if (p === undefined) done = true;
+      else pieces.push(p);
     }
-    return out;
+    return { pieces, seqs, done };
   }
 
   function onLevelArrived(m) {
     const win = windowPieces(m);
-    levels.arrive(m.segmentId, m.level, win.map((p) => ({ key: p.key, count: p.count })));
-    // 해제는 levels.released() 한 곳에서 받는다(skip 이면 빈 목록). 받은 즉시 비워 levels 쪽에 쌓이지 않게 한다.
-    // 받은 창의 key 는 이미 받은 조각이라 요청 계획에 넣지 않는다.
-    for (const key of levels.released()) {
-      pendingReleased.push(key);
-      const seqs = seqsByKey.get(key);
-      if (seqs === undefined) continue;
-      for (const s of seqs) bySeq.delete(s);
-      seqsByKey.delete(key);
+    if (win.done) {
+      // 창에 해제·건너뜀으로 끝난 조각이 있다 = 이 (구간, 수준) 은 이미 지나갔다(같은 세션에서 수준은 늘기만 하니 다시 받아도 skip).
+      // 이어받기 재전송이다. 그림·해제는 그대로 두고 창에 남은 live 조각만 끝낸다.
+      for (const s of win.seqs) retireSeq(s);
+      return;
     }
+    const result = levels.arrive(m.segmentId, m.level, win.pieces.map((p) => ({ key: p.key, count: p.count })));
+    arrivedSegments.add(m.segmentId);
+    // 해제는 levels.released() 한 곳에서 받는다(skip 이면 빈 목록). 받은 즉시 비워 levels 쪽에 쌓이지 않게 한다.
+    for (const key of levels.released()) {
+      pendingReleased.add(key);
+      const seqs = liveSeqsByKey.get(key);
+      if (seqs === undefined) continue;
+      for (const s of seqs.slice()) retireSeq(s);
+    }
+    // 건너뛴(skip) 창은 그리지 않으니 끝낸다(재전송이 오면 위 done 경로로 조용히 무시된다).
+    if (!result.accepted) for (const s of win.seqs) retireSeq(s);
   }
 
   /** MISSING 구간의 아직 받지 않은 PieceKey(호출자 자산 색인 기준). 구간이 이미 도착했으면 없다. */
   function missingRequestKeys(segmentId) {
     if (pieceIndex === undefined) return [];
-    if (levels.snapshots().some((s) => s.segmentId === segmentId && s.level >= 0)) return [];
+    if (arrivedSegments.has(segmentId)) return [];
     const list = pieceIndex(segmentId);
     if (!Array.isArray(list)) throw new TypeError('pieceIndex 결과는 PieceKey 배열이어야 한다');
     const out = [];
     for (const k of list) {
       if (!isObject(k)) throw new TypeError('pieceIndex 결과는 PieceKey 배열이어야 한다');
       if (k.segmentId !== segmentId) throw new TypeError(`pieceIndex(${segmentId}) 에 다른 구간 key: ${String(k.segmentId)}`);
-      if (!seqsByKey.has(keyString(k))) out.push(copyKey(k));
+      const s = keyString(k);
+      if (!receivedKeys.has(s)) out.push({ key: s, pieceKey: copyKey(k) });
     }
     return out;
   }
@@ -202,9 +246,9 @@ export function createStatusView(options) {
   function onMissing(m) {
     const { segmentId } = m;
     if (!Number.isInteger(segmentId) || Object.is(segmentId, -0) || segmentId < 0) throw new TypeError(`MISSING segmentId 가 틀림: ${String(segmentId)}`);
-    const ask = missingRequestKeys(segmentId);
-    if (ask.length > 0) planner.onSegmentArrived(segmentId, ask); // 검사 위반은 여기서 던지고 상태는 그대로
+    const ask = missingRequestKeys(segmentId); // 검사 위반은 여기서 던지고 상태는 그대로
     levels.expect(segmentId);
+    if (ask.length > 0) pendingAsks.push({ segmentId, keys: ask });
   }
 
   function onError(m) {
@@ -245,22 +289,36 @@ export function createStatusView(options) {
 
   function frame() {
     const states = levels.snapshots();
-    const drawKeys = levels.drawKeys();
-    const drawn = new Set(drawKeys);
+    const drawKeys = [];
+    for (const st of states) for (const p of st.pieces) drawKeys.push(p.key);
+    let releasedKeys = [];
+    if (pendingReleased.size > 0) {
+      const drawn = new Set(drawKeys);
+      for (const k of pendingReleased) if (!drawn.has(k)) releasedKeys.push(k);
+    }
     const out = {
       view,
       drawKeys,
-      releasedKeys: pendingReleased.filter((k) => !drawn.has(k)),
+      releasedKeys,
       markers: view === null ? [] : modules.overlay.projectMarkers(view, markers),
       notices: modules.missing_ui.missingNotices(states),
       reveal: modules.reveal.computeReveal(states),
       fallback: fallback.state(),
     };
-    pendingReleased = []; // 다 만든 뒤에 비운다(모듈이 던지면 다음 frame 이 다시 내준다)
+    pendingReleased = new Set(); // 다 만든 뒤에 비운다(모듈이 던지면 다음 frame 이 다시 내준다)
     return out;
   }
 
   function requests() {
+    // MISSING 뒤에 도착한 조각·구간은 여기서 뺀다(MISSING → 조각 도착 → requests() 순서에서도 받은 key 를 요청하지 않는다).
+    const asks = [];
+    for (const a of pendingAsks) {
+      if (arrivedSegments.has(a.segmentId)) continue;
+      const keys = a.keys.filter((k) => !receivedKeys.has(k.key)).map((k) => k.pieceKey);
+      if (keys.length > 0) asks.push([a.segmentId, keys]);
+    }
+    pendingAsks = [];
+    for (const [segmentId, keys] of asks) planner.onSegmentArrived(segmentId, keys);
     return planner.drain();
   }
 
