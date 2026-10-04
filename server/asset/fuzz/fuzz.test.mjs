@@ -217,9 +217,11 @@ test('fuzz_no_panic', { timeout: WALL_GUARD_MS + 10_000 }, () => {
   const start = performance.now();
   const cpuStart = cpuMs();
   let done = 0;
+  let abortWhy = null; // 반복 중단 원인(없으면 끝까지 돈 것)
   for (let i = 0; i < ITERATIONS; i++) {
     // 예산을 넘기면 중단하고 아래 단언에서 실패시킨다(끝없이 도는 것을 막는다)
-    if (performance.now() - start > WALL_GUARD_MS || (i % 256 === 0 && cpuMs() - cpuStart > TOTAL_BUDGET_MS)) break; // 벽시계는 매 입력 확인
+    if (performance.now() - start > WALL_GUARD_MS) { abortWhy = `벽시계 상한 ${WALL_GUARD_MS} ms 초과`; break; } // 벽시계는 매 입력 확인
+    if (i % 256 === 0 && cpuMs() - cpuStart > TOTAL_BUDGET_MS) { abortWhy = `CPU 예산 ${TOTAL_BUDGET_MS} ms 초과`; break; }
     done++;
     const { bytes, huge } = makeInput(i, rng);
     const measure = huge || i % 64 === 0;
@@ -242,7 +244,7 @@ test('fuzz_no_panic', { timeout: WALL_GUARD_MS + 10_000 }, () => {
   }
   for (const [n, s] of Object.entries(stats)) for (const r of s.repros) console.log(`[fuzz] REPRO ${n}: ${r}`);
 
-  assert.equal(done, ITERATIONS, `${done}/${ITERATIONS} 회 완료. 각 호출은 ${MAX_CALL_MS} ms 이내(재시도 포함), 전체 ${ITERATIONS} 회 반복 실행됨`);
+  assert.equal(done, ITERATIONS, `${done}/${ITERATIONS} 회에서 중단: ${abortWhy ?? '원인 미상'} (cpu=${(elapsed / 1000).toFixed(1)}s wall=${(wall / 1000).toFixed(1)}s). 호출별 ${MAX_CALL_MS} ms 상한은 아래 slow 단언이 따로 본다`);
   for (const [n, s] of Object.entries(stats)) {
     assert.equal(s.ok + s.err + s.fail, s.calls, `${n} 집계`);
     assert.equal(s.fail, 0, `${n}: 허용 밖 결과 ${s.fail}건(재현 입력은 위 REPRO 줄)`);
