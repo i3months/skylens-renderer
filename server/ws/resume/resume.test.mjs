@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { createSessionStore, DEFAULT_MAX_ENTRIES_PER_SESSION, DEFAULT_MAX_BYTES_PER_SESSION } from './index.mjs';
 import { encodeMessage } from '../../proto/codec/index.mjs';
@@ -566,7 +567,7 @@ test('F-212: TTL 갱신은 open 뿐 아니라 recordSent(새 기록·멱등 재�
     }
     c.t += ttl - 1;
     assert.equal(st.shouldSend(sessionId, key(77)), true, name);
-    c.t += 1; // 마지막 활동(shouldSend 는 갱신하지 않는다)이 아니라 step 이후 경과 2*(ttl-1)+1 → 만료
+    c.t += 1; // 마지막 활동(shouldSend 는 갱신하지 않는다)이 아니라 step 이후 경과 (ttl-1)+1 = ttl → 만료
     assert.equal(st.stats(sessionId), null, name);
   }
   // 활동이 없으면 갱신도 없다: shouldSend/stats 는 TTL 을 늘리지 않는다
@@ -608,9 +609,86 @@ test('F-212 ⑥: 여러 key 가 섞여 대체돼도 순서·재전송 후보가 
   const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
   let seq = 1;
   for (let n = 0; n < 5000; n++) st.recordSent(sessionId, key(1 + (n % 3)), seq++, 1);
-  assert.ok(st.pendingQueueLength(sessionId) <= 16);
+  assert.ok(st.pendingQueueLength(sessionId) <= 2 * 3, `pendingQ=${st.pendingQueueLength(sessionId)}`); // 살아 있는 3개 -> 길이 <= 2×3
   st.open({ sessionId, lastPieceSeq: 0 });
   assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [4998, 4999, 5000]);
   st.ack(sessionId, 4999);
   assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [5000]);
+});
+
+// ---- F-213: 상한에 닿은 뒤 '가장 오래된 것 축출'이 상한 크기에 비례해 느려지지 않는다 ----
+// 다른 시험이 남긴 JIT·힙 상태에 휘둘리지 않도록 새 프로세스에서 잰다. 각 상한을 번갈아 7회씩 재 중앙값을 견준다(채우는 시간은 제외).
+const EVICTION_BENCH = `
+import { createSessionStore } from ${JSON.stringify(new URL('./index.mjs', import.meta.url).href)};
+const kind = process.argv[1], ops = Number(process.argv[2]);
+const sessions = (cap) => {
+  let n = 1;
+  const st = createSessionStore({ maxSessions: cap, ttlMs: 1e12, now: () => 0, randomId: () => n++ });
+  const step = () => st.open({ sessionId: 0, lastPieceSeq: 0 });
+  return { fill: cap, step, done: () => { if (st.size() !== cap) throw new Error('size'); } };
+};
+const acked = (cap) => {
+  const st = createSessionStore({ maxSessions: 2, ttlMs: 1e12, now: () => 0, maxEntriesPerSession: cap });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  let seq = 1;
+  const step = () => {
+    if (!st.recordSent(sessionId, { segmentId: 1, level: 0, lod: 0, chunkIndex: seq, tileX: 0, tileY: 0 }, seq, 1)) throw new Error('rejected');
+    st.ack(sessionId, seq++);
+  };
+  return { fill: cap, step, done: () => { if (st.ackedQueueLength(sessionId) !== cap) throw new Error('len'); } };
+};
+const make = kind === 'sessions' ? sessions : acked;
+const time = (cap, n) => {
+  const b = make(cap);
+  for (let i = 0; i < b.fill; i++) b.step();
+  const t0 = process.hrtime.bigint();
+  for (let i = 0; i < n; i++) b.step();
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  b.done();
+  return ms;
+};
+time(1000, 20000); time(65536, 20000);
+const all = { 1000: [], 65536: [] };
+for (let r = 0; r < 7; r++) for (const cap of [65536, 1000]) all[cap].push(time(cap, ops));
+const med = (a) => a.sort((x, y) => x - y)[a.length >> 1];
+console.log(JSON.stringify({ 1000: med(all[1000]), 65536: med(all[65536]) }));
+`;
+function evictionRatio(kind, ops) {
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', EVICTION_BENCH, kind, String(ops)], { encoding: 'utf8', timeout: 120000 });
+  assert.equal(r.status, 0, r.stderr);
+  const best = JSON.parse(r.stdout);
+  return { ratio: best[65536] / best[1000], best };
+}
+
+test('F-213: sessions 가득 찬 뒤 open 25만 회, 상한 65536 의 회당 시간이 상한 1000 에 비례하지 않는다(<= 12배)', () => {
+  // 새 세션 객체가 상한 크기만큼 살아 남아 GC(승격·복사)가 상한에 비례해 비싸진다: 알고리즘 몫이 아니라 끌어올린 하한이다
+  // (측정 1~6배, 옛 구현 25~55배). 알고리즘 몫은 아래 ackedQ·touch 시험과 합쳐 본다.
+  const { ratio, best } = evictionRatio('sessions', 250_000);
+  assert.ok(ratio <= 12, `cap65536/cap1000 = ${ratio.toFixed(2)} ${JSON.stringify(best)}`);
+});
+
+test('F-213: ackedQ 가 가득 찬 뒤 recordSent+ack 25만 회, 상한 65536 의 회당 시간이 상한 1000 에 비례하지 않는다(<= 8배)', () => {
+  // recordSent 는 상한 크기의 sent Map 해시도 건드려 캐시 때문에 상한 65536 이 자연히 1.5~2.4배 느리다. 옛 구현은 20~55배였다.
+  const { ratio, best } = evictionRatio('acked', 250_000);
+  assert.ok(ratio <= 8, `cap65536/cap1000 = ${ratio.toFixed(2)} ${JSON.stringify(best)}`);
+});
+
+test('F-213: 오래된 순서 축출은 최근 사용(touch) 순서와 ackedQ 확인 순서를 지킨다', () => {
+  const { c, st } = mk({ maxSessions: 3 });
+  const a = st.open({ sessionId: 0, lastPieceSeq: 0 }).sessionId;
+  const b = st.open({ sessionId: 0, lastPieceSeq: 0 }).sessionId;
+  const d = st.open({ sessionId: 0, lastPieceSeq: 0 }).sessionId;
+  c.t += 1;
+  st.ack(a, 0); // a 를 최근으로
+  st.open({ sessionId: 0, lastPieceSeq: 0 }); // b 가 축출된다
+  assert.equal(st.stats(b), null);
+  assert.notEqual(st.stats(a), null);
+  assert.notEqual(st.stats(d), null);
+  const { st: s2 } = mk({ maxEntriesPerSession: 3 });
+  const id = s2.open({ sessionId: 0, lastPieceSeq: 0 }).sessionId;
+  for (let i = 1; i <= 3; i++) s2.recordSent(id, key(i), i, 1);
+  s2.ack(id, 3);
+  for (let i = 4; i <= 9; i++) { s2.recordSent(id, key(i), i, 1); s2.ack(id, i); }
+  assert.equal(s2.shouldSend(id, key(9)), false);
+  assert.equal(s2.stats(id).entries, 3);
 });
