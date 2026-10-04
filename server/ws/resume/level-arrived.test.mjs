@@ -154,7 +154,7 @@ test('recordLevelArrived 입력 검사', () => {
   const sid = st.open({ sessionId: 0 }).sessionId;
   send(st, sid, LEVEL0);
   assert.equal(st.recordLevelArrived(sid, la(9, 0, 1, 2)), true, '같은 기록 재기록은 멱등');
-  assert.throws(() => st.recordLevelArrived(sid, la(9, 0, 2, 2)), RangeError, '창 끝 3 > 기록한 최대 순번 2');
+  assert.throws(() => st.recordLevelArrived(sid, la(9, 0, 2, 2)), /조각 먼저 기록/, '창 끝 3 > 기록한 최대 순번 2');
   assert.throws(() => st.recordLevelArrived(sid, la(9, 1, 2, 1)), RangeError, '창 끝 역행(같은 끝, 다른 기록)');
   assert.throws(() => st.recordLevelArrived(sid, la(9, 0, 0, 1)), RangeError);
   assert.throws(() => st.recordLevelArrived(sid, la(9, 0, 1, 0)), RangeError);
@@ -247,7 +247,11 @@ test('F-238 ②: 같은 key 를 새 순번으로 1만 회 대체하며 기록해
   }
   const s = st.stats(sid);
   assert.ok(Object.hasOwn(s, 'levels'), 'stats().levels 노출');
-  assert.ok(s.levels <= MAX + 1, `levels=${s.levels}`);
+  // 근거(머리 주석 불변식, 결정 0033): 보관 기록 수 ≤ 미확인 조각 수 + 1 ≤ MAX + 1. 여기서는 미확인 조각이 1 개(같은 key
+  // 마지막 순번)이고 창 끝 == ackedUpTo 인 기록이 없으므로 정확히 1 이다(등호로 단언).
+  assert.equal(st.levelStats(sid).stored, 1);
+  assert.equal(s.levels, 1);
+  assert.equal(st.levelStats(sid).capDropped, 0, '방어용 상한은 걸리지 않는다');
   // 앞의 창(seq 1..N−1)은 조각이 대체로 죽어 다시 보낼 수 없으므로 지워지고 마지막 하나만 남는다.
   assert.deepEqual(s, { entries: 1, retainedBytes: 1, unacked: 1, groups: 1, levels: 1 });
   st.open({ sessionId: sid, lastPieceSeq: 0 });
@@ -315,15 +319,16 @@ test('F-238 ① 멱등 (c): ack 로 지워진 기록의 재시도는 true, 남�
   assert.deepEqual(st.resendPlan(sid), [la(10, 0, 2, 1)]);
 });
 
-test('F-238 ① 멱등 (d): 지워진 기록 자리라도 창 안 미확인 조각이 모두 살아 있으면 겹침 RangeError', () => {
+test('F-241 묘비: 지워진 기록 자리의 다른 값은 묘비와 대조해 RangeError, 같은 값만 true', () => {
   const st = store();
   const sid = st.open({ sessionId: 0 }).sessionId;
   send(st, sid, [piece(1, key(9, 0, 0)), piece(2, key(10, 0, 0)), piece(3, key(11, 0, 0)), la(9, 0, 1, 3)]);
-  send(st, sid, [piece(4, key(10, 0, 0))]); // seq 2 가 죽어 1..3 기록이 지워진다
+  send(st, sid, [piece(4, key(10, 0, 0))]); // seq 2 가 죽어 1..3 기록이 지워진다(묘비)
   assert.equal(st.stats(sid).levels, 0);
-  assert.equal(st.recordLevelArrived(sid, la(9, 0, 1, 3)), true, '(c) 같은 기록의 재시도');
-  assert.equal(st.recordLevelArrived(sid, la(8, 0, 1, 2)), true, '(c) 죽은 순번을 담은 창은 대조할 정보가 없어 true(대가)');
-  assert.throws(() => st.recordLevelArrived(sid, la(11, 0, 3, 1)), RangeError, '(d) 창 3..3 은 살아 있는데 앞 창 1..3 과 겹친다');
+  assert.equal(st.recordLevelArrived(sid, la(9, 0, 1, 3)), true, '(a) 묘비와 같은 기록의 재시도');
+  // 고치기 전(결정 0033 대가): 죽은 순번을 담은 창은 대조할 정보가 없어 true 였다.
+  assert.throws(() => st.recordLevelArrived(sid, la(8, 0, 1, 2)), /겹친다/, '(c) 묘비 1..3 과 다른 값');
+  assert.throws(() => st.recordLevelArrived(sid, la(11, 0, 3, 1)), /겹친다/, '(c) 창 3..3 은 앞 창 1..3 과 겹친다');
   assert.equal(st.stats(sid).levels, 0);
   assert.equal(st.recordLevelArrived(sid, la(10, 0, 4, 1)), true, '바로 뒤 창은 새 기록');
   assert.equal(st.stats(sid).levels, 1);
@@ -333,12 +338,14 @@ test('windowLive 는 resendPlan 과 같은 판정: 추월당한 미확인 조각
   const st = store();
   const sid = st.open({ sessionId: 0 }).sessionId;
   const laCount = () => st.resendPlan(sid).filter((m) => m.type === 'LEVEL_ARRIVED').length;
-  // 기록 때 이미 추월당함: 보관하지 않는다.
+  // 기록 때 이미 추월당함: 보관은 하지만(F-241 ②, 추월은 ack 로 풀린다) resendPlan·levels 는 세지 않는다.
   send(st, sid, [piece(1, key(9, 1, 0)), piece(2, key(9, 2, 0)), la(9, 1, 1, 1)]);
   assert.equal(st.stats(sid).levels, 0);
+  assert.equal(st.levelStats(sid).stored, 1);
   assert.equal(laCount(), 0);
-  assert.equal(st.recordLevelArrived(sid, la(9, 1, 1, 1)), true, '(c) 재시도도 true, 저장 없음');
+  assert.equal(st.recordLevelArrived(sid, la(9, 1, 1, 1)), true, '(a) 재시도도 true, 바꾸는 것 없음');
   assert.equal(st.stats(sid).levels, 0);
+  assert.equal(st.levelStats(sid).stored, 1);
   send(st, sid, [la(9, 2, 2, 1)]);
   assert.equal(st.stats(sid).levels, 1);
   assert.equal(laCount(), 1);
