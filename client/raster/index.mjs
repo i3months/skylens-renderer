@@ -13,6 +13,7 @@
 //   넘기면 상주 key 를 selectDrawable 로 나눠 draw 에 든 조각만 그린다. setArrived 를 한 번도 부르지 않으면 아무것도 그리지 않는다.
 //   setArrived 는 계약 Renderer 에 올라 있는 도착 입력 메서드다(결정 0034). 결과의 discard 는
 //   호출자가 releasePiece 로 해제한다(해제 근거). 렌더러는 discard 를 스스로 해제하지 않는다.
+//   setArrived(list, {deferResult: true}) 는 반환값이 필요 없는 호출자용 지연 경로다(선택은 다음 draw 에서 1회).
 //   재계산 주기(F-246 ⑦, 계약 '프레임마다 부르지 않는다'): selectDrawable 은 setArrived 때만 돈다. 업로드가 끝난 key 가 직전
 //   선택에 없으면(도착 집합에 없는 새 key) 직전 선택에서 pending 으로 보고 다시 돌지 않는다. 도착 집합에 든 key 가 올라오면
 //   다음 draw 에서 프레임당 최대 1회 다시 돈다. 해제·퇴출은 선택을 건드리지 않는다(draw 가 상주하지 않는 key 를 건너뛴다).
@@ -392,8 +393,27 @@ export function createRenderer(options) {
     fresh.delete(key);
   }
 
-  function setArrived(list) {
+  function setArrived(list, opts) {
     assertAlive();
+    if (opts !== undefined && opts !== null && opts.deferResult === true) {
+      // 지연 경로: 반환값이 필요 없는 호출자용. 선택은 다음 draw 에서 프레임당 1회만 돈다(연속 호출은 마지막 입력으로 합쳐진다).
+      // 항목 모양(segmentId·level·keys 배열)만 지금 검사하고 key 해석 오류는 draw 에서 ClientRasterError('piece') 로 난다.
+      if (!Array.isArray(list)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
+      if (list.length === 0) throw new ClientRasterError('piece', 'arrived 는 비지 않은 배열이어야 함');
+      for (const a of list) {
+        if (!a || !Number.isInteger(a.segmentId) || !Number.isInteger(a.level) || !Array.isArray(a.keys) || a.keys.length === 0) {
+          throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
+        }
+      }
+      arrived = list.map((a) => ({ segmentId: a.segmentId, level: a.level, keys: [...a.keys] }));
+      arrivedKeys = new Set();
+      for (const a of arrived) for (const k of a.keys) arrivedKeys.add(k);
+      if (selection === null) selection = { draw: [], pending: [], discard: [] };
+      selectionStale = true;
+      fresh.clear(); // 새 도착 집합에 든 상주 key 는 다시 고르기 전까지 그리는 조각으로 보호한다
+      for (const k of arrivedKeys) if (meta.has(k)) fresh.add(k);
+      return undefined;
+    }
     const res = select([...meta.keys()], list); // 입력 검사 겸 결과(도착 이벤트마다 한 번)
     arrived = list.map((a) => ({ segmentId: a.segmentId, level: a.level, keys: [...a.keys] }));
     arrivedKeys = new Set();
