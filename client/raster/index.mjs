@@ -205,26 +205,33 @@ export function createRenderer(options) {
   // 변경 세대: meta 가 바뀔 때마다 올라간다(roomCache 의 (metaGen, key) 는 직전 거부/판정을 다시 쓸 수 있는지 보는 키일 뿐, 선택 상태가 아니다.
   // resident·base 는 처음 한 번만 만들고 이후 meta 의 set(새 key)/delete 마다 roomResidentChange 가 그 타일만 증분 갱신한다)
   let metaGen = 0;
+  // meta 항목의 단조 삽입 순번(key → 순번). meta 는 새 key 를 뒤에 붙이기만 하므로 순번 순서가 곧 meta 순서다.
+  // makeRoom 이 보호에서 빠진 key(복귀 소집합)를 희생 후보 목록과 meta 순서로 병합할 때 쓴다(F-271)
+  const metaSeq = new Map();
+  let nextMetaSeq = 0;
   const meta = new (class extends Map {
     set(k, v) {
       metaGen += 1;
       // had 가드: 유일한 호출부(uploadPiece 끝, meta.delete(key) 직후 meta.set)에서는 항상 false 다. 덮어쓰기에 대비한 방어일 뿐이다
       const had = super.has(k);
       super.set(k, v);
-      if (!had) roomResidentChange(k, true); // 같은 key 를 덮어쓰면 상주 목록은 그대로다
+      if (!had) metaSeq.set(k, nextMetaSeq++); // 덮어쓰기는 meta 위치가 그대로이므로 순번도 그대로다
+      if (!had) { roomResidentChange(k, true); drawingCandChange(k, true); } // 같은 key 를 덮어쓰면 상주 목록은 그대로다
       return this;
     }
     delete(k) {
       metaGen += 1;
       const had = super.delete(k);
-      if (had) roomResidentChange(k, false);
+      if (had) { roomResidentChange(k, false); drawingCandChange(k, false); metaSeq.delete(k); }
       return had;
     }
-    clear() { metaGen += 1; super.clear(); roomCache = null; }
+    clear() { metaGen += 1; super.clear(); metaSeq.clear(); roomCache = null; if (drawingCache !== null) drawingCache.cand = null; }
   })();
-  // makeRoom 전용 캐시(selection 계열 상태와 무관). setArrived 두 경로·dispose 에서 null 로 돌려 도착 입력 사본을 붙잡지 않는다.
+  // makeRoom 전용 캐시(selection 계열 상태와 무관). setArrived 두 경로·dispose·meta.clear(위 clear())에서 null 로 돌려 도착 입력 사본을 붙잡지 않는다.
   // {tiles: 도착 입력의 타일 표, gen: key·drawing 을 만든 metaGen, resident: 타일 → 상주 도착 key(meta 변경마다 그 key 의 타일 하나만 증분 갱신),
-  //  base: 새 key 를 넣지 않은 보호 Set(같이 증분 갱신), key·drawing: 직전 거부/판정의 올리는 key 와 보호 집합}
+  //  base: 새 key 를 넣지 않은 보호 Set(같이 증분 갱신), cand: base 밖 meta key 를 meta 순서로 둔 희생 후보 Set(makeRoom 이 처음 쓸 때 한 번 만들고
+  //  roomResidentChange 가 증분 갱신), back: 보호에서 빠져 후보로 돌아온 key 의 복귀 소집합(cand 와 겹치지 않는다. cand ∪ back = base 밖 meta key.
+  //  null 이면 비어 있음), key·drawing: 직전 거부/판정의 올리는 key 와 보호 집합}
   let roomCache = null;
   /** @type {Map<string, number>} 올리는 중인 key → 토큰(해제·소실 뒤 늦게 끝난 업로드를 버린다) */
   const inflight = new Map();
@@ -267,11 +274,20 @@ export function createRenderer(options) {
     return selection;
   }
 
-  // 선택 객체별 draw 크기 Set 캐시(F-249 ⑨): 한도 초과 업로드마다 Set 을 새로 만들지 않고 선택이 바뀔 때만 만든다
-  let drawingCache = null; // {sel, set}
+  // 선택 객체별 draw 크기 Set 캐시(F-249 ⑨): 한도 초과 업로드마다 Set 을 새로 만들지 않고 선택이 바뀔 때만 만든다.
+  // cand: 그 선택의 draw 밖 meta key 를 meta 순서로 둔 희생 후보 Set(makeRoom 이 처음 쓸 때 한 번 만들고 meta set/delete 마다
+  // drawingCandChange 가 증분 갱신). 도착 집합 밖 key 를 올릴 때(선택 기반 보호) 앞쪽 보호 key 를 매번 다시 건너뛰지 않게 한다(F-269)
+  let drawingCache = null; // {sel, set, cand}
   function drawingSet(sel) {
-    if (drawingCache === null || drawingCache.sel !== sel) drawingCache = { sel, set: new Set(sel.draw) };
+    if (drawingCache === null || drawingCache.sel !== sel) drawingCache = { sel, set: new Set(sel.draw), cand: null };
     return drawingCache.set;
+  }
+  // 선택의 draw Set 은 선택이 바뀌기 전까지 고정이므로, 새 key 는 draw 밖이면 뒤에 붙이고(meta 도 뒤에 붙는다) 나간 key 는 뺀다
+  function drawingCandChange(k, added) {
+    const dc = drawingCache;
+    if (dc === null || dc.cand === null) return;
+    if (!added) dc.cand.delete(k);
+    else if (!dc.set.has(k)) dc.cand.add(k);
   }
 
   function dropPiece(key) {
@@ -369,7 +385,7 @@ export function createRenderer(options) {
   }
   function roomProtection(key) {
     let rc = roomCache;
-    if (rc === null) rc = { tiles: buildRoomTiles(), gen: -1, resident: null, base: null, key: null, drawing: null };
+    if (rc === null) rc = { tiles: buildRoomTiles(), gen: -1, resident: null, base: null, key: null, drawing: null, cand: null, back: null };
     if (rc.resident === null) { // 처음 한 번만 meta 전체를 돈다. 이후 상주 변경은 roomResidentChange 가 그 key 의 타일만 고친다
       const resident = new Map(); // 타일 → {have, ks: Map(key → lod), chosen}
       for (const k of meta.keys()) {
@@ -388,7 +404,7 @@ export function createRenderer(options) {
         e.chosen = chooseLod(e.have, rc.tiles.get(id).need);
         for (const [k, lod] of e.ks) if (lod === e.chosen) base.add(k);
       }
-      rc = { tiles: rc.tiles, gen: metaGen, resident, base, key: null, drawing: null };
+      rc = { tiles: rc.tiles, gen: metaGen, resident, base, key: null, drawing: null, cand: null, back: null };
       roomCache = rc; // 증분 갱신이 이 객체를 본다
     }
     // key 를 더했을 때 같은 타일의 보호 집합이 달라지는가
@@ -416,8 +432,56 @@ export function createRenderer(options) {
   // meta 에 key 가 들어오거나 나갈 때 그 key 의 타일 하나만 resident·base 를 고친다. 고른 LOD 가 그대로면 O(1)이고,
   // 바뀔 때만 그 타일의 base 항목을 다시 만든다(O(그 타일의 상주 chunk 수)). ks 는 Map 이라 삭제도 O(1)이다.
   // roomCache 가 없거나 resident 를 아직 안 만들었으면 할 일이 없다(만들 때 meta 를 돈다).
+  // --- 복귀 소집합(F-271) ---
+  // 고른 LOD 가 바뀌어 보호에서 빠진 key 는 meta 의 원래 위치(앞쪽일 수 있다)로 후보에 돌아와야 하는데 Set 인 cand 는 뒤에만 붙일 수 있다.
+  // cand 를 버리고 meta 전체를 다시 도는 대신 그 key 를 back 에 넣고, makeRoom 이 cand 와 순번으로 병합해 돈다.
+  // back = {seq: Map(key → meta 순번), arr: 순번 오름차순 key 배열}. 넣기·빼기는 이분 탐색 + splice(O(log r + r), r = 복귀 수).
+  // r 이 cand 크기의 1/4(최소 1024)을 넘으면 cand 에 병합해 하나의 Set 으로 만든다(O(상주 수)이지만 그만큼의 복귀마다 한 번이라 상각 O(1))
+  function backIndex(b, s) { // 순번 s 이상인 첫 위치
+    let lo = 0;
+    let hi = b.arr.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (b.seq.get(b.arr[mid]) < s) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+  function backAdd(rc, k) {
+    if (rc.back === null) rc.back = { seq: new Map(), arr: [] };
+    const b = rc.back;
+    const s = metaSeq.get(k);
+    b.seq.set(k, s);
+    b.arr.splice(backIndex(b, s), 0, k);
+    if (b.arr.length > 1024 && b.arr.length * 4 > rc.cand.size) {
+      const cand = new Set();
+      let i = 0;
+      for (const ck of rc.cand) {
+        const cs = metaSeq.get(ck);
+        while (i < b.arr.length && b.seq.get(b.arr[i]) < cs) cand.add(b.arr[i++]);
+        cand.add(ck);
+      }
+      while (i < b.arr.length) cand.add(b.arr[i++]);
+      rc.cand = cand;
+      rc.back = null;
+    }
+  }
+  function backRemove(rc, k) {
+    const b = rc.back;
+    if (b === null) return;
+    const s = b.seq.get(k);
+    if (s === undefined) return;
+    b.arr.splice(backIndex(b, s), 1);
+    b.seq.delete(k);
+  }
+
   function roomResidentChange(k, added) {
     const rc = roomCache;
+    // 희생 후보 목록(rc.cand) 갱신: 새 key 는 일단 후보로 뒤에 넣고(meta 순서와 같다) base 에 들어가면 아래에서 뺀다. 나간 key 는 cand·back 에서 뺀다
+    if (rc !== null && rc.cand !== null) {
+      if (added) rc.cand.add(k);
+      else { rc.cand.delete(k); backRemove(rc, k); }
+    }
     if (rc === null || rc.resident === null || !arrivedKeys.has(k)) return;
     const id = keyTile(k);
     const t = rc.tiles.get(id);
@@ -440,11 +504,19 @@ export function createRenderer(options) {
     e.chosen = chosen;
     if (chosen !== old) {
       for (const [bk, l] of e.ks) {
-        if (l === old) rc.base.delete(bk);
-        else if (l === chosen) rc.base.add(bk);
+        if (l === old) {
+          rc.base.delete(bk);
+          // 보호에서 빠진 key 가 meta 에 남아 있으면 원래 meta 위치로 후보에 돌아와야 한다. cand 를 버리지 않고 복귀 소집합에 넣는다
+          // (방금 들어온 k 는 위에서 이미 cand 뒤에 넣었다 — meta 에서도 맨 뒤다)
+          if ((bk !== k || !added) && rc.cand !== null) backAdd(rc, bk);
+        } else if (l === chosen) {
+          rc.base.add(bk);
+          if (rc.cand !== null) { rc.cand.delete(bk); backRemove(rc, bk); }
+        }
       }
     } else if (added && lod === chosen) {
       rc.base.add(k);
+      if (rc.cand !== null) rc.cand.delete(k);
     }
   }
 
@@ -468,11 +540,62 @@ export function createRenderer(options) {
     }
     const victims = [];
     let free = 0;
-    for (const [k, info] of meta) {
-      if (resident + bytes - free <= maxResidentBytes) break;
-      if (k === key || drawing.has(k)) continue;
-      victims.push(k);
-      free += info.bytes;
+    const rc = roomCache;
+    if (rc !== null && drawing === rc.base && rc.gen === metaGen && rc.key === key) {
+      // 보호 집합이 base 그대로면 base 밖 후보만 meta 순서로 돈다(보호 key 가 앞쪽에 몰려도 건너뛰지 않는다, F-269).
+      // 후보 목록이 없으면(처음) meta 를 한 번 돌아 만든다
+      if (rc.cand === null) {
+        const cand = new Set();
+        for (const k of meta.keys()) if (!rc.base.has(k)) cand.add(k);
+        rc.cand = cand;
+      }
+      // 복귀 소집합(back)이 있으면 cand 와 meta 순번으로 병합해 돈다(F-271). 둘은 겹치지 않으므로 결과는 base 밖 meta key 의 meta 순서다
+      const b = rc.back;
+      const ba = b === null ? [] : b.arr;
+      let bi = 0;
+      cands: for (const k of rc.cand) {
+        if (bi < ba.length) {
+          const s = metaSeq.get(k);
+          while (bi < ba.length && b.seq.get(ba[bi]) < s) {
+            if (resident + bytes - free <= maxResidentBytes) break cands;
+            const bk = ba[bi++];
+            if (bk === key) continue;
+            victims.push(bk);
+            free += meta.get(bk).bytes;
+          }
+        }
+        if (resident + bytes - free <= maxResidentBytes) break;
+        if (k === key) continue;
+        victims.push(k);
+        free += meta.get(k).bytes;
+      }
+      while (bi < ba.length && resident + bytes - free > maxResidentBytes) {
+        const bk = ba[bi++];
+        if (bk === key) continue;
+        victims.push(bk);
+        free += meta.get(bk).bytes;
+      }
+    } else if (drawingCache !== null && drawing === drawingCache.set) {
+      // 선택 기반 보호: 그 선택의 draw 밖 후보만 meta 순서로 돈다. 후보 목록이 없으면(처음·선택이 바뀐 뒤) meta 를 한 번 돌아 만든다
+      const dc = drawingCache;
+      if (dc.cand === null) {
+        const cand = new Set();
+        for (const k of meta.keys()) if (!dc.set.has(k)) cand.add(k);
+        dc.cand = cand;
+      }
+      for (const k of dc.cand) {
+        if (resident + bytes - free <= maxResidentBytes) break;
+        if (k === key) continue;
+        victims.push(k);
+        free += meta.get(k).bytes;
+      }
+    } else {
+      for (const [k, info] of meta) {
+        if (resident + bytes - free <= maxResidentBytes) break;
+        if (k === key || drawing.has(k)) continue;
+        victims.push(k);
+        free += info.bytes;
+      }
     }
     if (resident + bytes - free > maxResidentBytes) {
       throw new ClientRasterError('memory', `조각 ${bytes} B 를 올리면 상주가 maxResidentBytes ${maxResidentBytes} 를 넘음(그리는 조각은 해제하지 않음)`);
