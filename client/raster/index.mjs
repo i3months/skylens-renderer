@@ -195,7 +195,14 @@ export function createRenderer(options) {
   }
   const meter = createMemoryMeter(); // key → GPU 바이트(풀과 같은 값). 해제 순서(오래된 것부터)도 이 표의 삽입 순서로 정한다
   /** @type {Map<string, {format: number, count: number, origin: number[]}>} */
-  const meta = new Map();
+  // 변경 세대: meta 가 바뀔 때마다 올라간다(makeRoom 의 지역 선택 재사용 판정용, 선택 상태가 아니다)
+  let metaGen = 0;
+  const meta = new (class extends Map {
+    set(k, v) { metaGen += 1; return super.set(k, v); }
+    delete(k) { metaGen += 1; return super.delete(k); }
+    clear() { metaGen += 1; super.clear(); }
+  })();
+  let roomCache = null; // makeRoom 전용: 직전 지역 선택의 (세대, 도착 객체, key) → draw Set. selection 계열 상태와 무관
   /** @type {Map<string, number>} 올리는 중인 key → 토큰(해제·소실 뒤 늦게 끝난 업로드를 버린다) */
   const inflight = new Map();
   let nextToken = 1;
@@ -308,9 +315,16 @@ export function createRenderer(options) {
     // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 지금 올리는 key 도 목록에 넣어
     // 그 key 가 완성할 LOD 의 상주 조각이 draw 에 들어 보호된다. 낡지 않았으면 직전 선택을 그대로 쓴다
     // 지금 올리는 key 가 도착 집합에 들고 meta 에 없으면 낡음 여부와 관계없이 그 key 를 넣은 지역 선택으로 돈다(저장하지 않는다)
-    const drawing = arrived !== null && !meta.has(key) && arrivedKeys.has(key)
-      ? new Set(select([...meta.keys(), key], arrived).draw)
-      : drawingSet(currentSelection());
+    let drawing;
+    if (arrived !== null && !meta.has(key) && arrivedKeys.has(key)) {
+      // 같은 (meta 세대, 도착 객체, key) 로 이어진 거부는 직전 지역 결과를 다시 쓴다
+      if (!(roomCache && roomCache.gen === metaGen && roomCache.arrived === arrived && roomCache.key === key)) {
+        roomCache = { gen: metaGen, arrived, key, drawing: new Set(select([...meta.keys(), key], arrived).draw) };
+      }
+      drawing = roomCache.drawing;
+    } else {
+      drawing = drawingSet(currentSelection());
+    }
     const victims = [];
     let free = 0;
     for (const [k, info] of meta) {

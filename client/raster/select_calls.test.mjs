@@ -97,3 +97,16 @@ test('도착 집합 밖 key 업로드는 한도 초과여도 선택을 다시 �
   assert.equal(r.draw().drawnPieces, 1);
   assert.equal(c.select, 0);
 });
+
+test('도착 집합 key 의 연속 거부는 같은 상태에서 선택을 한 번만 돈다', async () => {
+  const { r, c } = make({ maxResidentBytes: 2 * POINT_BYTES });
+  await r.uploadPiece(keyOf(0), bytesOf(0));
+  await r.uploadPiece(keyOf(1), bytesOf(1));
+  r.setArrived(arrivedOf(0, 1, 2)); // 0·1 은 그리는 조각이라 해제되지 않아 key 2 는 매번 거부된다
+  r.draw();
+  c.select = 0;
+  for (let n = 0; n < 8; n++) {
+    await assert.rejects(r.uploadPiece(keyOf(2), bytesOf(2)), (e) => e.code === 'memory' || e.kind === 'memory' || /memory/.test(String(e.code ?? e.kind ?? e.message)));
+  }
+  assert.ok(c.select <= 1, `거부 8회에 select ${c.select}회`);
+});
