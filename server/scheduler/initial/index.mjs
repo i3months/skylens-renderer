@@ -4,9 +4,13 @@
 //   - 시야 판정: 카메라 앞쪽 원뿔 근사. 카메라는 contracts/raster 와 같이 카메라 좌표 +z 를 본다.
 //     quat(x,y,z,w, 단위) 는 카메라 → 월드(ENU) 회전이고, 앞 방향 = quat·(0,0,1). 원뿔 반각 = fovY/2 를 가로세로비
 //     ASPECT_GUARD 만큼 넓힌 값(가로 시야각을 모르므로 보수적). 상자는 외접구로 근사(구가 원뿔에 걸리면 시야 안).
-//   - 순서: 상자까지의 거리가 가까운 순(같으면 입력 순서). 예산(≤ 15 MB(15,000,000 B))을 넘기는 항목은 건너뛰고 다음 것을 계속 본다.
+//   - 순서: 상자까지의 거리가 가까운 순(같으면 입력 순서). 예산(≤ 15 MB(15,000,000 B), 웹소켓으로 나가는 프레임 바이트 기준 — 조각당 PIECE 머리와 ws 머리 포함)을 넘기는 항목은 건너뛰고 다음 것을 계속 본다.
 //   - droppedCount: 위 조건을 모두 만족했지만 예산 때문에 빠진 항목 수. 시야 밖·수준 0 아님·덜 거친 lod 는 세지 않는다.
 export const INITIAL_BUDGET_BYTES = 15_000_000;
+// 조각 하나를 보낼 때 .skla 바이트 위에 붙는 프레임 머리의 상한(F-202): PIECE 머리 28 B + ws 머리 최대 10 B(서버→클라이언트, 마스크 없음, 64 KiB 이상).
+export const PIECE_HEADER_BYTES = 28;
+export const WS_HEADER_MAX_BYTES = 10;
+export const PIECE_FRAME_OVERHEAD_BYTES = PIECE_HEADER_BYTES + WS_HEADER_MAX_BYTES;
 const ASPECT_GUARD = 2;
 
 function forwardOf(q) {
@@ -40,7 +44,8 @@ function boxDistance(pos, bbox) {
  * @param {{pose:{pos:number[],quat:number[],fovY:number},
  *          catalog:{key:{segmentId:number,level:number,lod:number,chunkIndex:number,tileX:number,tileY:number},bytes:number,bbox:{min:number[],max:number[]},lod?:number}[],
  *          budgetBytes?:number}} input
- * @returns {{items:object[], totalBytes:number, droppedCount:number}}
+ * @returns {{items:object[], totalBytes:number, frameBytes:number, droppedCount:number}} totalBytes = 담긴 .skla 바이트 합,
+ *   frameBytes = 조각당 프레임 머리 상한을 더한 송출 바이트 상한(예산 판정 대상, 항상 ≤ budgetBytes)
  */
 export function buildInitialBundle({ pose, catalog, budgetBytes = INITIAL_BUDGET_BYTES }) {
   const { pos, quat, fovY } = pose;
@@ -66,12 +71,15 @@ export function buildInitialBundle({ pose, catalog, budgetBytes = INITIAL_BUDGET
 
   const items = [];
   let totalBytes = 0;
+  let frameBytes = 0;
   let droppedCount = 0;
   for (const { it } of cand) {
-    if (totalBytes + it.bytes <= budgetBytes) {
+    const frame = it.bytes + PIECE_FRAME_OVERHEAD_BYTES;
+    if (frameBytes + frame <= budgetBytes) {
       items.push(it);
       totalBytes += it.bytes;
+      frameBytes += frame;
     } else droppedCount++;
   }
-  return { items, totalBytes, droppedCount };
+  return { items, totalBytes, frameBytes, droppedCount };
 }

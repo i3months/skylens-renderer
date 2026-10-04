@@ -1,13 +1,14 @@
+// 시험 전용(F-203 ⑦): 제품 코드는 import 하지 않는다. 이름이 .testutil.mjs 이고 testing/ 아래에 둔다.
 // 초기 묶음 시험용 카탈로그 헬퍼(F-187 ①): fixtures/scenes 의 점군을 server/asset/pack 의 packChunk 로
 // 실제 .skla 조각으로 만들고, 조각 헤더에서 읽은 실제 크기·bbox 로 buildInitialBundle 입력 카탈로그를 만든다.
 // 새로 작성한 코드이며 외부 코드를 차용하지 않았다.
 import { readFileSync } from 'node:fs';
-import { SCENES } from '../../../contracts/scenes/index.mjs';
-import { parseHeader, TILE_SIZE_M, FORMAT_POINT27 } from '../../../contracts/asset/index.mjs';
-import { packChunk } from '../../asset/pack/index.mjs';
-import { levelCloud } from '../../../fixtures/scenes/levels/index.mjs';
+import { SCENES } from '../../../../contracts/scenes/index.mjs';
+import { parseHeader, TILE_SIZE_M, FORMAT_POINT27 } from '../../../../contracts/asset/index.mjs';
+import { packChunk } from '../../../asset/pack/index.mjs';
+import { levelCloud } from '../../../../fixtures/scenes/levels/index.mjs';
 
-const ROOT = new URL('../../../', import.meta.url);
+const ROOT = new URL('../../../../', import.meta.url);
 /** 조각 하나가 담을 최대 점 수(타일 안에서 넘으면 chunkIndex 를 올려 나눈다). */
 export const CHUNK_POINTS = 65536;
 const ANCHOR = Object.freeze({ lat: 37.5, lon: 127.0, alt: 30.0 });
