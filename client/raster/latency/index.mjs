@@ -8,7 +8,10 @@
 //   probe.measure('input-to-draw', 'input', 'draw');
 //   const events = probe.events();
 
-/** marks·measurements 개수 상한(메모리 누적 방지) */
+// marks·measurements 개수 상한: 메모리 누적 방지.
+// 기본값 10000 은 초당 ~100 프레임에서 ~100 초 분량의 기록 보관으로,
+// 일반적인 성능 계측 시나리오(수십 프레임의 최근 지연 구간 추적)에 충분.
+// 상한 도달 시 가장 오래된 항목을 삭제해서 최근 N개만 유지.
 const MAX_MARKS = 10000;
 const MAX_MEASUREMENTS = 10000;
 
