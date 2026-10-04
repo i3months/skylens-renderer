@@ -1,7 +1,7 @@
 {
  "limits": {
-  "initialBytes": 15728640,
-  "perSegmentBytes": 3145728
+  "initialBytes": 15000000,
+  "perSegmentBytes": 3000000
  },
  "small": {
   "segments": 4,
