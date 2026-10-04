@@ -341,6 +341,7 @@ export function createRenderer(options) {
       // 알림 콜백의 예외가 업로드를 막지 않게 한다(희생 조각은 이미 해제됨)
       try { onEvict(victims); } catch { /* 호출자 콜백 오류는 렌더러 상태와 무관 */ }
     }
+    return victims.length > 0;
   }
 
   async function uploadPiece(key, bytes) {
@@ -387,8 +388,14 @@ export function createRenderer(options) {
     let bytesTotal = 0;
     for (const v of Object.values(gpuPiece.planes)) bytesTotal += v.byteLength;
     if (bytesTotal > maxPieceBytes) throw new ClientRasterError('piece', `조각 ${bytesTotal} B 가 maxPieceBytes ${maxPieceBytes} 초과`);
-    makeRoom(key, bytesTotal);
-    pool.upload(key, gpuPiece); // 풀이 한도를 다시 검사한다
+    const evicted = makeRoom(key, bytesTotal);
+    try {
+      pool.upload(key, gpuPiece); // 풀이 한도를 다시 검사한다
+    } catch (e) {
+      // 희생은 이미 해제됐는데 새 조각이 없다: 선택이 해제된 key 를 가리키지 않게 다음 draw 에서 한 번 다시 돈다
+      if (evicted) selectionStale = true;
+      throw e;
+    }
     meter.remove(key); // 삽입 순서를 최신으로
     meter.add(key, bytesTotal);
     meta.delete(key);
