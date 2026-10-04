@@ -72,8 +72,11 @@
 //     pieceCount ≥ 1).
 //   - 선의 LEVEL_ARRIVED 는 {segmentId, level, pieceCount} 뿐이라 keys 는 받은 PIECE 열로 만든다(./arrival.mjs completedKeys·
 //     collectArrivals). 규칙: 같은 pieceSeq·같은 PieceKey 의 PIECE 는 한 조각(재전송), 같은 pieceSeq 에 다른 PieceKey 는 거부.
-//     s = 그 LEVEL_ARRIVED 전까지 받은 가장 큰 pieceSeq, n = pieceCount 일 때 완료 집합은 pieceSeq s−n+1..s 의 조각 n 개의 key 다.
-//     그 n 개를 다 받지 못했거나(모자람) 다른 (segmentId, level) 이 섞였거나 key 가 겹치면 ClientRasterError('piece').
+//     기본 규칙(F-236): LEVEL_ARRIVED 가 firstPieceSeq 를 싣고 있으면(선을 거친 것은 항상) n = pieceCount 일 때 완료 집합은 pieceSeq
+//     firstPieceSeq..firstPieceSeq+n−1 의 조각 n 개의 key 다. 창이 명시되어 받은 PIECE 의 최대 pieceSeq 와 무관하고, 이어받기 뒤
+//     혼자 다시 온 LEVEL_ARRIVED 도 같은 창이다(멱등). 대체 규칙: firstPieceSeq 가 없는 항목(선을 거치지 않은 입력)만
+//     s = 그 LEVEL_ARRIVED 전까지 받은 가장 큰 pieceSeq 로 추정한 pieceSeq s−n+1..s 를 쓴다.
+//     어느 쪽이든 그 n 개를 다 받지 못했거나(모자람) 다른 (segmentId, level) 이 섞였거나 key 가 겹치면 ClientRasterError('piece').
 //     server/adapter/core 는 한 수준을 PIECE f..f+n−1 → LEVEL_ARRIVED 로 연달아 내고 그 사이 다른 이벤트를 내지 않으므로(F-204)
 //     창은 정확히 그 수준의 조각이다. 실패한 시도가 남긴 조각: LEVEL_ARRIVED 가 쓰였으면 완료로 센다(그 시도가 LEVEL_ARRIVED
 //     까지 쓴 뒤 실패하고 재시도가 skip 이 되어도 선에는 완료 표시가 있다, F-235). LEVEL_ARRIVED 가 쓰이지 않은 시도의 조각

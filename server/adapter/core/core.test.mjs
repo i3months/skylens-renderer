@@ -442,7 +442,7 @@ for (const viaCodec of [false, true]) {
           [...prior.pieces, ...ev.pieces].map((p) => pieceKeyString(p.key)));
         // 보관 바이트는 조각마다 한 번만 센다
         const bytes = [...prior.pieces, ...ev.pieces].reduce((a, p) => a + p.bytes.length, 0);
-        assert.deepEqual(store.stats(sessionId), { entries: 6, retainedBytes: bytes, unacked: 6, groups: 6 });
+        assert.deepEqual(store.stats(sessionId), { entries: 6, retainedBytes: bytes, unacked: 6, groups: 6, levels: 0 });
         assert.equal(ad.nextPieceSeq(), 7);
         assert.equal(store.open({ sessionId, lastPieceSeq: 0 }).nextPieceSeq, 7, 'WELCOME 순번 = 어댑터 다음 순번');
       }
@@ -1075,6 +1075,19 @@ for (const [failAt, expected] of [
     assert.equal(h.rel.length, failAt === 3 ? 0 : 1);
   });
 }
+
+test('F-239 ⑨: levelArrivedMaybeSent skip 은 기계가 쥐지 않은 key 의 서버 내부 해제도 알리지 않는다', () => {
+  const h = laHarness();
+  h.attempt(3);
+  h.machine.arrive(9, 3, levelEvent(9, 3).pieces);
+  const held = new Set(h.machine.snapshot(9).pieces.map((p) => JSON.stringify(p.key)));
+  assert.ok(F231_KEYS.every((k) => !held.has(JSON.stringify(k))), '재시도 수준 key 는 기계가 쥐지 않는다');
+  const r = h.retry();
+  assert.equal(r.levelArrivedMaybeSent, true);
+  assert.deepEqual(r.abandoned, []);
+  assert.deepEqual(h.rel, [], 'onRelease 는 불리지 않는다');
+  assert.deepEqual(h.ad.pendingReleases(), [], '보관한 알림도 없다');
+});
 
 test('F-235: LEVEL_ARRIVED emit 을 부른 시도 뒤 재시도가 더 일찍 실패해도 표시는 남는다', () => {
   const h = laHarness();

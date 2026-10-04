@@ -231,7 +231,7 @@ test('F-192: 100 KB 조각 2000개 기록·전부 ack 후 보관 바이트 0, �
   st.ack(sessionId, 1000);
   assert.equal(st.stats(sessionId).retainedBytes, 1000 * PIECE);
   st.ack(sessionId, N);
-  assert.deepEqual(st.stats(sessionId), { entries: N, retainedBytes: 0, unacked: 0, groups: N });
+  assert.deepEqual(st.stats(sessionId), { entries: N, retainedBytes: 0, unacked: 0, groups: N, levels: 0 });
   assert.equal(st.retainedBytes(), 0);
   for (const i of [1, 1000, N]) {
     assert.equal(st.shouldSend(sessionId, { segmentId: i, level: 2, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0 }), false);
@@ -245,11 +245,11 @@ test('F-192: maxEntriesPerSession 초과 시 가장 오래 전에 ack 된 항목
   const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
   for (let i = 1; i <= 3; i++) assert.equal(st.recordSent(sessionId, key(i), i, 10), true);
   assert.equal(st.recordSent(sessionId, key(4), 4, 10), false); // ack 된 것 없음 -> 거부, 변화 없음
-  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 30, unacked: 3, groups: 3 });
+  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 30, unacked: 3, groups: 3, levels: 0 });
   assert.equal(st.shouldSend(sessionId, key(4)), true);
   st.ack(sessionId, 2); // 1, 2 확인
   assert.equal(st.recordSent(sessionId, key(4), 4, 10), true); // 1 축출
-  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 20, unacked: 2, groups: 3 });
+  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 20, unacked: 2, groups: 3, levels: 0 });
   // 축출된 항목: 그 묶음 최고 수준과 같은 수준이면 '같은 수준 다른 chunk' 와 구별이 안 돼 다시 true(헤더에 적은 대가)
   assert.equal(st.shouldSend(sessionId, key(1)), true);
   assert.equal(st.shouldSend(sessionId, key(2)), false); // 아직 남은 ack 항목
@@ -267,7 +267,7 @@ test('F-192: maxEntriesPerSession 초과 시 가장 오래 전에 ack 된 항목
   assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [7, 8]);
   assert.equal(st.stats(sessionId).unacked, 3); // 계측 수는 추월당한 미확인 항목도 센다
   assert.equal(st.recordSent(sessionId, key(9), 9, 10), false); // 남은 ack 항목 없음
-  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 30, unacked: 3, groups: 3 });
+  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 30, unacked: 3, groups: 3, levels: 0 });
 });
 
 test('F-192: maxBytesPerSession 은 미확인 바이트 합 기준, ack 뒤 다시 받는다', () => {
@@ -279,7 +279,7 @@ test('F-192: maxBytesPerSession 은 미확인 바이트 합 기준, ack 뒤 다�
   assert.equal(st.stats(sessionId).retainedBytes, 250);
   st.ack(sessionId, 1);
   assert.equal(st.recordSent(sessionId, key(3), 3, 100), true);
-  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 250, unacked: 2, groups: 3 });
+  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 250, unacked: 2, groups: 3, levels: 0 });
   assert.throws(() => createSessionStore({ maxSessions: 1, ttlMs: 1, now: () => 0, maxBytesPerSession: 0 }), RangeError);
 });
 
@@ -292,7 +292,7 @@ test('F-192: 재전송으로 같은 key 를 다시 기록하면 이전 바이트
   assert.equal(st.stats(sessionId).retainedBytes, 40);
   assert.equal(st.shouldSend(sessionId, key(2)), true);
   st.recordSent(sessionId, key(2), 3, 40);
-  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 40, unacked: 1, groups: 2 });
+  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 40, unacked: 1, groups: 2, levels: 0 });
   assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [3]);
 });
 
@@ -335,7 +335,7 @@ test('F-192: 상한 옵션 없이 만든 저장소도 바이트 상한을 넘는
   for (let i = 1; i <= 4; i++) assert.equal(st.recordSent(sessionId, k(i), i, quarter), true); // 상한과 같음(포함)
   assert.equal(st.recordSent(sessionId, k(5), 5, 1), false);
   assert.equal(st.recordSent(sessionId, k(5), 5, new Uint8Array(1)), false);
-  assert.deepEqual(st.stats(sessionId), { entries: 4, retainedBytes: DEFAULT_MAX_BYTES_PER_SESSION, unacked: 4, groups: 4 });
+  assert.deepEqual(st.stats(sessionId), { entries: 4, retainedBytes: DEFAULT_MAX_BYTES_PER_SESSION, unacked: 4, groups: 4, levels: 0 });
   st.ack(sessionId, 4);
   assert.equal(st.stats(sessionId).retainedBytes, 0);
   assert.equal(st.retainedBytes(), 0);
@@ -363,13 +363,13 @@ test('F-192: groupMax 는 묶음의 마지막 항목이 축출될 때 함께 지
   assert.equal(st.stats(sessionId).groups, 1);
   // 새 묶음 기록 -> 가장 오래된 확인 항목(수준 1)만 축출, 수준 3 이 남아 groupMax 유지
   assert.equal(st.recordSent(sessionId, G(0, 1), 3, 5), true);
-  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 5, unacked: 1, groups: 2 });
+  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 5, unacked: 1, groups: 2, levels: 0 });
   assert.equal(st.shouldSend(sessionId, G(1, 0)), false); // 축출됐지만 묶음 최고 수준 3 이 남음
   assert.equal(st.shouldSend(sessionId, G(2, 0, 5)), false);
   // 묶음 tileX=0 의 마지막 항목(수준 3)이 축출되면 groupMax 도 사라진다
   st.ack(sessionId, 3);
   assert.equal(st.recordSent(sessionId, G(0, 2), 4, 5), true);
-  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 5, unacked: 1, groups: 2 });
+  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 5, unacked: 1, groups: 2, levels: 0 });
   assert.equal(st.shouldSend(sessionId, G(1, 0)), true); // 헤더에 적은 대가
   // 많은 묶음을 흘려도 groups 는 항목 상한을 넘지 않는다
   for (let i = 5; i <= 1004; i++) {
@@ -412,7 +412,7 @@ test('F-197: 같은 key·같은 seq 재기록은 true, 상태 하나만 남는�
   assert.equal(st.recordSent(sessionId, key(2), 2, 30), true);
   assert.equal(st.recordSent(sessionId, key(1), 1, 30), true); // 재시도
   assert.equal(st.recordSent(sessionId, key(2), 2, new Uint8Array(30)), true);
-  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 60, unacked: 2, groups: 2 });
+  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 60, unacked: 2, groups: 2, levels: 0 });
   assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [1, 2]);
   assert.equal(st.recordSent(sessionId, key(1), 1, 71), false); // 대체 바이트가 상한을 넘으면 거부, 변화 없음
   assert.equal(st.stats(sessionId).retainedBytes, 60);
@@ -426,7 +426,7 @@ test('F-197: 같은 key·같은 seq 재기록은 true, 상태 하나만 남는�
   // 확인된 항목의 재기록은 아무것도 바꾸지 않는다
   st.ack(sessionId, 2);
   assert.equal(st.recordSent(sessionId, key(1), 1, 30), true);
-  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 0, unacked: 0, groups: 2 });
+  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 0, unacked: 0, groups: 2, levels: 0 });
   assert.equal(st.open({ sessionId, lastPieceSeq: 0 }).nextPieceSeq, 3);
 });
 
@@ -459,11 +459,11 @@ test('F-207a: 같은 key 를 새 seq 로 대체한 뒤 축출해도 groups 는 �
   st.recordSent(sessionId, key(1), 2, 1); // 대체: 묶음 항목 수는 그대로 1
   st.recordSent(sessionId, key(2), 3, 1);
   st.ack(sessionId, 3);
-  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 0, unacked: 0, groups: 2 });
+  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 0, unacked: 0, groups: 2, levels: 0 });
   assert.equal(st.recordSent(sessionId, key(3), 4, 1), true); // key(1)(seq 2) 축출 -> 그 묶음도 사라져야 한다
   const stt = st.stats(sessionId);
   assert.ok(stt.groups <= 2, `groups=${stt.groups}`);
-  assert.deepEqual(stt, { entries: 2, retainedBytes: 1, unacked: 1, groups: 2 });
+  assert.deepEqual(stt, { entries: 2, retainedBytes: 1, unacked: 1, groups: 2, levels: 0 });
 });
 
 test('F-207b: 같은 seq 를 다른 크기로 다시 기록하면 retainedBytes 가 손으로 센 값이고 ack 후 0', () => {
@@ -499,7 +499,7 @@ test('F-209 ⑦: ack 후 같은 key 재기록 100만 번 뒤에도 ackedQ <= max
   const ms = (c1.user + c1.system) / 1000;
   assert.ok(st.ackedQueueLength(sessionId) <= maxEntries, `ackedQ=${st.ackedQueueLength(sessionId)}`);
   assert.equal(st.ackedQueueLength(sessionId), 3);
-  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 0, unacked: 0, groups: 3 });
+  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 0, unacked: 0, groups: 3, levels: 0 });
   console.log(`# cpu ms = ${ms}`); // 시간 단정 없음(로그만)
   // 가득 찬 뒤에도 가장 오래 확인된 항목부터 축출된다
   st.recordSent(sessionId, key(9), seq++, 1);
@@ -595,12 +595,12 @@ test('F-212 ⑥: ack 없이 같은 key 100만 번 재기록해도 pendingQ <= 2�
   const ms = (c1.user + c1.system) / 1000;
   peak = Math.max(peak, st.pendingQueueLength(sessionId));
   assert.ok(peak <= 2 * maxEntries, `pendingQ=${peak}`);
-  assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 1, unacked: 1, groups: 1 });
+  assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 1, unacked: 1, groups: 1, levels: 0 });
   assert.deepEqual(st.unacked(sessionId), [{ seq: 1_000_000, key: key(1) }]);
   console.log(`# cpu ms = ${ms}`); // 시간 단정 없음(로그만)
   // 압축 뒤에도 ack·재접속 동작은 그대로
   st.ack(sessionId, 1_000_000);
-  assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 0, unacked: 0, groups: 1 });
+  assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 0, unacked: 0, groups: 1, levels: 0 });
   assert.equal(st.pendingQueueLength(sessionId), 0);
 });
 

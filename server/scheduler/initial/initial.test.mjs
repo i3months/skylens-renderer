@@ -91,6 +91,14 @@ test('경계: 한 바이트 넘으면 버림 (2,999,952 x 5: 프레임 15,000,00
   assert.equal(r.frameBytes, 4 * 2_999_990 + 58); // + WELCOME 27 + LEVEL_ARRIVED 31
 });
 
+test('경계: 한 바이트 초과 (2,999,950 x 4 + 2,999,953 x 1: 프레임 15,000,001 B)', () => {
+  const cat = Array.from({ length: 5 }, (_, i) => cell(i, i < 4 ? 2_999_950 : 2_999_953));
+  const r = buildInitialBundle({ pose: { ...pose, fovY: 2.0 }, catalog: cat });
+  assert.equal(r.items.length, 4);
+  assert.equal(r.droppedCount, 1);
+  assert.equal(r.frameBytes, 27 + 3_000_019 + 2_999_988 * 3);
+});
+
 test('경계: 초기 묶음 초과 (3MB x 6개): 4개만, 2개 버림', () => {
   // 3,000,038 B x 5 = 15,000,190 > 15,000,000 이므로 4개
   const cat = Array.from({ length: 6 }, (_, i) => cell(i, 3_000_000));

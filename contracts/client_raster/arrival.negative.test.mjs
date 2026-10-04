@@ -35,7 +35,7 @@ test('LEVEL_ARRIVED with only a wrong type is rejected for the type reason', () 
 });
 
 test('pieceCount larger than received pieces is rejected with the shortage message', () => {
-  // guard at arrival.mjs:90. With maxSeq 5 and pieceCount 2 the window start (4) is >= 1, so only the
+  // guard at arrival.mjs:120. With maxSeq 5 and pieceCount 2 the window start (4) is >= 1, so only the
   // `pieceCount > size` half throws here; without it the error would name the missing pieceSeq 4 instead.
   assert.throws(() => completedKeys([piece(5)], arrived({ pieceCount: 2 })), piecesError(/pieceCount 2 만큼 조각을 받지 못함\(받은 조각 1\)$/));
   // window start below 1 (maxSeq 1, pieceCount 2) also reaches the same guard message
