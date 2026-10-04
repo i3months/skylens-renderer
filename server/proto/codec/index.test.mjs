@@ -184,3 +184,20 @@ test('부호화 field 오류', () => {
   assert.equal(code(() => encodeMessage({ ...v, width: 0 })), 'field');
   assert.equal(code(() => encodeMessage({ ...v, height: 65536 })), 'field');
 });
+
+test('chunkIndex 65535 왕복 성공, 65536 거부', () => {
+  const key65535 = { segmentId: 1, level: 0, lod: 0, chunkIndex: 65535, tileX: 0, tileY: 0 };
+  const key65536 = { segmentId: 1, level: 0, lod: 0, chunkIndex: 65536, tileX: 0, tileY: 0 };
+  // 65535는 성공
+  const msg65535 = { type: 'PIECE_REQUEST', reqId: 0, items: [key65535] };
+  assert.deepEqual(decodeMessage(encodeMessage(msg65535)).items[0], key65535);
+  // 65536은 실패
+  assert.equal(code(() => encodeMessage({ type: 'PIECE_REQUEST', reqId: 0, items: [key65536] })), 'field');
+});
+
+test('서버 복호 바이트배열 아님은 short', () => {
+  assert.equal(code(() => decodeMessage(null)), 'short');
+  assert.equal(code(() => decodeMessage('string')), 'short');
+  assert.equal(code(() => decodeMessage(123)), 'short');
+  assert.equal(code(() => decodeMessage(Buffer.from([1, 2, 3]))), 'short');
+});

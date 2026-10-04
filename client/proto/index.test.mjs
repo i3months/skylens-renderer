@@ -131,3 +131,39 @@ test('s2c 왕복 / 전 종류 부호화 후 같은 값', () => {
   const e = { type: 'ERROR', code: 5, text: '' };
   assert.deepEqual(decodeMessage(encodeMessage(e)), e);
 });
+
+test('chunkIndex 65535 부호화 성공, 65536 거부', () => {
+  const key65535 = { segmentId: 1, level: 0, lod: 0, chunkIndex: 65535, tileX: 0, tileY: 0 };
+  const key65536 = { segmentId: 1, level: 0, lod: 0, chunkIndex: 65536, tileX: 0, tileY: 0 };
+  // 65535는 성공
+  const msg65535 = { type: 'PIECE_REQUEST', reqId: 0, items: [key65535] };
+  assert.equal(encodeMessage(msg65535).length > 0, true);
+  // 65536은 실패
+  assert.equal(code(() => encodeMessage({ type: 'PIECE_REQUEST', reqId: 0, items: [key65536] })), 'field');
+  // PIECE 도 테스트
+  const piece65535 = { type: 'PIECE', pieceSeq: 0, key: key65535, chunk: new Uint8Array([1]) };
+  assert.equal(encodeMessage(piece65535).length > 0, true);
+  const piece65536 = { type: 'PIECE', pieceSeq: 0, key: key65536, chunk: new Uint8Array([1]) };
+  assert.equal(code(() => encodeMessage(piece65536)), 'field');
+});
+
+test('BOM 텍스트 왕복 동일', () => {
+  const bom = '﻿';
+  const textWithBom = bom + '테스트';
+  const textWithoutBom = '테스트';
+  // BOM 있는 텍스트와 없는 텍스트를 인코딩하고 디코딩
+  const encoded1 = encodeMessage({ type: 'ERROR', code: 1, text: textWithBom });
+  const encoded2 = encodeMessage({ type: 'ERROR', code: 1, text: textWithoutBom });
+  // ignoreBOM: true 이므로 두 경우 모두 같게 디코딩되어야 함
+  const decoded1 = decodeMessage(encoded1);
+  const decoded2 = decodeMessage(encoded2);
+  // 인코딩된 바이트는 다를 수 있지만, ignoreBOM: true 이므로 디코딩시 같아야 함
+  assert.equal(decoded1.text.length, textWithBom.length); // BOM 포함
+  assert.equal(decoded2.text.length, textWithoutBom.length);
+});
+
+test('배열 흉내 객체 거부', () => {
+  const arrayLike = { 0: 1, 1: -2, 2: 0.5, length: 3 };
+  assert.equal(code(() => encodeMessage({ type: 'VIEW_UPDATE', viewSeq: 0, pos: arrayLike, quat: [0, 0, 0, 1], fovY: 1, width: 1, height: 1 })), 'field');
+  assert.equal(code(() => encodeMessage({ type: 'VIEW_UPDATE', viewSeq: 0, pos: [1, -2, 0.5], quat: arrayLike, fovY: 1, width: 1, height: 1 })), 'field');
+});

@@ -1,7 +1,8 @@
 // 서버 쪽 웹소켓 메시지 부호화·복호(T11.1). 계약: contracts/proto/index.mjs.
 // encodeMessage 는 9종 모두, decodeMessage 는 c→s 종류(HELLO, VIEW_UPDATE, PIECE_REQUEST, ACK)만 받는다.
-// 복호 검사 순서: short → type → version → reserved → limit → length(프레임) → direction → 본문 length → field.
-//   (방향 검사는 프레임 길이 검사 직후, 본문 해석 이전에 둔다. 계약이 방향의 순번을 따로 정하지 않아 그렇게 정했다.)
+// 복호 검사 순서(계약): 바이트배열 아님 'short' → type 모름 'type' → version 'version'
+//   → reserved 'reserved' → payloadLength > MAX 'limit' → 프레임 길이 불일치 'length' → 방향 'direction' → 고정 크기 'length' → 본문 값 범위 'field'.
+// 부호화: 메시지 타입 모름 'type', 범위 위반 'field', 본문 상한 초과 'limit'.
 // 모든 다바이트 값은 little-endian. 외부 코드 없음.
 import {
   PROTO_VERSION, FRAME_HEADER_BYTES, PIECE_KEY_BYTES, MAX_PAYLOAD_BYTES, MAX_REQUEST_ITEMS, MAX_ERROR_TEXT,
@@ -13,7 +14,7 @@ const U32_MAX = 0xffffffff;
 const QUAT_TOL = 1e-3;
 const ERR_CODE_SET = new Set(Object.values(ERR_CODES));
 const utf8Enc = new TextEncoder();
-const utf8Dec = new TextDecoder('utf-8', { fatal: true });
+const utf8Dec = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 function fail(code, msg) { throw new ProtoError(code, msg); }
 function uint(v, max, name) {
@@ -165,7 +166,7 @@ export function encodeMessage(m) {
 
 /** 서버 복호: c→s 종류만. @param {Uint8Array} bytes */
 export function decodeMessage(bytes) {
-  if (!(bytes instanceof Uint8Array)) fail('field', 'bytes 는 Uint8Array');
+  if (!(bytes instanceof Uint8Array)) fail('short', 'bytes 는 Uint8Array');
   if (bytes.length < FRAME_HEADER_BYTES) fail('short', `길이 ${bytes.length} < ${FRAME_HEADER_BYTES}`);
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const type = dv.getUint8(0);

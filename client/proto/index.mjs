@@ -3,10 +3,11 @@
 // 복호는 s2c 종류(WELCOME, PIECE, LEVEL_ARRIVED, MISSING, ERROR)만 받고 c2s 는 ProtoError('direction').
 // 부호화는 9종 모두 한다(교차 시험·모의 클라이언트용).
 //
-// 검사 순서(계약): 길이 < 8 'short' → type 모름 'type' → version 'version'
-//   → reserved 'reserved' → payloadLength > MAX 'limit' → 프레임 길이 불일치 'length' → 본문 값 범위 'field'.
+// 복호 검사 순서(계약): 바이트배열 아님 'short' → 길이 < 8 'short' → type 모름 'type' → version 'version'
+//   → reserved 'reserved' → payloadLength > MAX 'limit' → 프레임 길이 불일치 'length' → 방향 'direction' → 고정 크기 'length' → 본문 값 범위 'field'.
 // 가변 종류의 본문: 최소 크기 미만 또는 항목 수·글자 수와 본문 길이 불일치는 'length', 값 범위 위반은 'field'.
 //   PIECE_REQUEST 의 count > MAX_REQUEST_ITEMS, ERROR 의 알 수 없는 code·잘못된 utf8 은 'field'.
+// 부호화: 메시지 타입 모름 'type', 범위 위반 'field', 본문 상한 초과 'limit'.
 import {
   PROTO_VERSION, FRAME_HEADER_BYTES, PIECE_KEY_BYTES, MAX_PAYLOAD_BYTES, MAX_REQUEST_ITEMS, MAX_ERROR_TEXT,
   MSG, MSG_NAMES, DIRECTION, FIXED_PAYLOAD_BYTES, ERR_CODES, ProtoError,
@@ -63,14 +64,14 @@ function checkFov(f) {
   if (!(f > 0 && f < Math.PI)) fail('field', `fovY 는 0<fovY<π 여야 한다: ${f}`);
 }
 function vec(v, n, name) {
-  if (v === null || typeof v !== 'object' || v.length !== n) fail('field', `${name} 길이 ${n} 배열이어야 한다`);
+  if (v === null || typeof v !== 'object' || Array.isArray(v) === false && !ArrayBuffer.isView(v) || v.length !== n) fail('field', `${name} 길이 ${n} 배열이어야 한다`);
   const out = [];
   for (let i = 0; i < n; i++) out.push(f32(v[i], `${name}[${i}]`));
   return out;
 }
 
 const enc = new TextEncoder();
-const dec = new TextDecoder('utf-8', { fatal: true });
+const dec = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 /**
  * 메시지 -> 프레임 바이트. 범위 밖이면 ProtoError('field'), 본문이 상한을 넘으면 ProtoError('limit').
@@ -78,7 +79,7 @@ const dec = new TextDecoder('utf-8', { fatal: true });
  * @returns {Uint8Array}
  */
 export function encodeMessage(message) {
-  if (message === null || typeof message !== 'object') fail('field', '메시지가 객체가 아님');
+  if (message === null || typeof message !== 'object') fail('type', '메시지가 객체가 아님');
   const type = MSG[message.type];
   if (type === undefined || typeof message.type !== 'string') fail('type', `알 수 없는 종류: ${message.type}`);
   let payload; // 본문 길이
@@ -221,7 +222,7 @@ export function decodeMessage(bytes) {
       if (payload < 21) fail('length', `PIECE 본문 ${payload} B < 21`);
       const key = readKey(dv, b + 4);
       checkKey(key, 'key');
-      return { type: 'PIECE', pieceSeq: dv.getUint32(b, true), key, chunk: bytes.slice(b + 20) };
+      return { type: 'PIECE', pieceSeq: dv.getUint32(b, true), key, chunk: new Uint8Array(bytes.slice(b + 20)) };
     }
     case MSG.LEVEL_ARRIVED: {
       const segmentId = dv.getUint32(b, true);
