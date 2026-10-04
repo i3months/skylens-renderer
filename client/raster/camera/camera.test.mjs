@@ -203,7 +203,6 @@ test('한 단계 fitIntrinsics(…, dpr) 는 정답(truthDevice)과 장치 픽�
     worst = Math.max(worst, worstVsTruthDevice(fitIntrinsics(K_REF, REF_W, REF_H, W, H, dpr), U, W, H, dpr));
   }
   assert.ok(worst < 1e-6, `최대 오차 ${worst} 장치 px`);
-  assert.ok(worst <= 0.5, `fit 대 renderer ≤ 0.5 장치 px`);
 });
 
 test('판별력: fitIntrinsics 자리에 scaleIntrinsics 를 바꿔 써도 정답과의 비교가 잡아낸다(667×375@3 에서 약 0.45 장치 px)', () => {
