@@ -70,7 +70,7 @@
 //     어느 LEVEL_ARRIVED 창에도 들지 않은 조각(선에서 완료 표시를 받지 못한 시도의 조각)이라 그리지 않고 discard 로 돌려준다.
 //     호출자는 discard 를 releasePiece 로 해제한다. keys 가 없거나 빈 배열인 항목은 ClientRasterError('piece')다(LEVEL_ARRIVED 는
 //     pieceCount ≥ 1).
-//   - 선의 LEVEL_ARRIVED 는 {segmentId, level, pieceCount} 뿐이라 keys 는 받은 PIECE 열로 만든다(./arrival.mjs completedKeys·
+//   - 선의 LEVEL_ARRIVED 는 {segmentId, level, pieceCount, firstPieceSeq} 이고 key 는 없어 keys 는 받은 PIECE 열로 만든다(./arrival.mjs completedKeys·
 //     collectArrivals). 규칙: 같은 pieceSeq·같은 PieceKey 의 PIECE 는 한 조각(재전송), 같은 pieceSeq 에 다른 PieceKey 는 거부.
 //     기본 규칙(F-236): LEVEL_ARRIVED 가 firstPieceSeq 를 싣고 있으면(선을 거친 것은 항상) n = pieceCount 일 때 완료 집합은 pieceSeq
 //     firstPieceSeq..firstPieceSeq+n−1 의 조각 n 개의 key 다. 창이 명시되어 받은 PIECE 의 최대 pieceSeq 와 무관하고, 이어받기 뒤

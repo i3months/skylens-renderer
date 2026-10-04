@@ -1,6 +1,6 @@
 // 수준 도착의 완료 key 집합(F-230). 계약: ./index.mjs ④, contracts/proto(PIECE·LEVEL_ARRIVED·재전송 규약)
 //
-// 선의 LEVEL_ARRIVED 는 {segmentId, level, pieceCount} 뿐이고 key 가 없다. selectDrawable 의 arrived 항목
+// 선의 LEVEL_ARRIVED 는 {segmentId, level, pieceCount, firstPieceSeq} 이고 key 는 없다. selectDrawable 의 arrived 항목
 // {segmentId, level, keys} 는 받은 PIECE 열과 LEVEL_ARRIVED 로 여기서 만든다. 순수 함수이고 상태를 두지 않는다.
 //
 // 규칙(받은 순서대로 본 PIECE 들과 그 뒤에 온 LEVEL_ARRIVED 하나, 연결이 바뀌어도 한 세션의 수신 이력 전체):
@@ -155,7 +155,11 @@ export function completedKeys(pieces, levelArrived) {
  * 입력은 한 세션의 수신 이력이다(헤더 규칙 ⓪). PIECE 는 색인에 넣고, LEVEL_ARRIVED 마다 그때까지의 색인으로
  * completedKeys 와 같은 규칙의 항목을 만든다. WELCOME 은 세션 경계만 본다: resumed=false 가 PIECE 뒤에 오면, 또는
  * resumed=true 의 sessionId 가 앞 WELCOME 과 다르면 ClientRasterError('piece'). 그 밖의 종류(MISSING·ERROR)는 이 규칙과
- * 무관해 건너뛴다. type 이 문자열이 아니면 ClientRasterError('piece').
+ * 무관해 건너뛴다. WELCOME sessionId 는 1..u32 정수여야 하고(서버는 0 을 발급하지 않는다) 아니면 ClientRasterError('piece').
+ * resumed=true WELCOME 은 앞에 sessionId 를 알려 준 WELCOME 이 있어야 하며, 없으면(예: 재접속 뒤의 새 연결 메시지만 넣은 경우)
+ * ClientRasterError('piece'). type 이 문자열이 아니면 ClientRasterError('piece').
+ * 호출 규약: 재접속(resumed=true)이 있으면 호출자는 앞 연결의 첫 WELCOME(resumed=false)부터 이어 붙인 세션의 수신 이력 전체를
+ * 넣는다. 새 연결의 메시지만 넣으면 첫 WELCOME 이 resumed=true 라 전체가 거부된다.
  * @param {object[]} messages
  * @returns {{keys: string[], arrived: {segmentId: number, level: number, keys: string[]}[]}}
  *   keys: 받은 조각 key(중복 없이 처음 받은 순서), arrived: LEVEL_ARRIVED 순서의 항목
@@ -174,8 +178,8 @@ export function collectArrivals(messages) {
       if (!m.resumed && index.bySeq.size > 0) {
         throw new ClientRasterError('piece', 'WELCOME resumed=false(새 세션)가 PIECE 뒤에 옴: 새 세션의 수신은 새 입력으로 넣는다(F-234)');
       }
-      if (!Number.isInteger(m.sessionId) || m.sessionId < 0 || m.sessionId > U32_MAX) {
-        throw new ClientRasterError('piece', `WELCOME sessionId 는 u32 정수여야 함: ${String(m.sessionId)}`);
+      if (!Number.isInteger(m.sessionId) || m.sessionId < 1 || m.sessionId > U32_MAX) {
+        throw new ClientRasterError('piece', `WELCOME sessionId 는 u32 정수여야 함(1 이상, 서버는 0 을 발급하지 않음): ${String(m.sessionId)}`);
       }
       if (m.resumed && sessionId === undefined) {
         throw new ClientRasterError('piece', 'WELCOME resumed=true 인데 앞 WELCOME 의 sessionId 가 없음(이어받을 세션을 알 수 없다)');
