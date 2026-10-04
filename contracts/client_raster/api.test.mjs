@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { CLIENT_RASTER_API } from './index.mjs';
 import { createRenderer } from '../../client/raster/index.mjs';
 
-test('CONTRACT: CLIENT_RASTER_API 메서드 목록이 구현과 일치', (t) => {
+test('CONTRACT: CLIENT_RASTER_API 메서드 목록이 계약 표 고정', (t) => {
   // 계약에 정의된 메서드 목록
   const contractMethods = Object.keys(CLIENT_RASTER_API).sort();
 
@@ -32,6 +32,11 @@ test('CONTRACT: CLIENT_RASTER_API 메서드 목록이 구현과 일치', (t) => 
   ].sort();
 
   assert.deepEqual(contractMethods, requiredMethods, '계약 메서드 목록이 필수 메서드와 일치해야 함');
+
+  const contractKeys = new Set(contractMethods);
+  for (const key of NON_RENDERER) {
+    assert.ok(contractKeys.has(key), `NON_RENDERER 의 '${key}' 가 계약에 있어야 함`);
+  }
 });
 
 test('CONTRACT: 각 메서드가 fn 속성을 가짐', (t) => {
@@ -160,4 +165,28 @@ test('IMPL: onContextLost 구독 해제가 호출을 끊는다', () => {
   off();
   canvas.fire('webglcontextlost');
   assert.equal(n, 1, '해제 뒤에는 불리지 않아야 함');
+});
+
+test('CONTRACT: createRenderer 옵션이 계약 또는 시험 전용 확장에만 속함', () => {
+  const contractOptionKeys = new Set([
+    'canvas', 'maxPieceBytes', 'maxResidentBytes', 'decode', 'onEvict',
+    'shading', 'now', 'contextAttributes',
+  ]);
+  const testOnlyExtensions = new Set(['testHooks']);
+  const allowedKeys = new Set([...contractOptionKeys, ...testOnlyExtensions]);
+
+  const { renderer: _r, canvas } = makeRenderer();
+
+  const implOptionKeys = new Set([
+    'canvas', 'maxPieceBytes', 'maxResidentBytes', 'decode', 'onEvict',
+    'shading', 'now', 'contextAttributes', 'testHooks',
+  ]);
+
+  for (const key of implOptionKeys) {
+    assert.ok(allowedKeys.has(key), `구현 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함`);
+  }
+
+  for (const key of allowedKeys) {
+    assert.ok(implOptionKeys.has(key), `계약 옵션 '${key}' 가 구현에 지원되어야 함 (또는 선택 사항)` );
+  }
 });
