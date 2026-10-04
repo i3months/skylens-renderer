@@ -1,7 +1,7 @@
 // 클라이언트 수준 상태 기계(T10.4). 계약: contracts/levels/index.mjs
 // 서버 기계와 같은 서명·같은 결과를 내되 server/ 를 import 하지 않고 계약만 쓴다.
 // 구간마다 현재 수준과 그 수준의 조각만 보관한다. 타이머·시계를 쓰지 않는다.
-import { NONE, FINAL_LEVEL, ACTIONS, decideArrival, assertSegmentId, assertLevel } from '../../contracts/levels/index.mjs';
+import { NONE, FINAL_LEVEL, ACTIONS, decideArrival, assertSegmentId, assertLevel, sumPieceCounts } from '../../contracts/levels/index.mjs';
 
 export function createLevelMachine(options = {}) {
   const recordHistory = options.recordHistory === true;
@@ -29,6 +29,7 @@ export function createLevelMachine(options = {}) {
     assertSegmentId(segmentId);
     assertLevel(level);
     const incoming = normalizePieces(pieces);
+    sumPieceCounts(incoming); // 상태를 바꾸기 전에 count 정의역 검사
     const existing = table.get(segmentId);
     const previousLevel = existing === undefined ? NONE : existing.level;
     const action = decideArrival(previousLevel, level);
@@ -70,11 +71,7 @@ export function createLevelMachine(options = {}) {
     assertSegmentId(segmentId);
     const rec = table.get(segmentId);
     if (rec === undefined) return 0;
-    let total = 0;
-    for (const piece of rec.pieces) {
-      if (piece && Number.isFinite(piece.count)) total += piece.count;
-    }
-    return total;
+    return sumPieceCounts(rec.pieces);
   }
 
   function history() {
