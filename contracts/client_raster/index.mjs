@@ -68,7 +68,8 @@
 //   - arrived 항목은 {segmentId, level, keys} 이고 keys 는 그 수준에서 완료된 조각 key 집합(ASSET_FORMAT §11 정규 문자열,
 //     모두 같은 segmentId·level)이다. 가장 높은 수준 M 의 조각 중 그 집합에 든 key 만 그린다. 집합 밖의 M 수준 key 는 그 수준의
 //     어느 LEVEL_ARRIVED 창에도 들지 않은 조각(선에서 완료 표시를 받지 못한 시도의 조각)이라 그리지 않고 discard 로 돌려준다.
-//     호출자는 discard 를 releasePiece 로 해제한다. keys 가 없는 항목은 ClientRasterError('piece')다. 빈 배열은 허용한다(그 수준에 도착한 조각이 없음).
+//     호출자는 discard 를 releasePiece 로 해제한다. keys 가 없거나 빈 배열인 항목은 ClientRasterError('piece')다(LEVEL_ARRIVED 는
+//     pieceCount ≥ 1). 항목 목록 arrived 자체가 빈 배열 []인 것은 허용한다(도착 없음).
 //   - 선의 LEVEL_ARRIVED 는 {segmentId, level, pieceCount, firstPieceSeq} 이고 key 는 없어 keys 는 받은 PIECE 열로 만든다(./arrival.mjs completedKeys·
 //     collectArrivals). 규칙: 같은 pieceSeq·같은 PieceKey 의 PIECE 는 한 조각(재전송), 같은 pieceSeq 에 다른 PieceKey 는 거부.
 //     기본 규칙(F-236): LEVEL_ARRIVED 가 firstPieceSeq 를 싣고 있으면(선을 거친 것은 항상) n = pieceCount 일 때 완료 집합은 pieceSeq
@@ -154,7 +155,7 @@
  * @property {() => void} dispose  리소스 정리
  * @property {(callback?: () => void) => (() => void)} onContextLost  WebGL 컨텍스트 손실 핸들러. 구독 해제 함수 반환(부르면 그 callback 을 더 부르지 않는다)
  * @property {(callback?: (keys: string[], error?: Error) => void) => (() => void)} onContextRestored  WebGL 컨텍스트 복구 핸들러. 콜백 인자: 다시 올려야 할 key 배열(소실 당시 상주·업로드 중이던 것). 둘째 인자 error 는 구현 확장(시험용, 계약 밖). 구독 해제 함수 반환
- * @property {(arrived: {segmentId: number, level: number, keys: string[]}[], opts?: {deferResult: true}) => {draw: string[], pending: string[], discard: string[]} | undefined} setArrived  LEVEL_ARRIVED 완료 집합을 넘겨 그리는 조각을 정한다. 두 번째 인자 {deferResult: true} 면 반환 없이(undefined) selectDrawable 을 다음 draw 로 미뤄 프레임당 1회로 합친다(F-248 ④: 이벤트 폭주 때 이벤트 수 × 전체를 피한다). 반환값을 쓰면 인자 없이 부르며 그때는 지금처럼 즉시 계산한다. 지연 경로도 항목·key 해석(key 형식, segmentId·level 일치, level 0..3)을 호출 시점에 검사해 'piece' 로 던지며, 던지면 직전 상태를 바꾸지 않는다. 빈 배열은 허용한다(도착이 없음).
+ * @property {(arrived: {segmentId: number, level: number, keys: string[]}[], opts?: {deferResult: true}) => {draw: string[], pending: string[], discard: string[]} | undefined} setArrived  LEVEL_ARRIVED 완료 집합을 넘겨 그리는 조각을 정한다. 두 번째 인자 {deferResult: true} 면 반환 없이(undefined) selectDrawable 을 다음 draw 로 미뤄 프레임당 1회로 합친다(F-248 ④: 이벤트 폭주 때 이벤트 수 × 전체를 피한다). 반환값을 쓰면 인자 없이 부르며 그때는 지금처럼 즉시 계산한다. 지연 경로도 항목·key 해석(key 형식, segmentId·level 일치, level 0..3)을 호출 시점에 검사해 'piece' 로 던지며, 던지면 직전 상태를 바꾸지 않는다. arrived 목록이 빈 배열인 것은 허용한다(도착 없음, 즉시·지연 같음). 빈 keys 항목은 'piece'.
  * @property {() => string[]} residentKeys  현재 상주 key 배열
  * @property {() => boolean} isContextLost  WebGL 컨텍스트 손실 상태
  *
@@ -211,7 +212,7 @@ export const CLIENT_RASTER_API = Object.freeze({
   dispose: { fn: 'renderer.dispose() -> void' },
   onContextLost: { fn: 'renderer.onContextLost(callback?) -> () => void  컨텍스트 손실 알림, 구독 해제 함수 반환' },
   onContextRestored: { fn: 'renderer.onContextRestored(callback?: (keys: string[]) => void) -> () => void  컨텍스트 복구 알림 (인자: 다시 올려야 할 key 배열); 둘째 인자 error 는 구현 확장(시험용), 구독 해제 함수 반환' },
-  setArrived: { fn: 'renderer.setArrived(arrived: [{segmentId, level, keys}], opts?: {deferResult: true}) -> {draw: string[], pending: string[], discard: string[]} | undefined  LEVEL_ARRIVED 완료 집합으로 그리는 조각 결정. deferResult 면 undefined 를 반환하고 선택은 다음 draw 로 미루되 입력 검사는 호출 시점에 한다. 빈 배열 허용(도착 없음)' },
+  setArrived: { fn: 'renderer.setArrived(arrived: [{segmentId, level, keys}], opts?: {deferResult: true}) -> {draw: string[], pending: string[], discard: string[]} | undefined  LEVEL_ARRIVED 완료 집합으로 그리는 조각 결정. deferResult 면 undefined 를 반환하고 선택은 다음 draw 로 미루되 입력 검사는 호출 시점에 한다. arrived 가 빈 배열[]이면 허용(도착 없음), 빈 keys 항목은 piece' },
   residentKeys: { fn: 'renderer.residentKeys() -> string[]  현재 GPU 상주 key 배열' },
   isContextLost: { fn: 'renderer.isContextLost() -> boolean  WebGL 컨텍스트 손실 상태' },
   drawingBufferSize: { fn: 'drawingBufferSize(width, height, dpr) -> {width, height}  = round(width·dpr), round(height·dpr)' },
@@ -454,7 +455,7 @@ export function parsePieceKey(key) {
  * @param {string[]} keys ASSET_FORMAT §11 정규 문자열
  * @param {{segmentId: number, level: number, keys: string[]}[]} arrived 받은 LEVEL_ARRIVED 마다 completedKeys 로 만든 항목
  *   (segmentId < SEGMENT_ID_LIMIT = 2^30, -0 은 거부). keys 는 그 수준의 완료 key 집합이고 모두 (segmentId, level) 의 key 여야 한다.
- *   없으면 ClientRasterError('piece'), 빈 배열은 허용(도착이 없음을 표시).
+ *   없거나 빈 배열이면 ClientRasterError('piece')(LEVEL_ARRIVED pieceCount ≥ 1). arrived 목록 자체가 빈 배열이면 허용(도착 없음).
  * @returns {{draw: string[], pending: string[], discard: string[]}}
  */
 export function selectDrawable(keys, arrived) {
@@ -474,7 +475,7 @@ export function selectDrawable(keys, arrived) {
     if (!a || !Number.isInteger(a.segmentId) || Object.is(a.segmentId, -0) || a.segmentId < 0 || a.segmentId >= SEGMENT_ID_LIMIT || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
       throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
     }
-    if (!Array.isArray(a.keys)) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 는 배열이어야 함: ${JSON.stringify(a)}`);
+    if (!Array.isArray(a.keys) || a.keys.length === 0) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 는 비지 않은 배열이어야 함: ${JSON.stringify(a)}`);
     for (const k of a.keys) {
       const p = parsePieceKey(k);
       if (p.segmentId !== a.segmentId || p.level !== a.level) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 의 key 가 항목의 (segmentId, level) 과 다름: ${k}`);
