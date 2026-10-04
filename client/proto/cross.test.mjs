@@ -1,5 +1,4 @@
-// 서버·클라이언트 교차 시험. server/proto/codec/index.mjs 가 작업 트리에 있을 때만 돈다(동적 import, 없으면 건너뜀).
-// 건너뛰면 시험 결과에 skipped 로 남고, 사유가 표준 출력에 한 줄 찍힌다.
+// 서버·클라이언트 교차 시험. 서버 코덱은 정적 import 한다 — 모듈이 없으면 이 파일이 로드에서 실패한다(skip 으로 녹색 금지).
 // 단언:
 //  1) 9종 전부 무작위 유효 메시지(고정 시드)를 양쪽이 부호화한 바이트가 같다. 받는 쪽 방향 복호는 원 메시지를 되돌리고
 //     반대 방향 복호는 ProtoError('direction') 이다.
@@ -8,15 +7,10 @@
 //     서로 반대이므로, 프레임 검사(length 까지)에서 거절되면 두 쪽 code 가 같고, 통과하면 반대쪽은 'direction' 이다. 방향이 맞는 쪽이 성공하면 상대 부호화기로 다시 부호화한 바이트가 변조 입력과 같아야 한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as client from './index.mjs';
+import * as server from '../../server/proto/codec/index.mjs';
+import { makeDecoder as makeRefDecoder } from '../../server/proto/fuzz/reference-codec.mjs';
 import { ProtoError, MSG, DIRECTION, MAX_REQUEST_ITEMS, MAX_ERROR_TEXT, ERR_CODES } from '../../contracts/proto/index.mjs';
-
-const serverPath = fileURLToPath(new URL('../../server/proto/codec/index.mjs', import.meta.url));
-const server = existsSync(serverPath) ? await import(pathToFileURL(serverPath).href) : null;
-const skip = server ? false : 'server/proto/codec/index.mjs 없음 — 교차 시험 건너뜀';
-if (!server) console.log(`# 교차 시험 건너뜀: ${serverPath} 가 작업 트리에 없다`);
 
 function rng(seed) {
   let a = seed >>> 0;
@@ -111,7 +105,7 @@ function corruptBytes(b, r) {
   return x;
 }
 
-test('교차: 전 종류 왕복·바이트 일치', { skip }, () => {
+test('교차: 전 종류 왕복·바이트 일치', () => {
   const r = rng(20260101);
   const g = gen(r);
   for (let i = 0; i < 50; i++) {
@@ -127,7 +121,7 @@ test('교차: 전 종류 왕복·바이트 일치', { skip }, () => {
   }
 });
 
-test('교차: 부호화 오류 입력 1,000개의 (성공/실패, code) 가 같다', { skip }, () => {
+test('교차: 부호화 오류 입력 1,000개의 (성공/실패, code) 가 같다', () => {
   const r = rng(20260102);
   const g = gen(r);
   let fails = 0;
@@ -142,7 +136,7 @@ test('교차: 부호화 오류 입력 1,000개의 (성공/실패, code) 가 같�
   assert.ok(fails >= 500, `오류 입력이 너무 적다: ${fails}`);
 });
 
-test('교차: 복호 오류 입력 1,000개 — 방향이 맞는 쪽 기준 (성공/실패, code) 일치', { skip }, () => {
+test('교차: 복호 오류 입력 1,000개 — 방향이 맞는 쪽 기준 (성공/실패, code) 일치', () => {
   const r = rng(20260103);
   const g = gen(r);
   let fails = 0;
@@ -165,11 +159,32 @@ test('교차: 복호 오류 입력 1,000개 — 방향이 맞는 쪽 기준 (성
       const dir = DIRECTION[bytes[0]];
       const [own, other, otherMod] = dir === 's2c' ? [c, s, server] : [s, c, client];
       assert.equal(sig(other), 'direction', label); // 프레임 검사를 통과했으므로 반대쪽은 방향 거부
-      assert.ok(own.ok || own.code === 'length' || own.code === 'field', label);
+      // 방향이 맞는 쪽은 기준 코덱(계약 순서: length 먼저)과 (성공/실패, code)가 정확히 같아야 한다.
+      const ref = outcome(() => makeRefDecoder(dir)(bytes));
+      assert.equal(sig(own), sig(ref), label + ' 기준 코덱과 code');
       if (own.ok) assert.deepEqual(otherMod.encodeMessage(own.value), bytes, label + ' 재부호화');
     }
     if (!(c.ok && s.ok)) { fails++; seenCodes.add(sig(c)); seenCodes.add(sig(s)); }
   }
   assert.ok(fails >= 800, `오류 입력이 너무 적다: ${fails}`);
   for (const k of ['short', 'type', 'direction', 'version', 'reserved', 'limit', 'length', 'field']) assert.ok(seenCodes.has(k), `code ${k} 가 변조 집합에 없다`);
+});
+
+// 계약 순서: 본문 length 가 field 보다 먼저다. 양쪽 복호기에 같은 code 를 못 박는다(순서 교환 변이 사망용).
+test('교차: length 가 field 보다 먼저다(count=0xffff·본문 6 B, msgLen=300·본문 4 B)', () => {
+  const frame = (type, payload) => {
+    const f = new Uint8Array(8 + payload.length); f[0] = type; f[1] = 1;
+    new DataView(f.buffer).setUint32(4, payload.length, true); f.set(payload, 8); return f;
+  };
+  const req = frame(MSG.PIECE_REQUEST, Uint8Array.from([0, 0, 0, 0, 0xff, 0xff]));
+  const err = frame(MSG.ERROR, Uint8Array.from([1, 0, 300 & 255, 300 >> 8]));
+  assert.equal(sig(outcome(() => server.decodeMessage(req))), 'length');
+  assert.equal(sig(outcome(() => client.decodeMessage(req))), 'direction');
+  assert.equal(sig(outcome(() => client.decodeMessage(err))), 'length');
+  assert.equal(sig(outcome(() => server.decodeMessage(err))), 'direction');
+  // 본문 길이가 맞으면 field.
+  const big = frame(MSG.PIECE_REQUEST, new Uint8Array(6 + 16 * 257).map((_, i) => (i === 4 || i === 5 ? 1 : 0)));
+  assert.equal(sig(outcome(() => server.decodeMessage(big))), 'field');
+  const long = frame(MSG.ERROR, Uint8Array.from([1, 0, 300 & 255, 300 >> 8, ...new Array(300).fill(97)]));
+  assert.equal(sig(outcome(() => client.decodeMessage(long))), 'field');
 });

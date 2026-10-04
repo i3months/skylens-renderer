@@ -3,10 +3,11 @@
 // direction: 'c2s' 면 서버 복호, 's2c' 면 클라이언트 복호와 같은 방향 검사를 한다.
 import {
   PROTO_VERSION, FRAME_HEADER_BYTES, PIECE_KEY_BYTES, MAX_PAYLOAD_BYTES, MAX_REQUEST_ITEMS, MAX_ERROR_TEXT,
-  MSG, MSG_NAMES, DIRECTION, FIXED_PAYLOAD_BYTES, ProtoError,
+  MSG, MSG_NAMES, DIRECTION, FIXED_PAYLOAD_BYTES, ERR_CODES, ProtoError,
 } from '../../../contracts/proto/index.mjs';
 import { SEGMENT_ID_LIMIT, LOD_MAX } from '../../../contracts/asset/index.mjs';
 
+const ERR_CODE_SET = new Set(Object.values(ERR_CODES));
 const fail = (c, m) => { throw new ProtoError(c, m); };
 const inr = (v, lo, hi, n) => { if (!Number.isInteger(v) || v < lo || v > hi) fail('field', n); return v; };
 
@@ -53,7 +54,7 @@ export function encodeMessage(m) {
     case 'PIECE': dv.setUint32(o, u32(m.pieceSeq, 'seq'), true); writeKey(dv, o + 4, m.key); out.set(m.chunk, o + 20); break;
     case 'LEVEL_ARRIVED': dv.setUint32(o, inr(m.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId'), true); dv.setUint8(o + 4, inr(m.level, 0, 3, 'level')); dv.setUint32(o + 5, u32(m.pieceCount, 'pieceCount'), true); break;
     case 'MISSING': dv.setUint32(o, inr(m.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId'), true); break;
-    case 'ERROR': dv.setUint16(o, inr(m.code, 0, 65535, 'code'), true); dv.setUint16(o + 2, m._b.length, true); out.set(m._b, o + 4); break;
+    case 'ERROR': if (!ERR_CODE_SET.has(m.code)) fail('field', 'code'); dv.setUint16(o, m.code, true); dv.setUint16(o + 2, m._b.length, true); out.set(m._b, o + 4); break;
   }
   return out;
 }
@@ -75,7 +76,7 @@ export function makeDecoder(direction) {
     if (FIXED_PAYLOAD_BYTES[t] !== undefined && n !== FIXED_PAYLOAD_BYTES[t]) fail('length', 'fixed');
     const o = FRAME_HEADER_BYTES;
     switch (MSG_NAMES[t]) {
-      case 'HELLO': return { type: 'HELLO', sessionId: dv.getUint32(o, true), lastPieceSeq: dv.getUint32(o + 4, true) };
+      case 'HELLO': if (dv.getUint8(o + 8) !== 0) fail('field', 'flags'); return { type: 'HELLO', sessionId: dv.getUint32(o, true), lastPieceSeq: dv.getUint32(o + 4, true) };
       case 'VIEW_UPDATE': {
         const f = (i) => dv.getFloat32(o + 4 + 4 * i, true);
         const pos = [f(0), f(1), f(2)], quat = [f(3), f(4), f(5), f(6)], fovY = f(7);
@@ -89,8 +90,9 @@ export function makeDecoder(direction) {
       case 'PIECE_REQUEST': {
         if (n < 6) fail('length', 'req head');
         const count = dv.getUint16(o + 4, true);
-        if (count > MAX_REQUEST_ITEMS) fail('field', 'count');
+        // 계약 순서: length(본문 길이 일치) 먼저, 그다음 field(count 상한).
         if (n !== 6 + 16 * count) fail('length', 'req body');
+        if (count > MAX_REQUEST_ITEMS) fail('field', 'count');
         const items = []; for (let i = 0; i < count; i++) items.push(readKey(dv, o + 6 + 16 * i));
         return { type: 'PIECE_REQUEST', reqId: dv.getUint32(o, true), items };
       }
@@ -112,10 +114,12 @@ export function makeDecoder(direction) {
       case 'ERROR': {
         if (n < 4) fail('length', 'error');
         const len = dv.getUint16(o + 2, true);
-        if (len > MAX_ERROR_TEXT) fail('field', 'msgLen');
         if (n !== 4 + len) fail('length', 'error body');
+        if (len > MAX_ERROR_TEXT) fail('field', 'msgLen');
         let text; try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(o + 4)); } catch { fail('field', 'utf8'); }
-        return { type: 'ERROR', code: dv.getUint16(o, true), text };
+        const code = dv.getUint16(o, true);
+        if (!ERR_CODE_SET.has(code)) fail('field', 'code');
+        return { type: 'ERROR', code, text };
       }
     }
     return fail('type', 'unreachable');
