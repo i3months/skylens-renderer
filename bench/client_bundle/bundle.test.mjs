@@ -1,19 +1,13 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { execSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, mkdtempSync, rmSync } from 'fs';
 import { gzipSync } from 'zlib';
 import { resolve } from 'path';
+import { tmpdir } from 'os';
+import { main, modules } from './index.mjs';
 
 const GZIP_LIMIT_BYTES = 300 * 1024;
-const modules = [
-  'client/proto',
-  'client/codec',
-  'client/asset',
-  'client/levels',
-  'client/cull',
-  'client/geo'
-];
 
 async function checkEsbuild() {
   try {
@@ -36,13 +30,17 @@ async function checkEsbuild() {
 
 async function bundleWithEsbuild(modulePath, esbuildCmd) {
   const entryPath = resolve(modulePath, 'index.mjs');
-  const outputPath = `/tmp/bundle-test-${modulePath.replace(/\//g, '-')}.mjs`;
+  const tempDir = mkdtempSync(resolve(tmpdir(), 'bundle-test-'));
+  const outputPath = resolve(tempDir, `${modulePath.replace(/\//g, '-')}.mjs`);
 
   try {
     const cmd = `${esbuildCmd} ${entryPath} --bundle --minify --format=esm --outfile=${outputPath}`;
     execSync(cmd, { stdio: 'ignore' });
-    return readFileSync(outputPath, 'utf8');
+    const content = readFileSync(outputPath, 'utf8');
+    rmSync(tempDir, { recursive: true, force: true });
+    return content;
   } catch (error) {
+    rmSync(tempDir, { recursive: true, force: true });
     throw new Error(`Failed to bundle ${modulePath}: ${error.message}`);
   }
 }
@@ -61,12 +59,11 @@ function measureGzipSize(content) {
   return gzipped.length;
 }
 
-test('client bundle gzip size', async (t) => {
+test('client bundle gzip size', { timeout: 60_000 }, async (t) => {
   const esbuild = await checkEsbuild();
 
   if (!esbuild.available) {
-    // Skip if esbuild is not available and no network
-    t.skip('esbuild not available, skipping bundle test');
+    t.skip('skipped: esbuild not available');
     return;
   }
 
@@ -78,8 +75,7 @@ test('client bundle gzip size', async (t) => {
     try {
       content = await bundleWithEsbuild(modulePath, esbuild.command);
     } catch (error) {
-      t.fail(`Failed to bundle ${modulePath}: ${error.message}`);
-      return;
+      assert.fail(`Failed to bundle ${modulePath}: ${error.message}`);
     }
 
     const gzipSize = measureGzipSize(content);
