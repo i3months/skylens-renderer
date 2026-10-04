@@ -404,13 +404,16 @@ test('F-300 ④ planner 가 던지면 후보를 잃지 않는다: 두 번째 req
 });
 
 test('F-300 ④ 두 번째 구간에서 던져도 이미 넣은 첫 구간은 다시 넣지 않고 둘 다 한 번씩만 나온다', () => {
-  const { modules } = spyArrival({ throwOnCalls: [2] });
+  const { stat, modules } = spyArrival({ throwOnCalls: [2] });
   const view = createStatusView({ modules, countOf: countOfTestChunk, pieceIndex: twoKeyIndex });
   view.handle({ type: 'MISSING', segmentId: 1 });
   view.handle({ type: 'MISSING', segmentId: 2 });
   assert.throws(() => view.requests(), /planner 가 던졌다/);
   const items = view.requests().flatMap((r) => r.items);
   assert.deepEqual(items, [...twoKeyIndex(1), ...twoKeyIndex(2)]);
+  // 출력만으로는 구간 1 을 다시 넣어도 같아 보인다(planner 가 중복을 합친다). 넣은 횟수로 본다:
+  // 첫 requests() 에서 구간 1(1 회)·구간 2(던짐, 2 회), 두 번째에서 구간 2 만(3 회). 구간 1 을 다시 넣으면 4 회가 된다.
+  assert.equal(stat.calls, 3);
 });
 
 test('F-301 ③ 원래와 다른 창(같은 구간·수준, 다른 first/n)은 거부하고 상태를 바꾸지 않는다', () => {
@@ -513,4 +516,31 @@ test('F-301 ⑦ WELCOME(resumed=false) 중 주입 모듈이 던져도 상태가 
     a.v.handle({ type: 'WELCOME', sessionId: 9, resumed: false, nextPieceSeq: 1 });
     assert.deepEqual(a.v.frame().drawKeys, [], mode);
   }
+});
+
+test('F-303 ⑥ WELCOME(resumed=false) 중 fallback 이 던지면 levels.released() 에서 비운 해제 key 를 되돌려 다음 frame() 이 내준다', () => {
+  // 실제 levels 는 도착 때마다 해제를 비우므로 WELCOME 시점의 drained 가 늘 비어 있다. 그래서 released() 가 WELCOME 때 key 를 돌려주는 주입 levels 로 되돌림 줄을 지난다.
+  const flag = { throwFallback: false, extra: [] };
+  const wrapped = {
+    ...FAKE_MODULES,
+    levels: {
+      createStatusLevels() {
+        const l = FAKE_MODULES.levels.createStatusLevels();
+        return { ...l, released() { return [...l.released(), ...flag.extra.splice(0)]; } };
+      },
+    },
+    fallback: {
+      createFallbackController() {
+        const f = FAKE_MODULES.fallback.createFallbackController();
+        return { ...f, handle(e) { if (flag.throwFallback) throw new Error('주입 오류 fallback'); return f.handle(e); } };
+      },
+    },
+  };
+  const view = createStatusView({ modules: wrapped, countOf: countOfTestChunk, pieceIndex: twoKeyIndex });
+  feed(view, createMockRenderServer().welcome(false));
+  flag.extra = ['9.9.9.9.9.9'];
+  flag.throwFallback = true;
+  assert.throws(() => view.handle({ type: 'WELCOME', sessionId: 9, resumed: false, nextPieceSeq: 1 }), /주입 오류 fallback/);
+  flag.throwFallback = false;
+  assert.deepEqual(view.frame().releasedKeys, ['9.9.9.9.9.9']);
 });
