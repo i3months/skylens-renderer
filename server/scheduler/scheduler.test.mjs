@@ -314,7 +314,7 @@ const YIELD_EVERY = 4096;
 const isIndexKey = (k) => typeof k === 'string' && k !== '' && String(k >>> 0) === k && (k >>> 0) !== 4294967295;
 
 function observe() {
-  const c = { moved: 0, touched: 0, stored: 0, on: true, cap: { moved: Infinity, touched: Infinity, stored: Infinity } };
+  const c = { moved: 0, touched: 0, stored: 0, reads: 0, on: true, cap: { moved: Infinity, touched: Infinity, stored: Infinity } };
   const over = () => {
     if (c.moved > c.cap.moved || c.touched > c.cap.touched || c.stored > c.cap.stored) {
       throw new Error(`관측 상한 초과: moved ${c.moved}/${c.cap.moved}, touched ${c.touched}/${c.cap.touched}, stored ${c.stored}/${c.cap.stored}`);
@@ -332,6 +332,12 @@ function observe() {
         if (c.on && isIndexKey(k)) { c.stored++; over(); }
         t[k] = v;
         return true;
+      },
+      // 읽기 횟수(F-240 ⑪): 인덱스·length 읽기를 센다. 감싼 힙을 읽어 지역 배열로 복사하는 O(n) 삽입 변이는 push 마다 n 번 읽으므로
+      // 이 계수가 연산당 상한을 바로 넘는다(시간 단언 아님, 결정적 횟수).
+      get(t, k, r) {
+        if (c.on && (k === 'length' || isIndexKey(k))) c.reads++;
+        return Reflect.get(t, k, r);
       },
     });
   };
@@ -385,6 +391,7 @@ const SLACK = 1024;
 // 하한: enqueue 마다 힙에 항목을 하나 넣고(wrapArray 로 감싼 힙의 push 가 인덱스 대입 1 로 센다) nextBatch 로 비우는 측정도 있어
 // check(ops) 의 ops 는 enqueue 수의 최대 2 배다(오름차순+비우기 시험의 2n). 그래서 연산당 stored >= 0.5 를 하한으로 둔다.
 // wrapArray 를 아예 거치지 않는 지역 배열 O(n) 삽입 변이는 stored 가 거의 0 이라 이 하한에서 바로 실패한다(F-237 ⑧, 시간 단언 아님).
+// 감싼 힙을 읽어 지역 배열로 복사하는 변이는 stored 하한을 통과하므로 Proxy get 트랩의 reads 상한(boundsFor 의 reads)이 잡는다(F-240 ⑪).
 // SLACK 은 처음 몇 연산의 고정 비용과 같은 값을 쓴다(하한은 ops * 0.5 - SLACK).
 const STORED_MIN_PER_OP = 0.5;
 // 측정 구간: 시험 쪽 비교 계수기와 저장소 Proxy 를 넣은 스케줄러를 만들고 body(s, check) 를 관측 아래에서 돌린다.
@@ -420,6 +427,11 @@ async function measured(opts, body, bounds, maxOps, signal) {
         c.restore();
         assert.fail(`ops=${ops}: stored ${snap.stored} (>= ${ops} * ${STORED_MIN_PER_OP} - ${SLACK}) - 내부 배열이 wrapArray 를 거치지 않는다`);
       }
+      if (bounds.reads !== undefined && c.reads > ops * bounds.reads + SLACK) {
+        const snap = { reads: c.reads };
+        c.restore();
+        assert.fail(`ops=${ops}: reads ${snap.reads} (<= ${ops} * ${bounds.reads.toFixed(1)} + ${SLACK}) - 감싼 배열을 연산마다 O(n) 읽는다`);
+      }
       if (c.moved > ops * bounds.moved + SLACK || c.touched > ops * bounds.touched + SLACK || c.stored > ops * bounds.stored + SLACK || cmp.n > ops * bounds.compares + SLACK) {
         const snap = { moved: c.moved, touched: c.touched, stored: c.stored, compares: cmp.n };
         c.restore();
@@ -432,13 +444,14 @@ async function measured(opts, body, bounds, maxOps, signal) {
   } finally {
     c.restore();
   }
-  return { s, out, moved: c.moved, touched: c.touched, stored: c.stored, compares: cmp.n };
+  return { s, out, moved: c.moved, touched: c.touched, stored: c.stored, reads: c.reads, compares: cmp.n };
 }
 
 // 연산당 상한. 힙은 연산당 비교 <= 2 log2 n(siftDown 은 층당 2번), 옮김은 0 이어야 한다(앞쪽 삽입·삭제 없음).
 // touched 는 keyId 의 KEY_FIELDS 6 칸 + push 몇 칸 + 일괄 정리(amortized) 같은 상수다. log2 n 의 상수배로 둔다.
 // stored 는 siftUp/siftDown 이 층마다 한 번 대입하므로 연산당 log2 n + 몇 칸이다. 2 log2 n 으로 둔다.
-const boundsFor = (n) => ({ compares: 2 * log2(n), moved: 2, touched: 2 * log2(n), stored: 2 * log2(n) });
+const READS_PER_LOG = 4;
+const boundsFor = (n) => ({ compares: 2 * log2(n), moved: 2, touched: 2 * log2(n), stored: 2 * log2(n), reads: READS_PER_LOG * log2(n) });
 const ASC_N = 100000;
 const GROUP_N = 20000;
 
