@@ -382,3 +382,92 @@ out.textContent = JSON.stringify(res);
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- F-244 ② 메인 쪽: Worker 가 만든 gpu 평면 ----
+function withGpu(k, edit) {
+  const d = decodeChunkClient(piece1(k, [0.5, 0.5, 5, 1.5, 0.5, 5.25], [1, 2, 3, 4, 5, 6], [0, 0, 1, 0, 0, 1]));
+  const gpu = toGpuPlanes(d, d.header.bboxMin); // Worker 가 하는 일
+  const out = { header: d.header, planes: d.planes, gpu };
+  if (edit) edit(out);
+  return out;
+}
+
+test('gpu 가 있으면 toGpuPlanes 를 다시 돌리지 않고 기존 경로와 같은 평면·픽셀로 그린다', async () => {
+  const k = '3.1.0.0.0.0';
+  const bytes = piece1(k, [0.5, 0.5, 5, 1.5, 0.5, 5.25], [1, 2, 3, 4, 5, 6], [0, 0, 1, 0, 0, 1]);
+  const run = async (decode) => {
+    let toCalls = 0;
+    const { r, calls } = make({ decode, testHooks: { toGpuPlanes: (...a) => { toCalls += 1; return toGpuPlanes(...a); } } });
+    r.setView(VIEW);
+    calls.length = 0;
+    await r.uploadPiece(k, bytes);
+    const uploads = calls.filter((c) => c[0] === 'bufferData').map((c) => [c[2] && c[2].constructor.name, c[2] ? [...c[2]] : null]);
+    r.setArrived([arrivedOf(k)]);
+    calls.length = 0;
+    const s = r.draw();
+    return { toCalls, s: { ...s, drawMs: 0 }, drawCalls: calls.filter((c) => c[0] === 'drawArrays'), uploads, bytes: r.memoryBytes() };
+  };
+  const old = await run((b) => decodeChunkClient(b));
+  const viaGpu = await run((b) => { const d = decodeChunkClient(b); return { ...d, gpu: toGpuPlanes(d, d.header.bboxMin) }; });
+  assert.equal(old.toCalls, 1);
+  assert.equal(viaGpu.toCalls, 0, 'gpu 가 있는데 toGpuPlanes 를 다시 돌았다');
+  assert.deepEqual(viaGpu.s, old.s);
+  assert.deepEqual(viaGpu.drawCalls, old.drawCalls);
+  assert.deepEqual(viaGpu.uploads, old.uploads);
+  assert.ok(viaGpu.uploads.length >= 3);
+  assert.equal(viaGpu.bytes, old.bytes);
+});
+
+test('잘못된 gpu 는 piece 오류: count·origin·형식·평면 이름·타입·길이', async () => {
+  const k = '3.1.0.0.0.0';
+  const bad = {
+    'count': (d) => { d.gpu.count = 1; },
+    'origin': (d) => { d.gpu.origin = [0, 0, 0]; },
+    'origin 길이': (d) => { d.gpu.origin = [0.5, 0.5]; },
+    'format': (d) => { d.gpu.format = FORMAT_GAUSS56; },
+    '평면 길이': (d) => { d.gpu.planes.position = new Float32Array(3); },
+    '평면 타입': (d) => { d.gpu.planes.color = new Uint8ClampedArray(6); },
+    '법선 누락': (d) => { delete d.gpu.planes.normalOct; },
+    '법선 타입': (d) => { d.gpu.planes.normalOct = new Uint8Array(4); },
+    '모르는 평면': (d) => { d.gpu.planes.extra = new Uint8Array(2); },
+    'planes 없음': (d) => { d.gpu.planes = null; },
+    'gpu null': (d) => { d.gpu = null; },
+  };
+  for (const [name, edit] of Object.entries(bad)) {
+    const { r } = make({ decode: () => withGpu(k, edit) });
+    await assert.rejects(r.uploadPiece(k, piece1(k, [0.5, 0.5, 5])), (e) => e instanceof ClientRasterError && e.code === 'piece', name);
+    assert.equal(r.memoryBytes(), 0, name);
+  }
+  // 형식 2 에 법선 평면이 있으면 틀림
+  const k2 = '3.1.0.0.0.1';
+  const d2 = decodeChunkClient(piece2(k2, [0.25, 0.5, 2]));
+  const g2 = toGpuPlanes(d2, d2.header.bboxMin);
+  const { r } = make({ decode: () => ({ ...d2, gpu: { ...g2, planes: { ...g2.planes, normalOct: new Int8Array(2) } } }) });
+  await assert.rejects(r.uploadPiece(k2, piece2(k2, [0.25, 0.5, 2])), (e) => e.code === 'piece');
+  // 올바른 gpu 는 통과한다
+  const ok = make({ decode: () => withGpu(k) });
+  await ok.r.uploadPiece(k, piece1(k, [0.5, 0.5, 5]));
+  assert.deepEqual(ok.r.residentKeys(), [k]);
+});
+
+// ---- F-245 ⑤: 복구 중 프로그램 재생성 실패 알림 ----
+test('복구 중 프로그램 재생성이 실패하면 onContextRestored 가 빈 key 와 오류를 알리고 업로드는 context 로 거부한다', async () => {
+  const { r, gl, canvas } = make();
+  const k = '3.1.0.0.0.0';
+  await r.uploadPiece(k, piece1(k, [0.5, 0.5, 5]));
+  r.setView(VIEW);
+  const seen = [];
+  r.onContextRestored((keys, err) => { seen.push([keys, err && err.code]); });
+  canvas.fire('webglcontextlost');
+  gl.getProgramParameter = () => false; // 링크 실패
+  canvas.fire('webglcontextrestored');
+  assert.deepEqual(seen, [[[], 'context']]);
+  assert.deepEqual(r.draw().drawnPieces, 0);
+  await assert.rejects(r.uploadPiece(k, piece1(k, [0.5, 0.5, 5])), (e) => e.code === 'context');
+  // 다시 복구되면 소실 목록이 남아 있어 알린다
+  gl.getProgramParameter = () => true;
+  canvas.fire('webglcontextlost');
+  canvas.fire('webglcontextrestored');
+  assert.deepEqual(seen[1], [[k], undefined]);
+  r.dispose();
+});
