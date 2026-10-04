@@ -396,7 +396,7 @@ export function createRenderer(options) {
     for (const v of Object.values(gpuPiece.planes)) bytesTotal += v.byteLength;
     if (bytesTotal > maxPieceBytes) throw new ClientRasterError('piece', `조각 ${bytesTotal} B 가 maxPieceBytes ${maxPieceBytes} 초과`);
     const evicted = makeRoom(key, bytesTotal);
-    onGlUploadStart();
+    try { onGlUploadStart(); } catch { /* 시험 hook 예외가 업로드 상태를 깨지 않게 삼킨다 */ }
     try {
       pool.upload(key, gpuPiece); // 풀이 한도를 다시 검사한다
     } catch (e) {
@@ -404,7 +404,7 @@ export function createRenderer(options) {
       if (evicted) selectionStale = true;
       throw e;
     } finally {
-      onGlUploadEnd();
+      try { onGlUploadEnd(); } catch { /* 같은 이유: 상태 반영·원래 오류를 덮지 않는다 */ }
     }
     meter.remove(key); // 삽입 순서를 최신으로
     meter.add(key, bytesTotal);
@@ -506,7 +506,7 @@ export function createRenderer(options) {
     }
     const { cam, values } = view;
     const drawKeys = currentSelection().draw; // 선택 재계산(CPU)은 GL 구간 밖에서 한다
-    onDrawStart();
+    try { onDrawStart(); } catch { /* 시험 hook 예외가 draw 를 깨지 않게 삼킨다 */ }
     if (canvas.width !== cam.bw) canvas.width = cam.bw;
     if (canvas.height !== cam.bh) canvas.height = cam.bh;
     gl.viewport(0, 0, cam.bw, cam.bh);
@@ -539,7 +539,7 @@ export function createRenderer(options) {
       drawnPieces += 1;
     }
     gl.bindVertexArray(null);
-    onDrawEnd();
+    try { onDrawEnd(); } catch { /* 같은 이유 */ }
     return { drawnPoints, drawnPieces, droppedFrames, drawMs: Math.max(0, now() - t0) };
   }
 
