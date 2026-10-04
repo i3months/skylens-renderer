@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { nonEmptyValuesInEmpty, computeCoverage, compareWithReference } from './index.mjs';
+import { nonEmptyValuesInEmpty, computeCoverage, compareWithReference, drawnMask } from './index.mjs';
 import { emptyResult } from '../../../contracts/raster/index.mjs';
 
 // nonEmptyValuesInEmpty 입력 검증: result 객체가 유효해야 함
@@ -124,23 +124,50 @@ test('nonEmptyValuesInEmpty: 범위 밖 인덱스 감지(100×100 배열)', () =
   assert.throws(() => nonEmptyValuesInEmpty(r, [10000]), /^Error: missing:/);
 });
 
-// ① 변이 잡기: 깊이·색 조건 줄 제거 (라인 98-99 삭제 변이)
+// index=-1 인데 깊이·색이 어긋난 결과는 RenderResult 검사(computeCoverage 와 같음)에서 missing: 오류
 test('nonEmptyValuesInEmpty: index=-1 인데 깊이·색만 어긋난 빈 픽셀을 감지', () => {
   const r = emptyResult(2, 2);
-  // 픽셀 0: index는 EMPTY_INDEX(-1) 이지만 깊이가 0이 아님
-  r.index[0] = -1;
-  r.depth[0] = 5;  // 빈 픽셀이 아닌데 index는 빈값
-  // color[0,1,2]는 기본값 0
-  const result1 = nonEmptyValuesInEmpty(r, [0]);
-  assert.deepEqual(result1, [0], 'index=-1 이어도 depth!=0 이면 감지해야 함');
+  r.depth[0] = 5; // index 는 −1 인데 깊이가 0 이 아님
+  assert.throws(() => nonEmptyValuesInEmpty(r, [0]), /^Error: missing:/);
+  assert.throws(() => computeCoverage(r), /^Error: missing:/);
 
-  // 픽셀 1: index는 EMPTY_INDEX(-1) 이지만 색이 0이 아님
   const r2 = emptyResult(2, 2);
-  r2.index[1] = -1;
-  r2.depth[1] = 0;  // depth는 정상
-  r2.color[3] = 7;  // color[3*1+0] = 7, 빈 픽셀이 아님
-  const result2 = nonEmptyValuesInEmpty(r2, [1]);
-  assert.deepEqual(result2, [1], 'index=-1 이어도 color!=0 이면 감지해야 함');
+  r2.color[3] = 7; // index −1, 깊이 0 인데 색이 0 이 아님
+  assert.throws(() => nonEmptyValuesInEmpty(r2, [1]), /^Error: missing:/);
+  assert.throws(() => computeCoverage(r2), /^Error: missing:/);
+});
+
+// emptyPixels 에 든 칠해진 픽셀은 검사를 통과한 결과에서 목록으로 돌려준다
+test('nonEmptyValuesInEmpty: emptyPixels 에 든 칠해진 픽셀(번호·깊이·색)을 돌려준다', () => {
+  const r = emptyResult(2, 2);
+  r.index[2] = 7; r.depth[2] = 3; r.color[6] = 9;
+  assert.deepEqual(nonEmptyValuesInEmpty(r, [0, 2, 3]), [2]);
+});
+
+// F-251②: RenderResult 검사는 호출당 한 번만 일어난다. assertRenderResult 는 color 를 한 번 읽으므로 color 읽기 횟수로 센다.
+function countingResult(base) {
+  const counter = { color: 0 };
+  const r = {
+    width: base.width, height: base.height, depth: base.depth, index: base.index,
+    get color() { counter.color += 1; return base.color; },
+  };
+  return { r, counter };
+}
+test('RenderResult 검사 횟수: computeCoverage·drawnMask·compareWithReference·nonEmptyValuesInEmpty 모두 인자당 1회', () => {
+  const a = countingResult(emptyResult(3, 3));
+  computeCoverage(a.r);
+  assert.equal(a.counter.color, 1, 'computeCoverage');
+  const b = countingResult(emptyResult(3, 3));
+  drawnMask(b.r);
+  assert.equal(b.counter.color, 1, 'drawnMask');
+  const c = countingResult(emptyResult(3, 3));
+  const d = countingResult(emptyResult(3, 3));
+  compareWithReference(c.r, d.r);
+  assert.equal(c.counter.color, 1, 'compareWithReference 후보');
+  assert.equal(d.counter.color, 1, 'compareWithReference 참조');
+  const e = countingResult(emptyResult(3, 3));
+  nonEmptyValuesInEmpty(e.r, []);
+  assert.equal(e.counter.color, 1, 'nonEmptyValuesInEmpty');
 });
 
 // ② 변이 잡기: 0×0 및 음수 크기 RenderResult 검사
