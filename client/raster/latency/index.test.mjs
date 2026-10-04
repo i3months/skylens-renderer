@@ -249,29 +249,24 @@ test('createLatencyProbe: 측정값 개수 상한 도달 시 가장 오래된 �
   const probe = createLatencyProbe({ now: () => time, maxMeasurements });
 
   probe.mark('start');
-  time += 5;
-  probe.mark('end');
 
   // 상한(10) + 1 개의 측정을 반복해서 추가되고 가장 오래된 항목이 삭제됨을 확인
-  // 각 측정에 고유한 id를 추가해서 어떤 항목이 삭제되었는지 추적
-  const measurementIds = [];
+  // 각 측정마다 다른 duration을 가지도록 하여 어떤 항목이 삭제되었는지 추적
   for (let i = 0; i < maxMeasurements + 1; i++) {
-    probe.measure('start', 'end');
-    measurementIds.push(i);
+    time = 5 + i;  // duration = (5 + i) - 0 = 5 + i
+    probe.mark(`end-${i}`);
+    probe.measure('start', `end-${i}`);
   }
 
   const { measurements: recorded } = probe.events();
   // 상한 도달 시 가장 오래된 측정이 삭제되고 최근 N개만 유지
   assert.equal(recorded.length, maxMeasurements);
 
-  // 모든 측정이 기록되고 순서 유지 및 duration 확인
+  // 가장 오래된 측정(duration 5인 첫 번째 측정)이 삭제되고
+  // 남은 측정들은 duration 6부터 15까지
   for (let i = 0; i < maxMeasurements; i++) {
-    assert.equal(recorded[i].duration, 5);
+    assert.equal(recorded[i].duration, 6 + i, `측정 ${i}는 duration ${6 + i}를 가져야 함 (가장 오래된 측정은 제거됨)`);
   }
-
-  // 가장 오래된 측정(첫 번째 측정, index 0)이 삭제되었는지 확인
-  // 남은 측정들은 원래 index 1 부터 maxMeasurements 까지임
-  assert.equal(recorded[0].duration, 5, '첫 번째 측정은 제거되고 두 번째 측정이 새로운 첫 번째가 됨');
 });
 
 test('createLatencyProbe: maxMarks 유효성 검증 - 정수 아님', (t) => {
