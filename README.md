@@ -117,6 +117,10 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 ### 현황판 어댑터 (T13)
 현황판 화면 역할을 경로 B 위에 얹는다. 계약·대응표 `contracts/statusview/`, 구현 `client/status/`(조각 요청 `arrival/`, 수준 교체 `levels/`, 도착 기준 노출 `reveal/`, 카메라 동기 `camera/`, 마커 덧그리기 `overlay/`, "없음" 안내 `missing_ui/`, 폴백 상태 `fallback/`, 조립 `e2e/`), 측정 `bench/status_bw/`·`bench/status_quality/`. 대응표의 skylens 원본 열은 추정이며 원본 대조는 아직 하지 않았다. SPEC S6 구간당 문턱(≤ 3,000,000 B)은 구간당 250만 점 합성에서 무손실 색 코덱과 구간 점 예산 솎기(`server/scheduler/segment_budget/`)로 구간당 약 2.93 MB 까지 내려가지만, 원본 점의 약 13.4% 만 보내므로 화질(S9)에 영향이 있고 실제 송출 경로에는 아직 배선하지 않았다. 솎지 않으면 구간당 약 10 MB 이상이다. 10만 점 합성 통과는 S6 충족을 뜻하지 않는다. 측정한 솎기 비율 모두 SSIM 0.95 미달, S6·S9 충돌(결정 0043): 채택 방식 13.40% 는 250만 점 8시점 SSIM 최소 0.6877·평균 0.7534 이고 50% 도 최소 0.8714 이다. 품질 측정 `status_quality` 는 320×180 해상도·20만 점·무손실 색·CPU 래스터 조건 ([local] T13.10L)에서 실행되며 S9 가 확정되지 않았다. ws 진입점 배선 `server/ws/wire/`.
 
+### 관제탑 자산 (T14)
+
+`contracts/tower_assets/` 가 계약이다. 지형 격자 LOD(`server/terrain/mesh_lod`), 위성 드레이프 타일(`drape`), 타일 색인(`tile_index`), 오프라인 검사(`offline`), 건물 돌출·LOD·점 표본·검정 건물 선·항공뷰 UV(`server/buildings/*`)가 있다. 입력은 모두 합성이며 실제 VWorld 입력은 아직 검증하지 않았다. `bench/tower_assets` 는 6,191동 합성 도시의 처리 시간과 크기(약 2.74 MB)를 잰다.
+
 ## English
 
 Server-side renderer for SkyLens. Work in progress.
@@ -233,3 +237,8 @@ Draws .skla chunks with WebGL2. Contract: `contracts/client_raster/`; implementa
 
 ### Status view adapter (T13)
 Puts the status-view roles on top of path B. Contract and role map: `contracts/statusview/`; implementation: `client/status/` (piece requests `arrival/`, level replacement `levels/`, arrival-based reveal `reveal/`, camera sync `camera/`, marker overlay `overlay/`, "missing" notice `missing_ui/`, fallback state `fallback/`, assembly `e2e/`); measurements: `bench/status_bw/`, `bench/status_quality/`. The skylens-original column of the role map is an estimate and has not been checked against the source. The SPEC S6 per-segment threshold (≤ 3,000,000 B) is reached in 2.5M-point synthesis at about 2.93 MB per segment using the lossless-color codec plus a per-segment point-budget thinning (`server/scheduler/segment_budget/`), but only about 13.4% of the source points are sent, so quality (S9) is affected and it is not yet wired into the real send path. Without thinning a segment is about 10 MB or more. Passing 100k-point synthesis does not mean S6 compliance. Every measured thinning ratio falls short of SSIM 0.95, so S6 and S9 conflict (decision 0043): the adopted 13.40% ratio gives an 8-viewpoint SSIM minimum of 0.6877 and mean of 0.7534 at 2.5M points, and even 50% has a minimum of 0.8714. Quality measurement `status_quality` runs at 320×180 resolution, 200k points, lossless color, CPU raster ([local] T13.10L) and S9 is not yet confirmed. ws entry wiring: `server/ws/wire/`.
+
+### Tower assets (T14)
+
+The contract lives in `contracts/tower_assets/`. It covers terrain mesh LOD (`server/terrain/mesh_lod`), satellite drape tiles (`drape`), a tile index (`tile_index`), an offline-use check (`offline`), and building extrusion, LOD, point samples, black-building edge lines and aerial UVs (`server/buildings/*`). All inputs are synthetic; real VWorld inputs have not been verified yet. `bench/tower_assets` measures processing time and size (about 2.74 MB) for a 6,191-building synthetic city.
+
