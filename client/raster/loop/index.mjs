@@ -110,12 +110,22 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
   const st = { requests: 0, responses: 0, errors: 0, mainThreadEvents: 0, longTasks: 0, maxMainMs: 0 };
 
   function measure(fn) {
-    const t0 = now();
-    try { return fn(); } finally {
-      const ms = now() - t0;
-      st.mainThreadEvents++;
-      if (ms > st.maxMainMs) st.maxMainMs = ms;
-      if (ms > LONG_TASK_MS) st.longTasks++;
+    let t0;
+    try { t0 = now(); } catch { /* now threw, skip timing */ }
+
+    try {
+      return fn();
+    } finally {
+      if (t0 !== undefined) {
+        let t1;
+        try { t1 = now(); } catch { /* now threw, skip timing */ }
+        if (t1 !== undefined) {
+          const ms = t1 - t0;
+          st.mainThreadEvents++;
+          if (ms > st.maxMainMs) st.maxMainMs = ms;
+          if (ms > LONG_TASK_MS) st.longTasks++;
+        }
+      }
     }
   }
   function failAll(err) {
