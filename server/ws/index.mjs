@@ -6,19 +6,30 @@
 //   bufferedAmount(): 아직 소켓으로 나가지 못하고 쌓인 바이트(배압 판단용).
 import http from 'node:http';
 import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { FrameParser, encodeFrame, encodeClosePayload, OPCODES } from './frame/index.mjs';
 
 export const ENV_HOST = 'SKYLENS_WS_HOST';
 export const ENV_PORT = 'SKYLENS_WS_PORT';
 const HANDSHAKE_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const CLOSE_WAIT_MS = 2000;
-// 쓰기 버퍼 상한(소켓 writableLength): 읽지 않는 클라이언트에게 pong 이 무한히 쌓이는 것을 막는다. 넘기려는 pong 은 쓰지 않고 1008 로 닫는다.
+// pong 용 쓰기 버퍼 상한: 읽지 않는 클라이언트에게 pong 이 무한히 쌓이는 것을 막는다. 아직 나가지 못한 pong 바이트만 센다
+// (send() 로 쌓인 데이터는 세지 않는다: 큰 초기 번들을 받는 중인 정상 클라이언트의 ping 이 1008 을 받지 않도록). 넘기려는 pong 은 쓰지 않고 1008 로 닫는다.
 export const DEFAULT_MAX_WRITE_BUFFER = 1 << 20;
 // close 프레임을 상한 안에서 보낼 수 있게 pong 판단에서 남겨 두는 여유(close 본문은 최대 125 B + 머리 2 B).
 const CLOSE_RESERVE = 256;
 // ping 속도 제한: 1 초 창마다 허용하는 ping 수. 넘으면 1008.
 export const DEFAULT_MAX_PINGS_PER_SECOND = 50;
 const PING_WINDOW_MS = 1000;
+// send() 상한: 소켓에 쌓인 바이트(writableLength) + 새 프레임이 이 값을 넘으면 그 프레임은 쓰지 않고 false 를 돌려주며
+// 연결을 1008('send buffer')로 닫는다. 4 MiB 메시지 여럿을 감당하는 값.
+export const DEFAULT_MAX_SEND_BUFFER = 32 << 20;
+// 처리 중(약속이 아직 끝나지 않은) onMessage 상한. 가득 차면 소켓 읽기를 멈추고(pause) 끝나는 대로 이어서 처리한다.
+export const DEFAULT_MAX_PENDING_MESSAGES = 64;
+
+function checkInt(name, v, min) {
+  if (!Number.isInteger(v) || v < min) throw new RangeError(`${name} 는 ${min} 이상의 정수여야 한다: ${String(v)}`);
+}
 
 /** 환경 변수에서 { host, port } 를 읽는다. 없거나 잘못되면 오류. */
 export function loadConfig(env) {
@@ -45,8 +56,13 @@ function createConnection(socket, head, onError, limits) {
   let timer = null;
   let result = { code: 1006, reason: '' };
   let failed = false;
-  let pingWindowStart = 0;
+  let pingWindowStart = -Infinity;
   let pingCount = 0;
+  let pongBytes = 0; // 쓰기 콜백이 오지 않은 pong 바이트(send 데이터 제외)
+  let pending = 0; // 끝나지 않은 async onMessage 수
+  let paused = false;
+  let draining = false;
+  const backlog = [];
 
   // onError 자체가 던져도 서버는 멈추지 않는다.
   const report = (err, where) => {
@@ -56,7 +72,10 @@ function createConnection(socket, head, onError, limits) {
   const guarded = (fn, arg, where) => {
     try {
       const r = fn(arg);
-      if (r && typeof r.then === 'function') r.then(undefined, (err) => fail(err, where));
+      if (r && typeof r.then === 'function') {
+        pending++;
+        r.then(() => { pending--; drain(); }, (err) => { pending--; fail(err, where); drain(); });
+      }
     } catch (err) {
       fail(err, where);
     }
@@ -78,12 +97,15 @@ function createConnection(socket, head, onError, limits) {
   };
   const onPing = (data) => {
     if (closeSent) return;
-    const now = Date.now();
-    if (now - pingWindowStart >= PING_WINDOW_MS) { pingWindowStart = now; pingCount = 0; }
+    const now = limits.now();
+    const elapsed = now - pingWindowStart;
+    // elapsed < 0: 주입 시계가 되감겼다. 새 창으로 취급한다(오탐 1008 방지).
+    if (elapsed < 0 || elapsed >= PING_WINDOW_MS) { pingWindowStart = now; pingCount = 0; }
     if (++pingCount > limits.maxPingsPerSecond) return violate(1008, 'ping rate');
     const frame = encodeFrame(OPCODES.PONG, data);
-    if (socket.writableLength + frame.length > limits.maxWriteBuffer - CLOSE_RESERVE) return violate(1008, 'write buffer');
-    socket.write(frame);
+    if (pongBytes + frame.length > limits.maxWriteBuffer - CLOSE_RESERVE) return violate(1008, 'write buffer');
+    pongBytes += frame.length;
+    socket.write(frame, () => { pongBytes -= frame.length; });
   };
 
   const finish = () => {
@@ -103,36 +125,62 @@ function createConnection(socket, head, onError, limits) {
     if (!timer) { timer = setTimeout(finish, CLOSE_WAIT_MS); timer.unref?.(); }
   };
 
+  // 이벤트를 쌓아 두고 drain 이 차례로 처리한다. 처리 중 메시지가 상한에 닿으면 읽기를 멈추고 남은 이벤트는 backlog 에 둔다
+  // (backlog 는 읽은 청크 하나 분량으로 한정된다).
+  const drain = () => {
+    if (draining) return;
+    draining = true;
+    try {
+      while (backlog.length) {
+        if (failed || finished) { backlog.length = 0; return; }
+        const ev = backlog[0];
+        if (ev.type === 'message' && pending >= limits.maxPendingMessages) {
+          if (!paused) { paused = true; socket.pause(); }
+          return;
+        }
+        backlog.shift();
+        if (ev.type === 'message') guarded(msgCb, ev.data, 'onMessage');
+        else if (ev.type === 'ping') onPing(ev.data);
+        else if (ev.type === 'close') {
+          backlog.length = 0;
+          result = { code: ev.code, reason: ev.reason };
+          if (!closeSent) sendClose(ev.code === 1005 ? 1000 : ev.code);
+          // close 에코가 소켓으로 나간 뒤(end 의 완료 콜백)에 끝낸다. 바로 destroy 하면 에코가 유실될 수 있다.
+          socket.end(finish);
+          return;
+        } else if (ev.type === 'error') {
+          backlog.length = 0;
+          result = { code: ev.code, reason: ev.reason };
+          startClose(ev.code, ev.reason);
+          socket.end();
+          return;
+        }
+      }
+      if (paused && !finished) { paused = false; socket.resume(); }
+    } finally {
+      draining = false;
+    }
+  };
   const feed = (chunk) => {
     if (failed || finished) return; // 닫는 중에는 더 해석하지 않는다
-    for (const ev of parser.push(chunk)) {
-      if (finished || failed) return;
-      if (ev.type === 'message') { guarded(msgCb, ev.data, 'onMessage'); if (failed) return; }
-      else if (ev.type === 'ping') { onPing(ev.data); if (failed) return; }
-      else if (ev.type === 'close') {
-        result = { code: ev.code, reason: ev.reason };
-        if (!closeSent) sendClose(ev.code === 1005 ? 1000 : ev.code);
-        // close 에코가 소켓으로 나간 뒤(end 의 완료 콜백)에 끝낸다. 바로 destroy 하면 에코가 유실될 수 있다.
-        socket.end(finish);
-        return;
-      } else if (ev.type === 'error') {
-        result = { code: ev.code, reason: ev.reason };
-        startClose(ev.code, ev.reason);
-        socket.end();
-        return;
-      }
-    }
+    backlog.push(...parser.push(chunk));
+    drain();
   };
 
   socket.on('data', feed);
   socket.on('error', () => {});
+  // 상대가 close 프레임 없이 FIN 만 보내면 끝낸다(result 기본값 1006, 이미 정해진 코드는 유지).
+  socket.on('end', finish);
   socket.on('close', finish);
   if (head && head.length) queueMicrotask(() => feed(head));
 
   return {
     send(bytes) {
       if (closeSent || finished) return false;
-      return socket.write(encodeFrame(OPCODES.BINARY, bytes));
+      const frame = encodeFrame(OPCODES.BINARY, bytes);
+      // 상한 초과: 쓰지 않고 false, 연결은 1008 로 닫는다. (true/false 는 소켓 배압 신호이며 false 여도 데이터는 쌓인다.)
+      if (socket.writableLength + frame.length > limits.maxSendBuffer) { violate(1008, 'send buffer'); return false; }
+      return socket.write(frame);
     },
     onMessage(cb) { msgCb = cb; },
     onClose(cb) { closeCb = cb; },
@@ -142,18 +190,25 @@ function createConnection(socket, head, onError, limits) {
 }
 
 /**
- * @param {{host: string, port: number, maxWriteBuffer?: number, maxPingsPerSecond?: number, onConnection: (conn: object) => void, onError?: (err: unknown, where: string) => void}} options
+ * @param {{host: string, port: number, maxWriteBuffer?: number, maxPingsPerSecond?: number, maxSendBuffer?: number, maxPendingMessages?: number, now?: () => number, onConnection: (conn: object) => void, onError?: (err: unknown, where: string) => void}} options
  * @returns {Promise<{server: http.Server, address(): object, close(): Promise<void>}>} listen 이 끝난 뒤 반환.
  */
-export function createWsServer({ host, port, onConnection, onError, maxWriteBuffer = DEFAULT_MAX_WRITE_BUFFER, maxPingsPerSecond = DEFAULT_MAX_PINGS_PER_SECOND }) {
-  const limits = { maxWriteBuffer, maxPingsPerSecond };
+export function createWsServer({ host, port, onConnection, onError, maxWriteBuffer = DEFAULT_MAX_WRITE_BUFFER, maxPingsPerSecond = DEFAULT_MAX_PINGS_PER_SECOND, maxSendBuffer = DEFAULT_MAX_SEND_BUFFER, maxPendingMessages = DEFAULT_MAX_PENDING_MESSAGES, now = () => performance.now() }) {
   if (typeof onConnection !== 'function') throw new TypeError('onConnection 필요');
+  checkInt('maxWriteBuffer', maxWriteBuffer, CLOSE_RESERVE + 1);
+  checkInt('maxPingsPerSecond', maxPingsPerSecond, 1);
+  checkInt('maxSendBuffer', maxSendBuffer, 1);
+  checkInt('maxPendingMessages', maxPendingMessages, 1);
+  if (typeof now !== 'function') throw new TypeError('now 는 함수여야 한다');
+  const limits = { maxWriteBuffer, maxPingsPerSecond, maxSendBuffer, maxPendingMessages, now };
   const server = http.createServer((req, res) => {
     res.writeHead(426, { Upgrade: 'websocket', 'Content-Length': 0 });
     res.end();
   });
   const sockets = new Set();
   server.on('upgrade', (req, socket, head) => {
+    // 거절 경로(400)에서도 상대의 RST 가 uncaughtException 이 되지 않게 가장 먼저 단다.
+    socket.on('error', (err) => { try { onError?.(err, 'handshake'); } catch { /* 보고 실패는 삼킨다 */ } });
     const key = req.headers['sec-websocket-key'];
     const ok = req.method === 'GET'
       && String(req.headers.upgrade ?? '').toLowerCase() === 'websocket'

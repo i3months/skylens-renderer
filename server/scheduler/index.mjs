@@ -17,8 +17,8 @@
 //     같은 key 병합은 항목 수가 늘지 않으므로 항상 받는다. 낮은 level 을 밀어내서 자리가 나는 경우는 그 자리를 센다.
 //   - maxSentGroups(기본 65536): 나간 level 기억 맵의 묶음 수 상한. 넘으면 가장 오래 쓰이지 않은(LRU: 그 묶음에서 마지막으로
 //     항목이 나간 순) 묶음의 기억부터 버린다. 버려진 묶음은 낮은 level 이 다시 들어올 수 있다(상한을 크게 잡아 완화).
-//   - 정렬 배열은 항상 정렬된 채로 유지한다(F-203 ③): enqueue·cancel·우선순위 상승은 이분 탐색으로 자리를 찾아 끼우거나 뺀다
-//     (전체 재정렬 없음, 순서는 전체 정렬과 같다: before() 는 seq 로 전순서). nextBatch 가 앞에서 떼어내는 것도 순서를 깨지 않는다.
+//   - 대기열은 최소 힙이다(F-208): enqueue·nextBatch 는 O(log n), 삭제·우선순위 상승은 lazy(dead 표시 후 루트에서 버림, 많이 쌓이면 일괄 정리).
+//     순서는 전체 정렬과 같다: before() 는 seq 로 전순서. 묶음별로 최고 level 과 level 별 항목 집합을 따로 세어 enqueue 가 묶음 크기에 비례하지 않는다.
 
 import { assertLevel } from '../../contracts/levels/index.mjs';
 import { overtakeGroup } from '../../contracts/proto/index.mjs';
@@ -27,12 +27,10 @@ const KEY_FIELDS = ['segmentId', 'level', 'lod', 'chunkIndex', 'tileX', 'tileY']
 
 function keyId(key) {
   if (key === null || typeof key !== 'object') throw new TypeError('key 는 PieceKey 객체여야 한다');
-  const parts = [];
   for (const f of KEY_FIELDS) {
     if (!Number.isInteger(key[f])) throw new TypeError(`key.${f} 는 정수여야 한다: ${key[f]}`);
-    parts.push(key[f]);
   }
-  return parts.join(':');
+  return `${key.segmentId}:${key.level}:${key.lod}:${key.chunkIndex}:${key.tileX}:${key.tileY}`;
 }
 
 function before(a, b) {
@@ -51,10 +49,11 @@ export function createScheduler(options = {}) {
   if (!Number.isInteger(maxSentGroups) || maxSentGroups < 1) throw new RangeError(`maxSentGroups 는 1 이상 정수여야 한다: ${maxSentGroups}`);
 
   const sentLevel = new Map(); // group -> 나간 최고 level (삽입 순서 = LRU 순서)
-  const byKey = new Map(); // keyId -> entry
-  const byGroup = new Map(); // groupId -> Set<entry>
+  const byKey = new Map(); // keyId -> 살아 있는 entry
+  const groups = new Map(); // groupId -> { maxLevel, levels: Map<level, Set<entry>> } (묶음별 최고 level·level별 항목)
   let seq = 0;
-  let sorted = []; // 항상 before() 순으로 정렬된 entry 목록
+  // 최소 힙(before() 기준 맨 앞이 루트). 삭제는 dead 표시만 하고(lazy) 루트에 올라올 때 버린다. dead 가 많이 쌓이면 한 번에 정리한다.
+  let heap = [];
 
   function remember(group, level) {
     const prev = sentLevel.get(group);
@@ -63,35 +62,100 @@ export function createScheduler(options = {}) {
     if (sentLevel.size > maxSentGroups) sentLevel.delete(sentLevel.keys().next().value); // 가장 오래된 묶음 축출
   }
 
-  // before() 가 seq 로 전순서이므로 entry 의 자리는 유일하다. 첫 번째 'entry 보다 뒤' 위치를 찾는다.
-  function lowerBound(entry) {
-    let lo = 0;
-    let hi = sorted.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (before(sorted[mid], entry) < 0) lo = mid + 1;
-      else hi = mid;
+  function siftUp(i) {
+    const e = heap[i];
+    while (i > 0) {
+      const parent = (i - 1) >>> 1;
+      if (before(e, heap[parent]) >= 0) break;
+      heap[i] = heap[parent];
+      i = parent;
     }
-    return lo;
+    heap[i] = e;
   }
 
-  function insertSorted(entry) {
-    sorted.splice(lowerBound(entry), 0, entry);
+  function siftDown(i) {
+    const n = heap.length;
+    const e = heap[i];
+    for (;;) {
+      let c = 2 * i + 1;
+      if (c >= n) break;
+      if (c + 1 < n && before(heap[c + 1], heap[c]) < 0) c++;
+      if (before(heap[c], e) >= 0) break;
+      heap[i] = heap[c];
+      i = c;
+    }
+    heap[i] = e;
   }
 
-  function removeSorted(entry) {
-    const i = lowerBound(entry);
-    if (sorted[i] === entry) sorted.splice(i, 1);
+  function heapPush(entry) {
+    heap.push(entry);
+    siftUp(heap.length - 1);
+  }
+
+  function heapPop() {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      siftDown(0);
+    }
+    return top;
+  }
+
+  function dropDeadTop() {
+    while (heap.length > 0 && heap[0].dead) heapPop();
+  }
+
+  function compact() {
+    if (heap.length <= 2 * byKey.size + 32) return;
+    heap = heap.filter((e) => !e.dead);
+    for (let i = (heap.length >>> 1) - 1; i >= 0; i--) siftDown(i);
+  }
+
+  // 묶음 = { maxLevel, bucket } (bucket 은 level 별 연결 리스트: { level, count, head, nextBucket }). 같은 level 항목은
+  // 이중 연결 리스트(entry.prev/next)로 이어 추가·삭제가 O(1) 이고, 비용은 묶음 크기와 무관하게 level 수(적다)에만 비례한다.
+  function addToGroup(entry) {
+    let g = groups.get(entry.group);
+    if (!g) groups.set(entry.group, (g = { maxLevel: entry.level, bucket: null }));
+    let b = g.bucket;
+    while (b && b.level !== entry.level) b = b.nextBucket;
+    if (!b) g.bucket = b = { level: entry.level, count: 0, head: null, nextBucket: g.bucket };
+    entry.prev = null;
+    entry.next = b.head;
+    if (b.head) b.head.prev = entry;
+    b.head = entry;
+    b.count++;
+    if (entry.level > g.maxLevel) g.maxLevel = entry.level;
+  }
+
+  function removeFromGroup(entry) {
+    const g = groups.get(entry.group);
+    let b = g.bucket;
+    let before = null;
+    while (b.level !== entry.level) {
+      before = b;
+      b = b.nextBucket;
+    }
+    if (entry.prev) entry.prev.next = entry.next;
+    else b.head = entry.next;
+    if (entry.next) entry.next.prev = entry.prev;
+    entry.prev = entry.next = null;
+    if (--b.count > 0) return;
+    if (before) before.nextBucket = b.nextBucket;
+    else g.bucket = b.nextBucket;
+    if (g.bucket === null) {
+      groups.delete(entry.group);
+    } else if (entry.level === g.maxLevel) {
+      let m = -Infinity;
+      for (let x = g.bucket; x; x = x.nextBucket) if (x.level > m) m = x.level;
+      g.maxLevel = m;
+    }
   }
 
   function remove(entry) {
     byKey.delete(entry.id);
-    const set = byGroup.get(entry.group);
-    if (set) {
-      set.delete(entry);
-      if (set.size === 0) byGroup.delete(entry.group);
-    }
-    removeSorted(entry);
+    removeFromGroup(entry);
+    entry.dead = true;
   }
 
   function view(entry) {
@@ -111,36 +175,38 @@ export function createScheduler(options = {}) {
       const group = overtakeGroup(item.key);
       const sent = sentLevel.get(group);
       if (sent !== undefined && sent > level) return false; // 이미 더 높은 수준이 나갔다: 추월당한 항목은 받지 않는다
-      const peers = byGroup.get(group);
+      const g = groups.get(group);
       let lower = 0;
-      if (peers) {
-        for (const p of peers) {
-          if (p.level > level) return false; // 이미 더 높은 수준이 대기 중: 추월당한 항목은 받지 않는다
-          if (p.level < level) lower++;
-        }
+      if (g) {
+        if (g.maxLevel > level) return false; // 이미 더 높은 수준이 대기 중: 추월당한 항목은 받지 않는다
+        for (let b = g.bucket; b; b = b.nextBucket) if (b.level < level) lower += b.count;
       }
       const existing = byKey.get(id);
       if (existing) {
         if (priority > existing.priority) {
-          removeSorted(existing); // 바뀌기 전 값으로 자리를 찾아 뺀다
-          existing.priority = priority;
-          existing.bytes = bytes;
-          insertSorted(existing);
+          // 힙 안의 값은 바꿀 수 없으니 이전 항목은 죽이고 같은 순번의 새 항목을 넣는다
+          remove(existing);
+          const entry = { id, group, key: existing.key, bytes, priority, level, seq: existing.seq, dead: false, prev: null, next: null };
+          byKey.set(id, entry);
+          addToGroup(entry);
+          heapPush(entry);
+          compact();
         }
         return true;
       }
       if (byKey.size - lower >= maxPending) return false; // 큐 상한
-      if (peers) {
-        for (const p of [...peers]) {
-          if (p.level < level) remove(p); // 새 수준이 낮은 수준을 추월
+      if (lower > 0) {
+        const victims = [];
+        for (let b = g.bucket; b; b = b.nextBucket) {
+          if (b.level < level) for (let p = b.head; p; p = p.next) victims.push(p);
         }
+        for (const p of victims) remove(p); // 새 수준이 낮은 수준을 추월
       }
-      const entry = { id, group, key: { ...item.key }, bytes, priority, level, seq: seq++ };
+      const entry = { id, group, key: { ...item.key }, bytes, priority, level, seq: seq++, dead: false, prev: null, next: null };
       byKey.set(id, entry);
-      let set = byGroup.get(group);
-      if (!set) byGroup.set(group, (set = new Set()));
-      set.add(entry);
-      insertSorted(entry);
+      addToGroup(entry);
+      heapPush(entry);
+      compact();
       return true;
     },
 
@@ -148,42 +214,37 @@ export function createScheduler(options = {}) {
       const entry = byKey.get(keyId(key));
       if (!entry) return false;
       remove(entry);
+      compact();
       return true;
     },
 
     nextBatch() {
-      const list = sorted;
       const batch = [];
       batch.oversize = false;
       let total = 0;
-      let taken = 0;
-      for (const entry of list) {
+      for (;;) {
+        dropDeadTop();
+        if (heap.length === 0) break;
+        const entry = heap[0];
         if (total + entry.bytes > budget) {
-          if (batch.length === 0) {
-            batch.oversize = true; // 예산보다 큰 항목: 단독 배치
-            batch.push(view(entry));
-            taken = 1;
-          }
-          break;
+          if (batch.length === 0) batch.oversize = true; // 예산보다 큰 항목: 단독 배치
+          else break;
+        } else {
+          total += entry.bytes;
         }
-        total += entry.bytes;
+        heapPop();
         batch.push(view(entry));
-        taken++;
+        remember(entry.group, entry.level);
+        byKey.delete(entry.id);
+        removeFromGroup(entry);
+        entry.dead = true;
+        if (batch.oversize) break;
       }
-      // 앞에서 떼어내는 것은 나머지 순서를 깨지 않는다
-      for (let i = 0; i < taken; i++) {
-        remember(list[i].group, list[i].level);
-        byKey.delete(list[i].id);
-        const set = byGroup.get(list[i].group);
-        set.delete(list[i]);
-        if (set.size === 0) byGroup.delete(list[i].group);
-      }
-      sorted = list.slice(taken);
       return batch;
     },
 
     pending() {
-      return sorted.map(view);
+      return heap.filter((e) => !e.dead).sort(before).map(view);
     },
   };
 }

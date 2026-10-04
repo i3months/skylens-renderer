@@ -13,6 +13,9 @@
 //   PIECE(6, s→c)         4 + 16 + chunkLen B  pieceSeq u32, PieceKey 16 B, 조각 바이트(contracts/asset 의 .skla 조각 그대로, 1 B 이상)
 //   LEVEL_ARRIVED(7, s→c) 9 B   segmentId u32, level u8 (0..3), pieceCount u32 (>= 1: 조각 0 개 도착은 보내지 않는다)
 //   재전송 규약: 송출 실패 뒤 같은 pieceSeq·같은 PieceKey 로 다시 보낸 PIECE 는 같은 조각이다(수신측은 하나로 센다).
+//     한 pieceSeq 는 절대 서로 다른 두 PieceKey 에 쓰이지 않는다(F-204). 송출이 실패한 수준 도착의 pieceSeq 는 그 key 들에
+//     묶이고, 서버(server/adapter/core)는 그 수준 도착을 같은 pieceSeq·key 로 다시 보내 끝내기 전에는 다른 이벤트를 보내지
+//     않는다(다른 이벤트는 UNFINISHED_EVENT 로 거부).
 //   마지막 pieceSeq 가 0xFFFFFFFF 인 세션은 재개할 수 없고 서버는 새 세션(resumed=0)으로 답한다.
 //   MISSING(8, s→c)       4 B   segmentId u32  (도착하지 않은 구간. 메우거나 꾸미지 않는다)
 //   ERROR(9, s→c)         4 + n B  code u16 (ERR_CODES), msgLen u16, utf8 메시지(msgLen ≤ MAX_ERROR_TEXT)

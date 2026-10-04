@@ -449,3 +449,168 @@ test('F-203: recordSent(0xFFFFFFFF) 뒤 재접속은 nextPieceSeq 2^32 를 내�
   assert.deepEqual(welcome(r2), { type: 'WELCOME', sessionId: r2.sessionId, resumed: false, nextPieceSeq: 1 });
   assert.equal(st.open({ sessionId, lastPieceSeq: 0 }).resumed, false); // 다 쓴 세션은 지워졌다
 });
+
+// ---- F-207 / F-209 ⑦ ----
+test('F-207a: 같은 key 를 새 seq 로 대체한 뒤 축출해도 groups 는 항목 상한을 넘지 않는다', () => {
+  const { st } = mk({ maxEntriesPerSession: 2 });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  st.recordSent(sessionId, key(1), 1, 1);
+  st.recordSent(sessionId, key(1), 2, 1); // 대체: 묶음 항목 수는 그대로 1
+  st.recordSent(sessionId, key(2), 3, 1);
+  st.ack(sessionId, 3);
+  assert.deepEqual(st.stats(sessionId), { entries: 2, retainedBytes: 0, unacked: 0, groups: 2 });
+  assert.equal(st.recordSent(sessionId, key(3), 4, 1), true); // key(1)(seq 2) 축출 -> 그 묶음도 사라져야 한다
+  const stt = st.stats(sessionId);
+  assert.ok(stt.groups <= 2, `groups=${stt.groups}`);
+  assert.deepEqual(stt, { entries: 2, retainedBytes: 1, unacked: 1, groups: 2 });
+});
+
+test('F-207b: 같은 seq 를 다른 크기로 다시 기록하면 retainedBytes 가 손으로 센 값이고 ack 후 0', () => {
+  const { st } = mk();
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  st.recordSent(sessionId, key(1), 1, 10);
+  st.recordSent(sessionId, key(2), 2, 5);
+  assert.equal(st.stats(sessionId).retainedBytes, 15);
+  assert.equal(st.recordSent(sessionId, key(1), 1, 30), true); // 10 -> 30
+  assert.equal(st.stats(sessionId).retainedBytes, 35);
+  assert.equal(st.recordSent(sessionId, key(1), 1, 4), true); // 30 -> 4
+  assert.equal(st.stats(sessionId).retainedBytes, 9);
+  assert.equal(st.retainedBytes(), 9);
+  st.ack(sessionId, 1);
+  assert.equal(st.stats(sessionId).retainedBytes, 5);
+  st.ack(sessionId, 2);
+  assert.equal(st.stats(sessionId).retainedBytes, 0);
+  assert.equal(st.retainedBytes(), 0);
+});
+
+test('F-209 ⑦: ack 후 같은 key 재기록 100만 번 뒤에도 ackedQ <= maxEntries 이고 빠르다', () => {
+  const maxEntries = 4;
+  const { st } = mk({ maxEntriesPerSession: maxEntries });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  for (let i = 1; i <= 3; i++) { st.recordSent(sessionId, key(i), i, 1); st.ack(sessionId, i); }
+  const c0 = process.cpuUsage(); // 벽시계는 병렬 부하에 흔들리므로 CPU 시간으로 잰다
+  let seq = 4;
+  for (let n = 0; n < 1_000_000; n++) {
+    st.recordSent(sessionId, key(1), seq, 1);
+    st.ack(sessionId, seq++);
+  }
+  const c1 = process.cpuUsage(c0);
+  const ms = (c1.user + c1.system) / 1000;
+  assert.ok(st.ackedQueueLength(sessionId) <= maxEntries, `ackedQ=${st.ackedQueueLength(sessionId)}`);
+  assert.equal(st.ackedQueueLength(sessionId), 3);
+  assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 0, unacked: 0, groups: 3 });
+  assert.ok(ms < 3000, `${ms} ms`);
+  // 가득 찬 뒤에도 가장 오래 확인된 항목부터 축출된다
+  st.recordSent(sessionId, key(9), seq++, 1);
+  assert.equal(st.recordSent(sessionId, key(10), seq++, 1), true);
+  assert.equal(st.stats(sessionId).entries, 4);
+});
+
+// ---- F-212 ①: 음성 테스트(변이를 잡는다) ----
+test('F-212: 모르는·닫힌 세션은 shouldSend/recordSent/ack/unacked 가 모두 거부', () => {
+  const { st } = mk();
+  assert.equal(st.shouldSend(4242, key(1)), false); // 모르는 세션: true 를 돌려주면 안 된다
+  assert.equal(st.recordSent(4242, key(1), 1, 1), false);
+  assert.deepEqual(st.unacked(4242), []);
+  assert.equal(st.stats(4242), null);
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  assert.equal(st.shouldSend(sessionId, key(1)), true);
+  st.close(sessionId);
+  assert.equal(st.shouldSend(sessionId, key(1)), false);
+  assert.equal(st.recordSent(sessionId, key(1), 1, 1), false);
+  assert.equal(st.stats(sessionId), null);
+  assert.equal(st.size(), 0);
+});
+
+test('F-212: TTL 경계 — 경과 ttl-1 은 살아 있고 ttl 은 만료(shouldSend·recordSent·ack·stats 모두)', () => {
+  const ttl = 1000;
+  const probes = {
+    shouldSend: (st, id) => st.shouldSend(id, key(9)),
+    recordSent: (st, id) => st.recordSent(id, key(9), 2, 1),
+    stats: (st, id) => st.stats(id) !== null,
+    unacked: (st, id) => st.unacked(id).length === 1,
+  };
+  for (const [name, probe] of Object.entries(probes)) {
+    for (const [dt, alive] of [[ttl - 1, true], [ttl, false], [ttl + 1, false]]) {
+      const { c, st } = mk({ ttlMs: ttl });
+      const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+      st.recordSent(sessionId, key(1), 1, 1);
+      c.t += dt;
+      assert.equal(probe(st, sessionId), alive, `${name} dt=${dt}`);
+    }
+  }
+  // 만료된 세션은 ack 해도 되살아나지 않는다
+  const { c, st } = mk({ ttlMs: ttl });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  c.t += ttl;
+  st.ack(sessionId, 0);
+  assert.equal(st.stats(sessionId), null);
+  assert.equal(st.open({ sessionId, lastPieceSeq: 0 }).resumed, false);
+});
+
+test('F-212: TTL 갱신은 open 뿐 아니라 recordSent(새 기록·멱등 재기록)·ack 로도 된다', () => {
+  const ttl = 1000;
+  const steps = {
+    recordNew: (st, id, n) => st.recordSent(id, key(100 + n), 2 + n, 1),
+    recordIdempotent: (st, id) => st.recordSent(id, key(1), 1, 1),
+    ack: (st, id) => st.ack(id, 0),
+  };
+  for (const [name, step] of Object.entries(steps)) {
+    const { c, st } = mk({ ttlMs: ttl });
+    const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+    st.recordSent(sessionId, key(1), 1, 1);
+    for (let n = 0; n < 5; n++) { // 매번 ttl-1 만 흘려도 활동 때문에 계속 산다
+      c.t += ttl - 1;
+      assert.notEqual(st.stats(sessionId), null, `${name} #${n} 만료됨`);
+      step(st, sessionId, n);
+    }
+    c.t += ttl - 1;
+    assert.equal(st.shouldSend(sessionId, key(77)), true, name);
+    c.t += 1; // 마지막 활동(shouldSend 는 갱신하지 않는다)이 아니라 step 이후 경과 2*(ttl-1)+1 → 만료
+    assert.equal(st.stats(sessionId), null, name);
+  }
+  // 활동이 없으면 갱신도 없다: shouldSend/stats 는 TTL 을 늘리지 않는다
+  const { c, st } = mk({ ttlMs: ttl });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  c.t += ttl - 1;
+  st.shouldSend(sessionId, key(1));
+  st.stats(sessionId);
+  c.t += 1;
+  assert.equal(st.stats(sessionId), null);
+});
+
+// ---- F-212 ⑥: 같은 key 대체가 pendingQ 에 죽은 항목을 쌓지 않는다 ----
+test('F-212 ⑥: ack 없이 같은 key 100만 번 재기록해도 pendingQ <= 2×maxEntries 이고 빠르다', () => {
+  const maxEntries = 8;
+  const { st } = mk({ maxEntriesPerSession: maxEntries });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  const c0 = process.cpuUsage();
+  let peak = 0;
+  for (let seq = 1; seq <= 1_000_000; seq++) {
+    assert.equal(st.recordSent(sessionId, key(1), seq, 1), true);
+    if ((seq & 1023) === 0) peak = Math.max(peak, st.pendingQueueLength(sessionId));
+  }
+  const c1 = process.cpuUsage(c0);
+  const ms = (c1.user + c1.system) / 1000;
+  peak = Math.max(peak, st.pendingQueueLength(sessionId));
+  assert.ok(peak <= 2 * maxEntries, `pendingQ=${peak}`);
+  assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 1, unacked: 1, groups: 1 });
+  assert.deepEqual(st.unacked(sessionId), [{ seq: 1_000_000, key: key(1) }]);
+  assert.ok(ms < 3000, `${ms} ms`);
+  // 압축 뒤에도 ack·재접속 동작은 그대로
+  st.ack(sessionId, 1_000_000);
+  assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 0, unacked: 0, groups: 1 });
+  assert.equal(st.pendingQueueLength(sessionId), 0);
+});
+
+test('F-212 ⑥: 여러 key 가 섞여 대체돼도 순서·재전송 후보가 유지된다', () => {
+  const { st } = mk({ maxEntriesPerSession: 8 });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  let seq = 1;
+  for (let n = 0; n < 5000; n++) st.recordSent(sessionId, key(1 + (n % 3)), seq++, 1);
+  assert.ok(st.pendingQueueLength(sessionId) <= 16);
+  st.open({ sessionId, lastPieceSeq: 0 });
+  assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [4998, 4999, 5000]);
+  st.ack(sessionId, 4999);
+  assert.deepEqual(st.unacked(sessionId).map((u) => u.seq), [5000]);
+});

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { createCoreAdapter, MAX_PIECE_BYTES } from './index.mjs';
+import { createCoreAdapter, MAX_PIECE_BYTES, UnfinishedEventError } from './index.mjs';
 import { createLevelMachine as createServerMachine } from '../../levels/state/index.mjs';
 import { createLevelMachine as createClientMachine } from '../../../client/levels/index.mjs';
 import { MSG, PROTO_VERSION, FRAME_HEADER_BYTES, PIECE_SEQ_MIN, pieceKeyString } from '../../../contracts/proto/index.mjs';
@@ -450,6 +450,140 @@ for (const viaCodec of [false, true]) {
   }
 }
 
+// ── 송출 실패 뒤 다른 이벤트(F-204) ──────────────────────────────────
+// 한 pieceSeq 는 서로 다른 두 key 에 쓰이지 않는다. 송출 중 실패한 이벤트가 있으면 다른 이벤트는 UnfinishedEventError 로
+// 거부되고(아무것도 나가지 않음), 같은 이벤트를 다시 넣어야 풀린다.
+/** 구간 segmentId 수준 level 의 조각 count 개 이벤트(chunkIndex 0..count-1). */
+function piecesEvent(segmentId, level, count, salt = 0) {
+  const pieces = [];
+  for (let c = 0; c < count; c++) {
+    const bytes = Uint8Array.of(segmentId, level, c, 0xa0 + salt);
+    pieces.push({ key: { segmentId, level, lod: 0, chunkIndex: c, tileX: segmentId, tileY: c }, bytes });
+  }
+  return { kind: 'level_arrived', segmentId, level, pieces };
+}
+
+// 구간 1 수준 0 (조각 2 개: seq 1, 2) + LEVEL_ARRIVED = emit 3 번. 실패 지점 n:
+//   n=1: 1번째 emit(PIECE seq1) 기록 전에 던짐     n=2: PIECE seq1 기록 뒤 던짐
+//   n=3: 2번째 emit(PIECE seq2) 기록 전에 던짐     n=4: PIECE seq2 기록 뒤 던짐
+//   n=5: PIECE seq1·2 는 송출·recordSent 성공, 3번째 emit(LEVEL_ARRIVED) 송출 실패(과제의 시나리오)
+//   n=6: LEVEL_ARRIVED 를 쓴 뒤 던짐
+const F204_POINTS = [
+  { n: 1, call: 1, where: 'before', unackedWhileBlocked: [] },
+  { n: 2, call: 1, where: 'after', unackedWhileBlocked: [1] },
+  { n: 3, call: 2, where: 'before', unackedWhileBlocked: [1] },
+  { n: 4, call: 2, where: 'after', unackedWhileBlocked: [1, 2] },
+  { n: 5, call: 3, where: 'before', unackedWhileBlocked: [1, 2] },
+  { n: 6, call: 3, where: 'after', unackedWhileBlocked: [1, 2] },
+];
+for (const viaCodec of [false, true]) {
+  for (const pt of F204_POINTS) {
+    test(`F-204: 실패 지점 n=${pt.n}(${pt.call}번째 emit ${pt.where}) 뒤 다른 구간 이벤트 -> UNFINISHED_EVENT, 같은 이벤트 재시도로 복구, pieceSeq 한 key 전용·unacked 1..4 (codec=${viaCodec})`, () => {
+      const store = createSessionStore({ maxSessions: 4, ttlMs: 1000, now: () => 0, randomId: () => 9 });
+      const { sessionId, nextPieceSeq } = store.open({ sessionId: 0, lastPieceSeq: 0 });
+      assert.equal(nextPieceSeq, 1);
+      const wire = []; // emit 에 넘어온 모든 PIECE(실패한 시도 포함): [seq, keyString]
+      const delivered = []; // 끝까지 나간 메시지
+      let calls = 0;
+      let failAt = 0;
+      const boom = new Error('송출 실패');
+      const ad = createCoreAdapter({
+        encode: viaCodec ? encode : undefined,
+        firstPieceSeq: nextPieceSeq,
+        emit: (raw) => {
+          calls++;
+          const m = viaCodec ? decode(raw) : raw;
+          if (m.type === 'PIECE') wire.push([m.pieceSeq, pieceKeyString(m.key)]);
+          if (pt.where === 'before' && calls === failAt) throw boom;
+          if (m.type === 'PIECE') {
+            if (!store.recordSent(sessionId, m.key, m.pieceSeq, m.chunk)) throw new Error('recordSent 거부');
+          }
+          if (pt.where === 'after' && calls === failAt) throw boom;
+          delivered.push(m);
+        },
+      });
+      const ev1 = piecesEvent(1, 0, 2);
+      const ev2 = piecesEvent(2, 0, 2);
+
+      failAt = pt.call; calls = 0;
+      assert.throws(() => ad.handle(ev1), (e) => e === boom, `n=${pt.n}`);
+      failAt = 0;
+      assert.equal(calls, pt.call, `n=${pt.n}: 실패까지 emit ${pt.call} 번`);
+      assert.deepEqual(ad.unfinishedEvent(), { segmentId: 1, level: 0, firstPieceSeq: 1, pieceCount: 2 });
+      assert.equal(ad.nextPieceSeq(), 1);
+      assert.deepEqual(store.unacked(sessionId).map((u) => u.seq), pt.unackedWhileBlocked, `n=${pt.n}`);
+
+      // 다른 구간 이벤트: 정해진 오류, 아무것도 나가지 않고 순번·unacked 그대로
+      const blocked = [
+        ev2,
+        { kind: 'segment_expected', segmentId: 2 },
+        piecesEvent(1, 1, 2), // 같은 구간 다른 수준
+        piecesEvent(1, 0, 1), // 같은 구간·수준, 조각 수 다름
+        piecesEvent(1, 0, 2, 1), // 같은 key, 다른 bytes
+      ];
+      for (const [i, ev] of blocked.entries()) {
+        calls = 0;
+        assert.throws(() => ad.handle(ev), (e) => e instanceof UnfinishedEventError && e.code === 'UNFINISHED_EVENT'
+          && e.pending.segmentId === 1 && e.pending.level === 0 && e.pending.firstPieceSeq === 1 && e.pending.pieceCount === 2,
+        `n=${pt.n} 거부 ${i}`);
+        assert.equal(calls, 0, `n=${pt.n} 거부 ${i}: emit 0 번`);
+      }
+      assert.equal(ad.nextPieceSeq(), 1);
+      assert.deepEqual(store.unacked(sessionId).map((u) => u.seq), pt.unackedWhileBlocked, `n=${pt.n}: 거부 뒤 unacked 그대로`);
+
+      // 복구: 같은 이벤트(다른 객체지만 같은 내용) 재시도
+      const r1 = ad.handle(piecesEvent(1, 0, 2));
+      assert.deepEqual([r1.action, r1.emitted], ['first', 3], `n=${pt.n}`);
+      assert.equal(ad.unfinishedEvent(), null);
+      assert.equal(ad.nextPieceSeq(), 3);
+      const r2 = ad.handle(ev2);
+      assert.deepEqual([r2.action, r2.emitted], ['first', 3], `n=${pt.n}`);
+      assert.equal(ad.nextPieceSeq(), 5);
+
+      // 선에 나간 기록: 한 pieceSeq 에 key 는 하나뿐
+      const keyOfSeq = new Map();
+      for (const [seq, ks] of wire) {
+        if (keyOfSeq.has(seq)) assert.equal(ks, keyOfSeq.get(seq), `n=${pt.n}: pieceSeq ${seq} 가 두 key 에 쓰였다`);
+        else keyOfSeq.set(seq, ks);
+      }
+      const keys = [...ev1.pieces, ...ev2.pieces].map((p) => pieceKeyString(p.key));
+      assert.deepEqual([...keyOfSeq.entries()].sort((a, b) => a[0] - b[0]), [[1, keys[0]], [2, keys[1]], [3, keys[2]], [4, keys[3]]]);
+
+      // resume.unacked: 1..4 빈칸·중복 없음, key 도 그 순서
+      const un = store.unacked(sessionId);
+      assert.deepEqual(un.map((u) => u.seq), [1, 2, 3, 4], `n=${pt.n}`);
+      assert.deepEqual(un.map((u) => pieceKeyString(u.key)), keys);
+      assert.equal(store.stats(sessionId).entries, 4);
+      assert.equal(store.open({ sessionId, lastPieceSeq: 0 }).nextPieceSeq, 5, 'WELCOME 순번 = 어댑터 다음 순번');
+
+      // 받는 쪽: 같은 pieceSeq·key 재전송은 하나로 센다. 그러면 서버와 같은 상태가 된다.
+      const feeder = createClientFeeder();
+      let lastSeq = 0;
+      for (const m of delivered) {
+        if (m.type === 'PIECE' && m.pieceSeq <= lastSeq) continue;
+        if (m.type === 'PIECE') lastSeq = m.pieceSeq;
+        if (m.type === 'LEVEL_ARRIVED' && feeder.machine.snapshot(m.segmentId).level >= m.level) continue; // 다시 온 완료 표시
+        feeder.feed(m);
+      }
+      assert.deepEqual([1, 2].map((s) => feeder.machine.snapshot(s).pieces.length), [2, 2], `n=${pt.n}`);
+    });
+  }
+}
+
+test('F-204: 끝나지 않은 이벤트가 없으면 거부하지 않고, 재시도 성공 뒤 같은 이벤트는 skip', () => {
+  const out = [];
+  let fail = true;
+  const ad = createCoreAdapter({ emit: (m) => { if (fail && m.type === 'LEVEL_ARRIVED') throw new Error('x'); out.push(m); } });
+  assert.equal(ad.unfinishedEvent(), null);
+  assert.throws(() => ad.handle(piecesEvent(1, 0, 2)), /x/);
+  assert.throws(() => ad.handle({ kind: 'segment_expected', segmentId: 7 }), UnfinishedEventError);
+  fail = false;
+  assert.equal(ad.handle(piecesEvent(1, 0, 2)).action, 'first');
+  assert.equal(ad.handle(piecesEvent(1, 0, 2)).action, 'skip');
+  assert.equal(ad.handle({ kind: 'segment_expected', segmentId: 7 }).emitted, 1);
+  assert.deepEqual(out.filter((m) => m.type === 'PIECE').map((m) => m.pieceSeq), [1, 2, 1, 2]);
+});
+
 test('F-203: 빈 pieces 는 거부, 이전 수준·순번 그대로이고 아무것도 나가지 않는다', () => {
   const server = createServerMachine();
   const out = [];
@@ -482,6 +616,7 @@ test('encode 가 던지면 아무것도 나가지 않고 상태·순번 불변',
   });
   assert.throws(() => ad.handle(levelEvent(2, 2)), /encode 실패/);
   assert.deepEqual([out.length, server.snapshot(2).level, ad.nextPieceSeq()], [0, -1, PIECE_SEQ_MIN]);
+  assert.equal(ad.unfinishedEvent(), null, '부호화 실패는 아무것도 내보내지 않았으므로 끝나지 않은 이벤트로 남지 않는다');
   assert.equal(ad.handle(levelEvent(2, 2)).action, 'first');
   assert.equal(out.length, 4);
 });

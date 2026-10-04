@@ -194,3 +194,14 @@ for (const [name, mod, dir, seedBase] of [
     assert.ok(r.accepted > 1000, `성공 경로가 밟혀야 한다: ${r.accepted}`);
   });
 }
+
+test('기준 코덱: LEVEL_ARRIVED pieceCount 0 은 부호화·복호 모두 field, 1 은 왕복', () => {
+  const m = (pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount });
+  const kind = (fn) => { try { fn(); } catch (e) { assert.ok(e instanceof ProtoError); return e.code; } return null; };
+  const dec = makeDecoder('s2c');
+  assert.equal(kind(() => refEncode(m(0))), 'field');
+  const f = refEncode(m(1));
+  assert.deepEqual(dec(f), m(1));
+  const z = Uint8Array.from(f); z.set([0, 0, 0, 0], z.length - 4);
+  assert.equal(kind(() => dec(z)), 'field');
+});

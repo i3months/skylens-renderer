@@ -29,8 +29,8 @@ test('ids_roundtrip', () => {
       assert.equal(p, seg * 4 + level);
       assert.ok(Number.isInteger(p) && p >= 0 && p <= 0xffffffff);
       assert.deepEqual(unpackSegLevel(p), { segmentId: seg, level });
-      const key = { segmentId: seg, level, tileX: -(2 ** 31), tileY: 2 ** 31 - 1, lod: 7, chunkIndex: 4294967295 };
-      assert.equal(encodeChunkKey(key), `${seg}.${level}.-2147483648.2147483647.7.4294967295`);
+      const key = { segmentId: seg, level, tileX: -(2 ** 31), tileY: 2 ** 31 - 1, lod: 7, chunkIndex: 65535 };
+      assert.equal(encodeChunkKey(key), `${seg}.${level}.-2147483648.2147483647.7.65535`);
       assert.deepEqual(decodeChunkKey(encodeChunkKey(key)), key);
     }
   }
@@ -41,7 +41,7 @@ test('ids_roundtrip', () => {
     '+7.2.1.-2.0.0', '7.2.+1.-2.0.0', ' 7.2.1.-2.0.0', '7.2.1.-2.0.0 ', '7. 2.1.-2.0.0',
     '7.2.1.-0.0.0', '-0.2.1.-2.0.0', '7.2.-0.2.0.0',
     '1073741824.0.0.0.0.0', '-1.0.0.0.0.0', '7.4.0.0.0.0', '7.-1.0.0.0.0', '7.2.0.0.8.0',
-    '7.2.0.0.0.4294967296', '7.2.0.0.0.-1', '7.2.2147483648.0.0.0', '7.2.-2147483649.0.0.0',
+    '7.2.0.0.0.65536', '7.2.0.0.0.4294967296', '7.2.0.0.0.-1', '7.2.2147483648.0.0.0', '7.2.-2147483649.0.0.0',
     '7.2.1.-2.0', '7.2.1.-2.0.0.0', '', '7.2.1.-2.0.', '7.2.1.-2.0.0.', '7.2.1.x.0.0', '7.2.1.1.5.0.0',
     '7.2.1.1e1.0.0', '7.2.1.1.5.0x1', '7.2.1.--2.0.0',
   ]) {
@@ -57,7 +57,7 @@ test('ids_roundtrip', () => {
   const ok = { segmentId: 1, level: 1, tileX: 0, tileY: 0, lod: 0, chunkIndex: 0 };
   for (const patch of [
     { segmentId: 2 ** 30 }, { level: 4 }, { level: -1 }, { tileX: 2 ** 31 }, { tileY: -(2 ** 31) - 1 },
-    { tileX: 0.5 }, { lod: 8 }, { lod: -1 }, { chunkIndex: 2 ** 32 }, { chunkIndex: -1 }, { chunkIndex: NaN },
+    { tileX: 0.5 }, { lod: 8 }, { lod: -1 }, { chunkIndex: 65536 }, { chunkIndex: 2 ** 32 }, { chunkIndex: -1 }, { chunkIndex: NaN },
   ]) {
     assert.throws(() => encodeChunkKey({ ...ok, ...patch }), { name: 'AssetFormatError' }, JSON.stringify(patch));
   }

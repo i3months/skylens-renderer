@@ -95,6 +95,8 @@ class Queue {
     return x;
   }
   *[Symbol.iterator]() { for (let i = this.h; i < this.a.length; i++) yield this.a[i]; }
+  // keep(x) 가 참인 항목만 남기고 순서를 유지한 채 다시 채운다.
+  compact(keep) { this.a = this.a.slice(this.h).filter(keep); this.h = 0; }
 }
 
 export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntriesPerSession, maxBytesPerSession } = {}) {
@@ -130,11 +132,11 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     while (sessions.size >= maxSessions) sessions.delete(sessions.keys().next().value);
     let id;
     do { id = genId(); } while (id === 0 || sessions.has(id));
-    // sent: keyStr -> 항목 {seq,key,bytes,size,pending,dead}. pendingQ: 미확인 항목(순번 순). ackedQ: 확인된 항목(확인 순).
+    // sent: keyStr -> 항목 {seq,key,bytes,size,pending,dead}. pendingQ: 미확인 항목(순번 순). ackedQ: 확인된 살아 있는 항목 keyStr -> 항목(확인 순, Map 삽입 순서; 대체·축출 때 바로 지워 dead 가 쌓이지 않는다).
     // groupRefs: 묶음 -> sent 에 남은 그 묶음 항목 수(0 이 되면 groupMax 도 지운다).
     const s = {
       last: t, nextSeq: PIECE_SEQ_MIN, ackedUpTo: 0, sent: new Map(), groupMax: new Map(), groupRefs: new Map(),
-      pendingQ: new Queue(), ackedQ: new Queue(), retained: 0,
+      pendingQ: new Queue(), ackedQ: new Map(), retained: 0, deadQ: 0,
     };
     sessions.set(id, s);
     return id;
@@ -143,17 +145,29 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   function release(s) {
     while (s.pendingQ.length > 0 && s.pendingQ.peek().seq <= s.ackedUpTo) {
       const e = s.pendingQ.shift();
-      if (e.dead) continue;
+      e.queued = false;
+      if (e.dead) { s.deadQ--; continue; }
       s.retained -= e.size;
       e.bytes = null;
       e.size = 0;
       e.pending = false;
-      s.ackedQ.push(e);
+      s.ackedQ.set(e.ks, e);
     }
   }
-  // 항목 하나를 sent 에서 뺀다(같은 key 로 다시 기록돼 대체된 경우 포함). 큐에는 dead 표시만 남긴다.
+  // 항목 하나를 sent 에서 뺀다(같은 key 로 다시 기록돼 대체된 경우 포함). pendingQ 에는 dead 표시만 남기고(release 가 걷는다),
+  // ackedQ 에서는 O(1) 로 바로 지운다.
   function drop(s, e) {
     e.dead = true;
+    if (e.queued) {
+      s.deadQ++;
+      // 죽은 항목이 살아 있는 항목보다 많아지면 큐를 압축한다(큐 길이 <= 2 × 살아 있는 항목 <= 2 × maxEntries, 상각 O(1)).
+      if (s.deadQ * 2 > s.pendingQ.length) {
+        s.pendingQ.compact((x) => !x.dead);
+        s.deadQ = 0;
+        e.queued = false;
+      }
+    }
+    if (s.ackedQ.get(e.ks) === e) s.ackedQ.delete(e.ks);
     s.retained -= e.size;
     e.bytes = null;
     e.size = 0;
@@ -162,7 +176,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   // 축출: 항목을 sent 에서 지우고, 그 묶음의 마지막 항목이었으면 groupMax 도 지운다.
   function evict(s, e) {
     drop(s, e);
-    s.sent.delete(pieceKeyString(e.key));
+    s.sent.delete(e.ks);
     const g = overtakeGroup(e.key);
     const n = s.groupRefs.get(g) - 1;
     if (n > 0) s.groupRefs.set(g, n);
@@ -220,19 +234,14 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       if (s.retained - oldSize + size > maxBytes) return false;
       // 항목 수 상한: 대체가 아니면 하나 늘어난다. 가장 오래 전에 ack 된 것부터 지운다(대체될 항목은 건드리지 않는다).
       if (!old && s.sent.size + 1 > maxEntries) {
-        let evictable = 0;
-        for (const e of s.ackedQ) if (!e.dead) { evictable++; if (s.sent.size + 1 - evictable <= maxEntries) break; }
-        if (s.sent.size + 1 - evictable > maxEntries) return false;
-        while (s.sent.size + 1 > maxEntries) {
-          const e = s.ackedQ.shift();
-          if (e.dead) continue;
-          evict(s, e);
-        }
+        const need = s.sent.size + 1 - maxEntries;
+        if (s.ackedQ.size < need) return false; // ackedQ 는 살아 있는 항목만 담으므로 O(1)
+        for (let i = 0; i < need; i++) evict(s, s.ackedQ.values().next().value);
       }
       const g = overtakeGroup(key);
       if (old) drop(s, old); // 같은 key 대체: 묶음 항목 수는 그대로
       else s.groupRefs.set(g, (s.groupRefs.get(g) ?? 0) + 1);
-      const e = { seq, key: { ...key }, bytes: bytes ?? null, size, pending: false, dead: false };
+      const e = { seq, ks, key: { ...key }, bytes: bytes ?? null, size, pending: false, dead: false, queued: true };
       s.sent.set(ks, e);
       s.pendingQ.push(e);
       s.retained += size;
@@ -283,6 +292,16 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       let unacked = 0;
       for (const e of s.pendingQ) if (!e.dead) unacked++;
       return { entries: s.sent.size, retainedBytes: s.retained, unacked, groups: s.groupMax.size };
+    },
+    /** 진단용(테스트): 세션의 ackedQ 길이. 없는 세션은 -1. */
+    ackedQueueLength(sessionId) {
+      const s = live(sessionId);
+      return s ? s.ackedQ.size : -1;
+    },
+    /** 진단용(테스트): 세션의 pendingQ 물리 길이(죽은 항목 포함). 없는 세션은 -1. */
+    pendingQueueLength(sessionId) {
+      const s = live(sessionId);
+      return s ? s.pendingQ.length : -1;
     },
     retainedBytes() {
       let sum = 0;
