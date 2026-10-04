@@ -149,3 +149,11 @@ test('F-303 ⑦ levelPointTargets 합 ≤ total 과 fitSegmentBudget 인자 검�
   for (const bytesPerPointGuess of [0, -5, Infinity, NaN]) assert.throws(() => fitSegmentBudget({ ...base, bytesPerPointGuess }), RangeError, `guess ${bytesPerPointGuess}`);
   assert.equal(fitSegmentBudget({ ...base, maxIter: 1 }).thinned, false);
 });
+
+test('F-316 ⑤ 넘친 점 예산을 큰 수준부터 깎는 순서 검증', () => {
+  // [10, 1, 1, 1] total 7: sum=13, 비례 [5,0,0,0] → 최소 [5,1,1,1] → 넘침 1
+  // 큰 것부터 깎으면(정상): 인덱스 0 에서 1 만큼 깎아 [4,1,1,1]
+  // 작은 것부터 깎으면(역순 변형): 인덱스 1-3 은 깎을 수 없고(최소 1), 인덱스 0 으로 가서 결국 같은 결과
+  // 하지만 역순 정렬이 적용되면 순서가 바뀌고, 수동 계산한 [4,1,1,1] 과 일치해야 함
+  assert.deepEqual(levelPointTargets([10, 1, 1, 1], 7), [4, 1, 1, 1]);
+});

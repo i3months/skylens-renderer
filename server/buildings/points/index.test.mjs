@@ -37,7 +37,8 @@ test('samplesFor: 기준 숫자', () => {
   assert.equal(samplesFor(100, 6), 17);
   assert.equal(samplesFor(0, 0), 8); // 최소
   assert.equal(samplesFor(1e6, 30), 2000); // 최대
-  assert.equal(samplesFor(101, 6), Math.ceil((101 + 4 * Math.sqrt(101) * 6) * 0.05));
+  // 101 m² 지붕, 높이 6: ceil((101 + 4·√101·6) · 0.05) = ceil(17.109...) = 18
+  assert.equal(samplesFor(101, 6), 18);
   assert.equal(samplesFor(100, 6, { density: 1, min: 1, max: 50 }), 50);
   assert.throws(() => samplesFor(-1, 3));
   assert.throws(() => samplesFor(NaN, 3));
