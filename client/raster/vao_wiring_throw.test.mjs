@@ -6,8 +6,8 @@ import { createRenderer } from './index.mjs';
 import { packChunk } from '../../server/asset/pack/index.mjs';
 import { FORMAT_POINT27 } from '../../contracts/client_raster/index.mjs';
 
-function fakeCanvas() {
-  const state = { failPointer: false, pointerCalls: 0, bound: null, vaoSeq: 0, deletedVaos: [] };
+function fakeCanvas(options = {}) {
+  const state = { failPointer: false, failCleanup: false, pointerCalls: 0, bound: null, vaoSeq: 0, deletedVaos: [], ...options };
   const base = {
     getShaderParameter: () => true, getProgramParameter: () => true, createShader: () => ({}), createProgram: () => ({}),
     createVertexArray: () => ({ id: ++state.vaoSeq }), getUniformLocation: (_p, name) => ({ name }),
@@ -18,8 +18,12 @@ function fakeCanvas() {
     deleteVertexArray(v) {
       // deleteVertexArray 호출을 기록한다
       state.deletedVaos.push(v?.id ?? v);
+      if (state.failCleanup) throw new Error('deleteVertexArray cleanup failed');
     },
-    bindVertexArray(v) { state.bound = v; },
+    bindVertexArray(v) {
+      state.bound = v;
+      if (state.failCleanup && v === null) throw new Error('bindVertexArray(null) cleanup failed');
+    },
     vertexAttribPointer() {
       state.pointerCalls += 1;
       if (state.failPointer) throw new Error('vertexAttribPointer failed');
@@ -79,12 +83,12 @@ test('배선 중 vertexAttribPointer 예외: 반쯤 배선된 VAO 를 삭제한�
   await r.uploadPiece(K1, piece(K1));
   r.setArrived([{ segmentId: 3, level: 1, keys: [K1] }]);
 
+  // 초기화 중 삭제된 VAO들(없어야 함)
+  assert.equal(f.state.deletedVaos.length, 0, '초기화 중에는 VAO가 삭제되지 않음');
   f.state.failPointer = true;
-  const deletedBeforeFail = [...f.state.deletedVaos]; // 초기화 중 삭제된 VAO들(없어야 함)
   assert.throws(() => r.draw(), /vertexAttribPointer failed/);
   // 배선 중 예외가 나면 그 VAO 는 deleteVertexArray 로 즉시 삭제된다
-  const deletedAfterFail = f.state.deletedVaos.slice(deletedBeforeFail.length);
-  assert.ok(deletedAfterFail.length > 0, '배선 중 예외 후 VAO 가 삭제됨');
+  const deletedAfterFail = f.state.deletedVaos;
   // 반쯤 배선된 VAO 를 캐시에 넣지 않으므로 그것을 삭제해야 한다
   const pieceVaoId = f.state.vaoSeq; // 마지막으로 생성된 VAO id
   assert.ok(deletedAfterFail.includes(pieceVaoId), `반쯤 배선된 piece VAO(id=${pieceVaoId}) 가 삭제됨. 삭제된 id: [${deletedAfterFail}]`);
@@ -93,43 +97,14 @@ test('배선 중 vertexAttribPointer 예외: 반쯤 배선된 VAO 를 삭제한�
 
 test('배선 중 정리 중 예외: 원래 배선 오류가 보존된다', async () => {
   // deleteVertexArray 와 bindVertexArray(null) 이 던질 때도, 원래 배선 오류가 보존되는지 확인한다
-  const state = { failPointer: false, failCleanup: false, pointerCalls: 0, bound: null, vaoSeq: 0, deletedVaos: [] };
-  const base = {
-    getShaderParameter: () => true, getProgramParameter: () => true, createShader: () => ({}), createProgram: () => ({}),
-    createVertexArray: () => ({ id: ++state.vaoSeq }), getUniformLocation: (_p, name) => ({ name }),
-    getParameter: () => [1, 1024], isContextLost: () => false,
-    createBuffer: () => ({ live: true }),
-    deleteBuffer() {}, bufferData() {},
-    bindBuffer() {},
-    deleteVertexArray(v) {
-      state.deletedVaos.push(v?.id ?? v);
-      if (state.failCleanup) throw new Error('deleteVertexArray cleanup failed');
-    },
-    bindVertexArray(v) {
-      state.bound = v;
-      if (state.failCleanup && v === null) throw new Error('bindVertexArray(null) cleanup failed');
-    },
-    vertexAttribPointer() {
-      state.pointerCalls += 1;
-      if (state.failPointer) throw new Error('vertexAttribPointer failed');
-    },
-  };
-  const gl = new Proxy(base, {
-    get(t, p) {
-      if (p in t) return t[p];
-      if (typeof p === 'string' && /^[A-Z_0-9]+$/.test(p)) return p;
-      return () => {};
-    },
-  });
-  const canvas = { width: 300, height: 150, getContext: (k) => (k === 'webgl2' ? gl : null), addEventListener() {}, removeEventListener() {} };
-
-  const r = createRenderer({ canvas, maxPieceBytes: 1 << 20, maxResidentBytes: 1 << 20, now: () => 1 });
+  const f = fakeCanvas();
+  const r = createRenderer({ canvas: f.canvas, maxPieceBytes: 1 << 20, maxResidentBytes: 1 << 20, now: () => 1 });
   r.setView(VIEW);
   await r.uploadPiece(K1, piece(K1));
   r.setArrived([{ segmentId: 3, level: 1, keys: [K1] }]);
 
-  state.failPointer = true;
-  state.failCleanup = true;
+  f.state.failPointer = true;
+  f.state.failCleanup = true;
   let thrown;
   try {
     r.draw();
@@ -140,6 +115,6 @@ test('배선 중 정리 중 예외: 원래 배선 오류가 보존된다', async
   // 배선 중 예외가 나고, finally 에서 정리(bindVertexArray(null), deleteVertexArray) 중 예외가 나도
   // 원래 배선 오류가 보존되어야 한다(정리 예외가 덮지 않음)
   assert.match(thrown.message, /vertexAttribPointer failed/, '원래 오류(vertexAttribPointer failed) 가 보존됨');
-  state.failCleanup = false; // dispose 가 성공하도록 정리 예외를 끈다
+  f.state.failCleanup = false; // dispose 가 성공하도록 정리 예외를 끈다
   r.dispose();
 });
