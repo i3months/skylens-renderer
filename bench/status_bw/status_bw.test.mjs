@@ -25,11 +25,13 @@ test('구간 바이트 3_000_001 은 초과, 3_000_000 은 통과로 판정된�
   assert.deepEqual(ok.overBudget({ initialMax: STATUS_BW_LIMITS.initialBytes, perSegmentMax: STATUS_BW_LIMITS.perSegmentBytes }).segments, []);
 });
 
-test('mutation of perSegmentBytes to 3_145_728 causes test to fail', () => {
-  const ledger = createByteLedger();
-  ledger.record(STATUS_BW_LIMITS.perSegmentBytes + 1, { segmentId: 7, phase: 'segment' });
-  // With current perSegmentBytes, this value should be over budget
-  assert.deepEqual(ledger.overBudget({ initialMax: STATUS_BW_LIMITS.initialBytes, perSegmentMax: STATUS_BW_LIMITS.perSegmentBytes }).segments, [7]);
+test('initialBytes 경계값 15_000_001 은 초과, 15_000_000 은 통과로 판정된다', () => {
+  const over = createByteLedger();
+  over.record(15_000_001, { segmentId: 0, phase: 'initial' });
+  assert.deepEqual(over.overBudget({ initialMax: STATUS_BW_LIMITS.initialBytes }).initial, true);
+  const ok = createByteLedger();
+  ok.record(15_000_000, { segmentId: 0, phase: 'initial' });
+  assert.deepEqual(ok.overBudget({ initialMax: STATUS_BW_LIMITS.initialBytes }).initial, false);
 });
 
 const small = measureStatusBandwidth({ segments: 4, pointsPerSegment: 100000 });

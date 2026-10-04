@@ -356,3 +356,161 @@ test('모듈 없이 createStatusView 를 부르면 TypeError', () => {
   }
   assert.deepEqual(Object.keys(STATUS_MODULE_FUNCTIONS), ['arrival', 'levels', 'reveal', 'camera', 'overlay', 'missing_ui', 'fallback']);
 });
+
+// ---- F-300 ③④, F-301 ③④⑦ ----
+
+/** 실제 도착 계획기를 감싸 호출을 세고, 원할 때 던지게 하는 arrival 모듈. */
+function spyArrival({ throwOnCalls = [] } = {}) {
+  const stat = { calls: 0 };
+  const arrivalModule = {
+    createArrivalPlanner(options) {
+      const inner = FAKE_MODULES.arrival.createArrivalPlanner(options);
+      return {
+        ...inner,
+        onSegmentArrived(segmentId, keys) {
+          stat.calls += 1;
+          if (throwOnCalls.includes(stat.calls)) throw new Error('planner 가 던졌다');
+          return inner.onSegmentArrived(segmentId, keys);
+        },
+      };
+    },
+  };
+  return { stat, modules: { ...FAKE_MODULES, arrival: arrivalModule } };
+}
+
+const twoKeyIndex = (seg) => [pieceKeyOf(seg, 0, 0), pieceKeyOf(seg, 0, 1)];
+
+test('F-300 ③ 같은 구간 MISSING 10만 번과 구간 3개: requests() 없이도 후보는 구간당 하나만 남는다', () => {
+  const { stat, modules } = spyArrival();
+  const view = createStatusView({ modules, countOf: countOfTestChunk, pieceIndex: twoKeyIndex });
+  for (let i = 0; i < 100000; i += 1) view.handle({ type: 'MISSING', segmentId: i % 3 });
+  const req = view.requests();
+  assert.equal(stat.calls, 3); // 후보 하나가 구간 하나(덮어쓰기). 예전에는 100000 번
+  assert.equal(req.length, 1);
+  assert.equal(req[0].items.length, 6);
+  assert.deepEqual(view.requests(), []);
+});
+
+test('F-300 ④ planner 가 던지면 후보를 잃지 않는다: 두 번째 requests() 가 구간 1·2 를 모두 돌려준다', () => {
+  const { modules } = spyArrival({ throwOnCalls: [1] });
+  const view = createStatusView({ modules, countOf: countOfTestChunk, pieceIndex: twoKeyIndex });
+  feed(view, createMockRenderServer().welcome(false));
+  view.handle({ type: 'MISSING', segmentId: 1 });
+  view.handle({ type: 'MISSING', segmentId: 2 });
+  assert.throws(() => view.requests(), /planner 가 던졌다/);
+  const req = view.requests();
+  assert.deepEqual(req.flatMap((r) => r.items), [...twoKeyIndex(1), ...twoKeyIndex(2)]);
+  assert.deepEqual(view.requests(), []);
+});
+
+test('F-300 ④ 두 번째 구간에서 던져도 이미 넣은 첫 구간은 다시 넣지 않고 둘 다 한 번씩만 나온다', () => {
+  const { modules } = spyArrival({ throwOnCalls: [2] });
+  const view = createStatusView({ modules, countOf: countOfTestChunk, pieceIndex: twoKeyIndex });
+  view.handle({ type: 'MISSING', segmentId: 1 });
+  view.handle({ type: 'MISSING', segmentId: 2 });
+  assert.throws(() => view.requests(), /planner 가 던졌다/);
+  const items = view.requests().flatMap((r) => r.items);
+  assert.deepEqual(items, [...twoKeyIndex(1), ...twoKeyIndex(2)]);
+});
+
+test('F-301 ③ 원래와 다른 창(같은 구간·수준, 다른 first/n)은 거부하고 상태를 바꾸지 않는다', () => {
+  const view = newView();
+  const server = createMockRenderServer();
+  feed(view, server.welcome(false));
+  feed(view, server.levelArrival(0, 0)); // 1..2
+  feed(view, server.levelArrival(0, 1)); // 3..4, 0.0.* 해제(끝난 조각)
+  view.frame(); // 해제 목록 비우기
+  const before = stateOf(view);
+  // 끝난 조각만 든 창의 일부(1..1)는 같은 (구간, 수준) 이지만 원래 창(1..2)과 다르다
+  assert.throws(() => view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 1, firstPieceSeq: 1 }), TypeError);
+  assert.throws(() => view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 1, firstPieceSeq: 2 }), TypeError);
+  assert.deepEqual(stateOf(view), before);
+  // 같은 창의 재전송은 그대로 조용히 무시한다
+  view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 2, firstPieceSeq: 1 });
+  view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 1, pieceCount: 2, firstPieceSeq: 3 });
+  assert.deepEqual(stateOf(view), before);
+  // 새 세션은 창 기록도 비운다: 같은 (구간, 수준) 을 다른 창으로 새로 받을 수 있다
+  const s2 = createMockRenderServer({ sessionId: 8, counts: [[[7]]] });
+  feed(view, s2.welcome(false));
+  feed(view, s2.levelArrival(0, 0)); // 같은 (0, 0) 을 1..1 창으로
+  assert.deepEqual(view.frame().drawKeys, ['0.0.0.0.0.0']);
+});
+
+test('F-301 ④ 같은 key 에 pieceSeq 가 8만 개여도 해제는 key 단위로 한 번에 옮긴다(indexOf·splice 호출 0)', () => {
+  const view = newView();
+  const N = 80000;
+  const key = pieceKeyOf(0, 0, 0);
+  view.handle({ type: 'WELCOME', sessionId: 7, resumed: false, nextPieceSeq: 1 });
+  for (let s = 1; s <= N; s += 1) view.handle({ type: 'PIECE', pieceSeq: s, key, chunk: testChunk(1) });
+  view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 1, firstPieceSeq: 1 });
+  view.handle({ type: 'PIECE', pieceSeq: N + 1, key: pieceKeyOf(0, 1, 0), chunk: testChunk(1) });
+  const idx = Array.prototype.indexOf;
+  const spl = Array.prototype.splice;
+  let heavy = 0;
+  Array.prototype.indexOf = function patched(...a) { if (this.length >= 1000) heavy += 1; return idx.apply(this, a); };
+  Array.prototype.splice = function patched(...a) { if (this.length >= 1000) heavy += 1; return spl.apply(this, a); };
+  try {
+    view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 1, pieceCount: 1, firstPieceSeq: N + 1 }); // 수준 0 교체 → key 해제
+  } finally {
+    Array.prototype.indexOf = idx;
+    Array.prototype.splice = spl;
+  }
+  assert.equal(heavy, 0);
+  assert.deepEqual(view.frame().releasedKeys, ['0.0.0.0.0.0']);
+  // 끝난 조각의 재전송은 여전히 조용히 무시된다
+  view.handle({ type: 'PIECE', pieceSeq: 5, key, chunk: testChunk(1) });
+  assert.throws(() => view.handle({ type: 'PIECE', pieceSeq: 5, key: pieceKeyOf(0, 0, 1), chunk: testChunk(1) }), TypeError);
+});
+
+test('F-301 ⑦ WELCOME(resumed=false) 중 주입 모듈이 던져도 상태가 바뀌지 않는다', () => {
+  const modes = ['snapshots', 'released', 'create', 'expect', 'planner', 'fallback'];
+  for (const mode of modes) {
+    const flag = { mode: null };
+    const hit = (name) => { if (flag.mode === name) throw new Error(`주입 오류 ${name}`); };
+    const wrapped = {
+      ...FAKE_MODULES,
+      levels: {
+        createStatusLevels() {
+          hit('create');
+          const l = FAKE_MODULES.levels.createStatusLevels();
+          return {
+            ...l,
+            snapshots() { hit('snapshots'); return l.snapshots(); },
+            released() { hit('released'); return l.released(); },
+            expect(s) { hit('expect'); return l.expect(s); },
+          };
+        },
+      },
+      arrival: { createArrivalPlanner(o) { hit('planner'); return FAKE_MODULES.arrival.createArrivalPlanner(o); } },
+      fallback: {
+        createFallbackController() {
+          const f = FAKE_MODULES.fallback.createFallbackController();
+          return { ...f, handle(e) { hit('fallback'); return f.handle(e); } };
+        },
+      },
+    };
+    const make = (modules) => {
+      const v = createStatusView({ modules, countOf: countOfTestChunk, pieceIndex: twoKeyIndex });
+      const server = createMockRenderServer();
+      feed(v, server.welcome(false));
+      feed(v, server.missing(5));
+      feed(v, server.levelArrival(0, 0));
+      feed(v, server.levelArrival(0, 1)); // 0.0.* 해제가 frame() 에 아직 나가지 않은 상태
+      return { v, server };
+    };
+    const a = make(wrapped);
+    const b = make(FAKE_MODULES);
+    flag.mode = mode;
+    assert.throws(() => a.v.handle({ type: 'WELCOME', sessionId: 9, resumed: false, nextPieceSeq: 1 }), /주입 오류/, mode);
+    flag.mode = null;
+    assert.deepEqual(stateOf(a.v), stateOf(b.v), mode);
+    // 이어서 같은 입력을 넣으면 같은 결과(요청 후보·pieceSeq 장부·수준 상태 모두 그대로)
+    feed(a.v, a.server.levelArrival(0, 2));
+    feed(b.v, b.server.levelArrival(0, 2));
+    assert.deepEqual(stateOf(a.v), stateOf(b.v), mode);
+    assert.deepEqual(a.v.requests(), b.v.requests(), mode);
+    // 던지지 않으면 새 세션으로 바뀐다
+    a.v.handle({ type: 'WELCOME', sessionId: 9, resumed: false, nextPieceSeq: 1 });
+    assert.deepEqual(a.v.frame().drawKeys, [], mode);
+  }
+});

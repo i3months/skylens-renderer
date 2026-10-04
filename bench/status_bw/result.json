@@ -3,9 +3,15 @@
   "initialBytes": 15000000,
   "perSegmentBytes": 3000000
  },
+ "s6Config": {
+  "codec": 1,
+  "segmentByteBudget": 3000000
+ },
  "small": {
   "segments": 4,
   "pointsPerSegment": 100000,
+  "codec": 0,
+  "segmentByteBudget": null,
   "welcomeBytes": 19,
   "initialBytes": 137906,
   "initialLevels": [
@@ -15,12 +21,16 @@
    {
     "segmentId": 0,
     "points": 187500,
+    "sourcePoints": 187500,
     "pieces": 14,
     "frameBytes": 2064988,
+    "thinned": false,
+    "budgetTries": [],
     "levels": [
      {
       "level": 0,
       "points": 12500,
+      "sourcePoints": 12500,
       "pieces": 2,
       "pieceBytes": 137864,
       "arrivedBytes": 23,
@@ -29,6 +39,7 @@
      {
       "level": 1,
       "points": 25000,
+      "sourcePoints": 25000,
       "pieces": 2,
       "pieceBytes": 275364,
       "arrivedBytes": 23,
@@ -37,6 +48,7 @@
      {
       "level": 2,
       "points": 50000,
+      "sourcePoints": 50000,
       "pieces": 4,
       "pieceBytes": 550652,
       "arrivedBytes": 23,
@@ -45,6 +57,7 @@
      {
       "level": 3,
       "points": 100000,
+      "sourcePoints": 100000,
       "pieces": 6,
       "pieceBytes": 1101016,
       "arrivedBytes": 23,
@@ -55,12 +68,16 @@
    {
     "segmentId": 1,
     "points": 187500,
+    "sourcePoints": 187500,
     "pieces": 18,
     "frameBytes": 2065712,
+    "thinned": false,
+    "budgetTries": [],
     "levels": [
      {
       "level": 0,
       "points": 12500,
+      "sourcePoints": 12500,
       "pieces": 4,
       "pieceBytes": 138172,
       "arrivedBytes": 23,
@@ -69,6 +86,7 @@
      {
       "level": 1,
       "points": 25000,
+      "sourcePoints": 25000,
       "pieces": 4,
       "pieceBytes": 275704,
       "arrivedBytes": 23,
@@ -77,6 +95,7 @@
      {
       "level": 2,
       "points": 50000,
+      "sourcePoints": 50000,
       "pieces": 4,
       "pieceBytes": 550716,
       "arrivedBytes": 23,
@@ -85,6 +104,7 @@
      {
       "level": 3,
       "points": 100000,
+      "sourcePoints": 100000,
       "pieces": 6,
       "pieceBytes": 1101028,
       "arrivedBytes": 23,
@@ -95,12 +115,16 @@
    {
     "segmentId": 2,
     "points": 187500,
+    "sourcePoints": 187500,
     "pieces": 20,
     "frameBytes": 2065968,
+    "thinned": false,
+    "budgetTries": [],
     "levels": [
      {
       "level": 0,
       "points": 12500,
+      "sourcePoints": 12500,
       "pieces": 4,
       "pieceBytes": 138160,
       "arrivedBytes": 23,
@@ -109,6 +133,7 @@
      {
       "level": 1,
       "points": 25000,
+      "sourcePoints": 25000,
       "pieces": 4,
       "pieceBytes": 275672,
       "arrivedBytes": 23,
@@ -117,6 +142,7 @@
      {
       "level": 2,
       "points": 50000,
+      "sourcePoints": 50000,
       "pieces": 4,
       "pieceBytes": 550696,
       "arrivedBytes": 23,
@@ -125,6 +151,7 @@
      {
       "level": 3,
       "points": 100000,
+      "sourcePoints": 100000,
       "pieces": 8,
       "pieceBytes": 1101348,
       "arrivedBytes": 23,
@@ -135,12 +162,16 @@
    {
     "segmentId": 3,
     "points": 187500,
+    "sourcePoints": 187500,
     "pieces": 22,
     "frameBytes": 2066384,
+    "thinned": false,
+    "budgetTries": [],
     "levels": [
      {
       "level": 0,
       "points": 12500,
+      "sourcePoints": 12500,
       "pieces": 4,
       "pieceBytes": 138192,
       "arrivedBytes": 23,
@@ -149,6 +180,7 @@
      {
       "level": 1,
       "points": 25000,
+      "sourcePoints": 25000,
       "pieces": 4,
       "pieceBytes": 275716,
       "arrivedBytes": 23,
@@ -157,6 +189,7 @@
      {
       "level": 2,
       "points": 50000,
+      "sourcePoints": 50000,
       "pieces": 6,
       "pieceBytes": 551036,
       "arrivedBytes": 23,
@@ -165,6 +198,7 @@
      {
       "level": 3,
       "points": 100000,
+      "sourcePoints": 100000,
       "pieces": 8,
       "pieceBytes": 1101348,
       "arrivedBytes": 23,
@@ -177,6 +211,8 @@
  "large": {
   "segments": 3,
   "pointsPerSegment": 2500000,
+  "codec": 0,
+  "segmentByteBudget": null,
   "welcomeBytes": 19,
   "initialBytes": 3440198,
   "initialLevels": [
@@ -186,12 +222,16 @@
    {
     "segmentId": 0,
     "points": 4687500,
+    "sourcePoints": 4687500,
     "pieces": 238,
     "frameBytes": 51602140,
+    "thinned": false,
+    "budgetTries": [],
     "levels": [
      {
       "level": 0,
       "points": 312500,
+      "sourcePoints": 312500,
       "pieces": 16,
       "pieceBytes": 3440156,
       "arrivedBytes": 23,
@@ -200,6 +240,7 @@
      {
       "level": 1,
       "points": 625000,
+      "sourcePoints": 625000,
       "pieces": 32,
       "pieceBytes": 6880344,
       "arrivedBytes": 23,
@@ -208,6 +249,7 @@
      {
       "level": 2,
       "points": 1250000,
+      "sourcePoints": 1250000,
       "pieces": 64,
       "pieceBytes": 13760632,
       "arrivedBytes": 23,
@@ -216,6 +258,7 @@
      {
       "level": 3,
       "points": 2500000,
+      "sourcePoints": 2500000,
       "pieces": 126,
       "pieceBytes": 27520916,
       "arrivedBytes": 23,
@@ -226,12 +269,16 @@
    {
     "segmentId": 1,
     "points": 4687500,
+    "sourcePoints": 4687500,
     "pieces": 244,
     "frameBytes": 51603260,
+    "thinned": false,
+    "budgetTries": [],
     "levels": [
      {
       "level": 0,
       "points": 312500,
+      "sourcePoints": 312500,
       "pieces": 18,
       "pieceBytes": 3440528,
       "arrivedBytes": 23,
@@ -240,6 +287,7 @@
      {
       "level": 1,
       "points": 625000,
+      "sourcePoints": 625000,
       "pieces": 34,
       "pieceBytes": 6880696,
       "arrivedBytes": 23,
@@ -248,6 +296,7 @@
      {
       "level": 2,
       "points": 1250000,
+      "sourcePoints": 1250000,
       "pieces": 64,
       "pieceBytes": 13760676,
       "arrivedBytes": 23,
@@ -256,6 +305,7 @@
      {
       "level": 3,
       "points": 2500000,
+      "sourcePoints": 2500000,
       "pieces": 128,
       "pieceBytes": 27521268,
       "arrivedBytes": 23,
@@ -266,12 +316,16 @@
    {
     "segmentId": 2,
     "points": 4687500,
+    "sourcePoints": 4687500,
     "pieces": 241,
     "frameBytes": 51602792,
+    "thinned": false,
+    "budgetTries": [],
     "levels": [
      {
       "level": 0,
       "points": 312500,
+      "sourcePoints": 312500,
       "pieces": 18,
       "pieceBytes": 3440520,
       "arrivedBytes": 23,
@@ -280,6 +334,7 @@
      {
       "level": 1,
       "points": 625000,
+      "sourcePoints": 625000,
       "pieces": 32,
       "pieceBytes": 6880344,
       "arrivedBytes": 23,
@@ -288,6 +343,7 @@
      {
       "level": 2,
       "points": 1250000,
+      "sourcePoints": 1250000,
       "pieces": 64,
       "pieceBytes": 13760708,
       "arrivedBytes": 23,
@@ -296,10 +352,192 @@
      {
       "level": 3,
       "points": 2500000,
+      "sourcePoints": 2500000,
       "pieces": 127,
       "pieceBytes": 27521128,
       "arrivedBytes": 23,
       "frameBytes": 27521151
+     }
+    ]
+   }
+  ]
+ },
+ "s6": {
+  "segments": 3,
+  "pointsPerSegment": 2500000,
+  "codec": 1,
+  "segmentByteBudget": 3000000,
+  "welcomeBytes": 19,
+  "initialBytes": 225209,
+  "initialLevels": [
+   225190
+  ],
+  "rows": [
+   {
+    "segmentId": 0,
+    "points": 628069,
+    "sourcePoints": 4687500,
+    "pieces": 38,
+    "frameBytes": 2929312,
+    "thinned": true,
+    "budgetTries": [
+     {
+      "points": 600000,
+      "bytes": 2808596
+     },
+     {
+      "points": 628071,
+      "bytes": 2929312
+     }
+    ],
+    "levels": [
+     {
+      "level": 0,
+      "points": 41871,
+      "sourcePoints": 312500,
+      "pieces": 4,
+      "pieceBytes": 225167,
+      "arrivedBytes": 23,
+      "frameBytes": 225190
+     },
+     {
+      "level": 1,
+      "points": 83742,
+      "sourcePoints": 625000,
+      "pieces": 6,
+      "pieceBytes": 423568,
+      "arrivedBytes": 23,
+      "frameBytes": 423591
+     },
+     {
+      "level": 2,
+      "points": 167485,
+      "sourcePoints": 1250000,
+      "pieces": 10,
+      "pieceBytes": 795085,
+      "arrivedBytes": 23,
+      "frameBytes": 795108
+     },
+     {
+      "level": 3,
+      "points": 334971,
+      "sourcePoints": 2500000,
+      "pieces": 18,
+      "pieceBytes": 1485400,
+      "arrivedBytes": 23,
+      "frameBytes": 1485423
+     }
+    ]
+   },
+   {
+    "segmentId": 1,
+    "points": 628578,
+    "sourcePoints": 4687500,
+    "pieces": 42,
+    "frameBytes": 2925801,
+    "thinned": true,
+    "budgetTries": [
+     {
+      "points": 600000,
+      "bytes": 2806329
+     },
+     {
+      "points": 628579,
+      "bytes": 2925801
+     }
+    ],
+    "levels": [
+     {
+      "level": 0,
+      "points": 41905,
+      "sourcePoints": 312500,
+      "pieces": 4,
+      "pieceBytes": 225071,
+      "arrivedBytes": 23,
+      "frameBytes": 225094
+     },
+     {
+      "level": 1,
+      "points": 83810,
+      "sourcePoints": 625000,
+      "pieces": 6,
+      "pieceBytes": 422678,
+      "arrivedBytes": 23,
+      "frameBytes": 422701
+     },
+     {
+      "level": 2,
+      "points": 167621,
+      "sourcePoints": 1250000,
+      "pieces": 12,
+      "pieceBytes": 794356,
+      "arrivedBytes": 23,
+      "frameBytes": 794379
+     },
+     {
+      "level": 3,
+      "points": 335242,
+      "sourcePoints": 2500000,
+      "pieces": 20,
+      "pieceBytes": 1483604,
+      "arrivedBytes": 23,
+      "frameBytes": 1483627
+     }
+    ]
+   },
+   {
+    "segmentId": 2,
+    "points": 628279,
+    "sourcePoints": 4687500,
+    "pieces": 38,
+    "frameBytes": 2924359,
+    "thinned": true,
+    "budgetTries": [
+     {
+      "points": 600000,
+      "bytes": 2807655
+     },
+     {
+      "points": 628282,
+      "bytes": 2924359
+     }
+    ],
+    "levels": [
+     {
+      "level": 0,
+      "points": 41885,
+      "sourcePoints": 312500,
+      "pieces": 4,
+      "pieceBytes": 225173,
+      "arrivedBytes": 23,
+      "frameBytes": 225196
+     },
+     {
+      "level": 1,
+      "points": 83770,
+      "sourcePoints": 625000,
+      "pieces": 6,
+      "pieceBytes": 423020,
+      "arrivedBytes": 23,
+      "frameBytes": 423043
+     },
+     {
+      "level": 2,
+      "points": 167541,
+      "sourcePoints": 1250000,
+      "pieces": 10,
+      "pieceBytes": 793160,
+      "arrivedBytes": 23,
+      "frameBytes": 793183
+     },
+     {
+      "level": 3,
+      "points": 335083,
+      "sourcePoints": 2500000,
+      "pieces": 18,
+      "pieceBytes": 1482914,
+      "arrivedBytes": 23,
+      "frameBytes": 1482937
      }
     ]
    }
