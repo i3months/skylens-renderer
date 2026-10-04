@@ -63,3 +63,31 @@ test('terminate 가 던지는 Worker: messageerror 뒤 terminate() 는 다시 �
   const s = c.stats();
   assert.equal(s.requests, s.responses + s.errors + s.pending);
 });
+
+test('terminate() 뒤 onmessageerror 가 와도 worker.terminate 는 정확히 한 번만 불린다', async () => {
+  const { c, w, terminates } = rig(100);
+  const p = c.decode(new Uint8Array(1)).then(() => 'ok', (e) => e.message);
+  c.terminate();
+  assert.equal(terminates(), 1); // terminate() 에서 호출됨
+  w.onmessageerror({});
+  assert.equal(await p, 'terminated'); // terminate() 가 먼저 호출되어 'terminated' 로 거부됨
+  assert.equal(terminates(), 1); // onmessageerror 에서는 다시 호출하지 않음
+  const s = c.stats();
+  assert.equal(s.requests, s.responses + s.errors + s.pending);
+});
+
+test('timeout 뒤 onmessageerror 가 와도 worker.terminate 는 정확히 한 번만 불린다', async () => {
+  const { c, w, timers, terminates } = rig(100);
+  const p = c.decode(new Uint8Array(1)).then(() => 'ok', (e) => e.message);
+  // 타이머 콜백을 얻어서 timeout 을 트리거
+  assert.equal(timers.size, 1);
+  const timerEntry = Array.from(timers.values())[0];
+  timerEntry.f(); // timeout 트리거
+  assert.equal(terminates(), 1); // timeout 에서 worker.terminate() 호출됨
+  // timeout 뒤에 onmessageerror 가 온다
+  w.onmessageerror({});
+  assert.equal(await p, 'timeout'); // 처음 promise는 timeout으로 거부됨
+  assert.equal(terminates(), 1); // onmessageerror 에서 다시 호출하지 않음
+  const s = c.stats();
+  assert.equal(s.requests, s.responses + s.errors + s.pending);
+});
