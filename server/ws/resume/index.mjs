@@ -217,6 +217,10 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       const old = s.sent.get(ks);
       if (seq < s.nextSeq) {
         // 같은 key·같은 seq 재기록 = 멱등(F-197). 그 밖의 역행은 RangeError.
+        // 예외(F-219 ③): 이미 ack 된 순번(seq <= ackedUpTo)이고 그 key 항목이 없으면(어댑터 재시도 사이에 ack·축출로
+        // 지워짐) 멱등 true 로 아무것도 바꾸지 않는다. 클라이언트가 이미 받았다고 확인한 순번이라 보관할 것이 없다.
+        // 축출된 항목은 key 를 대조할 정보가 없으므로, 이 경로는 같은 seq 를 다른 key 로 쓰는 것을 잡지 못한다.
+        if (!old && seq <= s.ackedUpTo) { touch(sessionId, s, now()); return true; }
         if (!old || old.seq !== seq) {
           throw new RangeError(`seq 는 이미 기록한 최대 순번(${s.nextSeq - 1})보다 커야 한다: ${seq}`);
         }

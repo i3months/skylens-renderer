@@ -29,7 +29,22 @@
 //     시도가 쓰려던 pieceSeq 부터 같은 key 로 다시 매긴다(끊김 없음). 이미 나간 emit 은 같은 pieceSeq·key 로 다시 나가므로
 //     받는 쪽은 그것을 같은 조각으로 다룬다. 재시도가 ③ 을 다 마치면 끝나지 않은 이벤트 표시가 지워진다.
 //     이어받기 저장소(server/ws/resume)의 recordSent 는 같은 key·같은 seq 재기록을 멱등으로 받으므로(F-197) emit 안에서
-//     recordSent 를 불러도 재시도가 막히지 않는다.
+//     recordSent 를 불러도 재시도가 막히지 않는다. 실패한 시도 사이에 ack·축출로 그 항목이 지워졌어도(seq <= ackedUpTo)
+//     recordSent 는 멱등 true 다(F-219 ③).
+//     "같은 bytes" 는 실패한 시도 때의 내용이다. 어댑터는 실패 시점의 bytes 를 실제로 복사해 둔다(new Uint8Array,
+//     F-219 ①) — Buffer.prototype.slice 는 뷰라서 호출자가 원본(pool Buffer 등)을 덮어쓰면 재시도가 내용이 다른 조각을
+//     같은 pieceSeq·key 로 보내게 된다. 원본이 바뀐 재시도는 다른 이벤트로 보고 UnfinishedEventError 로 거부한다.
+//     재시도 때 수준 기계가 외부에서(어댑터를 거치지 않고) 진행돼 결정이 skip 이 되면(F-219 ②): 그 이벤트를 다시 보낼
+//     일이 없으므로 아무것도 내보내지 않고, 실패한 시도에 묶였던 pieceSeq 들(firstPieceSeq..+pieceCount-1)을 소비한 것으로
+//     확정하고(nextSeq 를 그만큼 올림) 끝나지 않은 표시를 지운 뒤 action 'skip' 을 돌려준다. 순번을 다시 쓰지 않으므로
+//     한 pieceSeq 가 두 key 에 쓰이는 일은 없다. 대가: 그 순번 중 일부는 선에 나갔을 수도, 안 나갔을 수도 있고(순번에
+//     빈칸이 생길 수 있음), 그 수준의 LEVEL_ARRIVED 는 나가지 않는다 — 받는 쪽은 완료 표시 없는 조각을 수준 도착으로
+//     세지 않는다.
+//     재시도가 영구히 실패할 때의 복구(F-219 ④): 어댑터 하나로는 풀 수 없다(같은 이벤트 재시도 말고는 모두 거부).
+//     호출자는 그 어댑터를 버리고 새로 만든다. 새 어댑터의 firstPieceSeq 는 옛 어댑터가 썼을 수 있는 모든 순번보다 커야
+//     한다: unfinishedEvent() 의 firstPieceSeq + pieceCount(또는 이어받기 저장소를 쓰면 open 이 돌려주는 nextPieceSeq 중
+//     큰 값). 수준 기계도 새로(또는 옛 기계 그대로 — 실패한 이벤트는 기계에 확정되지 않았다) 넘긴다. 연결이 끊긴 경우라면
+//     클라이언트는 HELLO 이어받기로 남은 조각을 다시 받고, 이어받을 수 없으면 새 세션으로 처음부터 받는다.
 //     ⑤ 는 상태 확정 뒤라 실패해도 되돌리지 않는다(메시지는 이미 다 나갔다). onRelease 는 함수 또는 함수 배열이며,
 //     하나가 던져도 나머지를 모두 부른 다음 예외를 다시 던진다(하나면 그 예외, 둘 이상이면 AggregateError).
 //   도착하지 않은 것을 만들거나 메우지 않는다. 시간·타이머를 쓰지 않는다. 상태는 handle 호출로만 바뀐다.
@@ -210,6 +225,11 @@ export function createCoreAdapter(options = {}) {
       // skip 은 기계에도 알린다(기계 이력 등). 상태는 바뀌지 않는다.
       const r = machine.arrive(segmentId, level, pieces);
       if (r.action !== ACTIONS.SKIP) throw new Error(`수준 기계 결정(${r.action})이 snapshot 으로 본 결정(skip)과 다르다`);
+      // 끝나지 않은 이벤트의 재시도인데 기계가 외부에서 진행돼 skip 이 됐다(F-219 ②). 묶였던 순번을 소비하고 표시를 지운다.
+      if (unfinished) {
+        nextSeq += unfinished.keys.length;
+        unfinished = null;
+      }
       return { action: 'skip', emitted: 0, released: [] };
     }
     // ② 메시지를 모두 만들고 부호화까지 마친다. 여기서 던지면 아무것도 나가지 않는다.
@@ -219,7 +239,7 @@ export function createCoreAdapter(options = {}) {
     // ③ 전부 송출한다. 던지면 상태·nextSeq 를 확정하지 않고, 이 이벤트를 끝나지 않은 이벤트로 남긴 채 다시 던진다.
     if (!unfinished) {
       unfinished = {
-        segmentId, level, keys: pieces.map((p) => pieceKeyString(p.key)), bytes: pieces.map((p) => p.bytes.slice()),
+        segmentId, level, keys: pieces.map((p) => pieceKeyString(p.key)), bytes: pieces.map((p) => new Uint8Array(p.bytes)), // 실제 사본(Buffer.slice 는 뷰, F-219 ①)
       };
     }
     for (const m of outgoing) emit(m);
