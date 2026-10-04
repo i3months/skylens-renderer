@@ -59,7 +59,7 @@ export function createSpatialThinner(positions) {
 }
 
 /**
- * 구간 전체 점 예산 total 을 수준별로 나눈다. 원본 수준 점 수 counts 에 비례(내림), 각 수준 최소 1, 원본 수 이하.
+ * 구간 전체 점 예산 total 을 수준별로 나눈다. 원본 수준 점 수 counts 에 비례(내림), 각 수준 최소 1, 원본 수 이하, 합은 total 이하.
  * total 이 원본 합 이상이면 counts 그대로다.
  * @param {number[]} counts  수준별 원본 점 수(1 이상 정수)
  * @param {number} total     구간 점 예산(수준 수 이상 정수)
@@ -72,7 +72,19 @@ export function levelPointTargets(counts, total) {
   if (!Number.isInteger(total) || total < counts.length) throw new RangeError(`total 은 수준 수(${counts.length}) 이상 정수: ${total}`);
   const sum = counts.reduce((s, c) => s + c, 0);
   if (total >= sum) return counts.slice();
-  return counts.map((c) => Math.min(c, Math.max(1, Math.floor((total * c) / sum))));
+  const out = counts.map((c) => Math.min(c, Math.max(1, Math.floor((total * c) / sum))));
+  // 최소 1 보정으로 합이 total 을 넘을 수 있다(예: [1000000,1,1,1], 4 → 합 6). 넘친 만큼 큰 수준부터 1 까지 덜어 합 ≤ total 을 지킨다.
+  let excess = out.reduce((s, t) => s + t, 0) - total;
+  if (excess > 0) {
+    const byDesc = out.map((_, i) => i).sort((a, b) => out[b] - out[a] || a - b);
+    for (const i of byDesc) {
+      const cut = Math.min(excess, out[i] - 1);
+      out[i] -= cut;
+      excess -= cut;
+      if (excess === 0) break;
+    }
+  }
+  return out;
 }
 
 /**
@@ -95,6 +107,8 @@ export function fitSegmentBudget(opts) {
   if (!(tolerance >= 0 && tolerance < 1)) throw new RangeError(`tolerance 는 [0, 1): ${tolerance}`);
   const maxIter = opts.maxIter ?? 6;
   const guess = opts.bytesPerPointGuess ?? 5;
+  if (!Number.isInteger(maxIter) || maxIter < 1) throw new RangeError(`maxIter 는 1 이상 정수: ${maxIter}`);
+  if (!(Number.isFinite(guess) && guess > 0)) throw new RangeError(`bytesPerPointGuess 는 0 보다 큰 유한수: ${guess}`);
   levelPointTargets(counts, counts.length); // counts 검사
   const sum = counts.reduce((s, c) => s + c, 0);
   const tries = [];

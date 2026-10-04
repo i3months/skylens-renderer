@@ -89,3 +89,63 @@ test('fitSegmentBudget: 최소 구성도 넘으면 던지고, 측정 반환이 �
   assert.throws(() => fitSegmentBudget({ counts: [10, 20], maxBytes: 10, measure: null }), TypeError);
   assert.throws(() => fitSegmentBudget({ counts: [10, 20], maxBytes: 10, measure: () => 1, safety: 0 }), RangeError);
 });
+
+// ---- F-303 ①②③⑦ ----
+test('F-303 ① 원본 그대로 경로: 원본이 maxBytes 를 넘으면(10,500 B > 10,000 B) 솎고 bytes ≤ maxBytes', () => {
+  const measure = (t) => t.reduce((s, k) => s + 70 * k, 0);
+  const r = fitSegmentBudget({ counts: [10, 20, 40, 80], maxBytes: 10_000, measure });
+  assert.equal(measure([10, 20, 40, 80]), 10_500);
+  assert.equal(r.thinned, true);
+  assert.ok(r.bytes <= 10_000, `${r.bytes}`);
+  assert.ok(r.budgetPoints < 150);
+});
+
+test('F-303 ② 허용 오차 안에 닿으면 6 회를 채우지 않고 멈춘다(탈출구 없이 단언)', () => {
+  // 점당 정확히 10 B: 첫 시도(maxBytes/5 → 원본 초과 → 비례 보정)가 5% 안에 닿는다
+  const measure = (t) => t.reduce((s, k) => s + 10 * k, 0);
+  const r = fitSegmentBudget({ counts: [1000, 2000, 4000, 8000], maxBytes: 100_000, measure });
+  const last = r.tries[r.tries.length - 1];
+  assert.ok(last.bytes <= 100_000 && last.bytes >= 0.95 * 100_000, `${last.bytes}`);
+  assert.equal(r.bytes, last.bytes);
+  assert.ok(r.tries.length < 6, `시도 ${r.tries.length} 회`);
+  // 허용 오차를 0 으로 주면 정확히 맞출 수 없어 더 시도한다(오차 조건이 멈춤을 결정한다는 대조)
+  const r0 = fitSegmentBudget({ counts: [1000, 2000, 4000, 8000], maxBytes: 100_000, tolerance: 0, measure: (t) => t.reduce((s, k) => s + 10 * k + 7, 0) });
+  assert.ok(r0.tries.length > r.tries.length);
+});
+
+test('F-303 ③ 섞은 순서 점군: 모턴 등간격이 블록마다 고르고, 같은 점 수에서 원래 순서 등간격보다 차분 비트가 적다', () => {
+  const side = 64;
+  const grid0 = grid(side);
+  // 결정적 섞기(LCG Fisher–Yates)
+  const perm = Array.from({ length: side * side }, (_, i) => i);
+  let st = 12345;
+  for (let i = perm.length - 1; i > 0; i--) { st = (Math.imul(st, 1664525) + 1013904223) >>> 0; const j = st % (i + 1); [perm[i], perm[j]] = [perm[j], perm[i]]; }
+  const pos = new Float32Array(grid0.length);
+  perm.forEach((src, i) => { pos.set(grid0.subarray(3 * src, 3 * src + 3), 3 * i); });
+  const k = 1024;
+  const sel = createSpatialThinner(pos).select(k);
+  const blocksOf = (idx) => { const b = new Array(64).fill(0); for (const i of idx) b[Math.floor(pos[3 * i + 2] / 8) * 8 + Math.floor(pos[3 * i] / 8)]++; return b; };
+  const mb = blocksOf(sel);
+  assert.ok(Math.min(...mb) >= 12 && Math.max(...mb) <= 20, `모턴 블록 ${Math.min(...mb)}..${Math.max(...mb)}`);
+  const naive = Array.from({ length: k }, (_, j) => Math.floor((j * perm.length) / k)); // 원래 순서 등간격
+  const nb = blocksOf(naive);
+  assert.ok(Math.max(...nb) - Math.min(...nb) > Math.max(...mb) - Math.min(...mb), '대조: 원래 순서 등간격은 덜 고르다');
+  // 같은 점 수에서 연속 점 차분의 비트 수 합(바이트 대리 값): 모턴 순이 더 작다
+  const bits = (idx) => { let s = 0; for (let j = 1; j < idx.length; j++) for (let a = 0; a < 3; a++) s += Math.ceil(Math.log2(Math.abs(pos[3 * idx[j] + a] - pos[3 * idx[j - 1] + a]) + 1)); return s; };
+  assert.equal(sel.length, naive.length);
+  assert.ok(bits(sel) < 0.7 * bits(naive), `모턴 ${bits(sel)} vs 원래 순서 ${bits(naive)}`);
+});
+
+test('F-303 ⑦ levelPointTargets 합 ≤ total 과 fitSegmentBudget 인자 검사', () => {
+  const t = levelPointTargets([1000000, 1, 1, 1], 4);
+  assert.deepEqual(t, [1, 1, 1, 1]);
+  for (const [c, total] of [[[1000000, 1, 1, 1], 6], [[5, 1000, 1, 1], 10], [[2, 2, 2, 2], 5], [[1, 1, 1], 3]]) {
+    const r = levelPointTargets(c, total);
+    assert.ok(r.reduce((s, x) => s + x, 0) <= total, JSON.stringify([c, total, r]));
+    assert.ok(r.every((x, i) => x >= 1 && x <= c[i]));
+  }
+  const base = { counts: [10, 20], maxBytes: 1000, measure: () => 1 };
+  for (const maxIter of [0, -1, 1.5, NaN]) assert.throws(() => fitSegmentBudget({ ...base, maxIter }), RangeError, `maxIter ${maxIter}`);
+  for (const bytesPerPointGuess of [0, -5, Infinity, NaN]) assert.throws(() => fitSegmentBudget({ ...base, bytesPerPointGuess }), RangeError, `guess ${bytesPerPointGuess}`);
+  assert.equal(fitSegmentBudget({ ...base, maxIter: 1 }).thinned, false);
+});
