@@ -239,17 +239,33 @@ test('요청은 MISSING 구간의 자산 색인 중 아직 받지 않은 PieceKe
   assert.throws(() => createStatusView({ modules: FAKE_MODULES, pieceIndex: 1 }), TypeError);
 });
 
-test('해제된 key 의 pieceSeq 색인은 지워진다: 해제된 창의 LEVEL_ARRIVED 재전송은 받지 못한 창이다', () => {
+test('해제된 창의 재전송(PIECE·LEVEL_ARRIVED)은 조용히 무시하고, 다른 key·모자란 창은 여전히 거부한다', () => {
   const view = newView();
   const server = createMockRenderServer();
   feed(view, server.welcome(false));
   feed(view, server.levelArrival(0, 0)); // pieceSeq 1, 2
   feed(view, server.levelArrival(0, 1)); // pieceSeq 3, 4 → 0.0.* 해제
   assert.deepEqual(view.frame().releasedKeys, ['0.0.0.0.0.0', '0.0.0.0.0.1']);
-  // 1..2 색인이 없어 창이 모자라다(TypeError). 3..4(그리는 수준)는 남아 재전송이 그대로 받아진다
-  assert.throws(() => view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 2, firstPieceSeq: 1 }), TypeError);
+  // 1..2 는 해제로 끝난 조각: 재전송 PIECE·LEVEL_ARRIVED 는 상태 불변
+  const before = stateOf(view);
+  feed(view, [...server.resend(1), ...server.resend(2)]);
+  view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 2, firstPieceSeq: 1 });
+  assert.deepEqual(stateOf(view), before);
+  // 끝난 pieceSeq 에 다른 key 는 TypeError, 끝난 조각이 든 창이라도 다른 수준·모자란 창은 TypeError
+  assert.throws(() => view.handle({ type: 'PIECE', pieceSeq: 1, key: pieceKeyOf(0, 0, 7), chunk: testChunk(1) }), TypeError);
+  assert.throws(() => view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 1, pieceCount: 2, firstPieceSeq: 1 }), TypeError);
+  assert.throws(() => view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 3, firstPieceSeq: 0 }), RangeError);
+  assert.throws(() => view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 6, firstPieceSeq: 1 }), TypeError);
+  // 3..4(그리는 수준)의 재전송 창은 같은 수준이라 건너뛰고 그림은 그대로
   view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 1, pieceCount: 2, firstPieceSeq: 3 });
   assert.deepEqual(view.frame().drawKeys, ['0.1.0.0.0.0', '0.1.0.0.0.1']);
+  // 창 안에 같은 key 가 두 번이면 TypeError(받은 조각만 든 창 5..6, 끝난 조각이 섞인 창 4..5 모두)
+  view.handle({ type: 'PIECE', pieceSeq: 5, key: pieceKeyOf(0, 1, 1), chunk: testChunk(1) });
+  view.handle({ type: 'PIECE', pieceSeq: 6, key: pieceKeyOf(0, 1, 1), chunk: testChunk(1) });
+  const before2 = stateOf(view);
+  assert.throws(() => view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 1, pieceCount: 2, firstPieceSeq: 5 }), TypeError);
+  assert.throws(() => view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 1, pieceCount: 2, firstPieceSeq: 4 }), TypeError);
+  assert.deepEqual(stateOf(view), before2);
 });
 
 function stateOf(view) {
