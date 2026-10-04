@@ -209,13 +209,22 @@ export async function captureWithChromium({ html, size, args = [] }) {
     throw new Error(`${ERR} size 는 양의 정수 width·height 여야 함`);
   }
   const pw = await loadPlaywright();
-  if (!pw?.chromium) return { skipped: true, reason: 'playwright 모듈을 찾지 못함' };
+  // SKYLENS_REQUIRE_GL=1 이면 브라우저가 없을 때 skip 으로 돌려주지 않고 던진다(조용한 skip 으로 검증이 빠지는 것을 막는다).
+  const strict = process.env.SKYLENS_REQUIRE_GL === '1';
+  if (!pw?.chromium) {
+    if (strict) throw new Error(`${ERR} SKYLENS_REQUIRE_GL=1 인데 playwright 모듈을 찾지 못함`);
+    return { skipped: true, reason: 'playwright 모듈을 찾지 못함' };
+  }
+  // SKYLENS_CHROMIUM 이 있으면 그 실행 파일을 쓰고, 경로가 틀리면 skip 이 아니라 오류다.
+  const envExe = process.env.SKYLENS_CHROMIUM;
+  if (envExe && !existsSync(envExe)) throw new Error(`${ERR} SKYLENS_CHROMIUM 경로가 없음: ${envExe}`);
   let browser;
   try {
-    browser = await pw.chromium.launch({ headless: true, args });
+    browser = await pw.chromium.launch({ headless: true, args, ...(envExe ? { executablePath: envExe } : {}) });
   } catch (e) {
     const base = process.env.PLAYWRIGHT_BROWSERS_PATH ?? '';
     const have = base && existsSync(base) ? readdirSync(base).join(',') : '없음';
+    if (strict) throw new Error(`${ERR} SKYLENS_REQUIRE_GL=1 인데 Chromium 실행 실패: ${String(e.message).split('\n')[0]}`);
     return { skipped: true, reason: `Chromium 실행 실패(브라우저 경로 항목: ${have}): ${String(e.message).split('\n')[0]}` };
   }
   try {

@@ -9,10 +9,27 @@ import { pathToFileURL } from 'node:url';
 
 const SHADER_URL = new URL('./index.mjs', import.meta.url).href;
 
-/** 쓸 수 있는 Chromium 실행 파일 경로. 환경 변수 SKYLENS_CHROMIUM 이 먼저이고, 없으면 Playwright 설치 위치를 찾는다. 없으면 null. */
+/** 실제 GL 시험을 건너뛰지 않고 반드시 돌리라는 환경 변수(SKYLENS_REQUIRE_GL=1). 켜져 있으면 Chromium 이 없을 때 skip 대신 실패한다. */
+export function requireGl() {
+  return process.env.SKYLENS_REQUIRE_GL === '1';
+}
+
+/**
+ * node:test 의 skip 옵션 값. REQUIRE_GL 이 꺼져 있으면 reason(없으면 false), 켜져 있으면 항상 false 로 돌려 시험이 실제로 돌다가 실패하게 한다.
+ * @param {string|null|undefined} reason 건너뛸 이유(건너뛸 필요가 없으면 비움)
+ */
+export function glSkip(reason) {
+  if (!reason) return false;
+  return requireGl() ? false : reason;
+}
+
+/** 쓸 수 있는 Chromium 실행 파일 경로. 환경 변수 SKYLENS_CHROMIUM 이 먼저이고(틀린 경로면 오류), 없으면 Playwright 설치 위치를 찾는다. 없으면 null. */
 export function findChromium() {
   const env = process.env.SKYLENS_CHROMIUM;
-  if (env) return existsSync(env) ? env : null;
+  if (env) {
+    if (!existsSync(env)) throw new Error(`SKYLENS_CHROMIUM 경로가 없음: ${env}`);
+    return env;
+  }
   const roots = [process.env.PLAYWRIGHT_BROWSERS_PATH, '/opt/pw-browsers', join(homedir(), '.cache', 'ms-playwright')].filter(Boolean);
   for (const root of roots) {
     let names;
