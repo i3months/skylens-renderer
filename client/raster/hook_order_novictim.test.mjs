@@ -85,10 +85,13 @@ test('희생 없는 업로드: onGlUploadStart~End 시간은 짧다(makeRoom 의
   const clock = {};
   const r = setup(log, clock);
   await r.uploadPiece(K, piece(K));
+  // 일시 지연(GC·스케줄링)으로 거짓 실패가 나지 않게 3 회 중 최솟값에 상한을 건다(변이는 매번 느리므로 최솟값도 느리다)
+  const spans = [];
   for (let i = 0; i < 3; i++) {
     await r.uploadPiece(K, piece(K));
-    const span = clock.end - clock.start;
-    assert.ok(span < 60, `GL 구간 ${span.toFixed(1)} ms: makeRoom 등 비-GL 작업이 Start~End 에 섞임`);
+    spans.push(clock.end - clock.start);
   }
+  const span = Math.min(...spans);
+  assert.ok(span < 60, `GL 구간 최솟값 ${span.toFixed(1)} ms(${spans.map((x) => x.toFixed(1))}): makeRoom 등 비-GL 작업이 Start~End 에 섞임`);
   r.dispose();
 });
