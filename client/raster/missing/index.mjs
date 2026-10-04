@@ -5,14 +5,29 @@ import { assertRenderResult, EMPTY_INDEX, EMPTY_DEPTH } from '../../../contracts
 
 const ERR = 'missing:';
 
-/** 칠해진 픽셀 마스크(Uint8Array, 1 = 칠해짐)를 RenderResult 에서 뽑는다. 빈 번호와 빈 깊이가 어긋나면 오류. */
-export function drawnMask(result) {
+// RenderResult 검사 한 번. raster: 오류는 missing: 오류로 바꿔 던진다.
+function checkRenderResult(result) {
   if (!result || typeof result !== 'object') throw new Error(`${ERR} 결과가 객체가 아님: ${String(result)}`);
-  assertRenderResult(result);
+  try {
+    assertRenderResult(result);
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('raster:')) throw new Error(e.message.replace(/^raster:/, ERR));
+    throw e;
+  }
+}
+
+// 검사가 끝난 RenderResult 에서 마스크만 뽑는다(검사 없음).
+function maskOf(result) {
   const n = result.width * result.height;
   const mask = new Uint8Array(n);
   for (let i = 0; i < n; i += 1) mask[i] = result.index[i] === EMPTY_INDEX ? 0 : 1;
   return mask;
+}
+
+/** 칠해진 픽셀 마스크(Uint8Array, 1 = 칠해짐)를 RenderResult 에서 뽑는다. 빈 번호와 빈 깊이가 어긋나면 오류. */
+export function drawnMask(result) {
+  checkRenderResult(result);
+  return maskOf(result);
 }
 
 // 입력은 {width, height, drawn: Uint8Array} 마스크이거나 RenderResult 다.
@@ -29,16 +44,9 @@ function toMask(x) {
     }
     return { width: x.width, height: x.height, drawn: x.drawn };
   }
-  // RenderResult: drawnMask 가 assertRenderResult 로 모든 검사를 한다
-  // raster: 오류를 missing: 으로 변환
-  try {
-    return { width: x.width, height: x.height, drawn: drawnMask(x) };
-  } catch (e) {
-    if (e.message.startsWith('raster:')) {
-      throw new Error(e.message.replace(/^raster:/, ERR));
-    }
-    throw e;
-  }
+  // RenderResult: 검사는 여기서 한 번만 한다
+  checkRenderResult(x);
+  return { width: x.width, height: x.height, drawn: maskOf(x) };
 }
 
 /**
@@ -77,9 +85,7 @@ export function compareWithReference(candidate, reference) {
  * @returns {number[]} 빈 값이 아닌 픽셀 인덱스 배열
  */
 export function nonEmptyValuesInEmpty(result, emptyPixels) {
-  if (!result || typeof result !== 'object') throw new Error(`${ERR} 결과가 객체가 아님: ${String(result)}`);
-  // 입력 검증: assertRenderResult 한 번만 호출
-  assertRenderResult(result);
+  checkRenderResult(result);
   const n = result.width * result.height;
   if (!Array.isArray(emptyPixels)) throw new Error(`${ERR} emptyPixels 는 배열이어야 함`);
   const bad = [];
