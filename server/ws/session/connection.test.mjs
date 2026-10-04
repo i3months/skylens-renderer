@@ -21,7 +21,7 @@ function fakeStore() {
 }
 const hello = (sessionId = 0) => encodeMessage({ type: 'HELLO', sessionId, lastPieceSeq: 0 });
 const ack = (n) => encodeMessage({ type: 'ACK', upToPieceSeq: n });
-const okReplay = async () => ({ sessionId: 7, resumed: false });
+const okReplay = async () => ({ sessionId: 7, resumed: false, nextPieceSeq: 5 });
 const setup = (extra = {}) => {
   const conn = fakeConn();
   const store = fakeStore();
@@ -72,7 +72,7 @@ test('onSession 1회, emit 은 HELLO 뒤 동작, 둘째 HELLO 는 ERROR 와 clos
   assert.equal(api.sessionId(), 7);
   await conn.msgCb(hello(7));
   assert.equal(sessions.length, 1);
-  assert.deepEqual(sessions[0], [7, { resumed: false, nextPieceSeq: undefined }]);
+  assert.deepEqual(sessions[0], [7, { resumed: false, nextPieceSeq: 5 }]);
   assert.deepEqual(conn.closes, [1002]);
   assert.throws(() => api.emit({ type: 'MISSING' }), /닫/);
   assert.equal(emitted.length, 1, '거부된 emit 은 나가지 않는다');
@@ -109,6 +109,36 @@ test('(a) onMessage 옵션이 던지면 conn.close(1011) 1회', async () => {
   await conn.msgCb(hello());
   await conn.msgCb(encodeMessage({ type: 'VIEW_UPDATE', viewSeq: 1, pos: [0, 0, 0], quat: [0, 0, 0, 1], fovY: 1, width: 640, height: 480 }));
   assert.deepEqual(conn.closes, [1011]);
+});
+
+test('(a2) 닫힘 처리는 멱등: onMessage 예외 뒤 메시지가 더 와도 conn.close 1회', async () => {
+  const { conn } = setup({ onMessage: () => { throw new Error('처리 실패'); } });
+  await conn.msgCb(hello());
+  const view = encodeMessage({ type: 'VIEW_UPDATE', viewSeq: 1, pos: [0, 0, 0], quat: [0, 0, 0, 1], fovY: 1, width: 640, height: 480 });
+  await conn.msgCb(view);
+  await conn.msgCb(view);
+  await conn.msgCb(ack(1));
+  assert.deepEqual(conn.closes, [1011]);
+});
+
+test('(a3) 상대가 먼저 닫은 뒤 onMessage 가 뒤늦게 던져도 conn.close 를 다시 부르지 않음', async () => {
+  let fail;
+  const pending = new Promise((_, rej) => { fail = rej; });
+  const { conn } = setup({ onMessage: () => pending });
+  await conn.msgCb(hello());
+  const inflight = conn.msgCb(encodeMessage({ type: 'VIEW_UPDATE', viewSeq: 1, pos: [0, 0, 0], quat: [0, 0, 0, 1], fovY: 1, width: 640, height: 480 }));
+  await new Promise((r) => setImmediate(r)); // onMessage 가 대기 상태에 들어가도록 양보
+  conn.closeCb({ code: 1006, reason: '' }); // 처리 중에 접속이 닫힘
+  fail(new Error('뒤늦은 실패'));
+  await inflight;
+  assert.deepEqual(conn.closes, []);
+});
+
+test('(b0) api.sessionId() 는 HELLO 전에 던지고 HELLO 뒤에는 값을 돌려줌', async () => {
+  const { conn, api } = setup();
+  assert.throws(() => api.sessionId(), /HELLO/);
+  await conn.msgCb(hello());
+  assert.equal(api.sessionId(), 7);
 });
 
 test('(b) 닫힘 뒤 도착한 ACK 는 store.ack 를 부르지 않음', async () => {
@@ -169,10 +199,10 @@ test('(f) 가짜 replay·makeEmit 이 받은 인자를 단언', async () => {
   // replay 와 makeEmit 가 올바른 인자를 받는지 확인
   const recordedReplayArgs = [];
   const recordedMakeEmitArgs = [];
-  const { conn } = setup({
+  const { conn, store } = setup({
     replay: async (args) => {
       recordedReplayArgs.push(args);
-      return { sessionId: 7, resumed: false };
+      return { sessionId: 7, resumed: false, nextPieceSeq: 42 };
     },
     makeEmit: (args) => {
       recordedMakeEmitArgs.push(args);
@@ -183,7 +213,7 @@ test('(f) 가짜 replay·makeEmit 이 받은 인자를 단언', async () => {
   // replay 가 받은 인자 확인
   assert.equal(recordedReplayArgs.length, 1);
   const replayArgs = recordedReplayArgs[0];
-  assert.ok(replayArgs.store);
+  assert.equal(replayArgs.store, store);
   assert.ok(replayArgs.hello);
   assert.equal(replayArgs.hello.type, 'HELLO');
   assert.equal(typeof replayArgs.send, 'function');
@@ -192,7 +222,10 @@ test('(f) 가짜 replay·makeEmit 이 받은 인자를 단언', async () => {
   // makeEmit 이 받은 인자 확인
   assert.equal(recordedMakeEmitArgs.length, 1);
   const emitArgs = recordedMakeEmitArgs[0];
-  assert.ok(emitArgs.store);
+  assert.equal(emitArgs.store, store);
+  // minPieceSeq 는 open 의 nextPieceSeq(정수 또는 그 값을 돌려주는 함수)로 전달된다(F-270)
+  const minSeq = typeof emitArgs.minPieceSeq === 'function' ? emitArgs.minPieceSeq() : emitArgs.minPieceSeq;
+  assert.equal(minSeq, 42);
   assert.equal(emitArgs.sessionId, 7);
   assert.equal(typeof emitArgs.send, 'function');
   assert.equal(typeof emitArgs.encode, 'function');
