@@ -255,10 +255,13 @@ function strideFor(w, h, budget) {
  *    모든 블록을 모형 예측 ±1 px 에서 1/32 px 까지 다시 찾아 무늬 주기 일치(가짜 최소)를 바로잡는다. 예측 근처 최소가 블록 자체
  *    최소보다 1.5배 넘게 나쁜 블록은 아핀으로 설명되지 않는 진짜 국소 어긋남(local)으로 남긴다.
  *    전역 가설이 여럿이면 아핀 변위장 아래 타일 전체 평균 제곱 차가 가장 작은 가설을 고른다.
- * 4) edgeMaxPx = 타일 네 모서리(±W/2, ±H/2)의 모형 변위 최댓값(아핀 변위장의 크기는 볼록이라 타일 안 최댓값은 모서리),
+ * 4) edgeMaxPx = 피복 범위(tile.coverage.bounds 를 타일로 자른 사각형, 없으면 타일 전체 ±W/2, ±H/2) 네 모서리의 모형 변위
+ *    최댓값(아핀 변위장의 크기는 볼록이라 사각형 안 최댓값은 모서리; 영상 자료가 없는 곳까지 외삽하지 않음),
  *    localMaxPx = local 블록 실측 이동량 크기 최댓값, maxMisalignPx = max(edgeMaxPx, localMaxPx).
- *    블록이 3개 미만이거나 블록 중심이 한 직선 위라 아핀을 못 맞추면 status = 'unmeasurable' 이고 maxMisalignPx·edgeMaxPx·축척 등은
- *    NaN 이다(0 으로 보고하지 않는다; NaN 은 어떤 `<= 허용` 판정도 통과하지 못한다).
+ *    다음이면 status = 'unmeasurable' 이고 maxMisalignPx·edgeMaxPx·축척 등은 NaN 이다(0 으로 보고하지 않는다; NaN 은 어떤
+ *    `<= 허용` 판정도 통과하지 못한다): 전역 비용면이 ±1 px 이동에 평평함(균일한 색 등), 아핀에 여분이 없음(블록 6개 미만이면서
+ *    2×2 이상 블록 격자 전체 피복도 아님 — 3~5블록 정확 적합은 잡음을 모서리 외삽으로 부풀림), 블록 중심이 한 직선 위,
+ *    이상치 제거 뒤 남은 블록이 그 하한 미만. 비용면이 한 축이라도 평평한 블록은 블록 측정에서 뺀다.
  * @returns {{status:'measured'|'unmeasurable', reason?:string, maxMisalignPx:number, dxPx:number, dyPx:number, rms:number,
  *   samples:number, globalDxPx:number, globalDyPx:number, blockMaxPx:number, residualMaxPx:number, edgeMaxPx:number,
  *   localMaxPx:number, scaleX:number, scaleY:number, rotationRad:number,
@@ -427,6 +430,28 @@ export function measureDrapeAlignment(image, tile) {
     if (g.n > 0) globals.push(g);
   }
 
+  // 이동량 (dx, dy) 에서 x·y 축 각각 ±1 px 옮긴 비용이 FLAT_MSE 이하로만 오르면 평평(그 축 이동량을 구별 못함).
+  function flatAt(xs, ys, dx, dy, minN, mse) {
+    for (const [a, b] of [[1, 0], [0, 1]]) {
+      let rise = Infinity;
+      for (const s of [-1, 1]) {
+        const c = cost(xs, ys, dx + s * a, dy + s * b);
+        if (c.n >= minN) rise = Math.min(rise, c.mse - mse);
+      }
+      if (rise !== Infinity && rise <= FLAT_MSE) return true;
+    }
+    return false;
+  }
+
+  // 모서리 외삽 범위(블록 좌표 di, dj = 픽셀 − 타일 중심): coverage.bounds 를 타일 안으로 자른 사각형, 없거나 잘못되면 타일 전체.
+  let ei0 = -TW / 2, ei1 = TW / 2, ej0 = -TH / 2, ej1 = TH / 2;
+  const cbx = tile.coverage?.bounds;
+  if (cbx && [cbx.minX, cbx.minY, cbx.maxX, cbx.maxY].every(Number.isFinite)) {
+    const i0 = Math.max(0, (cbx.minX - tb.minX) / pw), i1 = Math.min(TW, (cbx.maxX - tb.minX) / pw);
+    const j0 = Math.max(0, (tb.maxY - cbx.maxY) / ph), j1 = Math.min(TH, (tb.maxY - cbx.minY) / ph);
+    if (i1 > i0 && j1 > j0) { ei0 = i0 - TW / 2; ei1 = i1 - TW / 2; ej0 = j0 - TH / 2; ej1 = j1 - TH / 2; }
+  }
+
   const ex = blockEdges(TW), ey = blockEdges(TH);
   const blockPx = { width: ex[1] - ex[0], height: ey[1] - ey[0] };
   const results = globals.map((g) => alignFromGlobal(g));
@@ -452,6 +477,8 @@ export function measureDrapeAlignment(image, tile) {
         const minN = Math.ceil(base / 2);
         const r = search(xs, ys, g.dx, g.dy, [[Math.min(BLOCK_SEARCH_PX, radius), 1], ...BLOCK_COARSE_STAGES], minN);
         if (r.n === 0) continue;
+        // 이동량 한 축이라도 비용면이 평평하면(균일한 색·한 방향 줄무늬) 그 블록 이동량은 정해지지 않으므로 버린다.
+        if (flatAt(xs, ys, r.dx, r.dy, minN, r.mse)) continue;
         blocks.push({
           i0, j0, di: (i0 + i1) / 2 - TW / 2, dj: (j0 + j1) / 2 - TH / 2, xs, ys, minN,
           dx: r.dx, dy: r.dy, mse: r.mse, n: r.n, local: false,
@@ -473,8 +500,16 @@ export function measureDrapeAlignment(image, tile) {
 
     // 3) 아핀 적합(이상치 제거) → 모형 예측 근처(±1 px)에서 블록을 다시 찾아 무늬 주기 일치(가짜 최소)를 바로잡는다.
     //    이상치 블록의 예측 근처 최소가 자기 최소보다 뚜렷이 나쁘면(평균 제곱 차 비 > ALIAS_MSE_RATIO) 진짜 국소 어긋남(local)으로 남긴다.
-    if (blocks.length < 3) return unmeasurable(`블록 ${blocks.length}개(아핀 적합에 3개 이상 필요)`);
-    let fit = robustAffine(blocks);
+    // 전역 비용면이 평평하면(균일한 색 등) 어떤 이동량도 구별되지 않는다 → 0 px 가 아니라 측정 불가.
+    if (flatAt(gxs, gys, g.dx, g.dy, 1, g.mse)) return unmeasurable('비용면이 평평함(영상 무늬가 없어 이동량을 구별할 수 없음)');
+    // 아핀(6 매개변수)은 여분이 있어야 잡음이 모서리 외삽으로 부풀지 않는다: 블록 MIN_AFFINE_BLOCKS 개 이상,
+    // 또는 블록 격자 전체(2×2 이상)가 피복된 타일. 블록 3~5개 정확 적합은 측정 불가.
+    const gridBlocks = (ex.length - 1) * (ey.length - 1);
+    const minBlocks = blocks.length === gridBlocks ? Math.min(MIN_AFFINE_BLOCKS, gridBlocks) : MIN_AFFINE_BLOCKS;
+    if (blocks.length < Math.max(4, minBlocks)) {
+      return unmeasurable(`블록 ${blocks.length}개(아핀 적합에 ${MIN_AFFINE_BLOCKS}개 이상, 또는 2×2 이상 블록 격자 전체 피복 필요)`);
+    }
+    let fit = robustAffine(blocks, minBlocks);
     if (!fit) return unmeasurable('블록 이동량이 한 아핀 모형으로 모이지 않거나 블록 중심이 한 직선 위');
     for (const b of blocks) {
       const [px, py] = fit.at(b.di, b.dj);
@@ -487,13 +522,14 @@ export function measureDrapeAlignment(image, tile) {
       }
     }
     const affineBlocks = blocks.filter((b) => !b.local);
-    fit = robustAffine(affineBlocks);
+    fit = robustAffine(affineBlocks, minBlocks);
     if (!fit) return unmeasurable('블록 이동량이 한 아핀 모형으로 모이지 않거나 블록 중심이 한 직선 위');
     for (const b of affineBlocks) if (!fit.inlier.has(b)) b.local = true;
 
-    // 4) 타일 네 모서리의 모형 변위 최댓값, 그리고 모형으로 설명되지 않는 블록(local)의 실측 이동량 크기.
+    // 4) 피복 범위(coverage.bounds = 타일 ∩ 영상, 없으면 타일) 네 모서리의 모형 변위 최댓값, 그리고 모형으로 설명되지 않는
+    //    블록(local)의 실측 이동량 크기. 영상 자료가 없는 곳까지 외삽하지 않는다(완전 피복 타일이면 타일 네 모서리).
     let edgeMaxPx = 0;
-    for (const cx of [-TW / 2, TW / 2]) for (const cy of [-TH / 2, TH / 2]) edgeMaxPx = Math.max(edgeMaxPx, Math.hypot(...fit.at(cx, cy)));
+    for (const ci of [ei0, ei1]) for (const cj of [ej0, ej1]) edgeMaxPx = Math.max(edgeMaxPx, Math.hypot(...fit.at(ci, cj)));
     let residualMaxPx = 0, localMaxPx = 0;
     for (const b of blocks) {
       const [px, py] = fit.at(b.di, b.dj);
@@ -518,6 +554,10 @@ const ALT_GLOBAL_MAX = 2;
 const OUTLIER_PX = 0.5;
 // 이상치 블록의 예측 근처 최소의 평균 제곱 차가 자기 최소의 이 배 이내면 '무늬 주기 일치'로 보고 예측 근처 값을 쓴다.
 const ALIAS_MSE_RATIO = 1.5;
+// 아핀 적합에 필요한 블록 수(블록 격자 전체가 피복되지 않은 타일). 6 매개변수 정확 적합(3블록)은 잡음을 모서리로 부풀린다.
+const MIN_AFFINE_BLOCKS = 6;
+// 비용면 평평 판정: ±1 px 이동의 평균 제곱 차 상승(채널값²)이 이 이하면 그 축 이동량을 구별할 수 없다(uint8 반올림 잡음 1/12 보다 작음).
+const FLAT_MSE = 0.01;
 
 /**
  * 블록 이동량 (di, dj) → (dx, dy) 에 아핀 최소제곱. 블록 3개 미만이거나 중심이 한 직선 위면 null.
@@ -547,11 +587,12 @@ function fitAffine(list) {
 
 /**
  * 이상치를 하나씩 빼며 아핀을 맞춘다: 잔차 최댓값이 OUTLIER_PX 이하가 될 때까지 잔차가 가장 큰 블록을 뺀다.
- * 남은 블록(inlier)이 원래의 절반 미만(또는 3개 미만)이 되거나 적합이 불가능하면 null(측정 불가).
+ * 남은 블록(inlier)이 원래의 절반 미만(또는 minBlocks 개 미만)이 되거나 적합이 불가능하면 null(측정 불가).
  */
-function robustAffine(list) {
+function robustAffine(list, minBlocks) {
   const active = list.slice();
-  const need = Math.max(3, Math.ceil(list.length / 2));
+  const need = Math.max(3, minBlocks, Math.ceil(list.length / 2));
+  if (active.length < need) return null;
   for (;;) {
     const fit = fitAffine(active);
     if (!fit) return null;
