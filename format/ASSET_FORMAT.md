@@ -93,7 +93,7 @@ f64 필드는 모두 8바이트 정렬 위치에 있다. 헤더 128 B 는 점 �
 12. checksum 일치(§7).
 13. chunk_index ∈ 0..65535. 칸은 u32 이지만 contracts/proto PieceKey u16 과 같은 상한을 쓴다(F-193).
 
-`parseHeader`(계약)는 1·2·3·13 을 본다(최소 검사; 13 은 `readChunkIndex` 가 65536 이상을 거부). 미래 확장(reserved 영역·새 필드)은 검사 규칙이 아니라 §5 의 호환 규칙을 따른다. 나머지는 T03.1 `readHeaderStrict` 와 T03.6 `validateAsset` 이 한다.
+`parseHeader`(계약)는 1·2·3·13 을 본다(최소 검사; 13 은 `readChunkIndex` 가 65536 이상을 거부). 미래 확장(reserved 영역·새 필드)은 검사 규칙이 아니라 §9 의 버전 호환 정책을 따른다. 나머지는 T03.1 `readHeaderStrict` 와 T03.6 `validateAsset` 이 한다.
 
 **codec 1 검증**: codec 1 형식의 엄격한 검증(헤더 필드 규칙 3·10 외에도 본문 배치·stream 길이·엔트로피 복호 검사)은 `server/codec/chunk` 모듈의 `decodeChunk` 함수가 담당한다. `server/asset/header` 의 `readHeaderStrict` 함수는 codec 0 만 검증하고, codec 1 파일은 `decodeChunk` 를 통해 손상을 검증한다.
 
