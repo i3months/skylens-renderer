@@ -9,7 +9,7 @@
 //      뒤에 만나면 ClientRasterError('piece') 로 거부한다(첫 PIECE 앞의 WELCOME 은 통과). 새 세션의 수신은 새 입력으로
 //      넣고, 앞 세션에서 받은 key 는 ./index.mjs ④ 정리 규칙(재개 재시작 = 시도 끝)대로 호출자가 해제한다.
 //      WELCOME resumed=true 는 같은 세션의 이어받기라 이력을 그대로 잇는다(앞서 본 WELCOME 과 sessionId 가 다르거나,
-//      앞서 본 sessionId 가 없으면 거부). sessionId 는 u32 정수여야 한다.
+//      앞서 본 sessionId 가 없으면 거부). sessionId 는 1 이상(서버는 0 을 발급하지 않음) u32 정수여야 한다.
 //   ① 중복: 같은 pieceSeq·같은 PieceKey 의 PIECE 는 한 조각이다(proto 재전송 규약). 같은 pieceSeq 에 다른 PieceKey 가
 //      오면 계약 위반(F-204)이라 거부한다. 같은 key 가 다른 pieceSeq 로 다시 오는 것은 허용한다(새 어댑터의 재송출 등).
 //      단조(F-234): 재전송이 아닌(처음 보는) pieceSeq 는 그때까지 받은 가장 큰 pieceSeq 보다 커야 한다. 아니면
