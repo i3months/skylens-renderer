@@ -235,3 +235,63 @@ test('인자 검사: 함수가 아니면 TypeError 이고 아무것도 보내지
   assert.equal(out.sent.length, 0);
   assert.equal(store.size(), 0);
 });
+
+test('resumed=false 일 때 resendPlan 호출 안 함(M20): 새 세션·UNKNOWN_SESSION 에서 재전송 0', () => {
+  let resendPlanCalled = 0;
+
+  // 새 세션(resumed=false) 경우
+  {
+    const store = mkStore();
+    const out = sink();
+    const wrappedStore = {
+      open: (hello) => store.open(hello),
+      resendPlan: (sessionId) => {
+        resendPlanCalled++;
+        return store.resendPlan(sessionId);
+      }
+    };
+
+    const r = replayAfterHello({
+      store: wrappedStore,
+      hello: { sessionId: 0, lastPieceSeq: 0 },
+      send: out.send,
+      loadPiece: loadAll
+    });
+
+    // resumed=false 이면 resendPlan 을 호출하지 않는다
+    assert.equal(resendPlanCalled, 0, 'resendPlan 호출됨 (새 세션)');
+    // 재전송 없음
+    assert.equal(r.replayed, 0, 'replayed 값: 새 세션에서 재전송 필요 없음');
+    assert.equal(r.replayedBytes, 0, 'replayedBytes 값: 새 세션에서 재전송 필요 없음');
+    assert.equal(r.resumed, false);
+  }
+
+  // UNKNOWN_SESSION 경우
+  {
+    const { store } = seeded();
+    const out = sink();
+    resendPlanCalled = 0;
+    const wrappedStore = {
+      open: (hello) => store.open(hello),
+      resendPlan: (sessionId) => {
+        resendPlanCalled++;
+        return store.resendPlan(sessionId);
+      }
+    };
+
+    const r = replayAfterHello({
+      store: wrappedStore,
+      hello: { sessionId: 999, lastPieceSeq: 1 },
+      send: out.send,
+      loadPiece: () => assert.fail('조각을 읽으면 안 된다')
+    });
+
+    // resumed=false 이면 resendPlan 을 호출하지 않는다
+    assert.equal(resendPlanCalled, 0, 'resendPlan 호출됨 (UNKNOWN_SESSION)');
+    // 재전송 없음
+    assert.equal(r.replayed, 0, 'replayed 값: UNKNOWN_SESSION 에서 재전송 필요 없음');
+    assert.equal(r.replayedBytes, 0, 'replayedBytes 값: UNKNOWN_SESSION 에서 재전송 필요 없음');
+    assert.equal(r.resumed, false);
+    assert.equal(r.reason, 'UNKNOWN_SESSION');
+  }
+});
