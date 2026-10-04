@@ -98,3 +98,60 @@ test('resendPlan 호출 횟수와 배열 접근 횟수 검사(O(N²) 변이 잡�
   assert.equal(r.replayed, 2 * N);
 });
 
+
+// 시간 비율 시험(F-280 ④): 결정적 횟수 시험이 못 잡는 "복사 뒤 항목마다 재스캔" 류 O(N²) 변이를 잡는다.
+// 작은 n 과 8n 의 replayAfterHello 시간 중앙값 비율: 선형 ≈ 8, O(N²) ≈ 64. 문턱 24.
+// 작은 쪽 표본은 8번 돌린 시간의 1/8(잡음 완화), 큰 쪽은 1번. 동기 루프는 {timeout} 으로 끊기지 않으므로 n 을 작게 잡고,
+// 큰 쪽이 작은 쪽 중앙값의 72배를 넘으면 즉시 실패한다.
+test('시간 비율: 8n 의 재전송 시간 / n 의 재전송 시간 중앙값 < 24 (선형 ≈ 8, O(N²) ≈ 64)', () => {
+  const SMALL = 600;
+  const REPEATS = 11;
+  const THRESHOLD = 24;
+  const ABORT_RATIO = 72;
+  const mkStore = (n) => {
+    const plan = [];
+    for (let i = 1; i <= n; i++) {
+      plan.push({ type: 'PIECE', pieceSeq: i, key: { segmentId: i, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0 } });
+      plan.push({ type: 'LEVEL_ARRIVED', segmentId: i, level: 0, pieceCount: 1, firstPieceSeq: i });
+    }
+    return { open: () => ({ sessionId: 1, resumed: true, nextPieceSeq: n + 1, reason: null }), resendPlan: () => plan };
+  };
+  const chunk = new Uint8Array(2);
+  const timeIt = (store, times) => {
+    const t0 = process.hrtime.bigint();
+    for (let i = 0; i < times; i++) {
+      replayAfterHello({ store, hello: { sessionId: 1, lastPieceSeq: 0 }, send: () => {}, loadPiece: () => chunk, encode });
+    }
+    return Number(process.hrtime.bigint() - t0) / times;
+  };
+  const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
+  const small = mkStore(SMALL);
+  const big = mkStore(SMALL * 8);
+  const SMALL_TIMES = 8;
+  let smallMed = Infinity;
+  // 큰 쪽 한 번 재기. 72배를 넘으면 한 번 더 재서 둘 다 넘을 때만 즉시 실패한다(GC·스케줄링 튐은 봐준다. 동기 루프라 timeout 으로 못 끊는다).
+  const timeBig = () => {
+    const t = timeIt(big, 1);
+    if (t <= smallMed * ABORT_RATIO) return t;
+    const t2 = timeIt(big, 1);
+    assert.ok(t2 <= smallMed * ABORT_RATIO, `큰 쪽 ${Math.round(t)}ns·${Math.round(t2)}ns 가 작은 쪽 중앙값 ${Math.round(smallMed)}ns 의 ${ABORT_RATIO}배 초과 — O(N²) 의심`);
+    return t2;
+  };
+  const measure = () => {
+    smallMed = median([timeIt(small, SMALL_TIMES), timeIt(small, SMALL_TIMES)]); // 예열 겸 초기 중앙값
+    timeBig(); timeBig(); // 예열(변이가 있으면 여기서도 실패한다)
+    const smalls = [];
+    const bigs = [];
+    for (let r = 0; r < REPEATS; r++) {
+      smalls.push(timeIt(small, SMALL_TIMES));
+      smallMed = median(smalls);
+      bigs.push(timeBig());
+    }
+    return median(bigs) / median(smalls);
+  };
+  // 공유 장비의 잡음 대비: 첫 측정이 문턱을 넘으면 한 번 더 재고, 둘 다 넘을 때만 실패한다.
+  const ratios = [measure()];
+  if (ratios[0] >= THRESHOLD) ratios.push(measure());
+  const ratio = Math.min(...ratios);
+  assert.ok(ratio < THRESHOLD, `시간 비율 ${ratios.map((r) => r.toFixed(1)).join('·')} (문턱 ${THRESHOLD}; 선형 ≈ 8, O(N²) ≈ 64)`);
+});
