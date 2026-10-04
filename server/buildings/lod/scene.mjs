@@ -1,7 +1,7 @@
 // 건물 LOD 검증용 합성 장면·렌더·SSIM 공용 모듈(lod.test.mjs 와 tools/lod_seed_sweep.mjs 가 함께 쓴다).
 // 외부 의존성 없음, 결정적(고정 시드 PRNG, 고정 시점 리터럴).
 import { buildingHeightM, signedArea } from '../../../contracts/tower_assets/index.mjs';
-import { buildBuildingLod, BUILDING_LOD_CELL_M } from './index.mjs';
+import { buildBuildingLod } from './index.mjs';
 
 export function mulberry32(seed) {
   let a = seed >>> 0;
@@ -138,12 +138,26 @@ export const VIEWS = [
   { name: 'top-high', eye: [100, -300, 1800], at: [0, 0, 0] },
 ];
 
+// 시험 타일 크기. 일부러 구현 상수 BUILDING_LOD_CELL_M 을 import 하지 않고 리터럴로 둔다(F-333): 구현의 칸 키를 상수화·변경하는
+// 변이가 시험 장면의 타일 분할까지 따라 바뀌어 가려지는 일이 없게 한다. 구현 칸 크기와 같은지는 lod.test.mjs 의 단위 시험이 따로 본다.
+export const TILE_M = 64;
+
+// 먼 시점 5개의 시드 합계 면 수 감소율 하한(F-332). 시드·시점마다가 아니라 합계에 거는 이유: 이 장면은 시드에 따라 감소가 작은 시점이
+// 있다. 하한 근거 = 시드 1..300 스윕(2026-10-04, 원 코드, `node tools/lod_seed_sweep.mjs 1-300`)에서 시드 한 개짜리 시점별 최저 감소율의
+// 절반(어떤 시드 부분집합의 합계도 시드별 최저 이상이므로 정상 코드는 항상 통과한다):
+//   N-far 7.6%→3.8%, E-far 9.1%→4.5%, S-far-high 11.6%→5.8%, W-far-low 3.9%→1.9%, top-high 3.6%→1.8%.
+// 이 값은 측정 당시 정한 것이며 이후 측정에 맞춰 낮추지 않는다(낮추려면 LOD 알고리즘 회귀를 먼저 의심한다).
+// 칸 90% LOD 끔 변이는 합계가 N-far 0.9%·S-far-high 1.5% 로 떨어져 이 하한에서 실패한다. S-near·NE-mid·SW-mid 는 감소 0 이 정상이라 진단만 한다.
+export const FAR_VIEW_MIN_REDUCTION = {
+  'N-far': 0.038, 'E-far': 0.045, 'S-far-high': 0.058, 'W-far-low': 0.019, 'top-high': 0.018,
+};
+
 // 건물을 64 m 타일로 나누고, 타일마다 카메라에서 타일 상자(xy 타일 범위 × z [0, 최고 높이])까지 거리로 LOD 를 만든다.
 export function lodForView(city, eye) {
   const tiles = new Map();
   for (const b of city) {
     const bb = meshBounds(b.mesh);
-    const key = `${Math.floor((bb.minX + bb.maxX) / 2 / BUILDING_LOD_CELL_M)},${Math.floor((bb.minY + bb.maxY) / 2 / BUILDING_LOD_CELL_M)}`;
+    const key = `${Math.floor((bb.minX + bb.maxX) / 2 / TILE_M)},${Math.floor((bb.minY + bb.maxY) / 2 / TILE_M)}`;
     let t = tiles.get(key);
     if (!t) { const [tx, ty] = key.split(',').map(Number); t = { tx, ty, list: [], maxZ: 0 }; tiles.set(key, t); }
     t.list.push(b);
@@ -151,7 +165,7 @@ export function lodForView(city, eye) {
   }
   const groups = [];
   for (const t of tiles.values()) {
-    const s = BUILDING_LOD_CELL_M;
+    const s = TILE_M;
     const dx = Math.max(t.tx * s - eye[0], 0, eye[0] - (t.tx + 1) * s);
     const dy = Math.max(t.ty * s - eye[1], 0, eye[1] - (t.ty + 1) * s);
     const dz = Math.max(0 - eye[2], 0, eye[2] - t.maxZ);
