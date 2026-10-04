@@ -409,8 +409,25 @@ export function createRenderer(options) {
     view = makeView(v);
   }
 
+  // 조각별 VAO 캐시: 속성 배선(bindBuffer·vertexAttribPointer)은 만들 때 한 번만 하고 프레임에서는 bindVertexArray 만 부른다
+  const pieceVaos = new Map(); // key → {bufs, format, vao}
+  let vaoOwner = null; // 이 캐시가 만들어진 gpu(복구 때 gpu 가 바뀌면 옛 문맥의 VAO 는 버린다)
+
+  function deletePieceVao(entry) {
+    if (!lost) gl.deleteVertexArray(entry.vao);
+  }
+
   function bindPiece(key, info) {
     const bufs = pool.get(key);
+    let e = pieceVaos.get(key);
+    if (e && e.bufs === bufs && e.format === info.format) {
+      gl.bindVertexArray(e.vao);
+      return;
+    }
+    if (e) deletePieceVao(e); // 같은 key 를 다시 올려 버퍼가 바뀐 경우
+    e = { bufs, format: info.format, vao: gl.createVertexArray() };
+    pieceVaos.set(key, e);
+    gl.bindVertexArray(e.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, bufs.position);
     gl.enableVertexAttribArray(ATTRIB.position);
     gl.vertexAttribPointer(ATTRIB.position, 3, gl.FLOAT, false, 0, 0);
@@ -423,7 +440,6 @@ export function createRenderer(options) {
       gl.vertexAttribPointer(ATTRIB.normalOct, 2, gl.BYTE, false, 0, 0);
     } else {
       gl.disableVertexAttribArray(ATTRIB.normalOct);
-      gl.vertexAttrib2f(ATTRIB.normalOct, 0, 0);
     }
   }
 
@@ -445,16 +461,23 @@ export function createRenderer(options) {
     gl.depthFunc(gl.LESS);
     gl.useProgram(gpu.program);
     applyPointUniforms(gl, gpu.uniforms, values);
-    gl.bindVertexArray(gpu.vao);
+    if (vaoOwner !== gpu) { pieceVaos.clear(); vaoOwner = gpu; }
+    if (pieceVaos.size > meta.size) { // 해제된 조각의 VAO 정리(드물게만 돈다)
+      for (const [k, e] of pieceVaos) if (!meta.has(k)) { deletePieceVao(e); pieceVaos.delete(k); }
+    }
+    gl.vertexAttrib2f(ATTRIB.normalOct, 0, 0); // 법선 배열이 꺼진 조각(형식 2)의 상수 법선: 프레임에 한 번
     let drawnPoints = 0;
     let drawnPieces = 0;
+    // u_shade 는 프레임 시작(applyPointUniforms)에서 올린 값에서 바뀔 때만 다시 올린다
+    const hasShade = gpu.uniforms.u_shade !== null && gpu.uniforms.u_shade !== undefined;
+    let shadeNow = values.u_shade ? 1 : 0;
     for (const key of currentSelection().draw) {
       const info = meta.get(key);
       if (!info) continue;
       bindPiece(key, info);
       applyPieceOrigin(gl, gpu.uniforms, values, info.origin); // 조각 원점 기준 u_tgl(f64 계산)
-      const shade = info.format === FORMAT_POINT27;
-      if (gpu.uniforms.u_shade !== null && gpu.uniforms.u_shade !== undefined) gl.uniform1i(gpu.uniforms.u_shade, shade && values.u_shade ? 1 : 0);
+      const shade = info.format === FORMAT_POINT27 && values.u_shade ? 1 : 0;
+      if (hasShade && shade !== shadeNow) { gl.uniform1i(gpu.uniforms.u_shade, shade); shadeNow = shade; }
       gl.drawArrays(gl.POINTS, 0, info.count);
       drawnPoints += info.count;
       drawnPieces += 1;
@@ -475,11 +498,13 @@ export function createRenderer(options) {
     if (!lost) {
       pool.clear();
       if (gpu) {
+        for (const e of pieceVaos.values()) gl.deleteVertexArray(e.vao);
         gl.deleteVertexArray(gpu.vao);
         gl.deleteProgram(gpu.program);
       }
     }
     gpu = null;
+    pieceVaos.clear();
     meta.clear();
     meter.reset();
     lostKeys = new Set();

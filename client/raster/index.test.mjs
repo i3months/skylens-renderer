@@ -130,7 +130,7 @@ test('흐름: 올리기만 해서는 그리지 않고 setArrived 의 draw 만 �
   s = r.draw();
   assert.deepEqual([s.drawnPieces, s.drawnPoints, s.droppedFrames, s.drawMs], [2, 3, 0, 1]);
   assert.deepEqual(calls.filter((c) => c[0] === 'drawArrays'), [['drawArrays', 'POINTS', 0, 2], ['drawArrays', 'POINTS', 0, 1]]);
-  assert.deepEqual(calls.filter((c) => c[0] === 'uniform1i' && c[1] === 'u_shade').map((c) => c[2]), [1, 1, 0]);
+  assert.deepEqual(calls.filter((c) => c[0] === 'uniform1i' && c[1] === 'u_shade').map((c) => c[2]), [1, 0]); // 프레임 시작 1회 + 값이 바뀌는 조각(형식 2)에서만
   assert.ok(calls.some((c) => c[0] === 'vertexAttrib2f' && c[1] === 2)); // 형식 2: 법선 상수
   // 더 높은 수준 도착 → 낮은 수준은 discard(호출자가 해제)
   const sel2 = r.setArrived([{ segmentId: 3, level: 1, keys: [k1, k2] }, arrivedOf(kp)]);

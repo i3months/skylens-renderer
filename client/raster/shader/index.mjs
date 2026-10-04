@@ -135,6 +135,9 @@ export const UNIFORMS = Object.freeze({
   u_pointSizeM: 'float', u_near: 'float', u_far: 'float', u_maxPointSize: 'float',
 });
 
+/** UNIFORMS 의 [이름, 형] 쌍(프레임마다 Object.entries 로 배열을 새로 만들지 않도록 미리 계산). */
+const UNIFORM_ENTRIES = Object.freeze(Object.entries(UNIFORMS));
+
 /** 셰이더 오류. stage: 'vertex' | 'fragment' | 'link' | 'uniform'. */
 export class PointShaderError extends Error {
   /** @param {string} stage @param {string} message */
@@ -270,7 +273,8 @@ export function applyPieceOrigin(gl, uniforms, values, origin) {
  * @param {Record<string, number|boolean|number[]>} values
  */
 export function applyPointUniforms(gl, uniforms, values) {
-  for (const [name, type] of Object.entries(UNIFORMS)) {
+  for (let i = 0; i < UNIFORM_ENTRIES.length; i += 1) {
+    const [name, type] = UNIFORM_ENTRIES[i];
     const loc = uniforms[name];
     if (loc === null || loc === undefined) continue;
     const v = values[name];
