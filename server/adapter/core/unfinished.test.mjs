@@ -101,7 +101,8 @@ for (const extLevel of [0, 1]) {
 
     const n = wire.length;
     const r = ad.handle(piecesEvent(1, 0, 2));
-    assert.deepEqual(r, { action: 'skip', emitted: 0, released: [] });
+    // F-223 ①: 실패한 시도가 일부를 내보냈을 수 있으므로 그 key 들을 abandoned 로 알린다.
+    assert.deepEqual(r, { action: 'skip', emitted: 0, released: [], abandoned: piecesEvent(1, 0, 2).pieces.map((p) => ({ ...p.key })) });
     assert.equal(wire.length, n, 'skip 은 아무것도 내보내지 않는다');
     assert.equal(ad.unfinishedEvent(), null, '끝나지 않은 표시가 지워진다');
     assert.equal(ad.nextPieceSeq(), 3, '실패한 시도에 묶였던 pieceSeq 1·2 는 소비된다');
