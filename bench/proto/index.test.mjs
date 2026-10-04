@@ -3,10 +3,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
-import { createByteLedger } from './index.mjs';
+import { createByteLedger, INITIAL_BUDGET_BYTES, SEGMENT_BUDGET_BYTES } from './index.mjs';
 
-const INITIAL_BUDGET = 15 * 1024 * 1024;  // 15 MiB
-const SEGMENT_BUDGET = 3 * 1024 * 1024;   // 3 MiB
+// SPEC S6 의 MB 는 10^6 B. 상수 자체를 손으로 쓴 리터럴로 고정한다.
+test('예산 상수는 SPEC 단위(MB = 10^6 B)', () => {
+  assert.equal(INITIAL_BUDGET_BYTES, 15_000_000);
+  assert.equal(SEGMENT_BUDGET_BYTES, 3_000_000);
+});
 
 test('createByteLedger - 기본 기록', () => {
   const ledger = createByteLedger();
@@ -68,9 +71,9 @@ test('createByteLedger - initial 과 segment 분리', () => {
 test('overBudget - 기본값으로 예산 확인', () => {
   const ledger = createByteLedger();
 
-  // 정상 범위: 각 구간 3 MiB 미만
-  ledger.record(1024 * 1024, { segmentId: 0, phase: 'segment' });
-  ledger.record(2048 * 1024, { segmentId: 1, phase: 'segment' });
+  // 정상 범위: 각 구간 3 MB 미만
+  ledger.record(1_000_000, { segmentId: 0, phase: 'segment' });
+  ledger.record(2_000_000, { segmentId: 1, phase: 'segment' });
   ledger.record(1000, { segmentId: 0, phase: 'initial' });
 
   const result = ledger.overBudget();
@@ -78,23 +81,21 @@ test('overBudget - 기본값으로 예산 확인', () => {
   assert.deepEqual(result.segments, [], '모든 구간이 예산 내');
 });
 
-test('overBudget - 경계: 정확히 3 MiB 는 통과', () => {
+test('overBudget - 경계: 정확히 3 MB(3,000,000 B) 는 통과', () => {
   const ledger = createByteLedger();
 
-  // 정확히 3 MiB = 3 * 1024 * 1024 바이트
-  const exactBudget = 3 * 1024 * 1024;
+  const exactBudget = 3_000_000;
   ledger.record(exactBudget, { segmentId: 0, phase: 'segment' });
 
   const result = ledger.overBudget();
   assert.equal(result.initial, false, 'initial 예산 내');
-  assert.deepEqual(result.segments, [], '정확히 3 MiB 는 예산 내(통과)');
+  assert.deepEqual(result.segments, [], '정확히 3,000,000 B 는 예산 내(통과)');
 });
 
-test('overBudget - 경계: 3 MiB + 1 바이트는 초과', () => {
+test('overBudget - 경계: 3,000,001 B 는 초과', () => {
   const ledger = createByteLedger();
 
-  // 3 MiB + 1 바이트
-  const overBudget = 3 * 1024 * 1024 + 1;
+  const overBudget = 3_000_001;
   ledger.record(overBudget, { segmentId: 0, phase: 'segment' });
 
   const result = ledger.overBudget();
@@ -105,20 +106,36 @@ test('overBudget - 경계: 3 MiB + 1 바이트는 초과', () => {
 test('overBudget - 여러 구간 초과', () => {
   const ledger = createByteLedger();
 
-  const over = 3 * 1024 * 1024 + 1;
+  const over = 3_000_001;
   ledger.record(over, { segmentId: 0, phase: 'segment' });
   ledger.record(over, { segmentId: 2, phase: 'segment' });
-  ledger.record(2 * 1024 * 1024, { segmentId: 1, phase: 'segment' });  // 정상
+  ledger.record(2_000_000, { segmentId: 1, phase: 'segment' });  // 정상
 
   const result = ledger.overBudget();
   assert.deepEqual(result.segments, [0, 2], '초과한 구간이 오름차순으로 정렬됨');
 });
 
+test('overBudget - 경계: 초기 정확히 15,000,000 B 는 통과(`>` 를 `>=` 로 바꾸면 실패)', () => {
+  const ledger = createByteLedger();
+  ledger.record(15_000_000, { segmentId: 0, phase: 'initial' });
+  assert.equal(ledger.overBudget().initial, false, '정확히 15,000,000 B 는 예산 내');
+  assert.equal(ledger.initialBytes(), 15_000_000);
+});
+
+test('overBudget - 경계: 초기 15,000,000 + 1 B 는 초과(여러 번에 나눠 기록해도)', () => {
+  const ledger = createByteLedger();
+  ledger.record(14_999_999, { segmentId: 0, phase: 'initial' });
+  assert.equal(ledger.overBudget().initial, false, '14,999,999 B 는 통과');
+  ledger.record(2, { segmentId: 0, phase: 'initial' });
+  assert.equal(ledger.initialBytes(), 15_000_001);
+  assert.equal(ledger.overBudget().initial, true, '15,000,001 B 는 초과');
+});
+
 test('overBudget - initial 단계 초과', () => {
   const ledger = createByteLedger();
 
-  // initial 단계: 15 MiB + 1 바이트
-  const overInitial = 15 * 1024 * 1024 + 1;
+  // initial 단계: 15,000,001 B
+  const overInitial = 15_000_001;
   ledger.record(overInitial, { segmentId: 0, phase: 'initial' });
 
   const result = ledger.overBudget();
@@ -147,26 +164,21 @@ test('overBudget - 빈 원장', () => {
 });
 
 test('합성 데이터: 손 계산 검증', () => {
-  // 합성 입력: 3개 구간
-  // 구간 0: 1 MiB + 512 KiB = 1.5 MiB
-  // 구간 1: 2 MiB
-  // 구간 2: 1.5 MiB
-  // initial: 500 KiB
-
+  // 구간 0: 1,000,000 + 500,000 = 1,500,000 B / 구간 1: 2,000,000 B / 구간 2: 1,500,000 B / initial: 500,000 B
   const ledger = createByteLedger();
 
-  ledger.record(1024 * 1024, { segmentId: 0, phase: 'segment' });
-  ledger.record(512 * 1024, { segmentId: 0, phase: 'segment' });
-  ledger.record(2 * 1024 * 1024, { segmentId: 1, phase: 'segment' });
-  ledger.record(1536 * 1024, { segmentId: 2, phase: 'segment' });
-  ledger.record(500 * 1024, { segmentId: 0, phase: 'initial' });
+  ledger.record(1_000_000, { segmentId: 0, phase: 'segment' });
+  ledger.record(500_000, { segmentId: 0, phase: 'segment' });
+  ledger.record(2_000_000, { segmentId: 1, phase: 'segment' });
+  ledger.record(1_500_000, { segmentId: 2, phase: 'segment' });
+  ledger.record(500_000, { segmentId: 0, phase: 'initial' });
 
-  assert.equal(ledger.initialBytes(), 500 * 1024, 'initial: 500 KiB');
+  assert.equal(ledger.initialBytes(), 500_000);
 
   const perSeg = ledger.perSegment();
-  assert.equal(perSeg.get(0), 1.5 * 1024 * 1024, '구간 0: 1.5 MiB');
-  assert.equal(perSeg.get(1), 2 * 1024 * 1024, '구간 1: 2 MiB');
-  assert.equal(perSeg.get(2), 1.5 * 1024 * 1024, '구간 2: 1.5 MiB');
+  assert.equal(perSeg.get(0), 1_500_000);
+  assert.equal(perSeg.get(1), 2_000_000);
+  assert.equal(perSeg.get(2), 1_500_000);
 
   const result = ledger.overBudget();
   assert.equal(result.initial, false, 'initial 예산 내');

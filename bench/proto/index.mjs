@@ -1,8 +1,8 @@
 // 바이트 집계(byte ledger). 웹소켓 프레임 페이로드의 누적 바이트를 기록하고 예산 검사를 한다(T11.11).
-// SPEC S6: 초기 단계 ≤ 15 MiB, 구간당 ≤ 3 MiB. 이 값은 고정이다.
+// SPEC S6: 초기 단계 ≤ 15 MB(15,000,000 B), 구간당 ≤ 3 MB(3,000,000 B). SPEC 의 MB 는 10^6 B 이며 이 값은 고정이다.
 
-const INITIAL_BUDGET = 15 * 1024 * 1024;  // 15 MiB
-const SEGMENT_BUDGET = 3 * 1024 * 1024;   // 3 MiB
+export const INITIAL_BUDGET_BYTES = 15_000_000;  // 15 MB
+export const SEGMENT_BUDGET_BYTES = 3_000_000;   // 3 MB
 
 /**
  * @typedef {Object} ByteLedger
@@ -64,15 +64,15 @@ export function createByteLedger() {
     /**
      * 예산 초과 여부를 확인한다.
      * @param {Object} options
-     * @param {number} [options.initialMax=15*1024*1024] - 초기 단계 예산(바이트)
-     * @param {number} [options.perSegmentMax=3*1024*1024] - 구간당 예산(바이트)
+     * @param {number} [options.initialMax=15_000_000] - 초기 단계 예산(바이트)
+     * @param {number} [options.perSegmentMax=3_000_000] - 구간당 예산(바이트)
      * @returns {{initial: boolean, segments: number[]}}
      *   initial: 초기 단계가 예산을 초과했는가
      *   segments: 예산을 초과한 구간 ID 배열(오름차순)
      */
     overBudget(options = {}) {
-      const initialMax = options.initialMax ?? INITIAL_BUDGET;
-      const perSegmentMax = options.perSegmentMax ?? SEGMENT_BUDGET;
+      const initialMax = options.initialMax ?? INITIAL_BUDGET_BYTES;
+      const perSegmentMax = options.perSegmentMax ?? SEGMENT_BUDGET_BYTES;
 
       const overSegments = [];
       for (const [segmentId, bytes] of segmentTotals.entries()) {

@@ -1,11 +1,12 @@
 // 바이트 집계 보고서. 합성 입력에서 표 형태로 stdout 에 내보낸다(T11.11).
 // 사용: node bench/proto/report.mjs [data.json]
-// 표 형식: 구간 ID | 바이트 | 예산 대비 %
+//   인수 없음: 합성 장면 구간을 실제 송출 경로(measure.mjs)로 흘려 얻은 프레임 바이트 표(구간당 ≤ 3,000,000 B 대비).
+//   data.json: {segmentId, bytes, phase} 배열을 집계한 표(구간 ID | 바이트 | 예산 대비 %).
 
-import { createByteLedger } from './index.mjs';
+import { createByteLedger, SEGMENT_BUDGET_BYTES } from './index.mjs';
+import { measureSyntheticScene, formatSegmentTable } from './measure.mjs';
 import * as fs from 'fs';
-
-const SEGMENT_BUDGET = 3 * 1024 * 1024;  // 3 MiB
+import { fileURLToPath } from 'url';
 
 /**
  * 보고서를 생성한다.
@@ -29,7 +30,7 @@ export function generateReport(records) {
   // 각 구간별 행
   for (const segmentId of segments) {
     const bytes = perSegment.get(segmentId);
-    const percentage = Math.round((bytes / SEGMENT_BUDGET) * 10000) / 100;  // 소수점 2자리
+    const percentage = Math.round((bytes / SEGMENT_BUDGET_BYTES) * 10000) / 100;  // 소수점 2자리
     const percentStr = percentage.toFixed(2);
     lines.push(`${segmentId}\t${bytes}\t${percentStr}%`);
   }
@@ -38,31 +39,31 @@ export function generateReport(records) {
 }
 
 /**
- * 합성 데이터로 테스트하는 예제를 실행한다.
+ * 합성 장면의 실제 송출 바이트 표를 만든다(보고·시험이 같은 함수를 쓴다).
+ * @returns {string}
  */
-function main() {
-  // 기본 합성 데이터: 3개 구간, 각 1.5 MiB
-  const defaultData = [
-    { segmentId: 0, bytes: 1024 * 1024, phase: 'segment' },  // 1 MiB
-    { segmentId: 0, bytes: 512 * 1024, phase: 'segment' },   // 512 KiB (총 1.5 MiB)
-    { segmentId: 1, bytes: 1536 * 1024, phase: 'segment' },  // 1.5 MiB
-    { segmentId: 2, bytes: 2048 * 1024, phase: 'segment' },  // 2 MiB
-  ];
+export function syntheticSceneReport() {
+  return formatSegmentTable(measureSyntheticScene().rows);
+}
 
+/** 직접 실행 때만 돈다. */
+function main() {
   // 명령행 인수로 JSON 파일을 지정할 수 있다
-  let data = defaultData;
-  if (process.argv[2]) {
-    try {
-      const content = fs.readFileSync(process.argv[2], 'utf8');
-      data = JSON.parse(content);
-    } catch (e) {
-      console.error(`파일 읽기 오류: ${e.message}`);
-      process.exit(1);
-    }
+  if (!process.argv[2]) {
+    console.log(syntheticSceneReport());
+    return;
+  }
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+  } catch (e) {
+    console.error(`파일 읽기 오류: ${e.message}`);
+    process.exit(1);
   }
 
   const report = generateReport(data);
   console.log(report);
 }
 
-main();
+// import 때는 main() 을 돌리지 않는다.
+if (process.argv[1] && fileURLToPath(import.meta.url) === fs.realpathSync(process.argv[1])) main();
