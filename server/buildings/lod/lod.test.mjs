@@ -165,15 +165,37 @@ test(`진단: 40 m 필지 혼합 도시 8시점 건물 영역 SSIM ≥ ${BUILDIN
 // 한 시드에 맞춘 상수가 되지 않도록 여러 시드의 밀집 장면 전부에서 8시점을 모두 본다.
 const DENSE_SEEDS = [1, 2, 3, 42, 99, 307, 1234, 2026];
 
-test(`8시점 실제 병합 장면(20 m 필지 밀집, 회전 0~3° 섞음), 시드 ${DENSE_SEEDS.join('·')}: 시점마다 감소율 > 0 이고 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}`, (t) => {
-  for (const seed of DENSE_SEEDS) {
+// 감소율: 틈 칸(어느 구성 건물에도 속하지 않는 땅)은 hideTol(1/4 px)까지만 메운다(F-326). 이 장면은 필지마다 앞뒤 면이
+// 0.2~0.8 m 들쭉날쭉해서, 먼 곳 기준(500 m)에 가까운 타일만 LOD 되는 S-near 는 그 들쭉날쭉한 면을 메울 수 없어 시드에 따라
+// 감소가 0 이다(면 수는 늘지 않는다). 그래서 시드·시점마다 면 수가 늘지 않음을, 시점마다 시드 합계 감소율 > 0 을 단언한다.
+function sweepAssert(t, seeds, cityOf) {
+  const perView = new Map(VIEWS.map((v) => [v.name, { orig: 0, lod: 0, min: Infinity, minSeed: 0 }]));
+  for (const seed of seeds) {
     t.diagnostic(`시드 ${seed}`);
-    const city = seed === 307 ? DENSE : denseCity(seed);
-    for (const r of viewRows(city, t, `시드 ${seed} `)) {
-      assert.ok(r.lodTris < r.origTris, `시드 ${seed} ${r.view}: 면 수 감소 없음 (${r.origTris} → ${r.lodTris})`);
-      assert.ok(r.reduction > 0);
+    for (const r of viewRows(cityOf(seed), t, `시드 ${seed} `)) {
+      assert.ok(r.lodTris <= r.origTris, `시드 ${seed} ${r.view}: 면 수 증가 (${r.origTris} → ${r.lodTris})`);
+      const pv = perView.get(r.view);
+      pv.orig += r.origTris; pv.lod += r.lodTris;
+      if (r.ssimBuildingBlocks < pv.min) { pv.min = r.ssimBuildingBlocks; pv.minSeed = seed; }
     }
   }
+  for (const [name, pv] of perView) {
+    const red = 1 - pv.lod / pv.orig;
+    t.diagnostic(`${name}: 최저 건물 영역 SSIM ${pv.min.toFixed(4)} (시드 ${pv.minSeed}), 시드 합계 감소율 ${(red * 100).toFixed(1)}%`);
+    assert.ok(pv.min >= BUILDING_LOD_MIN_SSIM, `${name}: 최저 SSIM ${pv.min} (시드 ${pv.minSeed}) < ${BUILDING_LOD_MIN_SSIM}`);
+    assert.ok(red > 0, `${name}: 시드 합계 감소 없음 (${pv.orig} → ${pv.lod})`);
+  }
+}
+
+test(`8시점 실제 병합 장면(20 m 필지 밀집, 회전 0~3° 섞음), 시드 ${DENSE_SEEDS.join('·')}: 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}, 면 수 증가 없음, 시점마다 감소율 > 0`, (t) => {
+  sweepAssert(t, DENSE_SEEDS, (seed) => (seed === 307 ? DENSE : denseCity(seed)));
+});
+
+// 시드 일괄 검사(tools/lod_seed_sweep.mjs 가 1..300 전체를 본다)의 CI 판. 이전에는 시드 180 top-high 가 0.9496 이었다
+// (틈 칸을 tol 까지 메워 줄 사이 틈의 벽 띠가 지붕으로 덮였다). 상수를 시드에 맞추지 않도록 연속 범위 전체를 본다.
+const SWEEP_SEEDS = Array.from({ length: 40 }, (_, i) => i + 1);
+test(`시드 일괄 ${SWEEP_SEEDS[0]}..${SWEEP_SEEDS[SWEEP_SEEDS.length - 1]} × 8시점: 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}, 면 수 증가 없음, 시점마다 감소율 > 0`, (t) => {
+  sweepAssert(t, SWEEP_SEEDS, denseCity);
 });
 
 // ───────── 군집 오차 직접 검사 ─────────
@@ -281,13 +303,35 @@ test('틈 사례: 틈이 1/4 px 를 넘는 두 건물은 합치지 않는다(틈
   assert.equal(boxes(gapPxDist * 1.01), 1);
 });
 
-test('엇갈린 맞붙은 두 상자: 합친 상자의 바깥 모서리 오차(8 m)가 tol 을 넘으면 합치지 않는다', () => {
+test('엇갈린 맞붙은 두 상자: 빈 모서리(8 m)는 어느 건물에도 속하지 않는 땅이라 hideTol(1/4 px)이 8 m 를 넘어야 합친다', () => {
   // A [0,20]×[0,20], B [20.2,40]×[8,28]: 합친 상자 모서리 (0,28)·(40,0) 은 원본에서 8 m. 틈 0.2 m 는 1/4 px 이하.
+  // 모서리 칸은 틈 칸이라 기하 오차가 tol 안이어도(8 m 가 2 px 가 되는 거리의 1.6 배) 합치지 않는다(F-326).
   const a = { id: 1, mesh: rectPrism(0, 0, 20, 20, 5) }, b = { id: 2, mesh: rectPrism(20.2, 8, 40, 28, 5) };
   const boxes = (d) => buildBuildingLod([a, b], d)[0].mesh.indices.length / 3 / 10;
   const need = 8 / BUILDING_LOD_MAX_ANGLE_RAD; // ≈ 8251 m
-  for (const d of [3000, need * 0.99]) assert.equal(boxes(d), 2, `${d} m 에서 합쳐짐`);
-  assert.equal(boxes(need * 1.6), 1);
+  const hideNeed = 8 / (BUILDING_LOD_REF_PIXEL_RAD * BUILDING_LOD_MAX_GAP_PX); // ≈ 33 km
+  for (const d of [3000, need * 0.99, need * 1.6, hideNeed * 0.99]) assert.equal(boxes(d), 2, `${d} m 에서 합쳐짐`);
+  assert.equal(boxes(hideNeed * 1.2), 1);
+});
+
+test('F-326 대각 쌍: 5 × 5 × 10 m 두 동이 대각으로 0.5 m 떨어져 있으면 5 km 에서 한 상자가 되지 않는다', () => {
+  // A [0,5]², B [5.5,10.5]²: 상자 사이 거리 0.71 m ≤ hideTol(5 km 에서 ≈ 1.21 m)라 후보는 되지만, 합친 상자 [0,10.5]² 의
+  // 빈 사분면 모서리 (0,10.5)·(10.5,0) 은 두 건물에서 5.5 m 다. tol(≈ 9.7 m) 안이어도 빈 땅이라 hideTol 을 넘으면 합치지 않는다.
+  const a = { id: 1, mesh: rectPrism(0, 0, 5, 5, 10 / 3) }, b = { id: 2, mesh: rectPrism(5.5, 5.5, 10.5, 10.5, 10 / 3) };
+  const d = 5000, tol = d * BUILDING_LOD_MAX_ANGLE_RAD, hideTol = d * BUILDING_LOD_REF_PIXEL_RAD * BUILDING_LOD_MAX_GAP_PX;
+  assert.ok(5.5 < tol && Math.SQRT1_2 < hideTol && 5.5 > hideTol, `tol ${tol}, hideTol ${hideTol}`);
+  const out = buildBuildingLod([a, b], d);
+  assert.deepEqual(out.map((g) => g.ids), [[1, 2]]);
+  assert.equal(triCount(out.map((g) => g.mesh)), 20, '대각 쌍이 한 상자로 합쳐짐');
+  // 상자마다 자기 건물만 덮는다(빈 사분면이 지붕이 되지 않는다).
+  const p = out[0].mesh.positions;
+  for (let o = 0; o < p.length; o += 24) {
+    const box = readBox(p, o);
+    assert.ok(box.lu <= 5 + 1e-3 && box.lv <= 5 + 1e-3, `상자 ${box.lu} × ${box.lv}`);
+  }
+  // 같은 배치를 바로 붙이면(대각 0 m 대신 x 로 0.5 m 틈, 같은 y 범위) 빈 칸이 틈뿐이라 합쳐진다(위 결과가 빈 사분면 때문임을 확인).
+  const c = { id: 3, mesh: rectPrism(5.5, 0, 10.5, 5, 10 / 3) };
+  assert.equal(triCount(buildBuildingLod([a, c], d).map((g) => g.mesh)), 10);
 });
 
 test('높이 계단: 한 층(3 m) 차이 맞벽 이웃은 계단이 1/4 px 를 넘는 거리에서는 합치지 않는다(2 px tol 안이어도)', () => {
