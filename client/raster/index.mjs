@@ -115,8 +115,9 @@ export function toGpuPlanes(decoded, origin = [0, 0, 0]) {
 }
 
 /**
- * Worker 가 만든 gpu 평면의 가벼운 검증(값 전수 검사는 하지 않는다): 형식·점 수·원점·평면 이름·타입·길이.
- * origin 은 헤더 bboxMin 과 같아야 한다(렌더러가 쓰는 원점 규약). 어기면 ClientRasterError('piece').
+ * Worker 가 만든 gpu 평면의 가벼운 검증(O(1)): 형식·점 수·원점·평면 이름·타입·길이.
+ * origin 은 헤더 bboxMin 과 같아야 하고 유한해야 한다(렌더러가 쓰는 원점 규약). 어기면 ClientRasterError('piece').
+ * 평면 값(위치·법선)의 전수 검사는 하지 않는다(Worker 만 만드므로 신뢰됨). F-244 ② O(1) 성능 의도를 지킨다.
  * @param {any} decoded {header, planes, gpu}
  * @returns {{format: number, count: number, planes: Record<string, ArrayBufferView>, origin: number[]}}
  */
@@ -134,6 +135,7 @@ export function checkGpuPlanes(decoded) {
   if (g.count !== n) throw bad(`count ${String(g.count)} != 헤더 pointCount ${n}`);
   if (!Array.isArray(h.bboxMin) || h.bboxMin.length !== 3) throw bad('헤더 bboxMin 이 틀림');
   if (!Array.isArray(g.origin) || g.origin.length !== 3 || !g.origin.every((v, a) => v === h.bboxMin[a])) throw bad('origin 이 헤더 bboxMin 과 다름');
+  if (!g.origin.every(Number.isFinite)) throw bad('origin 이 유한하지 않음');
   const p = g.planes;
   if (p === null || typeof p !== 'object') throw bad('planes 가 없음');
   const want = format === FORMAT_POINT27 ? ['position', 'color', 'normalOct'] : ['position', 'color'];
