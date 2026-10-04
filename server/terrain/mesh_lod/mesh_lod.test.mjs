@@ -36,28 +36,38 @@ const DEMS = {
 const TILES = [];
 for (let ty = 0; ty < 4; ty++) for (let tx = 0; tx < 4; tx++) TILES.push([tx, ty]);
 
-// 독립 검산(F-305): 그려지는 표면끼리 비교한다. DEM 과 타일을 모두 terrainTileToMesh 와 같은 대각선
-// ((i,j)–(i+1,j+1)) 규약의 삼각형으로 보간해 0.25 m 간격(타일 한 변 257 점)으로 최대 차이를 잰다.
-// (이전에는 양쪽 쌍선형 보간이었다 — 비틀린 칸에서 실제 메시 오차를 놓쳤다.)
-function triInterp(h, w, u, v, maxI, maxJ) {
-  const i = Math.min(Math.floor(u), maxI), j = Math.min(Math.floor(v), maxJ);
-  const fx = u - i, fy = v - j;
-  const z00 = h[j * w + i], z10 = h[j * w + i + 1], z01 = h[(j + 1) * w + i], z11 = h[(j + 1) * w + i + 1];
-  return fx >= fy ? z00 + fx * (z10 - z00) + fy * (z11 - z10) : z00 + fy * (z01 - z00) + fx * (z11 - z01);
-}
-function demMesh(dem, x, y) {
-  return triInterp(dem.heights, dem.width, (x - dem.originX) / dem.cellM, (y - dem.originY) / dem.cellM, dem.width - 2, dem.height - 2);
-}
-function tileMesh(tile, x, y) {
-  const n = tile.cells - 1, step = 64 / n;
-  return triInterp(tile.heights, tile.cells, (x - tile.tx * 64) / step, (y - tile.ty * 64) / step, n - 1, n - 1);
+// 독립 검산(F-305, ④): 구현의 대각선 규약을 다시 쓰지 않는다. terrainTileToMesh 가 내놓은 positions·indices 를
+// 그대로 읽어, 점이 들어 있는 삼각형을 무게중심 좌표로 찾아 그 삼각형 위에서 z 를 보간한다.
+// 기준 표면 = 같은 타일의 LOD 0 메시(정점 = DEM 표본). 0.25 m 간격(per=4)으로 최대 차이를 잰다.
+function meshHeightAt(mesh, x, y) {
+  const P = mesh.positions, I = mesh.indices;
+  // 정규 격자 메시라 점이 놓인 칸의 삼각형 둘만 후보로 한다(칸 번호는 정점 좌표에서 구한다).
+  const c = Math.round(Math.sqrt(P.length / 3));
+  const x0 = P[0], y0 = P[1], x1 = P[(c - 1) * 3], y1 = P[((c - 1) * c) * 3 + 1];
+  const ci = Math.min(c - 2, Math.max(0, Math.floor(((x - x0) / (x1 - x0)) * (c - 1))));
+  const cj = Math.min(c - 2, Math.max(0, Math.floor(((y - y0) / (y1 - y0)) * (c - 1))));
+  const base = (cj * (c - 1) + ci) * 6;
+  const eps = 1e-9;
+  for (let t = 0; t < 2; t++) {
+    const [a, b, d] = [I[base + t * 3], I[base + t * 3 + 1], I[base + t * 3 + 2]];
+    const ax = P[a * 3], ay = P[a * 3 + 1], bx = P[b * 3], by = P[b * 3 + 1], dx = P[d * 3], dy = P[d * 3 + 1];
+    // 무게중심: p = a + s·(b−a) + t·(d−a) 를 풀어 s, t 를 얻는다.
+    const s2 = ((x - ax) * (dy - ay) - (y - ay) * (dx - ax)) / ((bx - ax) * (dy - ay) - (by - ay) * (dx - ax));
+    const t2 = ((y - ay) * (bx - ax) - (x - ax) * (by - ay)) / ((bx - ax) * (dy - ay) - (by - ay) * (dx - ax));
+    if (s2 >= -eps && t2 >= -eps && s2 + t2 <= 1 + eps) {
+      return P[a * 3 + 2] + s2 * (P[b * 3 + 2] - P[a * 3 + 2]) + t2 * (P[d * 3 + 2] - P[a * 3 + 2]);
+    }
+  }
+  throw new Error(`점 (${x}, ${y}) 을 덮는 삼각형이 없다`);
 }
 function bruteError(dem, tile, per = 4) {
+  const ref = terrainTileToMesh(buildTerrainTile(dem, tile.tx, tile.ty, 0));
+  const got = terrainTileToMesh(tile);
   let max = 0;
   const m = 64 * per;
   for (let b = 0; b <= m; b++) for (let a = 0; a <= m; a++) {
     const x = tile.tx * 64 + a / per, y = tile.ty * 64 + b / per;
-    max = Math.max(max, Math.abs(demMesh(dem, x, y) - tileMesh(tile, x, y)));
+    max = Math.max(max, Math.abs(meshHeightAt(ref, x, y) - meshHeightAt(got, x, y)));
   }
   return max;
 }
@@ -299,4 +309,56 @@ test('F-315 ③·F-314 ⑥: 유한하지 않은 높이 → 즉시 TowerAssetErro
   assert.deepEqual(terrainMissingTiles(d), [{ tx: 0, ty: 3 }, { tx: 1, ty: 3 }, { tx: 0, ty: 0 }].sort((p, q) => p.ty - q.ty || p.tx - q.tx));
   // 결측 타일을 뺀 판정이라 간격은 정상 DEM 과 같다(noise 명목 간격).
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.equal(terrainLodStride(d, lod), 1 << lod);
+});
+
+// ---- 변형 시험 보강(F-318 ①②③) ----
+function singleTileDem(f) {
+  const W = 65, h = new Float32Array(W * W);
+  for (let j = 0; j < W; j++) for (let i = 0; i < W; i++) h[j * W + i] = f(i, j);
+  return { originX: 0, originY: 0, cellM: 1, width: W, height: W, heights: h };
+}
+
+test('① 간격 판정은 첫 타일에서 멈추지 않는다: (0,0) 만 평평하고 나머지는 잡음', () => {
+  const dem = makeDem((x, y, i, j) => (i <= 64 && j <= 64 ? 3 : 2 * hashNoise(i, j)));
+  // 타일 (0,0) 은 간격 2 에서 오차 0 이지만 다른 타일은 0.5 m 를 넘는다 → 전역 간격은 1.
+  assert.equal(terrainLodStride(dem, 1), 1);
+  for (const [tx, ty] of TILES) {
+    const t = buildTerrainTile(dem, tx, ty, 1);
+    assert.equal(t.cells, 65, `(${tx},${ty}) cells`);
+    assert.ok(measureTerrainError(dem, t).maxErrorM <= TERRAIN_LOD_MAX_ERROR_M[1]);
+  }
+  // 대조: 평평한 타일만 따로 보면 간격 2 로도 오차 0.
+  const flatOnly = singleTileDem(() => 3);
+  assert.equal(terrainLodStride(flatOnly, 1), 2);
+});
+
+test('② 마지막 행·열만 솟은 DEM: 가장자리 칸 보간이 범위를 넘지 않고 오차가 정확히 1 m', () => {
+  for (const [name, f] of [['행', (i, j) => (j === 64 && i % 2 === 1 ? 1 : 0)], ['열', (i, j) => (i === 64 && j % 2 === 1 ? 1 : 0)]]) {
+    const dem = singleTileDem(f);
+    // 간격 2 타일을 직접 만든다(자동 선택은 오차 1 > 0.5 라 원본으로 물러난다).
+    const cells = 33, heights = new Float32Array(cells * cells);
+    for (let j = 0; j < cells; j++) for (let i = 0; i < cells; i++) heights[j * cells + i] = dem.heights[(j * 2) * 65 + i * 2];
+    const m = measureTerrainError(dem, { tx: 0, ty: 0, lod: 1, cells, heights }).maxErrorM;
+    assert.equal(m, 1, `마지막 ${name}`);
+  }
+  // 마지막 행 전체가 솟은 경우: 정점이 모두 솟고 바로 아래 홀수 행만 0.5 어긋난다.
+  const whole = singleTileDem((i, j) => (j === 64 ? 1 : 0));
+  const hs = new Float32Array(33 * 33);
+  for (let j = 0; j < 33; j++) for (let i = 0; i < 33; i++) hs[j * 33 + i] = whole.heights[(j * 2) * 65 + i * 2];
+  assert.equal(measureTerrainError(whole, { tx: 0, ty: 0, lod: 1, cells: 33, heights: hs }).maxErrorM, 0.5);
+});
+
+test('③ 오차 상한 경계: 상한 그대로면 유지, 상한 + 0.04 m 면 간격을 줄인다', () => {
+  // 홀수 표본 (1, 0) 하나만 d 만큼 솟게 해 모든 LOD 간격에서 오차가 정확히 d.
+  const spike = (d) => singleTileDem((i, j) => (i === 1 && j === 0 ? d : 0));
+  const nominalCells = { 1: 33, 2: 17, 3: 9 };
+  for (const lod of [1, 2, 3]) {
+    const cap = TERRAIN_LOD_MAX_ERROR_M[lod];
+    const keep = buildTerrainTile(spike(cap), 0, 0, lod);
+    assert.equal(keep.cells, nominalCells[lod], `LOD${lod} 상한 ${cap} 은 허용`);
+    assert.equal(measureTerrainError(spike(cap), keep).maxErrorM, cap);
+    const reduce = buildTerrainTile(spike(cap + 0.04), 0, 0, lod);
+    assert.ok(reduce.cells > nominalCells[lod], `LOD${lod} ${cap + 0.04} 는 간격을 줄여야 한다 (cells ${reduce.cells})`);
+    assert.ok(measureTerrainError(spike(cap + 0.04), reduce).maxErrorM <= cap);
+  }
 });

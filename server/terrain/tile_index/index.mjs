@@ -3,6 +3,8 @@
 import { TERRAIN_TILE_SIZE_M, TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 
 const S = TERRAIN_TILE_SIZE_M;
+/** 한 번의 질의·한 항목이 덮을 수 있는 타일 수 상한(F-319 ④). 256×256 타일 = 16.4 km 정사각. 넘으면 TowerAssetError. */
+export const TILE_INDEX_MAX_TILES = 65536;
 
 function checkBounds(b, what) {
   if (!b || !Number.isFinite(b.minX) || !Number.isFinite(b.minY) || !Number.isFinite(b.maxX) || !Number.isFinite(b.maxY)
@@ -12,11 +14,17 @@ function checkBounds(b, what) {
 }
 
 // 범위 b 가 덮는 타일 번호 구간. 색인 범위 밖은 잘라 낸다. 겹침이 없으면 null.
-function tileRange(b, root) {
+function tileRange(b, root, what) {
   const x0 = Math.max(b.minX, root.minX), x1 = Math.min(b.maxX, root.maxX);
   const y0 = Math.max(b.minY, root.minY), y1 = Math.min(b.maxY, root.maxY);
   if (x0 > x1 || y0 > y1) return null;
-  return { tx0: Math.floor(x0 / S), tx1: Math.floor(x1 / S), ty0: Math.floor(y0 / S), ty1: Math.floor(y1 / S) };
+  const r = { tx0: Math.floor(x0 / S), tx1: Math.floor(x1 / S), ty0: Math.floor(y0 / S), ty1: Math.floor(y1 / S) };
+  // 수를 곱하기 전에 비교한다(큰 범위에서도 정확하고, 배열을 만들기 전에 던진다).
+  const nx = r.tx1 - r.tx0 + 1, ny = r.ty1 - r.ty0 + 1;
+  if (nx > TILE_INDEX_MAX_TILES || ny > TILE_INDEX_MAX_TILES || nx * ny > TILE_INDEX_MAX_TILES) {
+    throw new TowerAssetError(`buildTileIndex: ${what} 가 덮는 타일이 ${nx}×${ny} 개로 상한 ${TILE_INDEX_MAX_TILES} 를 넘는다`);
+  }
+  return r;
 }
 
 /**
@@ -38,7 +46,7 @@ export function buildTileIndex(bounds, items) {
     checkBounds(it.bounds, `항목 ${it.id}`);
     const r = { id: it.id, minX: it.bounds.minX, minY: it.bounds.minY, maxX: it.bounds.maxX, maxY: it.bounds.maxY };
     rec.push(r);
-    const t = tileRange(r, root);
+    const t = tileRange(r, root, `항목 ${it.id}`);
     if (!t) continue;
     for (let ty = t.ty0; ty <= t.ty1; ty++) {
       for (let tx = t.tx0; tx <= t.tx1; tx++) {
@@ -62,7 +70,7 @@ export function buildTileIndex(bounds, items) {
     // b 와 겹치는(닫힌 b 가 반개구간 타일과 만나는) 타일, (tx, ty) 오름차순, 색인 범위 밖 제외.
     tilesIn(b) {
       checkBounds(b, '질의');
-      const t = tileRange(b, root);
+      const t = tileRange(b, root, '질의');
       const out = [];
       if (!t) return out;
       for (let tx = t.tx0; tx <= t.tx1; tx++) for (let ty = t.ty0; ty <= t.ty1; ty++) out.push({ tx, ty });
