@@ -181,3 +181,11 @@ test('pieceSeq·nextPieceSeq 0 은 field, 1 은 왕복(부호화·복호)', () =
   assert.equal(code(() => decodeMessage(pf)), 'field');
   assert.equal(code(() => decodeMessage(wf)), 'field');
 });
+
+test('LEVEL_ARRIVED pieceCount 0 은 부호화·복호 모두 field, 1 은 왕복(계약 >= 1)', () => {
+  const m = (pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount });
+  assert.equal(code(() => encodeMessage(m(0))), 'field');
+  assert.equal(code(() => decodeMessage(hex('07 01 0000 09000000 05000000 02 00000000'))), 'field');
+  assert.deepEqual(decodeMessage(encodeMessage(m(1))), m(1));
+  assert.deepEqual(decodeMessage(hex('07 01 0000 09000000 05000000 02 ffffffff')), m(0xffffffff));
+});

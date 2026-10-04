@@ -143,7 +143,7 @@ export function encodeMessage(m) {
       return out;
     }
     case 'LEVEL_ARRIVED': {
-      uint(m.segmentId, SEGMENT_ID_LIMIT - 1, 'segmentId'); uint(m.level, 3, 'level'); uint(m.pieceCount, U32_MAX, 'pieceCount');
+      uint(m.segmentId, SEGMENT_ID_LIMIT - 1, 'segmentId'); uint(m.level, 3, 'level'); if (typeof m.pieceCount !== 'number' || !Number.isInteger(m.pieceCount) || m.pieceCount < 1 || m.pieceCount > U32_MAX) fail('field', `pieceCount 범위 밖(1..${U32_MAX}): ${m.pieceCount}`);
       const { out, dv, o } = frame(type, 9);
       dv.setUint32(o, m.segmentId, true); dv.setUint8(o + 4, m.level); dv.setUint32(o + 5, m.pieceCount, true);
       return out;
