@@ -156,3 +156,55 @@ test('복호: subarray 뷰는 범위만 복사해 넘기고 원본 버퍼는 건
   const whole = new Uint8Array([9, 9]); c.decode(whole);
   assert.equal(sent[1][1][0], whole.buffer); // 전체 뷰는 복사 없이 그대로 넘긴다
 });
+
+test('now 가 한 번 던져도 errors+1·다음 프레임 예약·running 유지, start() 동작', () => {
+  const r = rig(); let fail = 1; const errs = [];
+  const loop = createFrameLoop({ draw() {}, requestFrame: r.requestFrame, now: () => { if (fail-- > 0) throw new Error('clock'); return r.now(); },
+    onError: (e, w) => errs.push(w) });
+  loop.start(); r.step();
+  assert.deepEqual(errs, ['now']); assert.equal(loop.stats().errors, 1);
+  assert.equal(loop.stats().running, true); assert.equal(r.queued(), 1);
+  loop.start(); assert.equal(r.queued(), 1); // 이미 도는 중이라 중복 예약 없음
+  r.step(); assert.equal(loop.stats().frames, 1); assert.equal(loop.stats().draws, 1);
+});
+
+test('복호: messageerror 뒤 pending 0·모든 decode reject', async () => {
+  const w = { postMessage() {}, terminate() {} };
+  const c = createDecodeWorkerClient({ spawn: () => w });
+  const a = c.decode(new Uint8Array(1)), b = c.decode(new Uint8Array(1));
+  assert.equal(c.stats().pending, 2);
+  w.onmessageerror({});
+  await assert.rejects(a, /messageerror/); await assert.rejects(b, /messageerror/);
+  assert.equal(c.stats().pending, 0);
+});
+
+test('복호: timeoutMs 안에 응답이 없으면 그 요청만 reject, 응답이 오면 타이머 해제', async () => {
+  const timers = new Map(); let nid = 1;
+  const setTimeoutFn = (f, ms) => { timers.set(nid, { f, ms }); return nid++; };
+  const clearTimeoutFn = (id) => { timers.delete(id); };
+  const w = { postMessage() {}, terminate() {} };
+  const c = createDecodeWorkerClient({ spawn: () => w, timeoutMs: 500, setTimeoutFn, clearTimeoutFn });
+  const a = c.decode(new Uint8Array(1)), b = c.decode(new Uint8Array(1));
+  assert.equal(timers.size, 2); assert.equal([...timers.values()][0].ms, 500);
+  w.onmessage({ data: { id: 2, result: 'ok' } }); assert.equal(await b, 'ok'); assert.equal(timers.size, 1);
+  [...timers.values()][0].f();
+  await assert.rejects(a, /timeout/); assert.equal(c.stats().pending, 0);
+  assert.throws(() => createDecodeWorkerClient({ spawn: () => w, timeoutMs: 0 }), RangeError);
+});
+
+test('복호: 응답 result 는 그대로 전달하고, message 없는 오류 객체도 [object Object] 가 되지 않는다', async () => {
+  const w = { postMessage() {}, terminate() {} };
+  const c = createDecodeWorkerClient({ spawn: () => w });
+  const result = { planes: new ArrayBuffer(4), gpu: { format: 1, count: 0 } };
+  const a = c.decode(new Uint8Array(1)); w.onmessage({ data: { id: 1, result } });
+  assert.equal(await a, result);
+  const b = c.decode(new Uint8Array(1)); w.onmessage({ data: { id: 2, error: { code: 7 } } });
+  await assert.rejects(b, (e) => e.message === '{"code":7}');
+});
+
+test('복호: 전체 버퍼 bytes 는 transfer 로 소유권이 넘어가 호출자 쪽이 detach 된다(문서화된 동작)', () => {
+  const w = { postMessage(m, tr) { for (const b of tr) structuredClone(b, { transfer: [b] }); }, terminate() {} };
+  const c = createDecodeWorkerClient({ spawn: () => w });
+  const bytes = new Uint8Array([1, 2]); c.decode(bytes);
+  assert.equal(bytes.byteLength, 0);
+});

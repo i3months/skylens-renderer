@@ -10,7 +10,7 @@ export const DEFAULT_FRAME_MS = 1000 / 60;
 /**
  * @param {{draw: () => any, requestFrame: (cb: () => void) => any, now: () => number,
  *          onFrame?: (info: {drawn: boolean, skipped: number, coalesced: number, drawMs: number}) => void,
- *          onError?: (err: any, where: 'draw'|'onFrame'|'requestFrame') => void,
+ *          onError?: (err: any, where: 'draw'|'onFrame'|'requestFrame'|'now') => void,
  *          frameMs?: number}} opts
  */
 export function createFrameLoop({ draw, requestFrame, now, onFrame, onError, frameMs = DEFAULT_FRAME_MS }) {
@@ -41,7 +41,9 @@ export function createFrameLoop({ draw, requestFrame, now, onFrame, onError, fra
 
   function tick(gen) {
     if (!running || gen !== token) return;
-    const t0 = now();
+    // now() 가 던져도 루프가 멈추지 않게 한다: 오류를 세고 다음 프레임을 예약한 채 running 을 유지한다.
+    let t0;
+    try { t0 = now(); } catch (e) { report(e, 'now'); if (running && gen === token) schedule(gen); return; }
     // 프레임 간격이 frameMs 의 정수배보다 길면 그 사이 건너뛴 프레임 수를 센다(반올림 오차 흡수용 0.5 프레임 여유).
     let skipped = 0;
     if (lastFrameAt !== null) {
@@ -61,7 +63,7 @@ export function createFrameLoop({ draw, requestFrame, now, onFrame, onError, fra
       try { draw(); } catch (e) { report(e, 'draw'); }
       drawn = true;
       s.draws++;
-      drawMs = now() - t0;
+      try { drawMs = now() - t0; } catch (e) { report(e, 'now'); drawMs = 0; }
       s.lastDrawMs = drawMs;
       if (drawMs > s.maxDrawMs) s.maxDrawMs = drawMs;
       if (drawMs > LONG_TASK_MS) s.longTasks++;
@@ -89,9 +91,18 @@ export function createFrameLoop({ draw, requestFrame, now, onFrame, onError, fra
  * codec 복호를 Web Worker 에 맡기는 얇은 래퍼. spawn() 은 Worker 모양 객체
  * ({postMessage, onmessage, onerror, terminate?})를 돌려준다. 요청 {id, bytes} → 응답 {id, result} 또는 {id, error}.
  * 메인 스레드에서는 postMessage 와 응답 배달만 한다. 그 한 번의 작업이 LONG_TASK_MS 를 넘으면 longTasks 로 센다.
- * @param {{spawn: () => any, now?: () => number}} opts
+ * 소유권: decode(bytes) 는 bytes 가 버퍼 전체를 덮으면 그 버퍼를 Worker 로 transfer 하므로 호출 뒤 호출자의 bytes 는
+ * detach 된다(길이 0). 일부만 덮는 뷰(subarray)는 그 범위만 복사해 넘기므로 원본은 그대로다. 복사를 피하려는 쪽은
+ * 전체 버퍼를 넘기고 이후 쓰지 않는다. 응답 result 는 가공 없이 그대로 돌려준다(그 안의 ArrayBuffer 는 Worker 가 transfer).
+ * 오류 경로: onerror·onmessageerror(역직렬화 실패)는 대기 중 전부를 reject 한다. timeoutMs(선택, 기본 없음)를 주면
+ * 그 시간 안에 응답이 없는 요청만 reject 한다(setTimeoutFn·clearTimeoutFn 주입으로 가짜 타이머 시험).
+ * @param {{spawn: () => any, now?: () => number, timeoutMs?: number,
+ *          setTimeoutFn?: Function, clearTimeoutFn?: Function}} opts
  */
-export function createDecodeWorkerClient({ spawn, now = () => 0 }) {
+export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setTimeoutFn = globalThis.setTimeout, clearTimeoutFn = globalThis.clearTimeout }) {
+  if (timeoutMs !== undefined && (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+    throw new RangeError('timeoutMs 는 0 보다 큰 유한한 수여야 한다');
+  }
   const worker = spawn();
   const pending = new Map();
   let nextId = 1;
@@ -108,8 +119,18 @@ export function createDecodeWorkerClient({ spawn, now = () => 0 }) {
     }
   }
   function failAll(err) {
-    for (const [, p] of pending) p.reject(err);
+    const all = [...pending.values()];
     pending.clear();
+    for (const p of all) { if (p.timer !== undefined) clearTimeoutFn(p.timer); p.reject(err); }
+  }
+  // message 없는 객체가 '[object Object]' 가 되지 않게 오류 값을 Error 로 바꾼다.
+  function toError(e) {
+    if (e instanceof Error) return e;
+    if (e && typeof e.message === 'string' && e.message) return new Error(e.message);
+    if (typeof e === 'string') return new Error(e);
+    let text;
+    try { text = JSON.stringify(e); } catch { /* 순환 등 */ }
+    return new Error(text === undefined ? String(e) : text);
   }
 
   worker.onmessage = (ev) => measure(() => {
@@ -118,10 +139,13 @@ export function createDecodeWorkerClient({ spawn, now = () => 0 }) {
     const p = pending.get(m.id);
     if (!p) return; // 알 수 없는 응답은 버린다
     pending.delete(m.id);
-    if ('error' in m && m.error !== undefined) { st.errors++; p.reject(new Error(String(m.error))); }
+    if (p.timer !== undefined) clearTimeoutFn(p.timer);
+    if ('error' in m && m.error !== undefined) { st.errors++; p.reject(toError(m.error)); }
     else { st.responses++; p.resolve(m.result); }
   });
-  worker.onerror = (e) => measure(() => failAll(e instanceof Error ? e : new Error(String((e && e.message) || e))));
+  worker.onerror = (e) => measure(() => failAll(toError(e)));
+  // 응답 역직렬화 실패는 어느 요청의 것인지 알 수 없으므로 대기 중 전부를 거부한다.
+  worker.onmessageerror = () => measure(() => failAll(new Error('messageerror')));
 
   return {
     decode(bytes) {
@@ -129,7 +153,13 @@ export function createDecodeWorkerClient({ spawn, now = () => 0 }) {
         // terminate 뒤에는 응답이 올 수 없으니 영원히 미결로 두지 않고 즉시 거부한다.
         if (terminated) { reject(new Error('terminated')); return; }
         const id = nextId++;
-        pending.set(id, { resolve, reject });
+        const entry = { resolve, reject, timer: undefined };
+        if (timeoutMs !== undefined) {
+          entry.timer = setTimeoutFn(() => {
+            if (pending.get(id) === entry) { pending.delete(id); st.errors++; reject(new Error('timeout')); }
+          }, timeoutMs);
+        }
+        pending.set(id, entry);
         st.requests++;
         try {
           measure(() => {
@@ -144,7 +174,9 @@ export function createDecodeWorkerClient({ spawn, now = () => 0 }) {
             worker.postMessage({ id, bytes: payload }, transfer);
           });
         } catch (e) {
-          pending.delete(id); // postMessage 실패 시 대기 항목이 새지 않게 한다
+          pending.delete(id);
+          if (entry.timer !== undefined) clearTimeoutFn(entry.timer);
+          // postMessage 실패 시 대기 항목이 새지 않게 한다
           reject(e);
         }
       });
