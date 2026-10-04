@@ -11,7 +11,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createWsServer, loadConfig, acceptKey, DEFAULT_MAX_WRITE_BUFFER, DEFAULT_MAX_PINGS_PER_SECOND } from './index.mjs';
 import { FrameParser, encodeFrame, encodeClosePayload, OPCODES, MAX_MESSAGE_BYTES } from './frame/index.mjs';
-import { MAX_PAYLOAD_BYTES } from '../../contracts/proto/index.mjs';
+import { MAX_PAYLOAD_BYTES, pieceKeyString } from '../../contracts/proto/index.mjs';
+import { createWire } from './wire/index.mjs';
+import { createSessionStore } from './resume/index.mjs';
+import { createCoreAdapter } from '../adapter/core/index.mjs';
+import { encodeMessage as clientEncode, decodeMessage as clientDecode } from '../../client/proto/index.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const KEY = Buffer.from([1, 2, 3, 4]);
@@ -907,4 +911,51 @@ test('close 프레임 없이 FIN: onClose 정확히 한 번, 코드 1006, 2 초 
   assert.equal(closes.length, 1);
   assert.equal(closes[0].code, 1006);
   await ws.close();
+});
+
+// 실제 소켓 경로: createWsServer({wire}) 가 접속마다 wire.onConnection 을 실제 연결 객체로 부르고,
+// 소켓으로 보낸 HELLO 로 재전송 정지가 나면 stats().stoppedCalls 가 1 이 되고 세션이 닫힌다.
+test('소켓 경로: wire.onConnection 이 실제 연결로 불리고 재전송 정지가 stoppedCalls 1 로 계측된다', async () => {
+  const store = createSessionStore({ maxSessions: 4, ttlMs: 60000, now: () => 0 });
+  const seg = [0, 1].map((i) => ({
+    key: { segmentId: 9, level: 1, lod: 0, chunkIndex: i, tileX: 0, tileY: 0 },
+    bytes: Uint8Array.from({ length: 4 + i }, (_, j) => (117 + i * 5 + j) & 0xff),
+  }));
+  const bytes = new Map(seg.map((p) => [pieceKeyString(p.key), p.bytes]));
+  const lostKey = pieceKeyString(seg[1].key); // seq2 바이트가 사라진다
+  let lost = false;
+  const wire = createWire({ store, loadPiece: (k) => { const ks = pieceKeyString(k); return lost && ks === lostKey ? null : (bytes.get(ks) ?? null); } });
+  const conns = [];
+  const apis = [];
+  const spy = { onConnection: (conn) => { conns.push(conn); const a = wire.onConnection(conn); apis.push(a); return a; }, stats: () => wire.stats() };
+  const ws = track(await createWsServer({ host: loopbackHost(), port: 0, wire: spy }));
+  const hello = (sid) => clientEncode({ type: 'HELLO', sessionId: sid, lastPieceSeq: 0 });
+
+  const c1 = await connect(ws);
+  c1.send(OPCODES.BINARY, hello(0));
+  const welcome = clientDecode((await c1.next()).data);
+  assert.equal(welcome.resumed, false);
+  assert.equal(conns.length, 1);
+  assert.equal(typeof conns[0].send, 'function'); // 실제 연결 객체
+  createCoreAdapter({ emit: (m) => apis[0].emit(m) }).handle({ kind: 'level_arrived', segmentId: 9, level: 1, pieces: seg });
+  c1.send(OPCODES.CLOSE, encodeClosePayload(1000, ''));
+  await c1.closed();
+  await waitFor(() => store.size() === 1);
+  lost = true;
+  assert.equal(ws.stats().stoppedCalls, 0);
+
+  const c2 = await connect(ws);
+  c2.send(OPCODES.BINARY, hello(welcome.sessionId));
+  let ev;
+  do { ev = await c2.next(); } while (ev && ev.type === 'message');
+  assert.equal(ev.type, 'close');
+  assert.equal(ev.code, 1011);
+  await waitFor(() => ws.stats().stoppedCalls === 1);
+  const st = ws.stats();
+  assert.equal(st.stoppedCalls, 1);
+  assert.equal(st.storeCloseOk, 1);
+  assert.equal(st.storeCloseFailed, 0);
+  assert.deepEqual(st.sameSidStops, { [welcome.sessionId]: 1 });
+  assert.equal(store.size(), 0);
+  assert.equal(conns.length, 2);
 });

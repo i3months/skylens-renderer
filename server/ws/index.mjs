@@ -224,10 +224,12 @@ function createConnection(socket, head, onError, limits) {
 }
 
 /**
- * @param {{host: string, port: number, maxWriteBuffer?: number, maxPingsPerSecond?: number, maxSendBuffer?: number, maxPendingMessages?: number, now?: () => number, onConnection: (conn: object) => void, onError?: (err: unknown, where: string) => void}} options
+ * @param {{host: string, port: number, wire?: {onConnection: Function, stats: Function}, maxWriteBuffer?: number, maxPingsPerSecond?: number, maxSendBuffer?: number, maxPendingMessages?: number, now?: () => number, onConnection?: (conn: object) => void, onError?: (err: unknown, where: string) => void}} options
  * @returns {Promise<{server: http.Server, address(): object, close(): Promise<void>}>} listen 이 끝난 뒤 반환.
  */
-export function createWsServer({ host, port, onConnection, onError, maxWriteBuffer = DEFAULT_MAX_WRITE_BUFFER, maxPingsPerSecond = DEFAULT_MAX_PINGS_PER_SECOND, maxSendBuffer = DEFAULT_MAX_SEND_BUFFER, maxPendingMessages = DEFAULT_MAX_PENDING_MESSAGES, now = () => performance.now() }) {
+export function createWsServer({ host, port, onConnection: onConnectionOpt, wire, onError, maxWriteBuffer = DEFAULT_MAX_WRITE_BUFFER, maxPingsPerSecond = DEFAULT_MAX_PINGS_PER_SECOND, maxSendBuffer = DEFAULT_MAX_SEND_BUFFER, maxPendingMessages = DEFAULT_MAX_PENDING_MESSAGES, now = () => performance.now() }) {
+  // wire(server/ws/wire 의 createWire 결과)가 있으면 접속마다 wire.onConnection 으로 attachConnection 을 배선하고 stats() 를 노출한다.
+  const onConnection = typeof onConnectionOpt === 'function' ? onConnectionOpt : wire?.onConnection?.bind(wire);
   if (typeof onConnection !== 'function') throw new TypeError('onConnection 필요');
   checkInt('maxWriteBuffer', maxWriteBuffer, CLOSE_RESERVE + MAX_PONG_FRAME_BYTES + 1);
   checkInt('maxPingsPerSecond', maxPingsPerSecond, 1);
@@ -277,6 +279,7 @@ export function createWsServer({ host, port, onConnection, onError, maxWriteBuff
       resolve({
         server,
         address: () => server.address(),
+        stats: () => (wire ? wire.stats() : null),
         close: () => new Promise((r) => {
           for (const s of sockets) s.destroy();
           server.close(() => r());

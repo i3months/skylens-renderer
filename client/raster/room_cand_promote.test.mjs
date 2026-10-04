@@ -163,10 +163,11 @@ test('희생 탐색 커서 ①(F-271): back 이 cand 사이에 끼는 배치에�
   assert.equal(releases, 2);
   assert.deepEqual(r.residentKeys(), order);
   r.dispose();
+  // 읽기 회귀는 ② 가 잡는다
   assert.ok(reads < 4 * N, `meta 읽기 ${reads} (${4 * N} 미만이어야 함)`);
 });
 
-test('희생 탐색 커서 ②(F-274 ⑩): 보호 key 가 meta 앞쪽일 때 새 타일 도착 key 업로드(rc 경로) 20회의 meta 읽기 총합이 3×N 미만이다', async () => {
+test('희생 탐색 커서 ②(F-274 ⑩): 보호 key 가 meta 앞쪽일 때 새 타일 도착 key 업로드(경로 1: 후보 목록 재사용, rc 경로) 20회의 meta 읽기 총합이 3×N 미만이다', async () => {
   const { r, evicted, up } = await build(layoutProtectedFront(), PROT2, XB2);
   const removed = [];
   const reads = await countMetaReads(async () => {

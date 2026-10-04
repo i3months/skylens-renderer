@@ -3,15 +3,19 @@
 //   어댑터(server/adapter/core)의 emit 으로 넘긴다. 어댑터에는 encode 를 주지 않는다(메시지 객체를 받아 여기서 부호화한다).
 // 순서: ① 부호화 ② 이어받기 저장소(server/ws/resume)에 기록 ③ send.
 //   ① 에서 던지면 아무것도 기록·송출하지 않는다.
-//   PIECE        : recordSent(sessionId, key, pieceSeq, chunk). false 면 send 하지 않고 RecordRejectedError 를 던진다.
+//   PIECE        : recordSent(sessionId, key, pieceSeq, chunk). 실패 경로는 모두 기록·송출 없이 던진다(순서대로):
+//                  ① pieceSeq 가 안전한 정수가 아니면 TypeError  ② 부호화(encode)가 던지면 그 예외
+//                  ③ sessionId·minPieceSeq 가 정수가 아니면 TypeError  ④ 하한 미만이고 같은 (seq, key) 재시도가 아니면 SeqFloorError
+//                  ⑤ recordSent 가 true 가 아니면 RecordRejectedError.
 //   LEVEL_ARRIVED: recordLevelArrived(sessionId, {segmentId, level, firstPieceSeq, pieceCount}) 를 send 보다 먼저.
+//                  firstPieceSeq·pieceCount 는 안전한 정수여야 하고 firstPieceSeq ≥ 1, pieceCount ≥ 1 이다. 아니면 부호화·기록 전에 TypeError.
 //                  false 면 send 하지 않고 RecordRejectedError. 기록 뒤 send 가 던지면 그 예외를 그대로 던진다 — 어댑터는
 //                  끝나지 않은 이벤트로 기억하고 같은 이벤트 재시도 때 같은 값으로 다시 부르며, 저장소 기록은 멱등이다.
 //                  먼저 기록하므로 선에서 유실돼도 이어받기 resendPlan 이 되살린다.
 //                  pieceSeq 하한(minPieceSeq, F-270): 하한 미만 pieceSeq 의 PIECE 는 이 emit 이 이미 보낸 같은 (seq, key)
 //                  의 재시도가 아니면 기록·송출 없이 SeqFloorError 를 던진다. 저장소 recordSent 는 seq <= ackedUpTo 이고
 //                  항목이 없으면 멱등 true 를 주므로(F-219 ③) 저장소만으로는 이어받기 전 연결이 쓴 순번의 재사용을 막지 못한다.
-//                  재시도 판별용으로 이 emit 이 기록한 (seq, key) 를 Map 에 둔다(minPieceSeq 가 함수일 때만 — 정수 하한은
+//                  재시도 판별용으로 이 emit 이 기록한 (seq, key) 를 순번 오름차순 평행 배열(seqs/ids)과 하한 커서 lo 로 둔다(minPieceSeq 가 함수일 때만 — 정수 하한은
 //                  바뀌지 않으므로 이 emit 이 보낸 순번은 언제나 하한 이상이다). 크기는 LEVEL_ARRIVED 송출이 끝나면 그 창
 //                  끝 이하 항목을 지워 묶는다: 어댑터는 끝나지 않은 이벤트만 재시도하고, LEVEL_ARRIVED 는 이벤트의 마지막
 //                  메시지라 그것이 나갔으면 그 창 이하 순번은 다시 오지 않는다.
@@ -119,7 +123,14 @@ export function createRecordingEmit(options) {
     if (type !== 'PIECE' && type !== 'LEVEL_ARRIVED' && type !== 'MISSING') {
       throw new TypeError(`기록 규칙이 없는 메시지 type: ${String(type)}`);
     }
-    if (type === 'PIECE' && !Number.isInteger(message.pieceSeq)) {
+    if (type === 'LEVEL_ARRIVED') {
+      for (const f of ['firstPieceSeq', 'pieceCount']) {
+        if (!Number.isSafeInteger(message[f]) || message[f] < 1) {
+          throw new TypeError(`LEVEL_ARRIVED ${f} 가 1 이상의 안전한 정수가 아니다: ${String(message[f])}`); // 기록·송출 없음
+        }
+      }
+    }
+    if (type === 'PIECE' && !Number.isSafeInteger(message.pieceSeq)) {
       throw new TypeError(`PIECE pieceSeq 가 정수가 아니다: ${String(message.pieceSeq)}`); // 기록·송출 없음
     }
     const bytes = encode(message); // ① 부호화 실패면 기록·송출 없음
