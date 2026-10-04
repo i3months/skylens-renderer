@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildInitialBundle } from './index.mjs';
-import { buildSceneCatalog, loadViewpoints, poseOfViewpoint } from './scene_catalog.mjs';
+import { buildSceneCatalog, loadViewpoints, poseOfViewpoint } from './testing/scene_catalog.testutil.mjs';
 
 const LIMIT = 15_000_000;
 

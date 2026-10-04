@@ -17,7 +17,8 @@
 //     같은 key 병합은 항목 수가 늘지 않으므로 항상 받는다. 낮은 level 을 밀어내서 자리가 나는 경우는 그 자리를 센다.
 //   - maxSentGroups(기본 65536): 나간 level 기억 맵의 묶음 수 상한. 넘으면 가장 오래 쓰이지 않은(LRU: 그 묶음에서 마지막으로
 //     항목이 나간 순) 묶음의 기억부터 버린다. 버려진 묶음은 낮은 level 이 다시 들어올 수 있다(상한을 크게 잡아 완화).
-//   - 정렬은 큐가 바뀌어 순서가 흐트러졌을 때만 한다. nextBatch 가 앞에서 떼어내는 것은 순서를 깨지 않으므로 재정렬하지 않는다.
+//   - 정렬 배열은 항상 정렬된 채로 유지한다(F-203 ③): enqueue·cancel·우선순위 상승은 이분 탐색으로 자리를 찾아 끼우거나 뺀다
+//     (전체 재정렬 없음, 순서는 전체 정렬과 같다: before() 는 seq 로 전순서). nextBatch 가 앞에서 떼어내는 것도 순서를 깨지 않는다.
 
 import { assertLevel } from '../../contracts/levels/index.mjs';
 import { overtakeGroup } from '../../contracts/proto/index.mjs';
@@ -53,8 +54,7 @@ export function createScheduler(options = {}) {
   const byKey = new Map(); // keyId -> entry
   const byGroup = new Map(); // groupId -> Set<entry>
   let seq = 0;
-  let sorted = []; // 정렬된 entry 캐시
-  let dirty = false;
+  let sorted = []; // 항상 before() 순으로 정렬된 entry 목록
 
   function remember(group, level) {
     const prev = sentLevel.get(group);
@@ -63,26 +63,39 @@ export function createScheduler(options = {}) {
     if (sentLevel.size > maxSentGroups) sentLevel.delete(sentLevel.keys().next().value); // 가장 오래된 묶음 축출
   }
 
-  function remove(entry, keepOrder = false) {
+  // before() 가 seq 로 전순서이므로 entry 의 자리는 유일하다. 첫 번째 'entry 보다 뒤' 위치를 찾는다.
+  function lowerBound(entry) {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (before(sorted[mid], entry) < 0) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  function insertSorted(entry) {
+    sorted.splice(lowerBound(entry), 0, entry);
+  }
+
+  function removeSorted(entry) {
+    const i = lowerBound(entry);
+    if (sorted[i] === entry) sorted.splice(i, 1);
+  }
+
+  function remove(entry) {
     byKey.delete(entry.id);
     const set = byGroup.get(entry.group);
     if (set) {
       set.delete(entry);
       if (set.size === 0) byGroup.delete(entry.group);
     }
-    if (!keepOrder) dirty = true;
+    removeSorted(entry);
   }
 
   function view(entry) {
     return { key: { ...entry.key }, bytes: entry.bytes, priority: entry.priority, level: entry.level };
-  }
-
-  function ordered() {
-    if (dirty) {
-      sorted = [...byKey.values()].sort(before);
-      dirty = false;
-    }
-    return sorted;
   }
 
   return {
@@ -109,9 +122,10 @@ export function createScheduler(options = {}) {
       const existing = byKey.get(id);
       if (existing) {
         if (priority > existing.priority) {
+          removeSorted(existing); // 바뀌기 전 값으로 자리를 찾아 뺀다
           existing.priority = priority;
           existing.bytes = bytes;
-          dirty = true;
+          insertSorted(existing);
         }
         return true;
       }
@@ -126,7 +140,7 @@ export function createScheduler(options = {}) {
       let set = byGroup.get(group);
       if (!set) byGroup.set(group, (set = new Set()));
       set.add(entry);
-      dirty = true;
+      insertSorted(entry);
       return true;
     },
 
@@ -138,7 +152,7 @@ export function createScheduler(options = {}) {
     },
 
     nextBatch() {
-      const list = ordered();
+      const list = sorted;
       const batch = [];
       batch.oversize = false;
       let total = 0;
@@ -156,17 +170,20 @@ export function createScheduler(options = {}) {
         batch.push(view(entry));
         taken++;
       }
-      // 앞에서 떼어내는 것은 나머지 순서를 깨지 않으므로 재정렬 표시 없이 캐시만 잘라낸다
+      // 앞에서 떼어내는 것은 나머지 순서를 깨지 않는다
       for (let i = 0; i < taken; i++) {
         remember(list[i].group, list[i].level);
-        remove(list[i], true);
+        byKey.delete(list[i].id);
+        const set = byGroup.get(list[i].group);
+        set.delete(list[i]);
+        if (set.size === 0) byGroup.delete(list[i].group);
       }
       sorted = list.slice(taken);
       return batch;
     },
 
     pending() {
-      return ordered().map(view);
+      return sorted.map(view);
     },
   };
 }
