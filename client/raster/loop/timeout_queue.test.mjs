@@ -166,6 +166,22 @@ test('postMessage 가 던지면 맨 앞 항목을 대기열에서도 빼서 다�
   const b = c.decode(new Uint8Array(1)).then(() => 'ok', (e) => e.message);
   clock.advance(100);
   assert.equal(await b, 'timeout');
+  const s = c.stats();
+  assert.equal(s.errors, 2);
+  assert.equal(s.requests, s.responses + s.errors + s.pending);
+});
+
+test('terminate 가 던져도 Worker 를 죽이는 시도는 셀 수 있다', async () => {
+  let killed = 0; const clock = fakeClock();
+  const w = { postMessage() {}, terminate() { killed++; throw new Error('terminate failed'); } };
+  const c = createDecodeWorkerClient({ spawn: () => w, timeoutMs: 100, setTimeoutFn: clock.setTimeoutFn, clearTimeoutFn: clock.clearTimeoutFn });
+  const a = c.decode(new Uint8Array(1)).then(() => 'ok', (e) => e.message);
+  clock.advance(100);
+  assert.equal(await a, 'timeout');
+  assert.equal(killed, 1);
+  const s = c.stats();
+  assert.equal(s.pending, 0);
+  assert.equal(s.requests, s.responses + s.errors + s.pending);
 });
 
 test('failAll(messageerror) 뒤 대기열이 비어 새 요청이 시한을 받는다', async () => {
