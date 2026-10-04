@@ -19,10 +19,20 @@ const BLOCKED = 'Network access blocked';
 function count() {
   const me = als.getStore() ?? active[active.length - 1];
   if (me) me.n++;
+  return me;
 }
 
-/** 차단된 요청 대체물. 'error'(Network access blocked)를 nextTick 에 낸다 — 듣는 쪽이 있을 때만(없으면 조용히 버린다). */
-function blockedRequest() {
+// 'error' 를 듣는 쪽이 없으면(콜백만 넘긴 http.get 등) emit 하면 프로세스가 죽고 안 내면 영영 끝나지 않는다.
+// 그래서 호출한 runOffline 을 대신 reject 시켜 finally 가 돌고 스텁이 복원되게 한다.
+function deliverBlocked(target, me) {
+  process.nextTick(() => {
+    if (target.listenerCount('error') > 0) target.emit('error', new Error(BLOCKED));
+    else if (me) me.fail(new Error(BLOCKED));
+  });
+}
+
+/** 차단된 요청 대체물. 'error'(Network access blocked)를 nextTick 에 낸다 — 듣는 쪽이 없으면 runOffline 을 reject 한다. */
+function blockedRequest(me) {
   const req = new EventEmitter();
   req.end = () => req;
   req.write = () => true;
@@ -30,9 +40,10 @@ function blockedRequest() {
   req.abort = () => {};
   req.setHeader = () => req;
   req.setTimeout = () => req;
-  process.nextTick(() => {
-    if (req.listenerCount('error') > 0) req.emit('error', new Error(BLOCKED));
-  });
+  req.flushHeaders = () => {};
+  req.getHeader = () => undefined;
+  req.setNoDelay = () => req;
+  deliverBlocked(req, me);
   return req;
 }
 
@@ -51,15 +62,12 @@ function install() {
     count();
     return Promise.reject(new Error(BLOCKED));
   };
-  http.get = () => { count(); return blockedRequest(); };
-  https.get = () => { count(); return blockedRequest(); };
-  http.request = () => { count(); return blockedRequest(); };
-  https.request = () => { count(); return blockedRequest(); };
+  http.get = () => blockedRequest(count());
+  https.get = () => blockedRequest(count());
+  http.request = () => blockedRequest(count());
+  https.request = () => blockedRequest(count());
   net.Socket.prototype.connect = function connectBlocked() {
-    count();
-    process.nextTick(() => {
-      if (this.listenerCount('error') > 0) this.emit('error', new Error(BLOCKED));
-    });
+    deliverBlocked(this, count());
     return this;
   };
   dns.lookup = (hostname, options, callback) => {
@@ -92,10 +100,12 @@ function restore() {
  */
 export async function runOffline(fn) {
   const me = { n: 0 };
+  const failed = new Promise((_, reject) => { me.fail = reject; });
+  failed.catch(() => {}); // 아무도 안 기다려도 unhandled rejection 이 되지 않게 한다
   if (active.length === 0) install();
   active.push(me);
   try {
-    const result = await als.run(me, () => Promise.resolve(fn()));
+    const result = await Promise.race([als.run(me, () => Promise.resolve(fn())), failed]);
     return { result, networkCalls: me.n };
   } finally {
     active.splice(active.indexOf(me), 1);

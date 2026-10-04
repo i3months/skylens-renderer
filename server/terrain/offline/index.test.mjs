@@ -234,7 +234,8 @@ test('dns.lookup 은 원본에 위임하지 않고 콜백에 blocked 오류를 �
     dns.lookup('blocked.example.invalid', (err, address) => resolve({ err, address }));
   }));
   assert.ok(result.err instanceof Error);
-  assert.match(result.err.message, /blocked/);
+  assert.match(result.err.message, /^DNS lookup blocked$/);
+  assert.strictEqual(result.err.code, undefined);
   assert.strictEqual(result.address, undefined);
 });
 
@@ -242,12 +243,13 @@ test('dns.lookup 옵션 인자 형태도 blocked 오류', async () => {
   const { result } = await runOffline(() => new Promise((resolve) => {
     dns.lookup('blocked.example.invalid', { all: true }, (err) => resolve(err));
   }));
-  assert.match(result.message, /blocked/);
+  assert.match(result.message, /^DNS lookup blocked$/);
+  assert.strictEqual(result.code, undefined);
 });
 
 test('dns.promises.lookup 은 blocked 로 거부된다', async () => {
   await runOffline(async () => {
-    await assert.rejects(() => dns.promises.lookup('blocked.example.invalid'), /blocked/);
+    await assert.rejects(() => dns.promises.lookup('blocked.example.invalid'), (e) => e.message === 'DNS lookup blocked' && e.code === undefined);
   });
 });
 
@@ -289,8 +291,11 @@ test('net.Socket connect 도 error 를 낸다', async () => {
   assertRestored(before);
 });
 
-test('듣는 쪽이 없으면 error 는 조용히 버려진다(프로세스가 죽지 않는다)', async () => {
-  await runOffline(async () => { http.get('http://example.com'); await sleepMs(5); });
+test('듣는 쪽이 없으면 프로세스는 죽지 않고 runOffline 이 reject 된다', async () => {
+  await assert.rejects(
+    () => runOffline(async () => { http.get('http://example.com'); await sleepMs(5); }),
+    (e) => e.message === 'Network access blocked',
+  );
 });
 
 // ---- F-319 ② : 끝난 뒤 붙들린 스텁 ----
@@ -310,9 +315,10 @@ test('끝난 뒤 붙들린 http/dns 스텁도 던지지 않는다', async () => 
   let h;
   await runOffline(() => { h = { get: http.get, lookup: dns.lookup, plookup: dns.promises.lookup }; });
   assert.doesNotThrow(() => h.get('http://example.com'));
-  await assert.rejects(() => h.plookup('blocked.example.invalid'), /blocked/);
+  await assert.rejects(() => h.plookup('blocked.example.invalid'), (e) => e.message === 'DNS lookup blocked' && e.code === undefined);
   const err = await new Promise((resolve) => h.lookup('blocked.example.invalid', (e) => resolve(e)));
-  assert.match(err.message, /blocked/);
+  assert.match(err.message, /^DNS lookup blocked$/);
+  assert.strictEqual(err.code, undefined);
 });
 
 // ---- F-319 ⑥ : 동시 호출 계수 귀속 ----
@@ -349,4 +355,24 @@ test('중첩 호출: 안쪽 호출은 안쪽에, 바깥 호출은 바깥에 센�
   });
   assert.strictEqual(result, 2);
   assert.strictEqual(networkCalls, 2);
+});
+
+// ---- F-319 ③ : 콜백만 넘긴 http.get 도 멈추지 않고 스텁이 복원된다 ----
+test('콜백만 넘긴 http.get/https.get 은 runOffline 을 reject 하고 스텁을 복원한다', async () => {
+  for (const [mod, url] of [[http, 'http://example.com'], [https, 'https://example.com']]) {
+    const before = snapshot();
+    await assert.rejects(
+      () => runOffline(() => new Promise(() => { mod.get(url, () => {}); })),
+      (e) => e.message === 'Network access blocked',
+    );
+    assert.deepStrictEqual(snapshot(), before);
+  }
+});
+
+test('차단 req 스텁은 flushHeaders/getHeader/setNoDelay 를 가진다', async () => {
+  await runOffline(() => {
+    const req = http.request('http://example.com');
+    req.on('error', () => {});
+    assert.doesNotThrow(() => { req.flushHeaders(); req.getHeader('x'); req.setNoDelay(true); });
+  });
 });

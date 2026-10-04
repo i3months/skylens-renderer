@@ -6,6 +6,9 @@ const S = TERRAIN_TILE_SIZE_M;
 /** 한 번의 질의·한 항목이 덮을 수 있는 타일 수 상한(F-319 ④). 256×256 타일 = 16.4 km 정사각. 넘으면 TowerAssetError. */
 export const TILE_INDEX_MAX_TILES = 65536;
 
+/** 한 색인이 항목들에 걸쳐 합산해 만들 수 있는 셀(항목×타일) 수 상한. 넘으면 TowerAssetError (F-319 ⑦). */
+export const TILE_INDEX_MAX_TOTAL_CELLS = 1_000_000;
+
 function checkBounds(b, what) {
   if (!b || !Number.isFinite(b.minX) || !Number.isFinite(b.minY) || !Number.isFinite(b.maxX) || !Number.isFinite(b.maxY)
     || b.minX > b.maxX || b.minY > b.maxY) {
@@ -24,6 +27,7 @@ function tileRange(b, root, what) {
   if (nx > TILE_INDEX_MAX_TILES || ny > TILE_INDEX_MAX_TILES || nx * ny > TILE_INDEX_MAX_TILES) {
     throw new TowerAssetError(`buildTileIndex: ${what} 가 덮는 타일이 ${nx}×${ny} 개로 상한 ${TILE_INDEX_MAX_TILES} 를 넘는다`);
   }
+  r.count = nx * ny;
   return r;
 }
 
@@ -38,6 +42,7 @@ export function buildTileIndex(bounds, items) {
   const rec = [];
   if (!Array.isArray(items)) throw new TowerAssetError('buildTileIndex: items 는 배열이어야 한다');
   const seen = new Set();
+  let total = 0;
   for (const it of items) {
     if (!it || typeof it !== 'object') throw new TowerAssetError('buildTileIndex: 항목이 null 이거나 객체가 아니다');
     if (!Number.isInteger(it.id)) throw new TowerAssetError(`buildTileIndex: 항목 id 가 정수가 아니다 (${it.id})`);
@@ -48,6 +53,10 @@ export function buildTileIndex(bounds, items) {
     rec.push(r);
     const t = tileRange(r, root, `항목 ${it.id}`);
     if (!t) continue;
+    total += t.count;
+    if (total > TILE_INDEX_MAX_TOTAL_CELLS) {
+      throw new TowerAssetError(`buildTileIndex: 항목 전체의 셀 수가 상한 ${TILE_INDEX_MAX_TOTAL_CELLS} 를 넘는다`);
+    }
     for (let ty = t.ty0; ty <= t.ty1; ty++) {
       for (let tx = t.tx0; tx <= t.tx1; tx++) {
         const k = `${tx},${ty}`;

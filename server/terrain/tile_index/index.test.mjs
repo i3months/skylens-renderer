@@ -137,3 +137,12 @@ test('타일 수 상한: 질의·항목이 상한을 넘으면 TowerAssetError, 
   assert.throws(() => buildTileIndex(BIG, [{ id: 1, bounds: BIG }]), TowerAssetError);
   assert.doesNotThrow(() => buildTileIndex(BIG, [{ id: 1, bounds: ok }]));
 });
+
+test('항목 합산 셀 수 상한: 65536 타일짜리 300개는 1초 안에 TowerAssetError (F-319 ⑦)', () => {
+  const side = 256 * 64 - 1;
+  const items = [];
+  for (let i = 0; i < 300; i++) items.push({ id: i, bounds: { minX: 0, minY: 0, maxX: side, maxY: side } });
+  const t0 = Date.now();
+  assert.throws(() => buildTileIndex({ minX: 0, minY: 0, maxX: side, maxY: side }, items), TowerAssetError);
+  assert.ok(Date.now() - t0 < 1000);
+});
