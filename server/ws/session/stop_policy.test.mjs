@@ -28,12 +28,19 @@ const CLOSE_INTERNAL = 1011;
 const CLOSE_PROTOCOL = 1002;
 
 function fakeConn() {
-  const c = { sent: [], closes: [], msgCb: null, closeCb: null };
-  c.send = (b) => { c.sent.push(b); return true; };
+  // events: send/close 를 한 열로 기록한다(순서 단언용). 닫힌 뒤의 send 는 실제 접속처럼 버리고 false 를 돌려준다.
+  const c = { sent: [], closes: [], events: [], dropped: 0, closed: false, msgCb: null, closeCb: null };
+  c.send = (b) => {
+    if (c.closed) { c.dropped += 1; return false; }
+    c.sent.push(b); c.events.push({ op: 'send', bytes: b }); return true;
+  };
   c.onMessage = (cb) => { c.msgCb = cb; };
   c.onClose = (cb) => { c.closeCb = cb; };
   // 실제 접속처럼 close 하면 닫힘 알림이 온다.
-  c.close = (code) => { c.closes.push(code); if (c.closeCb) c.closeCb({ code, reason: '' }); };
+  c.close = (code) => {
+    c.closes.push(code); c.events.push({ op: 'close', code }); c.closed = true;
+    if (c.closeCb) c.closeCb({ code, reason: '' });
+  };
   c.bufferedAmount = () => 0;
   return c;
 }
@@ -90,13 +97,17 @@ test('(1) 감독 재현: 재전송 정지면 ERROR(5)·close(1011), 생방송 �
   assert.equal(got.filter((m) => m.type === 'ERROR').length, 1);
   assert.equal(got[2].code, ERR_UNAVAILABLE);
   assert.deepEqual(w2.conn.closes, [CLOSE_INTERNAL]);
+  // 정지 ERROR 는 close 보다 앞에 나간다(닫힌 뒤 송신은 버려진다).
+  const ops = w2.conn.events.map((e) => (e.op === 'send' ? clientDecode(e.bytes).type : `close:${e.code}`));
+  assert.deepEqual(ops, ['WELCOME', 'PIECE', 'ERROR', `close:${CLOSE_INTERNAL}`]);
+  assert.equal(w2.conn.dropped, 0);
   assert.equal(w2.counts.onSession, 0);
   assert.equal(w2.counts.makeEmit, 0);
-  assert.throws(() => w2.api.emit({ type: 'MISSING', segmentId: SEG_B }));
+  assert.throws(() => w2.api.emit({ type: 'MISSING', segmentId: SEG_B }), /닫히는 중/);
 
   // firstPieceSeq=3 어댑터는 아무것도 보내지 못한다(emit 이 던진다).
   const a2 = createCoreAdapter({ emit: (m) => w2.api.emit(m), firstPieceSeq: NEW_ADAPTER_FIRST_SEQ });
-  assert.throws(() => a2.handle({ kind: 'level_arrived', segmentId: SEG_B, level: LEVEL, pieces: pieces(SEG_B, 1) }));
+  assert.throws(() => a2.handle({ kind: 'level_arrived', segmentId: SEG_B, level: LEVEL, pieces: pieces(SEG_B, 1) }), /닫히는 중/);
   assert.equal(w2.conn.sent.length, 3);
 
   // 닫힌 접속의 ACK(3) 는 처리되지 않는다.
@@ -144,21 +155,24 @@ test('(3) F-277 ①: replay 지연 중 접속이 닫히면 makeEmit·onSession 0
   const conn = fakeConn();
   let release;
   const gate = new Promise((r) => { release = r; });
-  const counts = { onSession: 0, makeEmit: 0 };
+  const counts = { onSession: 0, makeEmit: 0, replay: 0 };
   const api = attachConnection({
     conn, store: { ack() {} }, loadPiece: () => null,
-    replay: async () => { await gate; return { sessionId: 7, resumed: false, nextPieceSeq: 1, stoppedAt: null }; },
+    replay: async () => { counts.replay += 1; await gate; return { sessionId: 7, resumed: false, nextPieceSeq: 1, stoppedAt: null }; },
     makeEmit: () => { counts.makeEmit += 1; return () => {}; },
     onSession: () => { counts.onSession += 1; },
   });
   const done = conn.msgCb(clientEncode({ type: 'HELLO', sessionId: 0, lastPieceSeq: 0 }));
+  // chain 이 handle 을 마이크로태스크로 미루므로 한 번 양보해 replay 가 실제로 시작(1회)된 뒤에 닫는다.
+  await new Promise((r) => setImmediate(r));
+  assert.equal(counts.replay, 1);
   conn.closeCb({ code: 1006, reason: '' }); // replay 가 끝나기 전에 닫힘
   release();
   await done;
   assert.equal(counts.makeEmit, 0);
   assert.equal(counts.onSession, 0);
   assert.equal(conn.sent.length, 0);
-  assert.throws(() => api.emit({ type: 'MISSING', segmentId: 1 }));
+  assert.throws(() => api.emit({ type: 'MISSING', segmentId: 1 }), /닫히는 중/);
 });
 
 // 실제 코덱은 짧은 바이트에 던진다. null 경우는 첫 호출(HELLO)만 실제 코덱으로 복호하고 그 뒤는 null 을 돌려준다.
