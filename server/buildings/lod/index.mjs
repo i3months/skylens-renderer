@@ -11,8 +11,8 @@
 //       방향 묶음(묶음 안 모든 θ 가 묶음 기준 방향 φ 와 허용각 이내)을 만든다. 상자는 φ 방향 좌표계의 AABB 다.
 //       따라서 상자의 벽 법선은 원래 벽 법선과 허용각 넘게 다르지 않다(음영 오차 상한).
 //     - 건물마다 "φ 좌표계의 자기 상자로 바꿨을 때의 기하 오차"가 tol 이하인 것만 실제 상자 후보로 남는다(넘으면 원본 유지).
-//     - 같은 방향 묶음 안에서, 두 상자 사이 틈과 높이 차가 모두 BUILDING_LOD_MAX_GAP_PX 이하이고, 합친 상자가 새로 덮는 빈 땅(틈 칸)이
-//       구성 건물에서 hideTol 이내이며, 합친 상자의 오차가 tol 이하인 이웃 쌍을
+//     - 같은 방향 묶음 안에서, 두 상자 사이 틈과 높이 차가 모두 BUILDING_LOD_MAX_GAP_PX 이하이고, 합친 상자가 새로 덮는 빈 땅(틈 칸)의
+//       메워지는 폭(끼인 틈은 틈 폭, 바깥으로 열린 홈·모서리는 깊이; gapCellError)이 hideTol 이하이며, 합친 상자의 오차가 tol 이하인 이웃 쌍을
 //       오차 하한이 작은 순으로 탐욕적으로 합친다(응집 군집). 우선순위 큐에 인접 후보 쌍만 넣고, 꺼낸 쌍만 오차를 재며,
 //       합칠 때마다 새 군집과 남은 군집 사이 쌍만 새로 넣는다.
 //     - 다 합친 군집은 구성 건물 θ 범위의 가운데 방향으로 같은 병합 순서를 다시 재어 tol 안이면 그 방향 상자를 쓴다
@@ -32,8 +32,11 @@
 // 음영 오차: 상자 벽 법선과 원래 벽 법선의 각 차 ≤ BUILDING_LOD_MAX_WALL_ANGLE_RAD.
 // 지워지는 세부: 틈(상자 사이 거리)과 높이 계단(수직 오차)은 화면에서 옮겨지는 테두리가 아니라 통째로 사라지는 선·면이다.
 //   그래서 2 px 테두리 허용(tol)이 아니라 BUILDING_LOD_MAX_GAP_PX(hideTol = 거리 × 픽셀 각 × px) 이하일 때만 지운다.
-//   틈은 상자 사이 거리(mayMerge)만이 아니라 합친 상자가 새로 덮는 빈 땅 전체로 잰다: 틈 칸의 모든 점이 구성 건물에서
-//   hideTol 이내여야 한다. 상자 사이 거리만 보면 앞뒤 면이 들쭉날쭉한 줄이나 대각 배치에서 tol(= 8 × hideTol)까지
+//   틈은 상자 사이 거리(mayMerge)만이 아니라 합친 상자가 새로 덮는 빈 땅 전체로 잰다: the filled-in width of every gap-cell
+//   point, min(2 × distance to the members, distance to the members + distance to the merged box boundary), must be
+//   ≤ hideTol. A gap trapped between buildings is thus limited to width hideTol (1/4 px), an open notch or corner to depth
+//   hideTol. (Until F-334 the rule was "distance to the members ≤ hideTol", which let trapped gaps up to 2 × hideTol
+//   through when the pair was joined via a third building.) 상자 사이 거리만 보면 앞뒤 면이 들쭉날쭉한 줄이나 대각 배치에서 tol(= 8 × hideTol)까지
 //   빈 땅이 메워져, 줄 사이 틈의 벽 띠가 지붕으로 덮였다(이전 시드 180 top-high 건물 영역 SSIM 0.9496, F-326·F-331).
 // 계산량: 한 칸 k 동에 대해 쌍 선검사 O(k²)(값싼 상자 비교), 오차 평가는 꺼낸 쌍만, 틈 칸만 표본한다.
 import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
@@ -73,7 +76,12 @@ export const BUILDING_LOD_CELL_M = 64;
 
 /** 한 축 균등 표본 수 하한(작은 직사각형도 이만큼은 본다). */
 const ERROR_SAMPLES = 9;
-/** 한 축 균등 표본 수 상한(계산량 제한). 넘으면 칸이 커져 상한 추정이 더 보수적이 될 뿐 과소평가는 없다. */
+/**
+ * 한 축 균등 표본 수 상한(계산량 제한). 넘으면 칸이 커져 상한 추정이 더 보수적이 될 뿐 과소평가는 없다.
+ * Used only by singleError (one building against its own box, limit tol). A side longer than (MAX_GRID − 1) × tol/2
+ * gets spacing above tol/2 and a larger Lipschitz margin, so very long buildings may stay original (safe side).
+ * Gap cells do not use this grid (gapCellError).
+ */
 const MAX_GRID = 129;
 const QUARTER = Math.PI / 2;
 
@@ -329,27 +337,109 @@ function makeCluster(members, err, left = null, right = null) {
 }
 
 // 두 군집을 합칠 후보인지(값싼 조건): 두 상자 사이 틈 ≤ hideTol 이고 높이 차(계단) ≤ hideTol.
+// The height-step limit lives only here. mergeError does not repeat it: agglomerate calls mergeError only for pairs that
+// passed mayMerge, and reframe replays an already accepted merge tree in another frame, where maxZ and minTop do not
+// depend on the frame, so the step is the same value that passed here.
 function mayMerge(A, B, hideTol) {
   const gx = Math.max(0, A.minX - B.maxX, B.minX - A.maxX), gy = Math.max(0, A.minY - B.maxY, B.minY - A.maxY);
   if (gx * gx + gy * gy > hideTol * hideTol) return false;
   return Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop) <= hideTol;
 }
 
+/** Cell budget of one gap-cell branch-and-bound call. Running out rejects the merge (safe side: keep two boxes). */
+const GAP_MAX_CELLS = 1 << 14;
+
+// Gap-cell measure for the empty rectangle [x0,x1]×[y0,y1] that the merged box `box` (minX..maxY) newly covers.
+// For an empty point p let e(p) = distance to the members' xy union and x(p) = distance to the merged box boundary.
+// The filled-in width at p is w(p) = min(2·e(p), e(p) + x(p)):
+//  - in a gap trapped between buildings (x ≥ e) the point is e from the nearer side, so the gap there is at least 2·e wide;
+//    a gap of width w has w(p) = w on its centre line (F-334: the old limit e ≤ hideTol let trapped gaps up to 2·hideTol through);
+//  - in an open notch or corner (the empty land reaches the box boundary) the land that turns into roof is e + x deep,
+//    which equals the old "distance to the members" at the boundary, so staggered and diagonal pairs keep their old limit.
+// The merge is accepted only when max w(p) ≤ limit (= hideTol). The maximum is found by branch and bound on sub-rectangles:
+//  - upper bound of e on a cell: min over member edges S of max over the four cell corners of dist(corner, S)
+//    (distance to one segment is convex, so its maximum on a rectangle is at a corner, and e ≤ distance to any edge),
+//    and also e(centre) + half diagonal (1-Lipschitz);
+//  - upper bound of x on a cell: the minimum over the four box sides of the largest distance of the cell to that side;
+//  - lower bound: w(centre) exactly. Above the limit means reject.
+// Because the edge bound does not grow with the cell length along a wall, a long thin gap needs only a few cells along its
+// length; precision is set by the cell width across the gap, not by a fixed sample cap (F-335: the old uniform grid capped
+// at MAX_GRID samples per axis lost precision on gap cells longer than 16·hideTol and rejected small real gaps).
+// Returns { e, w } upper bounds (e feeds the geometric error), or null when the limit is exceeded or the budget runs out.
+function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
+  const near = [];
+  for (const m of members) {
+    const ox = Math.max(m.minX - x1, 0, x0 - m.maxX), oy = Math.max(m.minY - y1, 0, y0 - m.maxY);
+    if (ox * ox + oy * oy <= limit * limit) near.push(m);
+  }
+  if (near.length === 0) return null;
+  let eMax = 0, wMax = 0;
+  const stack = [x0, y0, x1, y1];
+  const minDiag = limit * 1e-6;
+  while (stack.length) {
+    const cy1 = stack.pop(), cx1 = stack.pop(), cy0 = stack.pop(), cx0 = stack.pop();
+    if (--budget.cells < 0) return null;
+    const mx = (cx0 + cx1) / 2, my = (cy0 + cy1) / 2;
+    const half = 0.5 * Math.hypot(cx1 - cx0, cy1 - cy0);
+    let c2 = Infinity;
+    for (const m of near) c2 = memberDist2(mx, my, m, c2);
+    const eC = Math.sqrt(c2);
+    const xC = Math.min(mx - box.minX, box.maxX - mx, my - box.minY, box.maxY - my);
+    if (Math.min(2 * eC, eC + xC) > limit) return null;
+    // Edge bound: min over edges of the farthest corner distance. A member whose AABB is farther from the cell than the
+    // current bound cannot lower it.
+    let eUb2 = (eC + half) * (eC + half);
+    for (const m of near) {
+      const ox = Math.max(m.minX - cx1, 0, cx0 - m.maxX), oy = Math.max(m.minY - cy1, 0, cy0 - m.maxY);
+      if (ox * ox + oy * oy >= eUb2) continue;
+      const s = m.segs;
+      for (let o = 0; o < s.length; o += 4) {
+        const ax = s[o], ay = s[o + 1], bx = s[o + 2], by = s[o + 3];
+        let far = segDist2(cx0, cy0, ax, ay, bx, by);
+        if (far >= eUb2) continue;
+        far = Math.max(far, segDist2(cx1, cy0, ax, ay, bx, by));
+        if (far >= eUb2) continue;
+        far = Math.max(far, segDist2(cx0, cy1, ax, ay, bx, by));
+        if (far >= eUb2) continue;
+        far = Math.max(far, segDist2(cx1, cy1, ax, ay, bx, by));
+        if (far < eUb2) eUb2 = far;
+      }
+    }
+    const eUb = Math.sqrt(eUb2);
+    const xUb = Math.min(cx1 - box.minX, box.maxX - cx0, cy1 - box.minY, box.maxY - cy0);
+    const wUb = Math.min(2 * eUb, eUb + xUb);
+    if (wUb <= limit) {
+      if (eUb > eMax) eMax = eUb;
+      if (wUb > wMax) wMax = wUb;
+      continue;
+    }
+    if (half < minDiag) return null;
+    stack.push(cx0, cy0, mx, my, mx, cy0, cx1, my, cx0, my, mx, cy1, mx, my, cx1, cy1);
+  }
+  return { e: eMax, w: wMax };
+}
+
 // 같은 φ 좌표계의 두 군집 A, B 를 상자 하나로 합칠 때의 오차 상한(m). tol 초과면 tol 초과라는 뜻만 있다.
-// 높이 차(계단)가 hideTol 을 넘으면 Infinity.
+// Precondition: the height step max(maxZ) − min(minTop) ≤ hideTol was already checked by mayMerge (see there); it still
+// enters the error as the vertical part.
 // 틈 칸(A·B 어느 상자에도 들지 않는 칸)은 어느 구성 건물에도 속하지 않는 빈 땅이라, 메우면 테두리가 옮겨지는 것이 아니라
-// 그 땅(과 그 너머로 보이던 벽)이 통째로 지붕이 된다. 그래서 틈 칸의 점은 구성 건물까지 거리가 tol 이 아니라 hideTol 이하여야
-// 한다(넘으면 Infinity, 합치지 않는다). 한 건물 자기 상자 안(L 자 홈 등)만 tol 까지 허용된다. 군집 상자 안의 틈 칸은
-// 앞선 병합에서 같은 조건으로 검사되었으므로, 이 불변식은 병합 트리 전체에서 성립한다.
+// 그 땅(과 그 너머로 보이던 벽)이 통째로 지붕이 된다. 그래서 틈 칸은 tol 이 아니라 hideTol 로 잰다: 메워지는 폭
+// w(p) = min(2·e, e + x) (gapCellError) 가 hideTol 이하여야 한다(넘으면 Infinity, 합치지 않는다).
+// Scope of the invariant: only the new gap cells are measured. Empty land inside a member's own box (an L-shaped
+// building's notch) is bounded by singleError at tol, not by hideTol. Empty land inside an earlier cluster box was
+// measured against that earlier box; when a later merge closes such an open notch into a trapped gap, the part of the
+// gap that lies inside the earlier box is not measured again, so a gap formed that way can exceed hideTol by up to the
+// earlier notch depth (≤ hideTol). The direct case of F-334 (the gap centre line lies in the new gap cells) is measured.
 function mergeError(A, B, tol, hideTol) {
   const step = Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop);
-  if (step > hideTol) return Infinity;
   const err = Math.max(A.err, B.err, step);
   if (err > tol) return err;
   const uniq = (a) => a.sort((p, q) => p - q).filter((x, i) => i === 0 || x !== a[i - 1]);
   const xs = uniq([A.minX, A.maxX, B.minX, B.maxX]);
   const ys = uniq([A.minY, A.maxY, B.minY, B.maxY]);
   const inBox = (C, x, y) => x > C.minX && x < C.maxX && y > C.minY && y < C.maxY;
+  const box = { minX: xs[0], maxX: xs[xs.length - 1], minY: ys[0], maxY: ys[ys.length - 1] };
+  const budget = { cells: GAP_MAX_CELLS };
   let members = null;
   let gapErr = 0;
   for (let j = 0; j + 1 < ys.length; j++) {
@@ -357,10 +447,9 @@ function mergeError(A, B, tol, hideTol) {
       const mx = (xs[i] + xs[i + 1]) / 2, my = (ys[j] + ys[j + 1]) / 2;
       if (inBox(A, mx, my) || inBox(B, mx, my)) continue;
       if (!members) members = A.members.concat(B.members);
-      // 틈 칸에는 구성 건물이 겹치지 않으므로 균등 격자와 칸 경계만으로 충분하다. 격자 간격 ≤ hideTol/8 로 립시츠 여유
-      // (≤ hideTol/8 × √2/2)를 작게 해, 실제 거리가 hideTol 에 가까운 틈을 여유 때문에 버리는 일을 줄인다.
-      gapErr = rectError(xs[i], ys[j], xs[i + 1], ys[j + 1], members, hideTol, hideTol / 4, gapErr, 2);
-      if (gapErr > hideTol) return Infinity;
+      const g = gapCellError(xs[i], ys[j], xs[i + 1], ys[j + 1], members, hideTol, box, budget);
+      if (!g) return Infinity;
+      if (g.e > gapErr) gapErr = g.e;
     }
   }
   return Math.max(err, gapErr);

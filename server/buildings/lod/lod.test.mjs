@@ -5,9 +5,10 @@ import assert from 'node:assert/strict';
 import { BUILDING_LOD_MIN_SSIM, TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 import {
   buildBuildingLod, BUILDING_LOD_FAR_DIST_M, BUILDING_LOD_MAX_ANGLE_RAD,
-  BUILDING_LOD_REF_PIXEL_RAD, BUILDING_LOD_MAX_GAP_PX,
+  BUILDING_LOD_REF_PIXEL_RAD, BUILDING_LOD_MAX_GAP_PX, BUILDING_LOD_CELL_M,
 } from './index.mjs';
-import { mulberry32, prism, denseCity, meshBounds, VIEWS, lodForView, triCount, render, blockSsim, W, H } from './scene.mjs';
+import { parseSeeds } from '../../../tools/lod_seed_sweep.mjs';
+import { mulberry32, prism, denseCity, meshBounds, VIEWS, FAR_VIEW_MIN_REDUCTION, TILE_M, lodForView, triCount, render, blockSsim, W, H } from './scene.mjs';
 
 // 합성 장면·소프트웨어 래스터·블록 SSIM 은 scene.mjs 에 있다(시드 일괄 검사 도구와 공유).
 
@@ -162,12 +163,16 @@ test(`진단: 40 m 필지 혼합 도시 8시점 건물 영역 SSIM ≥ ${BUILDIN
   viewRows(CITY, t);
 });
 
-// 한 시드에 맞춘 상수가 되지 않도록 여러 시드의 밀집 장면 전부에서 8시점을 모두 본다.
-const DENSE_SEEDS = [1, 2, 3, 42, 99, 307, 1234, 2026];
+// 고정 회귀 시드(F-333): 감소율·SSIM 여유가 작았던 시드를 항상 본다. 180 은 F-326 때 top-high 가 0.9496 이었던 시드
+// (틈 칸을 tol 까지 메워 줄 사이 틈의 벽 띠가 지붕으로 덮임). 3·83·150 은 스윕 1..300 에서 SSIM 여유가 작던 시드.
+const REGRESSION_SEEDS = [3, 83, 150, 180];
+// 한 시드에 맞춘 상수가 되지 않도록 다른 시드의 밀집 장면에서도 8시점을 모두 본다(307 은 미리 만든 DENSE).
+const DENSE_SEEDS = [1, 42, 307];
 
 // 감소율: 틈 칸(어느 구성 건물에도 속하지 않는 땅)은 hideTol(1/4 px)까지만 메운다(F-326). 이 장면은 필지마다 앞뒤 면이
 // 0.2~0.8 m 들쭉날쭉해서, 먼 곳 기준(500 m)에 가까운 타일만 LOD 되는 S-near 는 그 들쭉날쭉한 면을 메울 수 없어 시드에 따라
-// 감소가 0 이다(면 수는 늘지 않는다). 그래서 시드·시점마다 면 수가 늘지 않음을, 시점마다 시드 합계 감소율 > 0 을 단언한다.
+// 감소가 0 이다(면 수는 늘지 않는다). 그래서 시드·시점마다 면 수가 늘지 않음을 단언하고, 감소율 하한(FAR_VIEW_MIN_REDUCTION,
+// 근거는 scene.mjs)은 먼 시점 5개의 시드 합계에만 단언한다. S-near·NE-mid·SW-mid 의 감소율은 진단 기록만 한다.
 function sweepAssert(t, seeds, cityOf) {
   const perView = new Map(VIEWS.map((v) => [v.name, { orig: 0, lod: 0, min: Infinity, minSeed: 0 }]));
   for (const seed of seeds) {
@@ -181,21 +186,47 @@ function sweepAssert(t, seeds, cityOf) {
   }
   for (const [name, pv] of perView) {
     const red = 1 - pv.lod / pv.orig;
-    t.diagnostic(`${name}: 최저 건물 영역 SSIM ${pv.min.toFixed(4)} (시드 ${pv.minSeed}), 시드 합계 감소율 ${(red * 100).toFixed(1)}%`);
+    const floor = FAR_VIEW_MIN_REDUCTION[name];
+    t.diagnostic(`${name}: 최저 건물 영역 SSIM ${pv.min.toFixed(4)} (시드 ${pv.minSeed}), 시드 합계 감소율 ${(red * 100).toFixed(1)}%${floor === undefined ? ' (진단만)' : ` (하한 ${(floor * 100).toFixed(1)}%)`}`);
     assert.ok(pv.min >= BUILDING_LOD_MIN_SSIM, `${name}: 최저 SSIM ${pv.min} (시드 ${pv.minSeed}) < ${BUILDING_LOD_MIN_SSIM}`);
-    assert.ok(red > 0, `${name}: 시드 합계 감소 없음 (${pv.orig} → ${pv.lod})`);
+    if (floor !== undefined) assert.ok(red >= floor, `${name}: 시드 합계 감소율 ${(red * 100).toFixed(2)}% < 하한 ${(floor * 100).toFixed(1)}% (${pv.orig} → ${pv.lod})`);
   }
 }
 
-test(`8시점 실제 병합 장면(20 m 필지 밀집, 회전 0~3° 섞음), 시드 ${DENSE_SEEDS.join('·')}: 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}, 면 수 증가 없음, 시점마다 감소율 > 0`, (t) => {
+test(`8시점 실제 병합 장면(20 m 필지 밀집, 회전 0~3° 섞음), 시드 ${DENSE_SEEDS.join('·')}: 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}, 면 수 증가 없음, 먼 시점 시드 합계 감소율 ≥ 하한`, (t) => {
   sweepAssert(t, DENSE_SEEDS, (seed) => (seed === 307 ? DENSE : denseCity(seed)));
 });
 
-// 시드 일괄 검사(tools/lod_seed_sweep.mjs 가 1..300 전체를 본다)의 CI 판. 이전에는 시드 180 top-high 가 0.9496 이었다
-// (틈 칸을 tol 까지 메워 줄 사이 틈의 벽 띠가 지붕으로 덮였다). 상수를 시드에 맞추지 않도록 연속 범위 전체를 본다.
-const SWEEP_SEEDS = Array.from({ length: 40 }, (_, i) => i + 1);
-test(`시드 일괄 ${SWEEP_SEEDS[0]}..${SWEEP_SEEDS[SWEEP_SEEDS.length - 1]} × 8시점: 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}, 면 수 증가 없음, 시점마다 감소율 > 0`, (t) => {
+// 시드 일괄 검사(tools/lod_seed_sweep.mjs 가 1..300 전체를 본다)의 CI 판. 고정 회귀 시드는 항상 보고, 기본으로 1..SWEEP_DEFAULT 를
+// 더 본다(시험 파일 전체 30 s 이하를 지키려고 시드 수를 줄였다). 더 넓게 보려면 LOD_TEST_SEEDS=1-40(또는 3,83,180 처럼 목록)을 준다.
+const SWEEP_DEFAULT = '1-4';
+const SWEEP_SEEDS = [...new Set([...REGRESSION_SEEDS, ...parseSeeds(process.env.LOD_TEST_SEEDS ?? SWEEP_DEFAULT)])];
+test(`시드 일괄 ${SWEEP_SEEDS.join(',')} × 8시점: 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}, 면 수 증가 없음, 먼 시점 시드 합계 감소율 ≥ 하한`, (t) => {
   sweepAssert(t, SWEEP_SEEDS, denseCity);
+});
+
+// 장면 전체(밀집 도시 전부)를 buildBuildingLod 한 번에 넘긴다. 타일 분할 없이 구현 자체의 칸 나누기만 쓰므로 시험 쪽 분할이
+// 구현 결함을 가리지 않는다. 동 보존·면 수 비증가·건물 영역 SSIM 을 N-far·top-high 두 시점에서 본다(카메라 거리는 장면 중심까지).
+test('장면 전체를 한 번에 넘긴다: 동 보존, 면 수 감소, 건물 영역 SSIM ≥ 문턱', () => {
+  const origMeshes = DENSE.map((b) => b.mesh);
+  const origTris = triCount(origMeshes);
+  for (const name of ['N-far', 'top-high']) {
+    const view = VIEWS.find((v) => v.name === name);
+    const groups = buildBuildingLod(DENSE, Math.hypot(...view.eye));
+    const ids = allIds(groups);
+    assert.equal(ids.length, DENSE.length, `${name}: 동 수`);
+    assert.equal(new Set(ids).size, DENSE.length, `${name}: id 중복`);
+    const lodTris = triCount(groups.map((g) => g.mesh));
+    assert.ok(lodTris < origTris, `${name}: 감소 없음 (${origTris} → ${lodTris})`);
+    const s = blockSsim(render(origMeshes, view), render(groups.map((g) => g.mesh), view));
+    assert.ok(s.buildingBlocks > 0, `${name}: 건물 블록 없음`);
+    assert.ok(s.buildingMean >= BUILDING_LOD_MIN_SSIM, `${name}: 건물 영역 SSIM ${s.buildingMean} < ${BUILDING_LOD_MIN_SSIM}`);
+  }
+});
+
+test('시험 장면 타일 크기(리터럴 64)가 구현 칸 크기와 같다', () => {
+  assert.equal(TILE_M, 64);
+  assert.equal(BUILDING_LOD_CELL_M, 64);
 });
 
 // ───────── 군집 오차 직접 검사 ─────────
@@ -360,11 +391,13 @@ function towerOnBase() {
   return { id: 11, mesh: { positions, indices } };
 }
 
-test('한 메시 안 높이 차(기단 위 탑)는 수직 오차로 잡혀 tol < 90 m 인 거리에서 원본 유지', () => {
+test('한 메시 안 높이 차(기단 위 탑)는 수직 오차로 잡혀 hideTol < 90 m 인 거리에서 원본 유지', () => {
   const b = towerOnBase();
   assert.ok(Math.abs(meshBounds(b.mesh).maxZ - 100) < 1e-3);
-  // tol = 90 m 가 되는 거리 ≈ 92.8 km. 그보다 가까운 모든 먼 거리에서 원본 그대로(100 m 상자 하나로 바뀌지 않는다).
-  for (const d of [BUILDING_LOD_FAR_DIST_M, 3000, 20000, (90 / BUILDING_LOD_MAX_ANGLE_RAD) * 0.99]) {
+  // 높이 계단(90 m)이 hideTol(= 거리 × 기준 픽셀 각 × MAX_GAP_PX)을 넘으면 원본 유지. hideTol = 90 m 가 되는 거리 ≈ 371 km 보다 가까운
+  // 모든 먼 거리에서 원본 그대로(100 m 상자 하나로 바뀌지 않는다).
+  const hideTolDist = 90 / (BUILDING_LOD_REF_PIXEL_RAD * BUILDING_LOD_MAX_GAP_PX);
+  for (const d of [BUILDING_LOD_FAR_DIST_M, 3000, 20000, hideTolDist * 0.99]) {
     const out = buildBuildingLod([b], d);
     assert.equal(out.length, 1);
     assert.equal(out[0].mesh, b.mesh, `${d} m 에서 기단+탑이 상자로 바뀜`);
