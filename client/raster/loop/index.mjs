@@ -119,6 +119,7 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
   const pending = new Map();
   let nextId = 1;
   let terminated = false;
+  let terminateCalled = false;
   // 워커는 요청을 순서대로 하나씩 처리하므로 타임아웃은 '처리 시작'부터 잰다.
   // order 의 맨 앞 요청만 타이머를 가지고, 앞 요청이 끝나면 다음 요청의 타이머를 시작한다.
   const order = [];
@@ -132,7 +133,10 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
       entry.reject(new Error('timeout'));
       // 막힌 Worker 는 죽이고 'terminated' 로 세운다: 살려 두면 새 요청이 처리 중 요청 뒤에 줄 서서 거짓 timeout 을 받는다.
       terminated = true;
-      try { if (worker.terminate) worker.terminate(); } catch { /* 종료 실패는 무시 */ }
+      if (!terminateCalled) {
+        terminateCalled = true;
+        try { if (worker.terminate) worker.terminate(); } catch { /* 종료 실패는 무시 */ }
+      }
       failAll(new Error('timeout: worker blocked'));
     }, timeoutMs);
   }
@@ -208,7 +212,10 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
   // 버려진 요청을 Worker 가 계속 처리하므로 살려 두면 새 decode 가 거짓 timeout 을 받는다: terminated 로 세우고 terminate 한다.
   worker.onmessageerror = () => measure(() => {
     terminated = true;
-    try { if (worker.terminate) worker.terminate(); } catch { /* 종료 실패는 무시 */ }
+    if (!terminateCalled) {
+      terminateCalled = true;
+      try { if (worker.terminate) worker.terminate(); } catch { /* 종료 실패는 무시 */ }
+    }
     failAll(new Error('messageerror'));
   });
 
@@ -253,7 +260,9 @@ export function createDecodeWorkerClient({ spawn, now = () => 0, timeoutMs, setT
       });
     },
     terminate() {
+      if (terminateCalled) return;
       terminated = true;
+      terminateCalled = true;
       try { if (worker.terminate) worker.terminate(); } finally { failAll(new Error('terminated')); }
     },
     stats() { return { ...st, pending: pending.size }; },
