@@ -89,6 +89,19 @@
 //   - 수준은 쌓이지 않고 바뀐다: 한 구간에서 도착한 가장 높은 수준 M 의 조각만 그린다. 더 높은 수준이 도착하면 낮은 수준의
 //     조각은(도착했든 아직 LEVEL_ARRIVED 를 기다리든) 버린다(releasePiece). M 보다 높은 수준의 조각은 자기 LEVEL_ARRIVED 를
 //     기다리며 그리지 않는다.
+//   - LOD 는 타일마다 하나만 그린다(F-243 ④, ASSET_FORMAT §10.1 '같은 (구간, 수준, 타일) 의 LOD 들은 서로 바꿔 끼우는 표현이다.
+//     한 시점에 (구간, 수준, 타일) 마다 LOD 하나만 그린다'). 서버가 한 타일에 LOD 하나만 보낸다는 보장은 계약 어디에도 없으므로
+//     (§10.1 은 lod 0..7 을 모두 허용하고 LEVEL_ARRIVED 완료 집합은 타일·LOD 를 가리지 않는다) 그리는 쪽이 고른다.
+//     후보는 수준 M 의 완료 집합에 들고 동시에 keys(상주)에도 있는 조각뿐이다. 완료 집합 밖이거나 상주하지 않는 LOD 는 고르지
+//     않는다(도착하지 않은 것을 그리지 않는다). 타일의 후보 LOD 가 여럿이면:
+//       1) 완료 집합의 그 (타일, LOD) chunk 가 모두 상주한 LOD('완전') 중 가장 세밀한 것(lod 숫자가 가장 작은 것, §10.1 0 = 전부)을
+//          고른다. 완전한 LOD 가 없으면 상주 chunk 가 하나라도 있는 LOD 중 가장 세밀한 것을 고른다(chunk 는 서로소라 일부만
+//          그려도 도착한 점만 그린다. 다른 LOD 로 빈 chunk 를 메우지 않는다).
+//       2) 고른 LOD 의 상주·완료 chunk 는 draw. 고른 것보다 성긴 LOD(숫자가 큰 것)는 discard(바꿔 끼워졌다).
+//       3) 고른 것보다 세밀하지만 아직 완전하지 않은 LOD 는 pending(나머지 chunk 업로드를 기다린다. 그리지 않는다). discard 로 두면
+//          호출자가 해제해 그 LOD 가 영영 완전해지지 못하므로 버리지 않는다. 완전해지면 다음 호출에서 그것이 골라지고 성긴 LOD 는
+//          discard 가 된다. 끝내 완전해지지 않으면 아래 pending 정리 규칙으로 해제한다.
+//     같은 (타일, LOD) 의 서로 다른 chunk_index 는 점을 나눈 것이라 함께 그린다(§10.1).
 //   - 자기 LEVEL_ARRIVED 가 끝내 오지 않는 pending 조각: 계속 그리지 않는다. 정리 규칙: 그 구간의 시도(attempt)가 새 시도로
 //     대체되거나 끝나면(종료·연결 끊김·재개 재시작 포함) 그 구간에 남은 pending key 전부를 포기(abandoned)로 보고 호출자가
 //     releasePiece 로 해제한다. selectDrawable 은 순수 함수라 해제하지 않고 pending 을 그대로 돌려준다. 해제 전까지 pending 조각도
@@ -396,6 +409,8 @@ export function parsePieceKey(key) {
  *   discard: level < M 인 조각(더 높은 수준이 도착해 바뀌었다. 도착했든 기다리든 버린다),
  *            또는 level = M 이지만 완료 집합 밖인 조각(시도가 중간에 버린 abandoned 조각. 그리기 전에 해제된다)
  *   pending: 도착한 수준이 없는 구간의 조각 또는 level > M 인 조각(자기 LEVEL_ARRIVED 를 기다린다. 그리지 않는다)
+ * LOD(헤더 ④, ASSET_FORMAT §10.1): 위 draw 후보를 (타일) 마다 묶어 LOD 하나만 draw 로 남긴다. 완전히 상주한 LOD 중 가장 세밀한 것,
+ *   없으면 상주 chunk 가 있는 LOD 중 가장 세밀한 것을 고른다. 더 성긴 LOD 는 discard, 더 세밀하지만 덜 상주한 LOD 는 pending.
  * 같은 구간·같은 수준의 항목이 여럿이면 완료 집합은 합집합이다. 결과 배열 순서는 입력 순서를 따른다.
  * keys 에 같은 key 가 여러 번 있으면 첫 등장만 남기고 나머지는 버린다(draw·pending·discard 어디에도 한 번만 나온다).
  * 호출 주기: LEVEL_ARRIVED 도착 이벤트마다 부르며 프레임마다 부르지 않는다(결과는 다음 도착까지 재사용한다).
@@ -417,6 +432,7 @@ export function selectDrawable(keys, arrived) {
   const top = new Map(); // segmentId -> {level, done: Set<string>}
   const EMITTED = -1;
   const parsed = new Map(); // key -> segmentId * 4 + level(처리한 key 는 EMITTED): 해석 결과 재사용과 중복 제거를 겸한다
+  const lodInfo = new Map(); // 완료 집합 key -> {tile, lod}: LOD 고르기(헤더 ④)용. 완료 집합 밖 key 는 draw 후보가 아니라 필요 없다
   for (const a of arrived) {
     if (!a || !Number.isInteger(a.segmentId) || Object.is(a.segmentId, -0) || a.segmentId < 0 || a.segmentId >= SEGMENT_ID_LIMIT || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
       throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
@@ -427,13 +443,25 @@ export function selectDrawable(keys, arrived) {
       const p = parsePieceKey(k);
       if (p.segmentId !== a.segmentId || p.level !== a.level) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 의 key 가 항목의 (segmentId, level) 과 다름: ${k}`);
       parsed.set(k, a.segmentId * 4 + a.level);
+      lodInfo.set(k, { tile: `${p.segmentId}.${p.tileX}.${p.tileY}`, lod: p.lod });
       done.push(k);
     }
     const cur = top.get(a.segmentId);
     if (cur === undefined || a.level > cur.level) top.set(a.segmentId, { level: a.level, done: new Set(done) });
     else if (a.level === cur.level) for (const k of done) cur.done.add(k);
   }
-  const out = { draw: [], pending: [], discard: [] };
+  // 타일·LOD 마다 완료 집합의 chunk 수(최고 수준 M 의 것만). 상주 수와 같으면 그 LOD 는 '완전'하다
+  const need = new Map(); // tile -> Map<lod, count>
+  for (const m of top.values()) {
+    for (const k of m.done) {
+      const { tile, lod } = lodInfo.get(k);
+      let byLod = need.get(tile);
+      if (byLod === undefined) need.set(tile, (byLod = new Map()));
+      byLod.set(lod, (byLod.get(lod) ?? 0) + 1);
+    }
+  }
+  const order = []; // 입력 순서의 [key, 분류]. 분류: 0 = draw 후보(LOD 고르기 전), 1 = pending, 2 = discard
+  const have = new Map(); // tile -> Map<lod, 상주 완료 chunk 수>
   for (const key of keys) {
     let packed = parsed.get(key);
     if (packed === EMITTED) continue; // 중복 key: 첫 등장만 남긴다
@@ -445,9 +473,40 @@ export function selectDrawable(keys, arrived) {
     const segmentId = Math.floor(packed / 4);
     const level = packed % 4;
     const m = top.get(segmentId);
-    if (m === undefined || level > m.level) out.pending.push(key);
-    else if (level === m.level && m.done.has(key)) out.draw.push(key);
-    else out.discard.push(key);
+    if (m === undefined || level > m.level) order.push(key, 1);
+    else if (level === m.level && m.done.has(key)) {
+      const { tile, lod } = lodInfo.get(key);
+      let byLod = have.get(tile);
+      if (byLod === undefined) have.set(tile, (byLod = new Map()));
+      byLod.set(lod, (byLod.get(lod) ?? 0) + 1);
+      order.push(key, 0);
+    } else order.push(key, 2);
+  }
+  // 타일마다 그릴 LOD 하나: 완전한 LOD 중 가장 세밀한 것, 없으면 상주 chunk 가 있는 LOD 중 가장 세밀한 것(헤더 ④)
+  const chosen = new Map(); // tile -> lod
+  for (const [tile, byLod] of have) {
+    const needLod = need.get(tile);
+    let best = Infinity;
+    let bestComplete = Infinity;
+    for (const [lod, n] of byLod) {
+      if (lod < best) best = lod;
+      if (n === needLod.get(lod) && lod < bestComplete) bestComplete = lod;
+    }
+    chosen.set(tile, bestComplete !== Infinity ? bestComplete : best);
+  }
+  const out = { draw: [], pending: [], discard: [] };
+  for (let i = 0; i < order.length; i += 2) {
+    const key = order[i];
+    const c = order[i + 1];
+    if (c === 1) out.pending.push(key);
+    else if (c === 2) out.discard.push(key);
+    else {
+      const { tile, lod } = lodInfo.get(key);
+      const pick = chosen.get(tile);
+      if (lod === pick) out.draw.push(key);
+      else if (lod > pick) out.discard.push(key); // 더 성긴 LOD: 바꿔 끼워졌다
+      else out.pending.push(key); // 더 세밀하지만 덜 상주한 LOD: 나머지 chunk 를 기다린다
+    }
   }
   return out;
 }

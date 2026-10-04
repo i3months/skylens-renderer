@@ -103,3 +103,74 @@ describe('상수 대조: contracts/asset', () => {
     }
   });
 });
+
+// F-243 ④: 같은 (구간, 수준, 타일) 의 LOD 는 하나만 그린다(ASSET_FORMAT §10.1). 기준값은 손으로 적은 key 문자열이다.
+describe('selectDrawable: 타일마다 LOD 하나(F-243 ④)', () => {
+  const A = (segmentId, level, keys) => ({ segmentId, level, keys });
+
+  test('두 LOD 가 모두 도착·상주: 가장 세밀한 lod 하나만 draw, 나머지는 discard(입력·도착 순서와 무관)', () => {
+    const l0 = '7.1.3.-4.0.0';
+    const l2 = '7.1.3.-4.2.0';
+    const want = { draw: [l0], pending: [], discard: [l2] };
+    assert.deepEqual(selectDrawable([l0, l2], [A(7, 1, [l0, l2])]), want);
+    assert.deepEqual(selectDrawable([l2, l0], [A(7, 1, [l2, l0])]), want);
+    // 같은 수준 항목이 둘로 나뉘어 와도(완료 집합 합집합) 같다
+    assert.deepEqual(selectDrawable([l0, l2], [A(7, 1, [l2]), A(7, 1, [l0])]), want);
+  });
+
+  test('세 LOD·여러 chunk: 고른 LOD 의 chunk 는 모두 draw, 성긴 LOD 의 chunk 는 모두 discard', () => {
+    const keys = ['7.1.0.0.5.0', '7.1.0.0.1.0', '7.1.0.0.3.0', '7.1.0.0.1.1', '7.1.0.0.5.1'];
+    assert.deepEqual(selectDrawable(keys, [A(7, 1, keys)]), {
+      draw: ['7.1.0.0.1.0', '7.1.0.0.1.1'], pending: [], discard: ['7.1.0.0.5.0', '7.1.0.0.3.0', '7.1.0.0.5.1'],
+    });
+  });
+
+  test('완료 집합 밖의 세밀한 LOD 는 고르지 않는다: 도착한 LOD 를 draw, 집합 밖 key 는 discard', () => {
+    const l0 = '7.1.0.0.0.0'; // 상주하지만 LEVEL_ARRIVED 창 밖(완료 아님)
+    const l2 = '7.1.0.0.2.0';
+    assert.deepEqual(selectDrawable([l0, l2], [A(7, 1, [l2])]), { draw: [l2], pending: [], discard: [l0] });
+  });
+
+  test('완료 집합에 있으나 상주하지 않는 세밀한 LOD 는 고르지 않는다: 상주한 성긴 LOD 를 계속 draw', () => {
+    const l0 = '7.1.0.0.0.0';
+    const l2 = '7.1.0.0.2.0';
+    assert.deepEqual(selectDrawable([l2], [A(7, 1, [l0, l2])]), { draw: [l2], pending: [], discard: [] });
+  });
+
+  test('세밀한 LOD 가 일부 chunk 만 상주하면 완전한 성긴 LOD 를 draw, 세밀한 쪽은 pending. 완전해지면 바뀐다', () => {
+    const f0 = '7.1.0.0.0.0';
+    const f1 = '7.1.0.0.0.1';
+    const c0 = '7.1.0.0.2.0';
+    const arrived = [A(7, 1, [f0, f1, c0])];
+    assert.deepEqual(selectDrawable([f0, c0], arrived), { draw: [c0], pending: [f0], discard: [] });
+    assert.deepEqual(selectDrawable([f0, c0, f1], arrived), { draw: [f0, f1], pending: [], discard: [c0] });
+  });
+
+  test('완전한 LOD 가 없으면 상주 chunk 가 있는 가장 세밀한 LOD 를 draw(일부 chunk 만, 다른 LOD 로 메우지 않음)', () => {
+    const f0 = '7.1.0.0.0.0';
+    const f1 = '7.1.0.0.0.1';
+    const c0 = '7.1.0.0.2.0';
+    const c1 = '7.1.0.0.2.1';
+    assert.deepEqual(selectDrawable([c0, f0], [A(7, 1, [f0, f1, c0, c1])]), { draw: [f0], pending: [], discard: [c0] });
+  });
+
+  test('타일·구간이 다르면 따로 고른다, 낮은 수준은 LOD 와 무관하게 discard', () => {
+    const a0 = '7.1.0.0.0.0';
+    const a2 = '7.1.0.0.2.0';
+    const b2 = '7.1.1.0.2.0'; // 다른 타일: 그 타일의 유일한 LOD 라 draw
+    const c3 = '8.1.0.0.3.0'; // 다른 구간의 같은 타일 좌표
+    const low = '7.0.0.0.0.0'; // 낮은 수준
+    const keys = [low, a2, b2, c3, a0];
+    assert.deepEqual(selectDrawable(keys, [A(7, 0, [low]), A(7, 1, [a0, a2, b2]), A(8, 1, [c3])]), {
+      draw: [b2, c3, a0], pending: [], discard: [low, a2],
+    });
+  });
+
+  test('중복 key 가 있어도 LOD 상주 수를 두 번 세지 않는다', () => {
+    const f0 = '7.1.0.0.0.0';
+    const f1 = '7.1.0.0.0.1';
+    const c0 = '7.1.0.0.2.0';
+    // f0 이 두 번 들어와도 f1 이 없으므로 lod 0 은 완전하지 않다
+    assert.deepEqual(selectDrawable([f0, c0, f0], [A(7, 1, [f0, f1, c0])]), { draw: [c0], pending: [f0], discard: [] });
+  });
+});
