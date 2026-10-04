@@ -591,39 +591,42 @@ export function createRenderer(options) {
     const { cam, values } = view;
     const drawKeys = currentSelection().draw; // 선택 재계산(CPU)은 GL 구간 밖에서 한다
     try { onDrawStart(); } catch { /* 시험 hook 예외가 draw 를 깨지 않게 삼킨다 */ }
-    if (canvas.width !== cam.bw) canvas.width = cam.bw;
-    if (canvas.height !== cam.bh) canvas.height = cam.bh;
-    gl.viewport(0, 0, cam.bw, cam.bh);
-    gl.clearColor(0, 0, 0, 1);
-    gl.clearDepth(1);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    gl.enable(gl.DEPTH_TEST);
-    gl.depthFunc(gl.LESS);
-    gl.useProgram(gpu.program);
-    applyPointUniforms(gl, gpu.uniforms, values);
-    if (vaoOwner !== gpu) { pieceVaos.clear(); vaoOwner = gpu; }
-    if (pieceVaos.size > meta.size) { // 해제된 조각의 VAO 정리(드물게만 돈다)
-      for (const [k, e] of pieceVaos) if (!meta.has(k)) { deletePieceVao(e); pieceVaos.delete(k); }
-    }
-    gl.vertexAttrib2f(ATTRIB.normalOct, 0, 0); // 법선 배열이 꺼진 조각(형식 2)의 상수 법선: 프레임에 한 번
     let drawnPoints = 0;
     let drawnPieces = 0;
-    // u_shade 는 프레임 시작(applyPointUniforms)에서 올린 값에서 바뀔 때만 다시 올린다
-    const hasShade = gpu.uniforms.u_shade !== null && gpu.uniforms.u_shade !== undefined;
-    let shadeNow = values.u_shade ? 1 : 0;
-    for (const key of drawKeys) {
-      const info = meta.get(key);
-      if (!info) continue;
-      bindPiece(key, info);
-      applyPieceOrigin(gl, gpu.uniforms, values, info.origin); // 조각 원점 기준 u_tgl(f64 계산)
-      const shade = info.format === FORMAT_POINT27 && values.u_shade ? 1 : 0;
-      if (hasShade && shade !== shadeNow) { gl.uniform1i(gpu.uniforms.u_shade, shade); shadeNow = shade; }
-      gl.drawArrays(gl.POINTS, 0, info.count);
-      drawnPoints += info.count;
-      drawnPieces += 1;
+    try {
+      if (canvas.width !== cam.bw) canvas.width = cam.bw;
+      if (canvas.height !== cam.bh) canvas.height = cam.bh;
+      gl.viewport(0, 0, cam.bw, cam.bh);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clearDepth(1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LESS);
+      gl.useProgram(gpu.program);
+      applyPointUniforms(gl, gpu.uniforms, values);
+      if (vaoOwner !== gpu) { pieceVaos.clear(); vaoOwner = gpu; }
+      if (pieceVaos.size > meta.size) { // 해제된 조각의 VAO 정리(드물게만 돈다)
+        for (const [k, e] of pieceVaos) if (!meta.has(k)) { deletePieceVao(e); pieceVaos.delete(k); }
+      }
+      gl.vertexAttrib2f(ATTRIB.normalOct, 0, 0); // 법선 배열이 꺼진 조각(형식 2)의 상수 법선: 프레임에 한 번
+      // u_shade 는 프레임 시작(applyPointUniforms)에서 올린 값에서 바뀔 때만 다시 올린다
+      const hasShade = gpu.uniforms.u_shade !== null && gpu.uniforms.u_shade !== undefined;
+      let shadeNow = values.u_shade ? 1 : 0;
+      for (const key of drawKeys) {
+        const info = meta.get(key);
+        if (!info) continue;
+        bindPiece(key, info);
+        applyPieceOrigin(gl, gpu.uniforms, values, info.origin); // 조각 원점 기준 u_tgl(f64 계산)
+        const shade = info.format === FORMAT_POINT27 && values.u_shade ? 1 : 0;
+        if (hasShade && shade !== shadeNow) { gl.uniform1i(gpu.uniforms.u_shade, shade); shadeNow = shade; }
+        gl.drawArrays(gl.POINTS, 0, info.count);
+        drawnPoints += info.count;
+        drawnPieces += 1;
+      }
+      gl.bindVertexArray(null);
+    } finally {
+      try { onDrawEnd(); } catch { /* 같은 이유: 상태 반영·원래 오류를 덮지 않는다 */ }
     }
-    gl.bindVertexArray(null);
-    try { onDrawEnd(); } catch { /* 같은 이유 */ }
     return { drawnPoints, drawnPieces, droppedFrames, drawMs: Math.max(0, now() - t0) };
   }
 
