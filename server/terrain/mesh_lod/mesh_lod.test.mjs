@@ -10,7 +10,7 @@ import {
 } from '../../../contracts/tower_assets/index.mjs';
 import * as stubs from '../../../contracts/tower_assets/stubs.mjs';
 import * as lodMod from './index.mjs';
-import { buildTerrainTile, measureTerrainError, terrainTileToMesh, terrainLodStride } from './index.mjs';
+import { buildTerrainTile, measureTerrainError, terrainTileToMesh, terrainLodStride, terrainMissingTiles } from './index.mjs';
 
 // 257×257 표본, 1 m 셀 → 64 m 타일 4×4 = 16장(가장자리 공유).
 const N = 257;
@@ -36,25 +36,28 @@ const DEMS = {
 const TILES = [];
 for (let ty = 0; ty < 4; ty++) for (let tx = 0; tx < 4; tx++) TILES.push([tx, ty]);
 
-// 독립 검산: DEM 쌍선형과 타일 쌍선형을 0.25 m 간격으로 직접 표본해 최대 차이를 잰다.
-function demBilinear(dem, x, y) {
-  const u = (x - dem.originX) / dem.cellM, v = (y - dem.originY) / dem.cellM;
-  const i = Math.min(Math.floor(u), dem.width - 2), j = Math.min(Math.floor(v), dem.height - 2);
-  const fx = u - i, fy = v - j, h = dem.heights, w = dem.width;
-  return (h[j * w + i] * (1 - fx) + h[j * w + i + 1] * fx) * (1 - fy) + (h[(j + 1) * w + i] * (1 - fx) + h[(j + 1) * w + i + 1] * fx) * fy;
+// 독립 검산(F-305): 그려지는 표면끼리 비교한다. DEM 과 타일을 모두 terrainTileToMesh 와 같은 대각선
+// ((i,j)–(i+1,j+1)) 규약의 삼각형으로 보간해 0.25 m 간격(타일 한 변 257 점)으로 최대 차이를 잰다.
+// (이전에는 양쪽 쌍선형 보간이었다 — 비틀린 칸에서 실제 메시 오차를 놓쳤다.)
+function triInterp(h, w, u, v, maxI, maxJ) {
+  const i = Math.min(Math.floor(u), maxI), j = Math.min(Math.floor(v), maxJ);
+  const fx = u - i, fy = v - j;
+  const z00 = h[j * w + i], z10 = h[j * w + i + 1], z01 = h[(j + 1) * w + i], z11 = h[(j + 1) * w + i + 1];
+  return fx >= fy ? z00 + fx * (z10 - z00) + fy * (z11 - z10) : z00 + fy * (z01 - z00) + fx * (z11 - z01);
 }
-function tileBilinear(tile, x, y) {
+function demMesh(dem, x, y) {
+  return triInterp(dem.heights, dem.width, (x - dem.originX) / dem.cellM, (y - dem.originY) / dem.cellM, dem.width - 2, dem.height - 2);
+}
+function tileMesh(tile, x, y) {
   const n = tile.cells - 1, step = 64 / n;
-  const u = (x - tile.tx * 64) / step, v = (y - tile.ty * 64) / step;
-  const i = Math.min(Math.floor(u), n - 1), j = Math.min(Math.floor(v), n - 1);
-  const fx = u - i, fy = v - j, h = tile.heights, c = tile.cells;
-  return (h[j * c + i] * (1 - fx) + h[j * c + i + 1] * fx) * (1 - fy) + (h[(j + 1) * c + i] * (1 - fx) + h[(j + 1) * c + i + 1] * fx) * fy;
+  return triInterp(tile.heights, tile.cells, (x - tile.tx * 64) / step, (y - tile.ty * 64) / step, n - 1, n - 1);
 }
-function bruteError(dem, tile) {
+function bruteError(dem, tile, per = 4) {
   let max = 0;
-  for (let b = 0; b <= 256; b++) for (let a = 0; a <= 256; a++) {
-    const x = tile.tx * 64 + a / 4, y = tile.ty * 64 + b / 4;
-    max = Math.max(max, Math.abs(demBilinear(dem, x, y) - tileBilinear(tile, x, y)));
+  const m = 64 * per;
+  for (let b = 0; b <= m; b++) for (let a = 0; a <= m; a++) {
+    const x = tile.tx * 64 + a / per, y = tile.ty * 64 + b / per;
+    max = Math.max(max, Math.abs(demMesh(dem, x, y) - tileMesh(tile, x, y)));
   }
   return max;
 }
@@ -80,11 +83,14 @@ const EXPECTED = {
   // 평면: 쌍선형이 정확 → Float32 반올림 수준 오차만, 명목 간격 그대로.
   slope: { cells: [65, 33, 17, 9], max: [0, 0.0000019073486328125, 0.00000286102294921875, 0.00000286102294921875] },
   // 언덕(유리 함수): 곡률 오차가 간격²에 비례(약 4배씩).
-  hill: { cells: [65, 33, 17, 9], max: [0, 0.03726768493652344, 0.14631986618041992, 0.5442428588867188] },
+  // F-305 로 오차를 쌍선형 대신 메시(삼각형) 표면 기준으로 재면서 max 가 바뀌었다
+  // (이전 0.03726768493652344, 0.14631986618041992, 0.5442428588867188). 간격·해시는 그대로.
+  hill: { cells: [65, 33, 17, 9], max: [0, 0.03736114501953125, 0.14777565002441406, 0.5656108856201172] },
   // 1.5 m 계단(16 m 마다): 간격 2 → 0.75(>0.5) 라 LOD1 은 원본, LOD2 는 간격 2(0.75 ≤ 1), LOD3 은 간격 8(1.3125 ≤ 2).
   steps: { cells: [65, 65, 33, 9], max: [0, 0, 0.75, 1.3125] },
   // 0.4 m 폭 잡음 + 경사: 모든 LOD 가 명목 간격으로 상한 안.
-  noise: { cells: [65, 33, 17, 9], max: [0, 0.3926001787185669, 0.3806000351905823, 0.3904501795768738] },
+  // F-305 메시 표면 기준으로 LOD2 max 가 0.3806000351905823 → 0.3891999423503876 로 바뀌었다. 간격·해시는 그대로.
+  noise: { cells: [65, 33, 17, 9], max: [0, 0.3926001787185669, 0.3891999423503876, 0.3904501795768738] },
   // 2 m 폭 잡음: LOD1·2 는 상한을 못 맞춰 원본으로 물러나고, LOD3 만 간격 8 로 2 m 안.
   noiseBig: { cells: [65, 65, 65, 9], max: [0, 0, 0, 1.9522499740123749] },
 };
@@ -121,7 +127,7 @@ for (const [name, mk] of Object.entries(DEMS)) {
   });
 }
 
-test('measureTerrainError = 0.25 m 표본 독립 검산(연속 영역 최대)', () => {
+test('measureTerrainError = 0.25 m 표본 메시 표면 독립 검산(연속 영역 최대)', () => {
   for (const name of ['hill', 'steps', 'noise']) {
     const dem = DEMS[name]();
     for (let lod = 1; lod < TERRAIN_LOD_COUNT; lod++) {
@@ -235,4 +241,62 @@ test('잘못된 입력은 TowerAssetError', () => {
   assert.ok(buildTerrainTile(bad, 1, 0, 1)); // 다른 타일은 그대로 만들 수 있다
   assert.throws(() => measureTerrainError(dem, { tx: 0, ty: 0, lod: 0, cells: 8, heights: new Float32Array(64) }), TowerAssetError);
   assert.throws(() => terrainTileToMesh({ tx: 0, ty: 0, lod: 0, cells: 1, heights: new Float32Array(1) }), TowerAssetError);
+});
+
+// F-305 감독 재현: 4 m(8 표본)마다 ±2.5 m 체커보드 노드 사이를 쌍선형으로 채운 129² DEM(cellM 0.5, 타일 1장).
+// 쌍선형 기준으로는 4 m 간격이 오차 0 이지만, 대각선 삼각형 메시는 비틀린 칸 가운데에서 2.5 m 어긋난다.
+function checkerDem() {
+  const W = 129, h = new Float32Array(W * W);
+  const node = (a, b) => (((a + b) & 1) ? -2.5 : 2.5);
+  for (let j = 0; j < W; j++) for (let i = 0; i < W; i++) {
+    const a = Math.floor(i / 8), b = Math.floor(j / 8), fx = (i % 8) / 8, fy = (j % 8) / 8;
+    const a1 = Math.min(a + 1, 16), b1 = Math.min(b + 1, 16);
+    h[j * W + i] = (node(a, b) * (1 - fx) + node(a1, b) * fx) * (1 - fy) + (node(a, b1) * (1 - fx) + node(a1, b1) * fx) * fy;
+  }
+  return { originX: 0, originY: 0, cellM: 0.5, width: W, height: W, heights: h };
+}
+
+test('F-305 체커보드: 간격 8 메시 오차 ≥ 2.5 m 를 잡고, 간격이 줄어 모든 LOD 메시 오차 ≤ 상한', () => {
+  const dem = checkerDem();
+  // 이전 구현이 고르던 LOD3 타일(간격 8, cells 17)을 직접 만들어 잰다.
+  const old = { tx: 0, ty: 0, lod: 3, cells: 17, heights: new Float32Array(17 * 17) };
+  for (let j = 0; j < 17; j++) for (let i = 0; i < 17; i++) old.heights[j * 17 + i] = dem.heights[j * 8 * 129 + i * 8];
+  const mOld = measureTerrainError(dem, old).maxErrorM;
+  assert.ok(mOld >= 2.5, `간격 8 measure ${mOld} < 2.5`);
+  assert.ok(Math.abs(bruteError(dem, old) - mOld) <= 1e-9);
+  for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
+    const t = buildTerrainTile(dem, 0, 0, lod);
+    const m = measureTerrainError(dem, t).maxErrorM;
+    const b = bruteError(dem, t, 8);
+    assert.ok(m <= TERRAIN_LOD_MAX_ERROR_M[lod], `LOD${lod} measure ${m}`);
+    assert.ok(b <= TERRAIN_LOD_MAX_ERROR_M[lod], `LOD${lod} 메시 보간 오차 ${b}`);
+    assert.ok(Math.abs(m - b) <= 1e-9, `LOD${lod} measure ${m} vs brute ${b}`);
+    if (lod === 3) assert.ok(t.cells > 17, `LOD3 간격이 줄지 않았다 (cells ${t.cells})`);
+  }
+});
+
+test('F-315 ②: |origin| 이 상한을 넘으면 즉시 TowerAssetError (무한 루프 없음)', () => {
+  const dem = DEMS.slope();
+  for (const o of [1e20, -1e20, 1e7 + 64]) {
+    assert.throws(() => terrainLodStride({ ...dem, originX: o }, 1), TowerAssetError);
+    assert.throws(() => terrainLodStride({ ...dem, originY: o }, 1), TowerAssetError);
+    assert.throws(() => terrainMissingTiles({ ...dem, originX: o }), TowerAssetError);
+  }
+});
+
+test('F-315 ③·F-314 ⑥: 유한하지 않은 높이 → 즉시 TowerAssetError, 결측 타일 목록', () => {
+  const dem = DEMS.slope();
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    const t = buildTerrainTile(dem, 0, 0, 1);
+    t.heights[5] = bad;
+    assert.throws(() => measureTerrainError(dem, t), TowerAssetError);
+    assert.throws(() => terrainTileToMesh(t), TowerAssetError);
+  }
+  assert.deepEqual(terrainMissingTiles(dem), []);
+  const d = DEMS.noise();
+  d.heights[10] = NaN; // 타일 (0,0) 만
+  d.heights[200 * N + 64] = Infinity; // x=64 경계: 타일 (0,3)·(1,3) 공유
+  assert.deepEqual(terrainMissingTiles(d), [{ tx: 0, ty: 3 }, { tx: 1, ty: 3 }, { tx: 0, ty: 0 }].sort((p, q) => p.ty - q.ty || p.tx - q.tx));
+  // 결측 타일을 뺀 판정이라 간격은 정상 DEM 과 같다(noise 명목 간격).
+  for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.equal(terrainLodStride(d, lod), 1 << lod);
 });
