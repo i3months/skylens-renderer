@@ -1,6 +1,6 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createLevelMachine } from '../state/index.mjs';
 
@@ -93,9 +93,35 @@ test('시계를 켠 채 1시간 진행하는 동안 타이머를 등록하지 �
   assert.deepEqual(호출, { setTimeout: 0, setInterval: 0, setImmediate: 0, now: 0 });
 });
 
-test('소스에 타이머·시계 호출 문자열이 없음', () => {
-  for (const rel of ['../state/index.mjs', '../../../contracts/levels/index.mjs']) {
-    assert.deepEqual(금지어_찾기(소스(rel)), [], rel);
+// levels 소스 전부(F-180 ⑤): 서버·클라이언트·계약 디렉터리를 훑어 *.test.mjs 가 아닌 .mjs 를 모두 검사한다.
+// 목록을 손으로만 적으면 새 소스(또는 이미 있던 client/levels·missing·replace·final·log)가 빠진다.
+const 루트 = (rel) => fileURLToPath(new URL(rel, import.meta.url));
+function 소스_모으기(dir, out = []) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = `${dir}/${e.name}`;
+    if (e.isDirectory()) 소스_모으기(p, out);
+    else if (e.name.endsWith('.mjs') && !e.name.endsWith('.test.mjs')) out.push(p);
+  }
+  return out;
+}
+const 필수 = [
+  'client/levels/index.mjs', 'client/levels/missing/index.mjs',
+  'server/levels/state/index.mjs', 'server/levels/replace/index.mjs',
+  'server/levels/final/index.mjs', 'server/levels/log/index.mjs',
+  'contracts/levels/index.mjs',
+];
+
+test('검사 대상 목록에 levels 소스 7개가 모두 들어 있다', () => {
+  const 찾음 = [...소스_모으기(루트('../../../client/levels')), ...소스_모으기(루트('../../../server/levels')), ...소스_모으기(루트('../../../contracts/levels'))]
+    .map((p) => p.slice(루트('../../../').length));
+  for (const f of 필수) assert.ok(찾음.includes(f), `목록에 없음: ${f}`);
+});
+
+test('levels 소스(서버·클라이언트·계약) 전부에 타이머·시계 호출 문자열이 없음', () => {
+  const 파일 = [...소스_모으기(루트('../../../client/levels')), ...소스_모으기(루트('../../../server/levels')), ...소스_모으기(루트('../../../contracts/levels'))];
+  assert.ok(파일.length >= 필수.length, `소스 ${파일.length}개`);
+  for (const f of 파일) {
+    assert.deepEqual(금지어_찾기(readFileSync(f, 'utf8')), [], f);
   }
 });
 

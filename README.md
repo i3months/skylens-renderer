@@ -104,6 +104,9 @@ git config core.hooksPath .githooks
 ```
 훅은 커밋 메시지·추가 내용·브랜치 이름에 생성 도구 흔적이 있으면 커밋과 푸시를 막는다.
 
+### 프로토콜 (T11)
+웹소켓(TCP) 단일 이진 프레임: 머리 8 B + 본문, 메시지 9종(접속·시점 갱신·조각 요청·확인·환영·조각·수준 도착·없음·오류). 계약은 `contracts/proto/`, 부호화·복호는 서버 `server/proto/codec/`·클라이언트 `client/proto/`(같은 검사 순서·오류 코드), 서버 골격은 `server/ws/`(의존성 없는 RFC 6455 구현, 주소·포트는 환경 변수 `SKYLENS_WS_HOST`·`SKYLENS_WS_PORT`), 역압 `server/ws/backpressure/`, 재접속 `server/ws/resume/`, 송출 스케줄러 `server/scheduler/`(우선순위·바이트 예산·추월 버림)와 초기 묶음 `server/scheduler/initial/`, skylens 이벤트 어댑터 `server/adapter/core/`, 모의 클라이언트 `tools/mock_client/`, 퍼저 `server/proto/fuzz/`, 바이트 집계 `bench/proto/`.
+
 ### 컬링 (T08)
 - 컬링 단계는 모두 보수적이다(보여야 할 리프를 버리지 않는다). 결과는 길이 leafCount 의 0/1 마스크이고 `contracts/cull` 에 서명이 있다.
 - `server/cull/frustum`(절두체), `backface`(법선 원뿔), `occlusion`(CPU 깊이 피라미드), `distance`(거리 컷), `predict`(이동 방향 예측), `priority`(화면 기여 순 정렬), `degenerate`(퇴화 시점은 던지지 않고 빈 결과), `combine`(`cullAndSelect`: 마스크 AND 뒤 LOD 단계 선택). `client/cull`: 서버와 같은 마스크를 내는 절두체 컬링. `bench/cull`: 시점당 CPU 시간.
@@ -172,6 +175,9 @@ Header codec value 1 (SKLC1) compresses 27 B point chunks. Quantized values stay
 
 ### Level state machine (T10)
 The four delay-pattern levels (steps 250, 1,000, 3,500, 7,000) are replaced per segment. A new level releases the lower-level pieces of the same segment (no accumulation), and a lower or equal level arriving after a higher one is skipped. A segment that has not arrived is "missing" (zero render points), and state changes only on arrival events, never with time. The contract is `contracts/levels/` (`decideArrival`), the server machine is `server/levels/state/` (`createLevelMachine`), the client machine is `client/levels/`, and the missing-segment display is `client/levels/missing/`.
+
+### Protocol (T11)
+A single binary WebSocket (TCP) framing: 8-byte header plus payload, nine message types (hello, view update, piece request, ack, welcome, piece, level arrived, missing, error). The contract is `contracts/proto/`; encode/decode lives in `server/proto/codec/` and `client/proto/` (same check order and error codes). The server skeleton is `server/ws/` (dependency-free RFC 6455; host and port come from the environment variables `SKYLENS_WS_HOST` and `SKYLENS_WS_PORT`), with backpressure in `server/ws/backpressure/`, reconnect in `server/ws/resume/`, the send scheduler in `server/scheduler/` (priority, byte budget, overtaken-level drop) and the initial bundle in `server/scheduler/initial/`, the skylens event adapter in `server/adapter/core/`, a mock client in `tools/mock_client/`, a fuzzer in `server/proto/fuzz/` and byte accounting in `bench/proto/`.
 
 ### Point input and coordinates (T04)
 Reads and writes 27 B point and 56 B Gaussian PLY files. Contracts live in `contracts/points/` and `contracts/geo/`; server modules in `server/points/` (PLY read/write/streaming, rejection of corrupt input, normal normalization, segment file identification) and `server/geo/` (GPS↔ENU, ENU↔scene axes x=east, y=up, z=−north); the client conversion in `client/geo/`; point statistics in `tools/points_stat/`. GPS↔ENU uses the same equirectangular approximation as skylens `geo.ts` (R = 6378137 m) and is tested against a transcribed reference function to within 1 mm. When longitude difference |Δλ| exceeds 180°, use 360° − |Δλ|.

@@ -124,7 +124,5 @@ test('1만 경우 무작위 도착: 구간별 최고 수준 유지, 독립 오�
   assert.deepEqual(report, []);
   assert.equal(violations, 0);
   assert.ok(skips > 0 && accepts > 0);
-  // 고정 시드 기준값: 같은 시드면 항상 같은 합이다.
-  assert.equal(accepts, 47182);
-  assert.equal(skips, 67768);
+  // 실행값을 사후 고정하던 두 줄은 지웠다(F-180 ③). 구현 검증에 보태는 것이 없고, 판정은 위의 독립 오라클이 맡는다.
 });
