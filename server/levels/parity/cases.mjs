@@ -3,6 +3,7 @@
 //   source: '파일:줄' 은 그 줄의 서술로 기대값이 정해지는 사례.
 //   source: '추정' 은 문서 서술이 없어 계약의 결정 규칙으로 기대값을 채운 사례(시험에서 따로 묶는다).
 // arrivals: [segmentId, level] 를 도착 순서대로 나열한다(조각은 싣지 않는다).
+// registered: (선택) 도착 전에 expect 로 "없음" 등록해 두는 구간 번호 목록.
 // expect: 마지막 도착 뒤 구간별 { level, final, missing }. 도착하지 않은 구간은 level -1, missing true.
 
 export const ESTIMATED = '추정';
@@ -48,12 +49,6 @@ export const CASES = Object.freeze([
     expect: { 0: L(1) },
   },
   {
-    name: '같은 수준 중복 2→2 는 수준 2 그대로다',
-    source: 'decisions/0010-ws-bytes-copy-rule.md:13 ((구간, 수준)마다 원본은 한 번)',
-    arrivals: [[0, 2], [0, 2]],
-    expect: { 0: L(2) },
-  },
-  {
     name: '추월된 낮은 수준이 끼는 [L2, L1, L2] 는 수준 2 다',
     source: 'decisions/0010-ws-bytes-copy-rule.md:17 (§대가 [L2 5, L1 3, L2 5 final])',
     arrivals: [[5, 2], [5, 1], [5, 2]],
@@ -84,6 +79,13 @@ export const CASES = Object.freeze([
     expect: { 7: NONE_STATE },
   },
   {
+    name: 'expect 로 등록만 한 구간은 도착 전까지 없음이고, 도착하면 그 수준이 된다',
+    source: 'RULES.md:16-17 (§1.2 없으면 없다고 표시, 도착한 것만 그린다)',
+    registered: [3, 4],
+    arrivals: [[3, 1]],
+    expect: { 3: L(1), 4: NONE_STATE },
+  },
+  {
     name: '한 구간만 도착하면 다른 구간은 없음으로 남는다',
     source: 'RULES.md:16-17 (§1.2 메우지 않는다)',
     arrivals: [[0, 2]],
@@ -102,10 +104,16 @@ export const CASES = Object.freeze([
     expect: { 0: L(3) },
   },
   {
-    name: '낮은 수준만 여러 번 와도 시간으로 진행하지 않는다(0→0→1 은 1)',
-    source: 'RULES.md:12 (§1.1 렌더러는 타이머로 수준을 스스로 진행시키지 않는다)',
+    name: '낮은 수준 0 이 반복돼도 수준은 그대로이고 1 이 오면 1 로 교체된다(0→0→1 은 1)',
+    source: 'RULES.md:10 (§1.1 새 수준이 도착해야 낮은 수준을 교체; 같은 수준 0 의 반복은 상태를 바꾸지 않는다)',
     arrivals: [[0, 0], [0, 0], [0, 1]],
     expect: { 0: L(1) },
+  },
+  {
+    name: '같은 수준 중복 2→2 는 수준 2 그대로다(원본이 한 번이라는 가정에 기댄 추정: 0010:18 이 대조하지 않은 가정이라 명시)',
+    source: ESTIMATED,
+    arrivals: [[0, 2], [0, 2]],
+    expect: { 0: L(2) },
   },
   {
     name: '최종 수준 3 중복 도착 뒤에도 최종 3 이다',
