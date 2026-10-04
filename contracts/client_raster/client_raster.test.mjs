@@ -421,7 +421,7 @@ test('ClientRasterError 는 code 와 client_raster: 접두를 가진다', () => 
 
 test('CLIENT_RASTER_API 서명은 문자열 전체가 기대값과 같다(순서 포함)', () => {
   const expected = {
-    createRenderer: 'createRenderer(options) -> Renderer  options: {canvas, maxPieceBytes, maxResidentBytes}',
+    createRenderer: 'createRenderer(options) -> Renderer  options: {canvas, maxPieceBytes, maxResidentBytes, decode?, onEvict?, shading?, now?, contextAttributes?}',
     uploadPiece: 'renderer.uploadPiece(key, bytes) -> Promise<void>  key: ASSET_FORMAT §11 "seg.level.tileX.tileY.lod.chunk", bytes: .skla piece (format 1|2)',
     releasePiece: 'renderer.releasePiece(key) -> void  basis: selectDrawable discard + pending cleanup only (no direct wiring of server adapter release notices); must tolerate repeated release of the same key',
     setView: 'renderer.setView(view) -> void  view: {R, t, K, width, height, devicePixelRatio}  K·width·height in CSS px',

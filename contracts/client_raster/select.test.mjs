@@ -146,12 +146,40 @@ describe('selectDrawable: 타일마다 LOD 하나(F-243 ④)', () => {
     assert.deepEqual(selectDrawable([f0, c0, f1], arrived), { draw: [f0, f1], pending: [], discard: [c0] });
   });
 
-  test('완전한 LOD 가 없으면 상주 chunk 가 있는 가장 세밀한 LOD 를 draw(일부 chunk 만, 다른 LOD 로 메우지 않음)', () => {
+  test('완전한 LOD 가 없으면 상주 chunk 가 있는 가장 세밀한 LOD 를 draw(일부 chunk 만, 다른 LOD 로 메우지 않음), 성긴 일부 LOD 는 pending', () => {
     const f0 = '7.1.0.0.0.0';
     const f1 = '7.1.0.0.0.1';
     const c0 = '7.1.0.0.2.0';
     const c1 = '7.1.0.0.2.1';
-    assert.deepEqual(selectDrawable([c0, f0], [A(7, 1, [f0, f1, c0, c1])]), { draw: [f0], pending: [], discard: [c0] });
+    // F-246 ①: 성긴 c0 를 discard 하면 호출자가 해제해 lod 2 도 영영 완전해지지 못한다
+    assert.deepEqual(selectDrawable([c0, f0], [A(7, 1, [f0, f1, c0, c1])]), { draw: [f0], pending: [c0], discard: [] });
+  });
+
+  test('F-246 ① 재현: lod 2 chunk 10·lod 0 chunk 10 완료, lod 2 0..8·lod 0 0 상주 → discard 0. lod 2 가 완전해지면 lod 2 draw·lod 0 pending', () => {
+    const coarse = [];
+    const fine = [];
+    for (let i = 0; i < 10; i++) {
+      coarse.push(`7.1.0.0.2.${i}`);
+      fine.push(`7.1.0.0.0.${i}`);
+    }
+    const arrived = [A(7, 1, [...coarse, ...fine])];
+    const resident = [...coarse.slice(0, 9), fine[0]];
+    assert.deepEqual(selectDrawable(resident, arrived), { draw: [fine[0]], pending: coarse.slice(0, 9), discard: [] });
+    // lod 2 의 마지막 chunk 가 상주하면 lod 2 가 완전한 LOD 중 가장 세밀한 것이 된다. 덜 상주한 lod 0 은 pending(해제하지 않음)
+    assert.deepEqual(selectDrawable([...resident, coarse[9]], arrived), { draw: coarse, pending: [fine[0]], discard: [] });
+  });
+
+  test('완전한 LOD 를 고르면 그보다 성긴 LOD 는 일부 상주여도 discard(바꿔 끼워졌다)', () => {
+    const m0 = '7.1.0.0.1.0'; // lod 1: 완전
+    const c0 = '7.1.0.0.4.0'; // lod 4: 2개 중 1개만 상주
+    const c1 = '7.1.0.0.4.1';
+    assert.deepEqual(selectDrawable([c0, m0], [A(7, 1, [m0, c0, c1])]), { draw: [m0], pending: [], discard: [c0] });
+  });
+
+  test('완전한 LOD 가 없고 세 LOD 가 일부 상주: 가장 세밀한 것만 draw, 나머지는 모두 pending', () => {
+    const keys = ['7.1.0.0.5.0', '7.1.0.0.1.0', '7.1.0.0.3.0'];
+    const done = [...keys, '7.1.0.0.5.1', '7.1.0.0.1.1', '7.1.0.0.3.1'];
+    assert.deepEqual(selectDrawable(keys, [A(7, 1, done)]), { draw: ['7.1.0.0.1.0'], pending: ['7.1.0.0.5.0', '7.1.0.0.3.0'], discard: [] });
   });
 
   test('타일·구간이 다르면 따로 고른다, 낮은 수준은 LOD 와 무관하게 discard', () => {

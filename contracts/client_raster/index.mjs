@@ -97,11 +97,22 @@
 //       1) 완료 집합의 그 (타일, LOD) chunk 가 모두 상주한 LOD('완전') 중 가장 세밀한 것(lod 숫자가 가장 작은 것, §10.1 0 = 전부)을
 //          고른다. 완전한 LOD 가 없으면 상주 chunk 가 하나라도 있는 LOD 중 가장 세밀한 것을 고른다(chunk 는 서로소라 일부만
 //          그려도 도착한 점만 그린다. 다른 LOD 로 빈 chunk 를 메우지 않는다).
-//       2) 고른 LOD 의 상주·완료 chunk 는 draw. 고른 것보다 성긴 LOD(숫자가 큰 것)는 discard(바꿔 끼워졌다).
+//       2) 고른 LOD 의 상주·완료 chunk 는 draw. 고른 LOD 가 완전하면 그보다 성긴 LOD(숫자가 큰 것)는 discard(완전한 LOD 로
+//          바꿔 끼워졌다). 고른 LOD 가 완전하지 않으면(완전한 LOD 가 하나도 없으면) 그보다 성긴 LOD 도 pending 이다(F-246 ①).
+//          일부 상주한 성긴 LOD 를 discard 로 두면 호출자가 해제해 그 LOD 도 영영 완전해지지 못하고, 고른 세밀한 LOD 마저 끝내
+//          완전해지지 않으면 그 타일은 완전한 LOD 를 얻을 길이 없다. 성긴 LOD 가 먼저 완전해지면 다음 호출에서 1) 로 그것이
+//          골라지고(draw) 세밀한 일부 LOD 는 아래 3) 으로 pending 이 된다.
 //       3) 고른 것보다 세밀하지만 아직 완전하지 않은 LOD 는 pending(나머지 chunk 업로드를 기다린다. 그리지 않는다). discard 로 두면
 //          호출자가 해제해 그 LOD 가 영영 완전해지지 못하므로 버리지 않는다. 완전해지면 다음 호출에서 그것이 골라지고 성긴 LOD 는
 //          discard 가 된다. 끝내 완전해지지 않으면 아래 pending 정리 규칙으로 해제한다.
+//       곧 discard 는 '완전한 LOD 보다 성긴 LOD' 뿐이다. 완전한 LOD 가 없는 동안 타일의 어떤 LOD 도 LOD 고르기 때문에 해제되지 않는다.
 //     같은 (타일, LOD) 의 서로 다른 chunk_index 는 점을 나눈 것이라 함께 그린다(§10.1).
+//   - 시점 거리 기반 LOD 선택은 미룬다(결정 0034). contracts/lod 는 거리 d 에서 화면 오차 f_view·edgeM/d ≤ τ 로 단계를 고르고
+//     edge0M 하한에 깊이 해상도 Δd ≈ d²/(f·b) 를 쓰지만, 여기서는 시점을 보지 않고 늘 위 1)~3) 의 '완전한 것 중 가장 세밀한
+//     LOD' 를 그린다. 이유: 한 타일에 여러 LOD 가 온다는 보장도 하나만 온다는 보장도 없고(§10.1, 어느 LOD 를 보낼지는 서버의
+//     선택 몫), 시점이 바뀔 때마다 고르면 selectDrawable 이 도착 이벤트가 아니라 setView·프레임마다 돌아야 해(호출 주기 규칙과
+//     어긋남) 해제·재업로드가 시점 이동에 따라 오간다. 거리 기반 선택은 서버 송출이 타일당 LOD 를 정하는 방식이 확정된 뒤
+//     (결정 0034 '다시 볼 조건') 계약을 바꿔 넣는다. 그 전까지 세밀한 LOD 를 그리는 것은 도착한 점을 더 그리는 쪽이라 원칙을 어기지 않는다.
 //   - 자기 LEVEL_ARRIVED 가 끝내 오지 않는 pending 조각: 계속 그리지 않는다. 정리 규칙: 그 구간의 시도(attempt)가 새 시도로
 //     대체되거나 끝나면(종료·연결 끊김·재개 재시작 포함) 그 구간에 남은 pending key 전부를 포기(abandoned)로 보고 호출자가
 //     releasePiece 로 해제한다. selectDrawable 은 순수 함수라 해제하지 않고 pending 을 그대로 돌려준다. 해제 전까지 pending 조각도
@@ -142,8 +153,8 @@
  * @property {() => FrameStats} draw  프레임 렌더링 및 통계 반환
  * @property {() => number} memoryBytes  현재 GPU 메모리 사용량(바이트)
  * @property {() => void} dispose  리소스 정리
- * @property {(callback?: () => void) => void} onContextLost  WebGL 컨텍스트 손실 핸들러. 구독 해제 함수 반환
- * @property {(callback?: (keys: string[]) => void) => void} onContextRestored  WebGL 컨텍스트 복구 핸들러. 콜백 인자: 다시 올려야 할 key 배열(소실 당시 상주·업로드 중이던 것). 구독 해제 함수 반환
+ * @property {(callback?: () => void) => (() => void)} onContextLost  WebGL 컨텍스트 손실 핸들러. 구독 해제 함수 반환(부르면 그 callback 을 더 부르지 않는다)
+ * @property {(callback?: (keys: string[]) => void) => (() => void)} onContextRestored  WebGL 컨텍스트 복구 핸들러. 콜백 인자: 다시 올려야 할 key 배열(소실 당시 상주·업로드 중이던 것). 구독 해제 함수 반환
  * @property {(arrived: {segmentId: number, level: number, keys: string[]}[]) => {draw: string[], pending: string[], discard: string[]}} setArrived  LEVEL_ARRIVED 완료 집합을 넘겨 그리는 조각을 정한다
  * @property {() => string[]} residentKeys  현재 상주 key 배열
  * @property {() => boolean} isContextLost  WebGL 컨텍스트 손실 상태
@@ -152,6 +163,14 @@
  * @property {HTMLCanvasElement} canvas  렌더 타겟
  * @property {number} maxPieceBytes  한 조각 최대 크기(바이트, GPU 평면 합 = 형식 1 위치·색·법선 또는 형식 2 위치·색)
  * @property {number} maxResidentBytes  GPU 상주 메모리 상한(바이트)
+ * @property {(bytes: Uint8Array) => any | Promise<any>} [decode]  복호기 주입. 기본은 client/codec decodeChunkClient(① 의 Worker 복호를
+ *   하려면 Worker 클라이언트의 decode 를 넘긴다). 함수가 아니면 ClientRasterError('context')
+ * @property {(keys: string[]) => void} [onEvict]  maxResidentBytes 를 지키려고 렌더러가 스스로 해제한 그리지 않는 상주 조각(pending·discard,
+ *   오래된 것부터. draw 조각은 해제하지 않는다)의 key 알림. 호출자는 이 key 를 상주로 세지 않는다. 콜백이 던져도 해제는 이미 끝났다
+ * @property {{lightDirWorld?: number[], pointSizeM?: number, ambient?: number, near?: number, far?: number}} [shading]  셰이딩·점 크기·
+ *   깊이 범위. 빛 방향은 세계 좌표(①). 빠진 필드는 구현 기본값이고 틀린 값은 만들 때 ClientRasterError('view')
+ * @property {() => number} [now]  draw 의 drawMs 를 재는 시계(밀리초, 기본 performance.now). 시험에서 가짜 시계를 넣는 용도
+ * @property {Object} [contextAttributes]  canvas.getContext('webgl2', …) 속성. 구현 기본값 위에 덮어쓴다
  */
 
 /** 클라이언트 래스터라이저 오류. code: 'context' | 'memory' | 'piece' | 'view' | 'unimplemented'. */
@@ -181,7 +200,7 @@ export const PIECE_KEY_PATTERN = /^(0|[1-9][0-9]*)\.[0-3]\.(0|-?[1-9][0-9]*)\.(0
  * 이름과 메서드 순서는 이 표가 기준이다.
  */
 export const CLIENT_RASTER_API = Object.freeze({
-  createRenderer: { fn: 'createRenderer(options) -> Renderer  options: {canvas, maxPieceBytes, maxResidentBytes}' },
+  createRenderer: { fn: 'createRenderer(options) -> Renderer  options: {canvas, maxPieceBytes, maxResidentBytes, decode?, onEvict?, shading?, now?, contextAttributes?}' },
   uploadPiece: { fn: 'renderer.uploadPiece(key, bytes) -> Promise<void>  key: ASSET_FORMAT §11 "seg.level.tileX.tileY.lod.chunk", bytes: .skla piece (format 1|2)' },
   releasePiece: { fn: 'renderer.releasePiece(key) -> void  basis: selectDrawable discard + pending cleanup only (no direct wiring of server adapter release notices); must tolerate repeated release of the same key' },
   setView: { fn: 'renderer.setView(view) -> void  view: {R, t, K, width, height, devicePixelRatio}  K·width·height in CSS px' },
@@ -416,7 +435,8 @@ export function parsePieceKey(key) {
  *            또는 level = M 이지만 완료 집합 밖인 조각(시도가 중간에 버린 abandoned 조각. 그리기 전에 해제된다)
  *   pending: 도착한 수준이 없는 구간의 조각 또는 level > M 인 조각(자기 LEVEL_ARRIVED 를 기다린다. 그리지 않는다)
  * LOD(헤더 ④, ASSET_FORMAT §10.1): 위 draw 후보를 (타일) 마다 묶어 LOD 하나만 draw 로 남긴다. 완전히 상주한 LOD 중 가장 세밀한 것,
- *   없으면 상주 chunk 가 있는 LOD 중 가장 세밀한 것을 고른다. 더 성긴 LOD 는 discard, 더 세밀하지만 덜 상주한 LOD 는 pending.
+ *   없으면 상주 chunk 가 있는 LOD 중 가장 세밀한 것을 고른다. 더 세밀하지만 덜 상주한 LOD 는 pending. 더 성긴 LOD 는 고른 LOD 가
+ *   완전하면 discard, 완전하지 않으면 pending(F-246 ①: 완전한 LOD 가 없는 동안 어느 LOD 도 해제하지 않는다).
  * 같은 구간·같은 수준의 항목이 여럿이면 완료 집합은 합집합이다. 결과 배열 순서는 입력 순서를 따른다.
  * keys 에 같은 key 가 여러 번 있으면 첫 등장만 남기고 나머지는 버린다(draw·pending·discard 어디에도 한 번만 나온다).
  * 호출 주기: LEVEL_ARRIVED 도착 이벤트마다 부르며 프레임마다 부르지 않는다(결과는 다음 도착까지 재사용한다).
@@ -496,9 +516,11 @@ export function selectDrawable(keys, arrived) {
       order.push(key, code);
     } else order.push(key, DISCARD);
   }
-  // 타일마다 그릴 LOD 하나: 완전한 LOD 중 가장 세밀한 것, 없으면 상주 chunk 가 있는 LOD 중 가장 세밀한 것(헤더 ④)
+  // 타일마다 그릴 LOD 하나: 완전한 LOD 중 가장 세밀한 것, 없으면 상주 chunk 가 있는 LOD 중 가장 세밀한 것(헤더 ④).
+  // 고른 것이 완전하지 않으면 성긴 LOD 도 discard 하지 않고 pending 으로 둔다(F-246 ①)
   const tiles = tileSegLevel.length;
   const chosen = new Int8Array(tiles).fill(-1); // 타일 -> 고른 lod(-1 = 상주 후보 없음)
+  const chosenComplete = new Uint8Array(tiles); // 타일 -> 고른 lod 가 완전하면 1(그때만 성긴 LOD 를 discard)
   for (let t = 0; t < tiles; t++) {
     let best = -1;
     let bestComplete = -1;
@@ -509,6 +531,7 @@ export function selectDrawable(keys, arrived) {
       if (n === need[t * 8 + lod]) bestComplete = lod;
     }
     chosen[t] = bestComplete !== -1 ? bestComplete : best;
+    chosenComplete[t] = bestComplete !== -1 ? 1 : 0;
   }
   const out = { draw: [], pending: [], discard: [] };
   for (let i = 0; i < order.length; i += 2) {
@@ -518,10 +541,11 @@ export function selectDrawable(keys, arrived) {
     else if (c === DISCARD) out.discard.push(key);
     else {
       const lod = c % 8;
-      const pick = chosen[(c - lod) / 8];
+      const t = (c - lod) / 8;
+      const pick = chosen[t];
       if (lod === pick) out.draw.push(key);
-      else if (lod > pick) out.discard.push(key); // 더 성긴 LOD: 바꿔 끼워졌다
-      else out.pending.push(key); // 더 세밀하지만 덜 상주한 LOD: 나머지 chunk 를 기다린다
+      else if (lod > pick && chosenComplete[t] === 1) out.discard.push(key); // 완전한 LOD 보다 성긴 LOD: 바꿔 끼워졌다
+      else out.pending.push(key); // 더 세밀하지만 덜 상주한 LOD, 또는 완전한 LOD 가 없을 때의 성긴 LOD: 나머지 chunk 를 기다린다
     }
   }
   return out;
