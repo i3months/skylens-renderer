@@ -162,11 +162,11 @@ test('abandoned 섞인 재시도(어댑터 교체, F-219 ④): 같은 수준의 
   assert.deepEqual(selectDrawable(keys, arrived), { draw: ['9.1.1.-2.0.1', '9.1.1.-2.0.2'], pending: [], discard: ['9.1.1.-2.0.0'] });
 });
 
-test('재시도 skip(F-235): LEVEL_ARRIVED 가 쓰였으면 완료, 안 쓰였으면 아님. 클라이언트가 놓는 key 와 그리는 key 는 겹치지 않는다', () => {
+test('재시도 skip(F-235): LEVEL_ARRIVED 가 쓰였으면 완료, 안 쓰였으면 아님', () => {
   // 'before' call 2: 선에 P1 만 → 완료 표시 없음. 'after' call 3: 선에 P1 P2 LA → 완료 표시 있음(받는 쪽은 선만 본다).
-  for (const [f, wire, draw, pending] of [
-    [{ call: 2, where: 'before' }, [['PIECE', 1]], [], ['9.1.1.-2.0.0']],
-    [{ call: 3, where: 'after' }, [['PIECE', 1], ['PIECE', 2], ['LEVEL_ARRIVED', undefined]], ['9.1.1.-2.0.0', '9.1.1.-2.0.1'], []],
+  for (const [f, wire, draw, pending, abandoned] of [
+    [{ call: 2, where: 'before' }, [['PIECE', 1]], [], ['9.1.1.-2.0.0'], ['9.1.1.-2.0.0', '9.1.1.-2.0.1']],
+    [{ call: 3, where: 'after' }, [['PIECE', 1], ['PIECE', 2], ['LEVEL_ARRIVED', undefined]], ['9.1.1.-2.0.0', '9.1.1.-2.0.1'], [], []],
   ]) {
     const machine = createLevelMachine();
     const h = harness({ machine });
@@ -179,19 +179,8 @@ test('재시도 skip(F-235): LEVEL_ARRIVED 가 쓰였으면 완료, 안 쓰였�
     const { keys, arrived } = collectArrivals(msgs);
     const sel = selectDrawable(keys, arrived);
     assert.deepEqual(sel, { draw, pending, discard: [] }, f.where);
-    // 클라이언트 해제 근거(discard·pending 정리)와 draw 는 겹치지 않는다
-    for (const k of [...sel.discard, ...sel.pending]) assert.ok(!sel.draw.includes(k), `${f.where} ${k}`);
-    // 어댑터 abandoned 를 이 계약의 규칙(LEVEL_ARRIVED 가 쓰였으면 완료)으로 읽으면 draw 와 겹치지 않는다.
-    // 선에 완료 표시가 있는 key 는 abandoned 가 아니다.
-    const completed = new Set(arrived.flatMap((a) => a.keys));
-    const abandoned = (r.abandoned ?? []).map(pieceKeyToString);
-    const abandonedOnClient = abandoned.filter((k) => !completed.has(k));
-    assert.deepEqual(abandonedOnClient.filter((k) => sel.draw.includes(k)), [], f.where);
-    // 어댑터가 낸 abandoned 그대로와 draw 의 교집합: 'before' 는 언제나 비고, 'after' 는 지금 어댑터(F-235 어댑터 측 수정 전)
-    // 에서는 선에 완료 표시가 있는 두 key 이고 수정 뒤에는 빈다. 어느 쪽이든 그 key 는 선의 완료 집합 안에 있다.
-    const overlap = abandoned.filter((k) => sel.draw.includes(k));
-    if (f.where === 'before') assert.deepEqual(overlap, []);
-    else assert.ok(overlap.length === 0 || overlap.every((k) => completed.has(k)), JSON.stringify(overlap));
+    // 어댑터가 알린 abandoned 는 고정 배열이다: 'before'(LEVEL_ARRIVED 안 쓰임)는 두 key 전부, 'after'(쓰임)는 빈 배열(F-235).
+    assert.deepEqual((r.abandoned ?? []).map(pieceKeyToString), abandoned, f.where);
   }
 });
 
@@ -213,29 +202,51 @@ test('이상 입력은 ClientRasterError(piece)', () => {
   assert.deepEqual(completedKeys([P(1, 7, 0, 0), P(2, 7, 0, 1)], LA(7, 0, 2)), ['7.0.0.0.0.0', '7.0.0.0.0.1']);
   // 창이 최대 pieceSeq 에서 끝난다: 앞의 같은 수준 조각은 창 밖
   assert.deepEqual(completedKeys([P(1, 7, 0, 0), P(3, 7, 0, 1), P(4, 7, 0, 2)], LA(7, 0, 2)), ['7.0.0.0.0.1', '7.0.0.0.0.2']);
-  for (const [name, f] of [
-    ['pieceCount 가 받은 조각보다 많음', () => completedKeys([P(1, 7, 0, 0), P(2, 7, 0, 1)], LA(7, 0, 3))],
-    ['창에 빈칸(태운 순번)', () => completedKeys([P(1, 7, 0, 0), P(3, 7, 0, 1)], LA(7, 0, 2))],
-    ['다른 수준 섞임', () => completedKeys([P(1, 7, 1, 0), P(2, 7, 0, 1)], LA(7, 0, 2))],
-    ['다른 구간 섞임', () => completedKeys([P(1, 8, 0, 0), P(2, 7, 0, 1)], LA(7, 0, 2))],
-    ['창 끝이 다른 수준(뒤 이벤트 조각이 앞섬)', () => completedKeys([P(1, 7, 0, 0), P(2, 7, 1, 0)], LA(7, 0, 1))],
-    ['같은 pieceSeq 에 다른 key', () => completedKeys([P(1, 7, 0, 0), P(1, 7, 0, 1)], LA(7, 0, 1))],
-    ['창 안 같은 key 두 번', () => completedKeys([P(1, 7, 0, 0), P(2, 7, 0, 0)], LA(7, 0, 2))],
-    ['조각 없음', () => completedKeys([], LA(7, 0, 1))],
-    ['pieceCount 0', () => completedKeys([P(1, 7, 0, 0)], LA(7, 0, 0))],
-    ['segmentId 상한(2^30)', () => completedKeys([P(1, 7, 0, 0)], LA(1073741824, 0, 1))],
-    ['PIECE key segmentId 상한(2^30)', () => completedKeys([P(1, 1073741824, 0, 0)], LA(7, 0, 1))],
-    ['level 4', () => completedKeys([P(1, 7, 0, 0)], LA(7, 4, 1))],
-    ['pieceSeq 0', () => completedKeys([P(0, 7, 0, 0)], LA(7, 0, 1))],
-    ['LEVEL_ARRIVED 아님', () => completedKeys([P(1, 7, 0, 0)], { type: 'MISSING', segmentId: 7 })],
-    ['pieces 배열 아님', () => completedKeys(null, LA(7, 0, 1))],
-    ['messages type 없음', () => collectArrivals([{ pieceSeq: 1 }])],
-    ['collectArrivals 에서 모자람', () => collectArrivals([P(1, 7, 0, 0), LA(7, 0, 2)])],
-  ]) assert.throws(f, isPiece, name);
+  for (const [name, f, re] of [
+    ['pieceCount 가 받은 조각보다 많음', () => completedKeys([P(1, 7, 0, 0), P(2, 7, 0, 1)], LA(7, 0, 3)), /pieceCount 3 만큼 조각을 받지 못함\(받은 조각 2\)/],
+    ['창에 빈칸(태운 순번)', () => completedKeys([P(1, 7, 0, 0), P(3, 7, 0, 1)], LA(7, 0, 2)), /pieceSeq 2 조각을 받지 못함\(창 2\.\.3\)/],
+    ['다른 수준 섞임', () => completedKeys([P(1, 7, 1, 0), P(2, 7, 0, 1)], LA(7, 0, 2)), /창 1\.\.2 에 다른 구간·수준 조각이 섞임: pieceSeq 1 7\.1\.0\.0\.0\.0/],
+    ['다른 구간 섞임', () => completedKeys([P(1, 8, 0, 0), P(2, 7, 0, 1)], LA(7, 0, 2)), /창 1\.\.2 에 다른 구간·수준 조각이 섞임: pieceSeq 1 8\.0\.0\.0\.0\.0/],
+    ['창 끝이 다른 수준(뒤 이벤트 조각이 앞섬)', () => completedKeys([P(1, 7, 0, 0), P(2, 7, 1, 0)], LA(7, 0, 1)), /창 2\.\.2 에 다른 구간·수준 조각이 섞임: pieceSeq 2 7\.1\.0\.0\.0\.0/],
+    ['같은 pieceSeq 에 다른 key', () => completedKeys([P(1, 7, 0, 0), P(1, 7, 0, 1)], LA(7, 0, 1)), /pieceSeq 1 가 두 key 에 쓰임/],
+    ['창 안 같은 key 두 번', () => completedKeys([P(1, 7, 0, 0), P(2, 7, 0, 0)], LA(7, 0, 2)), /창에 같은 key 가 두 번: 7\.0\.0\.0\.0\.0/],
+    ['조각 없음', () => completedKeys([], LA(7, 0, 1)), /pieceCount 1 만큼 조각을 받지 못함\(받은 조각 0\)/],
+    ['pieceCount 0', () => completedKeys([P(1, 7, 0, 0)], LA(7, 0, 0)), /pieceCount 는 1 이상 u32 여야 함: 0/],
+    ['segmentId 상한(2^30)', () => completedKeys([P(1, 7, 0, 0)], LA(1073741824, 0, 1)), /LEVEL_ARRIVED segmentId 가 범위 밖/],
+    ['PIECE key segmentId 상한(2^30)', () => completedKeys([P(1, 1073741824, 0, 0)], LA(7, 0, 1)), /segmentId/],
+    ['level 4', () => completedKeys([P(1, 7, 0, 0)], LA(7, 4, 1)), /LEVEL_ARRIVED level 범위 밖: 4/],
+    ['pieceSeq 0', () => completedKeys([P(0, 7, 0, 0)], LA(7, 0, 1)), /pieceSeq 범위 밖: 0/],
+    ['LEVEL_ARRIVED 아님', () => completedKeys([P(1, 7, 0, 0)], { type: 'MISSING', segmentId: 7 }), /LEVEL_ARRIVED 메시지가 아님/],
+    ['pieces 배열 아님', () => completedKeys(null, LA(7, 0, 1)), /pieces 는 배열이어야 함/],
+    ['messages type 없음', () => collectArrivals([{ pieceSeq: 1 }]), /메시지 type 이 없음/],
+    ['collectArrivals 에서 모자람', () => collectArrivals([P(1, 7, 0, 0), LA(7, 0, 2)]), /pieceCount 2 만큼 조각을 받지 못함\(받은 조각 1\)/],
+  ]) assert.throws(f, (e) => isPiece(e) && re.test(e.message), name);
   // collectArrivals 는 LEVEL_ARRIVED 시점까지의 PIECE 만 본다(뒤 PIECE 로 앞 창을 채우지 않는다)
   assert.throws(() => collectArrivals([P(1, 7, 0, 0), LA(7, 0, 2), P(2, 7, 0, 1)]), isPiece);
   // 다른 종류는 건너뛴다
   assert.deepEqual(collectArrivals([{ type: 'MISSING', segmentId: 3 }, P(1, 7, 0, 0), LA(7, 0, 1)]).arrived, [{ segmentId: 7, level: 0, keys: ['7.0.0.0.0.0'] }]);
+});
+
+test('firstPieceSeq 명시 창(F-236): 단독 재전송·maxSeq 와 다른 창·범위 밖 값', () => {
+  const P = (pieceSeq, chunkIndex) => ({ type: 'PIECE', pieceSeq, key: { segmentId: 7, level: 0, lod: 0, chunkIndex, tileX: 0, tileY: 0 }, chunk: Uint8Array.of(1) });
+  const LA = (pieceCount, firstPieceSeq) => ({ type: 'LEVEL_ARRIVED', segmentId: 7, level: 0, pieceCount, firstPieceSeq });
+  const pieces = [P(1, 0), P(2, 1), P(3, 2), P(4, 3), P(5, 4)];
+  // firstPieceSeq ≠ maxSeq−n+1: maxSeq 5, n 2 면 옛 규칙은 4..5, 명시 창은 2..3
+  assert.deepEqual(completedKeys(pieces, LA(2, 2)), ['7.0.0.0.0.1', '7.0.0.0.0.2']);
+  // 단독 재전송: 뒤 PIECE 가 이미 와 있어도 이어받기 뒤 혼자 온 LEVEL_ARRIVED 는 자기 창(1..2)을 가리킨다
+  assert.deepEqual(completedKeys(pieces, LA(2, 1)), ['7.0.0.0.0.0', '7.0.0.0.0.1']);
+  assert.deepEqual(collectArrivals([...pieces, LA(2, 1), LA(2, 1)]).arrived, [
+    { segmentId: 7, level: 0, keys: ['7.0.0.0.0.0', '7.0.0.0.0.1'] }, { segmentId: 7, level: 0, keys: ['7.0.0.0.0.0', '7.0.0.0.0.1'] },
+  ]);
+  // 창 끝은 firstPieceSeq+n−1(포함): 마지막 PIECE 가 창의 끝이면 통과, 한 칸 모자라면 거부
+  assert.deepEqual(completedKeys(pieces, LA(2, 4)), ['7.0.0.0.0.3', '7.0.0.0.0.4']);
+  assert.throws(() => completedKeys(pieces, LA(2, 5)), (e) => isPiece(e) && /pieceSeq 6 조각을 받지 못함\(창 5\.\.6\)/.test(e.message));
+  // 범위 밖
+  const range = /firstPieceSeq 는 1 이상이고 창 끝이 u32 안이어야 함/;
+  for (const [first, n] of [[0, 1], [1.5, 1], [0xffffffff, 2]]) {
+    assert.throws(() => completedKeys(pieces, LA(n, first)), (e) => isPiece(e) && range.test(e.message), `${first},${n}`);
+  }
+  assert.throws(() => collectArrivals([...pieces, LA(2, 0)]), (e) => isPiece(e) && range.test(e.message));
 });
 
 test('새 세션(F-234): WELCOME resumed=false 가 PIECE 뒤에 오면 거부, 처음 보는 pieceSeq 가 줄면 거부', () => {
@@ -264,6 +275,14 @@ test('새 세션(F-234): WELCOME resumed=false 가 PIECE 뒤에 오면 거부, �
   // 이어받기라며 sessionId 가 다르면 거부, resumed 가 boolean 이 아니면 거부
   assert.throws(() => collectArrivals([W(77, false, 1), P(1, 9, 1, 0), W(78, true, 2), P(2, 9, 1, 1)]), isPiece);
   assert.throws(() => collectArrivals([W(77, 0, 1)]), isPiece);
+  // sessionId 는 u32, 앞 sessionId 없는 resumed=true 는 거부
+  for (const bad of [-1, 1.5, 0x100000000, undefined, '7']) {
+    assert.throws(() => collectArrivals([W(bad, false, 1)]), (e) => isPiece(e) && /WELCOME sessionId 는 u32 정수여야 함/.test(e.message), String(bad));
+  }
+  assert.throws(() => collectArrivals([W(77, true, 1), P(1, 9, 1, 0)]), (e) => isPiece(e) && /resumed=true 인데 앞 WELCOME 의 sessionId 가 없음/.test(e.message));
+  assert.throws(() => collectArrivals([P(1, 9, 1, 0), W(77, true, 2)]), (e) => isPiece(e) && /resumed=true 인데 앞 WELCOME 의 sessionId 가 없음/.test(e.message));
+  assert.throws(() => collectArrivals([W(77, false, 1), P(1, 9, 1, 0), W(78, true, 2)]), (e) => isPiece(e) && /sessionId 78 가 앞 세션 77 와 다름/.test(e.message));
+  assert.equal(collectArrivals([W(0xffffffff, false, 1), W(0xffffffff, true, 1)]).keys.length, 0);
   // 첫 PIECE 앞의 resumed=false 는 통과(여러 번이어도)
   assert.deepEqual(collectArrivals([W(5, false, 1), W(6, false, 1), P(1, 9, 1, 0), LA(9, 1, 1)]).arrived, [{ segmentId: 9, level: 1, keys: ['9.1.0.0.0.0'] }]);
   // 선을 거친 WELCOME 도 같다
