@@ -100,8 +100,17 @@ function rng(seed) {
   };
 }
 
-test('합성 1만 항목(시드 고정): 예산 초과 0, 순서 위반 0, 추월 후 낮은 수준 전송 0', () => {
-  const rand = rng(20240611);
+// 시드별 손으로 적은 기대값(독립 모델과 별개로 고정): [나간 항목 수, 나간 고유 key 수]
+const EXPECTED = new Map([
+  [20240611, [3973, 2616]],
+  [1, [3921, 2615]],
+  [7, [4035, 2632]],
+  [424242, [3874, 2583]],
+  [987654321, [3942, 2611]],
+]);
+
+for (const [SEED, [EXPECT_SENT, EXPECT_UNIQUE]] of EXPECTED) test(`합성 1만 항목(시드 ${SEED}): 예산 초과 0, 순서 위반 0, 추월 후 낮은 수준 전송 0`, () => {
+  const rand = rng(SEED);
   const BUDGET = 5000;
   const s = createScheduler({ budgetBytesPerTick: BUDGET });
   const id = (k) => `${k.segmentId}:${k.level}:${k.lod}:${k.chunkIndex}:${k.tileX}:${k.tileY}`;
@@ -187,8 +196,8 @@ test('합성 1만 항목(시드 고정): 예산 초과 0, 순서 위반 0, 추�
   assert.equal(notLiveSent, 0); // 유실·유령 없음: 나간 것은 전부 큐에 살아 있던 것
   assert.equal(cancelledSent, 0); // 취소한 것은 나가지 않는다
   assert.equal(live.size, 0); // 취소·추월 되지 않은 것은 전부 나갔다(유실 0)
-  assert.ok(sentIds.size > 100 && sentIds.size <= sentTotal, `나간 고유 key 수: ${sentIds.size}/${sentTotal}`);
-  assert.ok(sentTotal > 100, `전송 수가 너무 적음: ${sentTotal}`);
+  assert.equal(sentTotal, EXPECT_SENT);
+  assert.equal(sentIds.size, EXPECT_UNIQUE);
 });
 
 test('F-190: 수준 3 이 나간 뒤 같은 묶음 수준 1 enqueue 는 false, pending 0', () => {

@@ -3,6 +3,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
+import { generate as generateLevels, levelCloud } from '../../fixtures/scenes/levels/index.mjs';
 import { measureSyntheticScene, formatSegmentTable, packCloudPieces } from './measure.mjs';
 import { syntheticSceneReport } from './report.mjs';
 import { SEGMENT_BUDGET_BYTES } from './index.mjs';
@@ -10,10 +11,10 @@ import { decodeMessage as clientDecode } from '../../client/proto/index.mjs';
 
 // 합성 장면 levels(seed 1, 구간 4 개, 구간 최고 수준 100000 점) 의 실제 프레임 바이트(손으로 고정한 값).
 const EXPECTED = [
-  { segmentId: 0, pieces: 14, frameBytes: 2064882 },
-  { segmentId: 1, pieces: 18, frameBytes: 2065660 },
-  { segmentId: 2, pieces: 19, frameBytes: 2065788 },
-  { segmentId: 3, pieces: 20, frameBytes: 2065928 },
+  { segmentId: 0, pieces: 14, frameBytes: 2064896 },
+  { segmentId: 1, pieces: 18, frameBytes: 2065620 },
+  { segmentId: 2, pieces: 20, frameBytes: 2065876 },
+  { segmentId: 3, pieces: 22, frameBytes: 2066292 },
 ];
 
 test('합성 장면 구간 4 개의 실제 프레임 바이트가 고정 수치와 같다', () => {
@@ -39,10 +40,10 @@ test('모든 구간이 3,000,000 B 이하이고 표에 충족으로 나온다', 
   for (const r of rows) assert.ok(r.frameBytes <= SEGMENT_BUDGET_BYTES);
   assert.equal(syntheticSceneReport(), [
     '구간\t조각\t프레임바이트\t예산%(3000000 B)\t판정',
-    '0\t14\t2064882\t68.83%\t충족',
-    '1\t18\t2065660\t68.86%\t충족',
-    '2\t19\t2065788\t68.86%\t충족',
-    '3\t20\t2065928\t68.86%\t충족',
+    '0\t14\t2064896\t68.83%\t충족',
+    '1\t18\t2065620\t68.85%\t충족',
+    '2\t20\t2065876\t68.86%\t충족',
+    '3\t22\t2066292\t68.88%\t충족',
   ].join('\n'));
 });
 
@@ -82,4 +83,13 @@ test('기록된 프레임은 ws 프레임 머리 + 클라이언트 복호기로 
     },
   });
   assert.equal(checked, 14, '구간 0 의 조각 14 개');
+});
+
+test('levels 장면은 ENU(동, 북)로 타일을 나눈다: 북쪽 [-50, 50] m 는 tileY {-1, 0}, 구간 0 은 동쪽 [0, 50] m 라 tileX 0', () => {
+  const scene = generateLevels({ seed: 1, segments: 1, count: 20000 });
+  for (let level = 0; level < 4; level++) {
+    const pieces = packCloudPieces(levelCloud(scene, 0, level), { segmentId: 0, level });
+    assert.deepEqual([...new Set(pieces.map((p) => p.key.tileY))].sort((a, b) => a - b), [-1, 0]);
+    assert.deepEqual([...new Set(pieces.map((p) => p.key.tileX))], [0]);
+  }
 });

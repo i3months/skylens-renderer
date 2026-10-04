@@ -22,15 +22,20 @@ export const DEFAULT_SEED = 1;
 
 const ANCHOR = { lat: 0, lon: 0, alt: 0 };
 
+/** 장면 좌표(x=동, y=위, z=-북) → ENU(동, 북, 위). server/scheduler/initial/testing 의 sceneToEnu 와 같은 규칙이다. */
+const sceneToEnu = (a, i) => [a[3 * i], -a[3 * i + 2], a[3 * i + 1]];
+
 /**
- * 점군(27 B)을 packChunk 가 받아들이는 타일(x, y 인덱스 기준, packChunk 와 같다)별로 나눠 .skla 조각 목록을 만든다.
+ * 장면 좌표 점군(27 B)을 ENU 로 바꾼 뒤 packChunk 가 받아들이는 타일(동·북 인덱스 기준, packChunk 와 같다)별로 나눠 .skla 조각 목록을 만든다.
+ * 타일은 ENU 의 (동, 북) 으로 정한다. 장면 구간의 북쪽 [-50, 50] m 는 tileY ∈ {-1, 0} 을 덮는다.
  * @returns {{key: {segmentId:number, level:number, lod:number, chunkIndex:number, tileX:number, tileY:number}, skla: Uint8Array}[]}
  */
 export function packCloudPieces(cloud, { segmentId, level, maxPoints = MAX_POINTS_PER_CHUNK }) {
   const groups = new Map();
   for (let i = 0; i < cloud.count; i++) {
-    const tx = Math.floor(cloud.positions[3 * i] / TILE_SIZE_M);
-    const ty = Math.floor(cloud.positions[3 * i + 1] / TILE_SIZE_M);
+    const [e, n] = sceneToEnu(cloud.positions, i);
+    const tx = Math.floor(e / TILE_SIZE_M);
+    const ty = Math.floor(n / TILE_SIZE_M);
     const id = `${tx}:${ty}`;
     let g = groups.get(id);
     if (!g) groups.set(id, (g = { tx, ty, idx: [] }));
@@ -46,11 +51,9 @@ export function packCloudPieces(cloud, { segmentId, level, maxPoints = MAX_POINT
       const normals = new Float32Array(3 * n);
       const colors = new Uint8Array(3 * n);
       part.forEach((src, k) => {
-        for (let a = 0; a < 3; a++) {
-          positions[3 * k + a] = cloud.positions[3 * src + a];
-          normals[3 * k + a] = cloud.normals[3 * src + a];
-          colors[3 * k + a] = cloud.colors[3 * src + a];
-        }
+        positions.set(sceneToEnu(cloud.positions, src), 3 * k);
+        normals.set(sceneToEnu(cloud.normals, src), 3 * k);
+        for (let a = 0; a < 3; a++) colors[3 * k + a] = cloud.colors[3 * src + a];
       });
       const skla = packChunk({
         format: FORMAT_POINT27, segmentId, level, lod: 0, chunkIndex, anchor: ANCHOR,
@@ -67,7 +70,7 @@ const keyText = (k) => `${k.segmentId}:${k.level}:${k.lod}:${k.chunkIndex}:${k.t
 
 /**
  * 합성 장면(levels)의 구간 조각을 실제 송출 경로로 흘려 프레임 바이트를 장부에 기록한다.
- * 수준 0..3 을 낮은 수준부터 한 수준씩 큐에 넣고 비울 때까지 nextBatch 를 부른다(이미 나간 수준은 스케줄러가 기억하지 않는다).
+ * 수준 0..3 을 낮은 수준부터 한 수준씩 큐에 넣고 비울 때까지 nextBatch 를 부른다(낮은 수준부터 오름차순으로 넣으므로, 스케줄러가 나간 최고 수준을 기억해도(F-190) 거절되는 항목은 없다).
  * @param {{segments?: number, pointsPerSegment?: number, seed?: number, budgetBytesPerTick?: number, onFrame?: (frame: Uint8Array, key: object, skla: Uint8Array) => void}} [opts]
  * @returns {{ledger: ReturnType<typeof createByteLedger>, rows: {segmentId:number, pieces:number, sklaBytes:number, frameBytes:number}[]}}
  */

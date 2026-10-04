@@ -69,3 +69,34 @@ test('overtakeGroup 표', () => {
     seen.set(g, 1);
   }
 });
+
+// ---- F-193: PieceKey chunkIndex 와 .skla chunkIndex 는 같은 상한 ----
+test('chunkIndex 상한이 proto·asset 에서 같다(65535 수용, 65536 같은 거부)', async () => {
+  const A = await import('../asset/index.mjs');
+  const S = await import('../../server/proto/codec/index.mjs');
+  const C = await import('../../client/proto/index.mjs');
+  assert.equal(P.CHUNK_INDEX_LIMIT, 65536);
+  assert.equal(A.CHUNK_INDEX_LIMIT, P.CHUNK_INDEX_LIMIT);
+  const hdr = (chunkIndex) => ({
+    versionMajor: 1, versionMinor: 0, format: A.FORMAT_POINT27, codec: 0, segmentId: 1, level: 0, pointCount: 0,
+    tileX: 0, tileY: 0, tileSizeM: 64, lod: 0, quantExp: 8, chunkIndex, bodyBytes: 0,
+    bboxMin: [0, 0, 0], bboxMax: [0, 0, 0], anchor: { lat: 0, lon: 0, alt: 0 },
+  });
+  const rej = (fn) => { try { fn(); } catch (e) { return e; } return null; };
+  const pieceReq = (chunkIndex) => ({ type: 'PIECE_REQUEST', reqId: 1, items: [{ segmentId: 1, level: 0, lod: 0, chunkIndex, tileX: 0, tileY: 0 }] });
+  // 65535: 네 곳 모두 수용
+  assert.equal(A.parseHeader(A.serializeHeader(hdr(65535))).chunkIndex, 65535);
+  // (클라이언트는 c2s 를 복호하지 못하므로 두 인코더의 출력을 서버 복호기로 읽는다)
+  for (const codec of [S, C]) assert.equal(S.decodeMessage(codec.encodeMessage(pieceReq(65535))).items[0].chunkIndex, 65535);
+  // 65536: 모두 같은 code 'field' 로 거부
+  const bytes = A.serializeHeader(hdr(65535));
+  new DataView(bytes.buffer).setUint32(A.OFFSETS.chunkIndex, 65536, true);
+  const errs = [
+    rej(() => A.serializeHeader(hdr(65536))), rej(() => A.parseHeader(bytes)),
+    rej(() => S.encodeMessage(pieceReq(65536))), rej(() => C.encodeMessage(pieceReq(65536))),
+  ];
+  for (const e of errs) { assert.ok(e); assert.equal(e.code, 'field'); assert.match(e.message, /chunkIndex/); }
+  assert.match(errs[0].message, /0\.\.65535/);
+  assert.match(errs[1].message, /0\.\.65535/);
+  assert.ok(rej(() => A.serializeHeader(hdr(2 ** 32 - 1))));
+});

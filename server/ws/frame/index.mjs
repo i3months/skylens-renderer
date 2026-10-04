@@ -81,6 +81,7 @@ export class FrameParser {
     this.fragCount = 0; // 길이 0 포함, 이 메시지를 이룬 데이터 프레임 수
     this.fragOpcode = -1;
     this.dead = false;
+    this.need = 0; // 현재 프레임이 다 모이기까지 필요한 총 바이트. 모자라면 머리 해석을 다시 하지 않는다(1 B 조각 대비).
   }
 
   /** @param {Uint8Array} chunk @returns {object[]} 이벤트 목록 */
@@ -147,7 +148,7 @@ export class FrameParser {
   }
 
   #next() {
-    if (this.qBytes < 2) return null;
+    if (this.qBytes < 2 || this.qBytes < this.need) return null;
     const b = this.#peek(14); // 헤더 최대 길이 = 2 + 8 + 4
     const fin = (b[0] & 0x80) !== 0;
     if ((b[0] & 0x70) !== 0) return this.#fail(1002, 'RSV 비트');
@@ -179,7 +180,8 @@ export class FrameParser {
     if (len > this.maxPayload || (!isControl && this.fragBytes + len > this.maxPayload)) return this.#fail(1009, '페이로드 상한 초과');
     const hdr = off + (masked ? 4 : 0);
     const total = hdr + len;
-    if (this.qBytes < total) return null;
+    if (this.qBytes < total) { this.need = total; return null; }
+    this.need = 0;
     const key = masked ? b.subarray(off, off + 4) : null; // b 는 peek 복사본이라 소비 뒤에도 유효
     this.#skip(hdr);
     const payload = this.#take(len);

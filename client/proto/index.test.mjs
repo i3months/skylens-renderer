@@ -69,9 +69,9 @@ test('오류 limit', () => {
   const over = MAX_PAYLOAD_BYTES + 1;
   const h = new Uint8Array(8); h.set([8, 1, 0, 0]); new DataView(h.buffer).setUint32(4, over, true);
   assert.equal(code(() => decodeMessage(h)), 'limit'); // 프레임이 짧아도 limit 가 length 보다 앞
-  assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 0, key: CASES[5][1].key, chunk: new Uint8Array(MAX_PAYLOAD_BYTES) })), 'limit');
+  assert.equal(code(() => encodeMessage({ type: 'PIECE', pieceSeq: 1, key: CASES[5][1].key, chunk: new Uint8Array(MAX_PAYLOAD_BYTES) })), 'limit');
   // 상한 딱 맞는 본문은 통과
-  const ok = encodeMessage({ type: 'PIECE', pieceSeq: 0, key: CASES[5][1].key, chunk: new Uint8Array(MAX_PAYLOAD_BYTES - 20) });
+  const ok = encodeMessage({ type: 'PIECE', pieceSeq: 1, key: CASES[5][1].key, chunk: new Uint8Array(MAX_PAYLOAD_BYTES - 20) });
   assert.equal(ok.length, 8 + MAX_PAYLOAD_BYTES);
   assert.equal(decodeMessage(ok).chunk.length, MAX_PAYLOAD_BYTES - 20);
 });
@@ -112,7 +112,7 @@ test('오류 field(부호화)', () => {
     { type: 'PIECE_REQUEST', reqId: 0, items: Array.from({ length: MAX_REQUEST_ITEMS + 1 }, (_, i) => ({ segmentId: 0, level: 0, lod: 0, chunkIndex: i, tileX: 0, tileY: 0 })) },
     { type: 'PIECE_REQUEST', reqId: 0, items: [{ ...CASES[2][1].items[0], tileX: 2 ** 31 }] },
     { type: 'PIECE_REQUEST', reqId: 0, items: [{ ...CASES[2][1].items[0], chunkIndex: 65536 }] },
-    { type: 'WELCOME', sessionId: 0, resumed: 1, nextPieceSeq: 0 },
+    { type: 'WELCOME', sessionId: 0, resumed: 1, nextPieceSeq: 1 },
     { ...CASES[5][1], chunk: new Uint8Array(0) }, { ...CASES[5][1], chunk: [1] }, { ...CASES[5][1], key: { ...CASES[5][1].key, level: 4 } },
     { type: 'LEVEL_ARRIVED', segmentId: 0, level: 4, pieceCount: 0 }, { type: 'MISSING', segmentId: 2 ** 30 },
     { type: 'ERROR', code: 99, text: '' }, { type: 'ERROR', code: 1, text: 'a'.repeat(MAX_ERROR_TEXT + 1) }, { type: 'ERROR', code: 1, text: 5 },
@@ -141,9 +141,9 @@ test('chunkIndex 65535 부호화 성공, 65536 거부', () => {
   // 65536은 실패
   assert.equal(code(() => encodeMessage({ type: 'PIECE_REQUEST', reqId: 0, items: [key65536] })), 'field');
   // PIECE 도 테스트
-  const piece65535 = { type: 'PIECE', pieceSeq: 0, key: key65535, chunk: new Uint8Array([1]) };
+  const piece65535 = { type: 'PIECE', pieceSeq: 1, key: key65535, chunk: new Uint8Array([1]) };
   assert.equal(encodeMessage(piece65535).length > 0, true);
-  const piece65536 = { type: 'PIECE', pieceSeq: 0, key: key65536, chunk: new Uint8Array([1]) };
+  const piece65536 = { type: 'PIECE', pieceSeq: 1, key: key65536, chunk: new Uint8Array([1]) };
   assert.equal(code(() => encodeMessage(piece65536)), 'field');
 });
 
@@ -158,12 +158,26 @@ test('BOM 텍스트 왕복 동일', () => {
   const decoded1 = decodeMessage(encoded1);
   const decoded2 = decodeMessage(encoded2);
   // 인코딩된 바이트는 다를 수 있지만, ignoreBOM: true 이므로 디코딩시 같아야 함
-  assert.equal(decoded1.text.length, textWithBom.length); // BOM 포함
-  assert.equal(decoded2.text.length, textWithoutBom.length);
+  assert.equal(decoded1.text, textWithBom);
+  assert.equal(decoded2.text, textWithoutBom);
 });
 
 test('배열 흉내 객체 거부', () => {
   const arrayLike = { 0: 1, 1: -2, 2: 0.5, length: 3 };
   assert.equal(code(() => encodeMessage({ type: 'VIEW_UPDATE', viewSeq: 0, pos: arrayLike, quat: [0, 0, 0, 1], fovY: 1, width: 1, height: 1 })), 'field');
   assert.equal(code(() => encodeMessage({ type: 'VIEW_UPDATE', viewSeq: 0, pos: [1, -2, 0.5], quat: arrayLike, fovY: 1, width: 1, height: 1 })), 'field');
+});
+
+test('pieceSeq·nextPieceSeq 0 은 field, 1 은 왕복(부호화·복호)', () => {
+  const piece = (pieceSeq) => ({ ...CASES[5][1], pieceSeq });
+  const welcome = (nextPieceSeq) => ({ type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq });
+  assert.equal(code(() => encodeMessage(piece(0))), 'field');
+  assert.equal(code(() => encodeMessage(welcome(0))), 'field');
+  assert.deepEqual(decodeMessage(encodeMessage(piece(1))), piece(1));
+  assert.deepEqual(decodeMessage(encodeMessage(welcome(1))), welcome(1));
+  // 복호: 1 로 부호화한 프레임의 seq 바이트만 0 으로 바꾼다
+  const pf = encodeMessage(piece(1)); new DataView(pf.buffer).setUint32(8, 0, true);
+  const wf = encodeMessage(welcome(1)); new DataView(wf.buffer).setUint32(13, 0, true);
+  assert.equal(code(() => decodeMessage(pf)), 'field');
+  assert.equal(code(() => decodeMessage(wf)), 'field');
 });

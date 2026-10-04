@@ -128,6 +128,10 @@ const DIRECTED = {
     ['msgLen=257·본문 4 B -> length', hdr(9, Uint8Array.from([1, 0, ...u16le(257)])), 'length'],
     ['ERROR 알 수 없는 code -> field', hdr(9, Uint8Array.from([0, 0, 0, 0])), 'field'],
     ['WELCOME reserved=1 -> reserved', hdr(5, new Uint8Array(9), { reserved: 1 }), 'reserved'],
+    ['WELCOME nextPieceSeq=0 -> field', hdr(5, new Uint8Array(9)), 'field'],
+    ['WELCOME nextPieceSeq=1 -> 성공', hdr(5, Uint8Array.from([0, 0, 0, 0, 0, 1, 0, 0, 0])), 'ok'],
+    ['PIECE pieceSeq=0 -> field', hdr(6, new Uint8Array(21)), 'field'],
+    ['PIECE pieceSeq=1 -> 성공', hdr(6, Uint8Array.from([1, 0, 0, 0, ...new Array(17).fill(0)])), 'ok'],
   ],
 };
 function directedFailures(decode, dir) {

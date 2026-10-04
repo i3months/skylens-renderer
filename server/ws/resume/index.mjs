@@ -8,6 +8,14 @@
 //   순번 규약(contracts/proto PIECE_SEQ_MIN, F-184): pieceSeq 는 1 부터. ackedUpTo·lastPieceSeq 0 = '받은 것 없음'.
 //     새 세션 nextPieceSeq 는 PIECE_SEQ_MIN(1). recordSent 의 seq 는 PIECE_SEQ_MIN 이상이고, 이 세션에서 이미 기록한
 //     최대 순번보다 커야 한다(순번은 늘기만 한다). 어기면 RangeError.
+//     예외(F-197): 이미 기록한 같은 key·같은 seq 재기록은 멱등이다(true). 어댑터(server/adapter/core)는 송출 중 실패하면
+//     실패한 시도가 쓰던 pieceSeq·key 그대로 다시 내보내므로, emit 안에서 recordSent 를 불러도 재시도가 막히지 않는다.
+//     미확인 항목이면 bytes 를 새 값으로 바꾸고(바이트 상한 검사 포함) 'shouldSend=false' 로 둔다. 이미 확인된 항목이면
+//     아무것도 바꾸지 않는다. 같은 seq 를 다른 key 로 쓰거나, 그 key 의 기록 순번과 다른 낮은 seq 면 여전히 RangeError.
+//     (축출된 항목은 대조할 정보가 없어 RangeError — 축출은 확인된 항목만 하므로 재시도 경로에서는 생기지 않는다.)
+//   u32 끝(F-203 ②): seq 0xFFFFFFFF 도 기록할 수 있다(계약 범위). 그 뒤 세션의 다음 순번 2^32 는 WELCOME.nextPieceSeq(u32)
+//     로 보낼 수 없으므로 그 세션은 이어받을 수 없다: open 은 그 세션을 지우고 새 세션(resumed=false, reason
+//     'UNKNOWN_SESSION', nextPieceSeq 1)을 돌려준다. open 이 돌려주는 nextPieceSeq 는 언제나 1..0xFFFFFFFF 이다.
 //   recordSent(sessionId, key, seq, bytes) -> boolean  전송 기록. bytes 는 조각 바이트(ArrayBuffer 뷰) 또는 바이트 수(정수).
 //     같은 key 는 기록 후 shouldSend=false(재접속 후엔 후보일 때만 true). 모르는 세션이거나 상한(아래)에 걸리면 false 이고
 //     아무것도 바꾸지 않는다 — 호출자는 recordSent 가 true 인 조각만 보낸 것으로 친다.
@@ -16,18 +24,27 @@
 //     같은 묶음에서 이미 더 높은 수준을 보냈으면 낮은 수준의 어떤 chunk 도(chunkIndex 가 달라도) 추월당한 것이라 false.
 //     같은 수준의 다른 chunk 는 같은 조각 집합의 나머지라 추월이 아니다(아직 안 보냈으면 true).
 //   ack(sessionId, upToSeq)  upToSeq 이하 순번 확인 처리(되돌리지 않는다). 보낸 최대 순번보다 큰 값은 그 순번으로 줄인다.
-//   unacked(sessionId) -> [{seq,key}]       ack 되지 않은 조각, 순번 오름차순(재접속 직후엔 재전송 후보 전부).
+//   unacked(sessionId) -> [{seq,key}]       ack 되지 않은 조각 중 재전송 후보, 순번 오름차순(F-199).
+//     추월당한 조각(같은 overtakeGroup 에서 더 높은 수준을 이미 기록: groupMax > key.level)은 빼고 돌려준다 — 추월당한
+//     수준은 다시 보내지 않는다. 같은 수준의 다른 chunk 는 추월이 아니라 남는다. stats().unacked 는 보관 계측용이라
+//     추월당한 미확인 항목도 센다.
 //   close(sessionId)                         세션을 지운다(이어받기 불가).
-//   size() -> 살아 있는 세션 수. stats(sessionId) -> { entries, retainedBytes, unacked } | null (계측용).
+//   size() -> 살아 있는 세션 수. stats(sessionId) -> { entries, retainedBytes, unacked, groups } | null (계측용).
+//     groups = groupMax 에 남은 묶음 수.
 //   retainedBytes() -> 모든 세션이 보관 중인 조각 바이트 합(계측용).
 // 보관 정책(F-192):
 //   - ack(또는 이어받기 open)로 확인된 항목은 즉시 bytes 를 놓는다(보관 바이트 0). 항목 자체(key·seq)와 묶음별 최고 수준
 //     (groupMax)은 남겨 추월·중복 판정이 그대로 유지된다. retainedBytes 는 ack 되지 않은 항목의 바이트만 센다.
-//   - maxEntriesPerSession(기본 무제한): 기록 뒤 항목 수가 상한을 넘으면 가장 오래 전에 ack 된 항목부터 지운다.
+//   - 상한은 언제나 유한하다(F-192): 옵션을 주지 않으면 DEFAULT_MAX_ENTRIES_PER_SESSION·DEFAULT_MAX_BYTES_PER_SESSION.
+//     Infinity·0·비정수는 RangeError.
+//   - maxEntriesPerSession(기본 DEFAULT_MAX_ENTRIES_PER_SESSION): 기록 뒤 항목 수가 상한을 넘으면 가장 오래 전에 ack 된 항목부터 지운다.
 //     지워진 항목이 그 묶음 최고 수준보다 낮으면 groupMax 덕분에 여전히 shouldSend=false 다. 최고 수준과 같은 수준이면
 //     '같은 수준의 아직 안 보낸 chunk' 와 구별할 정보가 없어 다시 true 가 된다(이미 받은 조각의 중복 전송 가능 — 상한은
 //     세션 작업 집합보다 넉넉히 잡는다). ack 된 항목이 없어 상한 안으로 못 줄이면 recordSent 는 false.
-//   - maxBytesPerSession(기본 무제한): ack 되지 않은 항목 바이트 합이 상한을 넘게 되는 recordSent 는 false(ack 된 항목은
+//   - groupMax 축출: 묶음별 최고 수준은 그 묶음 항목이 sent 에 하나라도 남아 있는 동안만 둔다(묶음별 항목 수를 센다).
+//     묶음의 마지막 항목이 축출되면 groupMax 도 지운다 — groupMax 크기 ≤ 항목 수 ≤ maxEntriesPerSession. 대가: 그 뒤엔
+//     그 묶음의 낮은 수준도 다시 true 가 될 수 있다(위와 같은 이유로 상한은 작업 집합보다 넉넉히).
+//   - maxBytesPerSession(기본 DEFAULT_MAX_BYTES_PER_SESSION): ack 되지 않은 항목 바이트 합이 상한을 넘게 되는 recordSent 는 false(ack 된 항목은
 //     이미 0 B 라 축출로는 줄지 않는다). 호출자는 클라이언트 ACK 를 기다리거나 ERR OVER_LIMIT 로 끊는다.
 //   - 비용: ack 는 새로 확인된 항목만 앞에서부터 꺼낸다(순번이 늘기만 하므로 큐 하나로 충분). unacked 는 미확인 항목만 훑는다.
 // 세션 수 상한: 가득 차면 만료분을 먼저 비우고, 그래도 가득이면 가장 오래 쓰이지 않은 세션을 쫓아낸다.
@@ -38,6 +55,10 @@ import { randomInt } from 'node:crypto';
 import { overtakeGroup, pieceKeyString, PIECE_SEQ_MIN } from '../../../contracts/proto/index.mjs';
 
 const U32_MAX = 0xffffffff;
+/** 세션당 항목 수 기본 상한(F-192). */
+export const DEFAULT_MAX_ENTRIES_PER_SESSION = 65536;
+/** 세션당 미확인 조각 바이트 기본 상한(F-192). 초기 묶음 15 MB 를 넉넉히 담는 값. */
+export const DEFAULT_MAX_BYTES_PER_SESSION = 64 * 1024 * 1024;
 
 function assertU32(v, name) {
   if (!Number.isInteger(v) || v < 0 || v > U32_MAX) throw new RangeError(`${name} 는 u32 정수여야 한다: ${v}`);
@@ -55,8 +76,8 @@ function byteSize(bytes) {
   if (ArrayBuffer.isView(bytes)) return bytes.byteLength;
   throw new TypeError('bytes 는 ArrayBuffer 뷰 또는 0 이상 정수여야 한다');
 }
-function optLimit(v, name) {
-  if (v === undefined || v === Infinity) return Infinity;
+function optLimit(v, name, dflt) {
+  if (v === undefined) return dflt;
   if (!Number.isInteger(v) || v < 1) throw new RangeError(`${name} 는 1 이상 정수: ${v}`);
   return v;
 }
@@ -80,8 +101,8 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   if (!Number.isInteger(maxSessions) || maxSessions < 1) throw new RangeError(`maxSessions 는 1 이상 정수: ${maxSessions}`);
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) throw new RangeError(`ttlMs 는 양수: ${ttlMs}`);
   if (typeof now !== 'function') throw new TypeError('now 시계 함수가 필요하다');
-  const maxEntries = optLimit(maxEntriesPerSession, 'maxEntriesPerSession');
-  const maxBytes = optLimit(maxBytesPerSession, 'maxBytesPerSession');
+  const maxEntries = optLimit(maxEntriesPerSession, 'maxEntriesPerSession', DEFAULT_MAX_ENTRIES_PER_SESSION);
+  const maxBytes = optLimit(maxBytesPerSession, 'maxBytesPerSession', DEFAULT_MAX_BYTES_PER_SESSION);
   const genId = randomId ?? (() => randomInt(1, U32_MAX));
   /** @type {Map<number, any>} 삽입 순서 = 최근 사용 순서(touch 때 다시 넣는다) */
   const sessions = new Map();
@@ -110,8 +131,9 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     let id;
     do { id = genId(); } while (id === 0 || sessions.has(id));
     // sent: keyStr -> 항목 {seq,key,bytes,size,pending,dead}. pendingQ: 미확인 항목(순번 순). ackedQ: 확인된 항목(확인 순).
+    // groupRefs: 묶음 -> sent 에 남은 그 묶음 항목 수(0 이 되면 groupMax 도 지운다).
     const s = {
-      last: t, nextSeq: PIECE_SEQ_MIN, ackedUpTo: 0, sent: new Map(), groupMax: new Map(),
+      last: t, nextSeq: PIECE_SEQ_MIN, ackedUpTo: 0, sent: new Map(), groupMax: new Map(), groupRefs: new Map(),
       pendingQ: new Queue(), ackedQ: new Queue(), retained: 0,
     };
     sessions.set(id, s);
@@ -137,6 +159,16 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     e.size = 0;
   }
 
+  // 축출: 항목을 sent 에서 지우고, 그 묶음의 마지막 항목이었으면 groupMax 도 지운다.
+  function evict(s, e) {
+    drop(s, e);
+    s.sent.delete(pieceKeyString(e.key));
+    const g = overtakeGroup(e.key);
+    const n = s.groupRefs.get(g) - 1;
+    if (n > 0) s.groupRefs.set(g, n);
+    else { s.groupRefs.delete(g); s.groupMax.delete(g); }
+  }
+
   return {
     open(hello) {
       const { sessionId, lastPieceSeq = 0 } = hello ?? {};
@@ -147,7 +179,8 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
         const id = create(t);
         return { sessionId: id, resumed: false, nextPieceSeq: PIECE_SEQ_MIN, reason: null };
       }
-      const s = live(sessionId);
+      let s = live(sessionId);
+      if (s && s.nextSeq > U32_MAX) { sessions.delete(sessionId); s = null; } // 순번 공간을 다 쓴 세션(F-203 ②)
       if (!s) {
         const id = create(t);
         return { sessionId: id, resumed: false, nextPieceSeq: PIECE_SEQ_MIN, reason: 'UNKNOWN_SESSION' };
@@ -166,9 +199,23 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       const size = byteSize(bytes);
       const s = live(sessionId);
       if (!s) return false;
-      if (seq < s.nextSeq) throw new RangeError(`seq 는 이미 기록한 최대 순번(${s.nextSeq - 1})보다 커야 한다: ${seq}`);
       const ks = pieceKeyString(key);
       const old = s.sent.get(ks);
+      if (seq < s.nextSeq) {
+        // 같은 key·같은 seq 재기록 = 멱등(F-197). 그 밖의 역행은 RangeError.
+        if (!old || old.seq !== seq) {
+          throw new RangeError(`seq 는 이미 기록한 최대 순번(${s.nextSeq - 1})보다 커야 한다: ${seq}`);
+        }
+        if (seq > s.ackedUpTo) {
+          if (s.retained - old.size + size > maxBytes) return false;
+          s.retained += size - old.size;
+          old.bytes = bytes ?? null;
+          old.size = size;
+          old.pending = false;
+        }
+        touch(sessionId, s, now());
+        return true;
+      }
       const oldSize = old ? old.size : 0;
       if (s.retained - oldSize + size > maxBytes) return false;
       // 항목 수 상한: 대체가 아니면 하나 늘어난다. 가장 오래 전에 ack 된 것부터 지운다(대체될 항목은 건드리지 않는다).
@@ -179,16 +226,16 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
         while (s.sent.size + 1 > maxEntries) {
           const e = s.ackedQ.shift();
           if (e.dead) continue;
-          drop(s, e);
-          s.sent.delete(pieceKeyString(e.key));
+          evict(s, e);
         }
       }
-      if (old) drop(s, old);
+      const g = overtakeGroup(key);
+      if (old) drop(s, old); // 같은 key 대체: 묶음 항목 수는 그대로
+      else s.groupRefs.set(g, (s.groupRefs.get(g) ?? 0) + 1);
       const e = { seq, key: { ...key }, bytes: bytes ?? null, size, pending: false, dead: false };
       s.sent.set(ks, e);
       s.pendingQ.push(e);
       s.retained += size;
-      const g = overtakeGroup(key);
       if ((s.groupMax.get(g) ?? -1) < key.level) s.groupMax.set(g, key.level);
       s.nextSeq = seq + 1;
       touch(sessionId, s, now());
@@ -216,7 +263,11 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       const s = live(sessionId);
       if (!s) return [];
       const out = [];
-      for (const e of s.pendingQ) if (!e.dead) out.push({ seq: e.seq, key: { ...e.key } });
+      for (const e of s.pendingQ) {
+        if (e.dead) continue;
+        if ((s.groupMax.get(overtakeGroup(e.key)) ?? -1) > e.key.level) continue; // 추월당한 조각(F-199)
+        out.push({ seq: e.seq, key: { ...e.key } });
+      }
       return out; // pendingQ 는 순번 오름차순
     },
     close(sessionId) {
@@ -231,7 +282,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       if (!s) return null;
       let unacked = 0;
       for (const e of s.pendingQ) if (!e.dead) unacked++;
-      return { entries: s.sent.size, retainedBytes: s.retained, unacked };
+      return { entries: s.sent.size, retainedBytes: s.retained, unacked, groups: s.groupMax.size };
     },
     retainedBytes() {
       let sum = 0;

@@ -11,7 +11,9 @@
 //   ACK(4, c→s)           4 B   upToPieceSeq u32 (여기까지 받았음)
 //   WELCOME(5, s→c)       9 B   sessionId u32, resumed u8 (0|1), nextPieceSeq u32
 //   PIECE(6, s→c)         4 + 16 + chunkLen B  pieceSeq u32, PieceKey 16 B, 조각 바이트(contracts/asset 의 .skla 조각 그대로, 1 B 이상)
-//   LEVEL_ARRIVED(7, s→c) 9 B   segmentId u32, level u8 (0..3), pieceCount u32
+//   LEVEL_ARRIVED(7, s→c) 9 B   segmentId u32, level u8 (0..3), pieceCount u32 (>= 1: 조각 0 개 도착은 보내지 않는다)
+//   재전송 규약: 송출 실패 뒤 같은 pieceSeq·같은 PieceKey 로 다시 보낸 PIECE 는 같은 조각이다(수신측은 하나로 센다).
+//   마지막 pieceSeq 가 0xFFFFFFFF 인 세션은 재개할 수 없고 서버는 새 세션(resumed=0)으로 답한다.
 //   MISSING(8, s→c)       4 B   segmentId u32  (도착하지 않은 구간. 메우거나 꾸미지 않는다)
 //   ERROR(9, s→c)         4 + n B  code u16 (ERR_CODES), msgLen u16, utf8 메시지(msgLen ≤ MAX_ERROR_TEXT)
 // pieceSeq 는 1 부터 매긴다(PIECE_SEQ_MIN). 0 은 'ACK·HELLO 에서 받은 것 없음' 전용이라 조각 순번으로 쓰지 않는다. nextPieceSeq 도 1 이상이다.
@@ -33,7 +35,7 @@ export const MAX_REQUEST_ITEMS = 256;
 export const MAX_ERROR_TEXT = 256;
 /** 첫 조각 순번. 0 은 '받은 것 없음' 과 겹치므로 쓰지 않는다(F-184). */
 export const PIECE_SEQ_MIN = 1;
-/** PieceKey chunkIndex 상한(u16). contracts/asset 은 더 큰 chunkIndex 를 허용하지만 PIECE 로는 보낼 수 없다(F-193). */
+/** PieceKey chunkIndex 상한(배타, u16). contracts/asset CHUNK_INDEX_LIMIT 와 같은 값이다: 두 계약 모두 0..65535 만 받는다(F-193). */
 export const CHUNK_INDEX_LIMIT = 65536;
 
 export const MSG = Object.freeze({

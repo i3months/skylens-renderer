@@ -21,10 +21,14 @@
 //     ②·③ 에서 던지면 기계 상태·nextSeq 는 그대로이고 예외를 다시 던진다. 같은 이벤트를 다시 넣으면 결정이 그대로
 //     first/replace 로 나오고, 실패한 시도가 쓰려던 pieceSeq 부터 다시 매긴다(끊김 없음). 실패한 시도에서 일부 emit 이
 //     이미 나갔다면 같은 pieceSeq·key 로 다시 나가므로 받는 쪽은 그것을 같은 조각으로 다룬다.
+//     이어받기 저장소(server/ws/resume)의 recordSent 는 같은 key·같은 seq 재기록을 멱등으로 받으므로(F-197) emit 안에서
+//     recordSent 를 불러도 재시도가 막히지 않는다.
 //     ⑤ 는 상태 확정 뒤라 실패해도 되돌리지 않는다(메시지는 이미 다 나갔다). onRelease 는 함수 또는 함수 배열이며,
 //     하나가 던져도 나머지를 모두 부른 다음 예외를 다시 던진다(하나면 그 예외, 둘 이상이면 AggregateError).
 //   도착하지 않은 것을 만들거나 메우지 않는다. 시간·타이머를 쓰지 않는다. 상태는 handle 호출로만 바뀐다.
 // 입력 검사: 이벤트 전체를 기계에 넘기기 전에 검사한다(검사 실패 시 상태·순번은 그대로).
+//   level_arrived 의 pieces 는 1 개 이상이어야 한다(F-203 ①). 빈 수준 도착은 RangeError 로 거부하고 이전 수준을 그대로
+//   둔다 — 빈 수준이 replace 로 이미 그린 조각을 모두 놓게 하거나 pieceCount 0 LEVEL_ARRIVED 를 내보내지 않는다.
 //   모양이 틀리면 TypeError, 값이 범위 밖이면 RangeError.
 import { createLevelMachine } from '../../levels/state/index.mjs';
 import { LEVEL_COUNT, ACTIONS, decideArrival } from '../../../contracts/levels/index.mjs';
@@ -142,6 +146,7 @@ export function createCoreAdapter(options = {}) {
     const segmentId = intIn(ev.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId');
     const level = intIn(ev.level, 0, LEVEL_COUNT - 1, 'level');
     if (!Array.isArray(ev.pieces)) throw new TypeError('pieces 는 배열이어야 한다');
+    if (ev.pieces.length === 0) throw new RangeError('pieces 는 1 개 이상이어야 한다(빈 수준 도착은 거부, F-203)');
     const pieces = ev.pieces.map((p, i) => checkPiece(p, i, segmentId, level));
     const seen = new Set();
     for (const p of pieces) {
@@ -150,7 +155,7 @@ export function createCoreAdapter(options = {}) {
       seen.add(s);
     }
     // pieceSeq 는 u32 이다. 넘치면 되감지 않고 거부한다(받은 쪽 순번이 거꾸로 가지 않게).
-    if (pieces.length > 0 && nextSeq + pieces.length - 1 > U32_MAX) throw new RangeError('pieceSeq 가 u32 범위를 넘는다');
+    if (nextSeq + pieces.length - 1 > U32_MAX) throw new RangeError('pieceSeq 가 u32 범위를 넘는다');
 
     // ① 결정을 미리 본다. 상태는 아직 바꾸지 않는다.
     const planned = decideArrival(machine.snapshot(segmentId).level, level);

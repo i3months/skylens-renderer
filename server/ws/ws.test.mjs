@@ -1,6 +1,6 @@
 // T11.3 웹소켓 서버 골격 시험. 클라이언트는 node:net 으로 만든 최소 구현(핸드셰이크 + 마스킹 프레임).
 // 주소는 코드에 적지 않는다: 시스템이 알려 주는 내부(loopback) 인터페이스 주소를 listen 에 쓰고, 이후는 server.address() 만 쓴다. 포트는 0(임시 포트).
-import { test } from 'node:test';
+import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import http from 'node:http';
@@ -14,6 +14,7 @@ import { MAX_PAYLOAD_BYTES } from '../../contracts/proto/index.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const KEY = Buffer.from([1, 2, 3, 4]);
+const NEXT_TIMEOUT_MS = 3000;
 
 function loopbackHost() {
   for (const list of Object.values(os.networkInterfaces())) {
@@ -22,8 +23,19 @@ function loopbackHost() {
   throw new Error('loopback 인터페이스 없음');
 }
 
-async function start(onConnection) {
-  const ws = await createWsServer({ host: loopbackHost(), port: 0, onConnection });
+// 시험이 중간에 실패해도 서버·소켓이 남아 프로세스가 끝나지 않는 일이 없도록 모두 모아 두었다가 정리한다.
+const openServers = new Set();
+const openSockets = new Set();
+afterEach(async () => {
+  for (const s of openSockets) s.destroy();
+  openSockets.clear();
+  await Promise.all([...openServers].map((w) => w.close()));
+  openServers.clear();
+});
+const track = (ws) => { openServers.add(ws); return ws; };
+
+async function start(onConnection, extra = {}) {
+  const ws = track(await createWsServer({ host: loopbackHost(), port: 0, onConnection, ...extra }));
   return ws;
 }
 
@@ -32,6 +44,7 @@ function connect(ws, { wsKey = Buffer.from('0123456789abcdef').toString('base64'
   const { address, port } = ws.address();
   return new Promise((resolve, reject) => {
     const sock = net.connect({ host: address, port });
+    openSockets.add(sock);
     const parser = new FrameParser({ requireMask: false });
     const events = [];
     const waiters = [];
@@ -65,9 +78,17 @@ function connect(ws, { wsKey = Buffer.from('0123456789abcdef').toString('base64'
       sock, events,
       sendRaw: (b) => sock.write(b),
       send: (op, payload, opts = {}) => sock.write(encodeFrame(op, payload, { maskKey: KEY, ...opts })),
-      next: () => new Promise((res) => {
-        const check = () => { if (events.length) { res(events.shift()); return true; } if (ended) { res(null); return true; } return false; };
-        if (!check()) waiters.push(check);
+      // 시한이 있다: 서버가 멈추면 시험이 멈추지 않고 거절로 실패한다.
+      next: (ms = NEXT_TIMEOUT_MS) => new Promise((res, rej) => {
+        let timer;
+        const check = () => {
+          if (events.length) { clearTimeout(timer); res(events.shift()); return true; }
+          if (ended) { clearTimeout(timer); res(null); return true; }
+          return false;
+        };
+        if (check()) return;
+        timer = setTimeout(() => { const i = waiters.indexOf(check); if (i >= 0) waiters.splice(i, 1); rej(new Error(`next() 시간 초과 ${ms} ms`)); }, ms);
+        waiters.push(check);
       }),
       closed: () => new Promise((res) => { if (ended) res(); else sock.once('close', res); }),
     };
@@ -262,7 +283,7 @@ test('onMessage 가 던지면 그 연결만 1011 로 닫히고 uncaughtException
     const errors = [];
     const closes = [];
     let n = 0;
-    const ws = await createWsServer({
+    const ws = track(await createWsServer({
       host: loopbackHost(), port: 0,
       onError: (err, where) => errors.push([err.message, where]),
       onConnection: (c) => {
@@ -273,7 +294,7 @@ test('onMessage 가 던지면 그 연결만 1011 로 닫히고 uncaughtException
           c.send(m);
         });
       },
-    });
+    }));
     const bad = await connect(ws);
     const good = await connect(ws);
     bad.send(OPCODES.BINARY, Uint8Array.of(0xee));
@@ -307,11 +328,11 @@ test('onClose 가 던져도 uncaughtException 없이 onError 로 보고된다', 
   process.on('uncaughtException', onUncaught);
   try {
     const errors = [];
-    const ws = await createWsServer({
+    const ws = track(await createWsServer({
       host: loopbackHost(), port: 0,
       onError: (err, where) => errors.push([err.message, where]),
       onConnection: (c) => c.onClose(() => { throw new Error('closeboom'); }),
-    });
+    }));
     const cl = await connect(ws);
     cl.send(OPCODES.CLOSE, encodeClosePayload(1000));
     await cl.closed();
@@ -322,6 +343,125 @@ test('onClose 가 던져도 uncaughtException 없이 onError 로 보고된다', 
   } finally {
     process.off('uncaughtException', onUncaught);
   }
+});
+
+/** 동작 중 uncaughtException 을 모으는 틀. */
+async function withUncaught(fn) {
+  const uncaught = [];
+  const onUncaught = (e) => uncaught.push(e);
+  process.on('uncaughtException', onUncaught);
+  try { await fn(uncaught); } finally { process.off('uncaughtException', onUncaught); }
+}
+
+test('async onMessage 가 거절되면 그 연결만 1011, onError where=onMessage, uncaught 0, 다른 연결 유지', () => withUncaught(async (uncaught) => {
+  const errors = [];
+  const closes = [];
+  let n = 0;
+  const ws = await start((c) => {
+    const id = n++;
+    c.onClose((r) => closes.push([id, r.code]));
+    c.onMessage(async (m) => {
+      await new Promise((r) => setImmediate(r));
+      if (m[0] === 0xee) throw new Error('asyncboom');
+      c.send(m);
+    });
+  }, { onError: (err, where) => errors.push([err.message, where]) });
+  const bad = await connect(ws);
+  const good = await connect(ws);
+  bad.send(OPCODES.BINARY, Uint8Array.of(0xee));
+  const ev = await bad.next();
+  assert.deepEqual([ev.type, ev.code], ['close', 1011]);
+  bad.send(OPCODES.CLOSE, encodeClosePayload(1011));
+  await bad.closed();
+  for (const b of [1, 2, 3]) {
+    good.send(OPCODES.BINARY, Uint8Array.of(b));
+    const echo = await good.next();
+    assert.deepEqual([echo.type, [...echo.data]], ['message', [b]]);
+  }
+  await waitFor(() => closes.length === 1);
+  assert.deepEqual(errors, [['asyncboom', 'onMessage']]);
+  assert.deepEqual(closes, [[0, 1011]]);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(uncaught, []);
+  good.sock.destroy();
+  await ws.close();
+}));
+
+test('onConnection 이 던지면 그 소켓만 닫히고 onError where=onConnection, uncaught 0, 다른 연결 유지', () => withUncaught(async (uncaught) => {
+  const errors = [];
+  let n = 0;
+  const ws = await start((c) => {
+    if (n++ === 0) throw new Error('connboom');
+    c.onMessage((m) => c.send(m));
+  }, { onError: (err, where) => errors.push([err.message, where]) });
+  const bad = await connect(ws);
+  await bad.closed();
+  assert.deepEqual(errors, [['connboom', 'onConnection']]);
+  const good = await connect(ws);
+  for (const b of [4, 5]) {
+    good.send(OPCODES.BINARY, Uint8Array.of(b));
+    const echo = await good.next();
+    assert.deepEqual([...echo.data], [b]);
+  }
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(uncaught, []);
+  assert.equal(errors.length, 1);
+  good.sock.destroy();
+  await ws.close();
+}));
+
+test('읽지 않는 클라이언트에 ping 을 쏟아도 서버 writableLength 는 상한 이하이고 연결은 1008 로 닫힌다', async () => {
+  const CAP = 64 * 1024;
+  const PINGS = 1_000_000; // 125 B 본문 ping 100 만 건(약 131 MB 송신)
+  const s = serverSide();
+  const closes = [];
+  const ws = await start((c) => { c.onClose((r) => closes.push(r)); s.onConnection(c); }, { maxWriteBuffer: CAP, maxPingsPerSecond: Infinity });
+  const cl = await connect(ws);
+  cl.sock.pause(); // 읽지 않는다
+  const conn = await s.first;
+  let max = 0;
+  const sample = setInterval(() => { max = Math.max(max, conn.bufferedAmount()); }, 1);
+  const batch = Buffer.concat(Array.from({ length: 1000 }, () => encodeFrame(OPCODES.PING, new Uint8Array(125), { maskKey: KEY })));
+  try {
+    const deadline = Date.now() + 8000; // 서버가 닫지 않으면 시험이 멈추지 않고 아래 단언으로 실패한다
+    for (let i = 0; i < PINGS / 1000 && !cl.sock.destroyed && Date.now() < deadline; i++) {
+      if (!cl.sock.write(batch)) {
+        await new Promise((r) => {
+          const done = () => { clearTimeout(t); cl.sock.off('drain', done); cl.sock.off('close', done); r(); };
+          const t = setTimeout(done, 1000);
+          cl.sock.on('drain', done); cl.sock.on('close', done);
+        });
+      }
+    }
+    await waitFor(() => closes.length === 1, 3000);
+  } finally {
+    clearInterval(sample);
+  }
+  max = Math.max(max, conn.bufferedAmount());
+  assert.equal(closes[0].code, 1008);
+  assert.ok(max > 0, '실제로 쌓인 적이 있어야 시험이 의미 있다');
+  assert.ok(max <= CAP, `writableLength ${max} > ${CAP}`);
+  cl.sock.destroy();
+  await ws.close();
+});
+
+test('ping 속도 제한: 한도까지는 모두 pong, 넘으면 1008', async () => {
+  const closes = [];
+  const ws = await start((c) => c.onClose((r) => closes.push(r)), { maxPingsPerSecond: 10 });
+  const cl = await connect(ws);
+  for (let i = 0; i < 10; i++) cl.send(OPCODES.PING, Uint8Array.of(i));
+  for (let i = 0; i < 10; i++) {
+    const ev = await cl.next();
+    assert.deepEqual([ev.type, [...ev.data]], ['pong', [i]]);
+  }
+  cl.send(OPCODES.PING, Uint8Array.of(99)); // 11 번째
+  const ev = await cl.next();
+  assert.deepEqual([ev.type, ev.code], ['close', 1008]);
+  cl.send(OPCODES.CLOSE, encodeClosePayload(1008));
+  await cl.closed();
+  await waitFor(() => closes.length === 1);
+  assert.equal(closes[0].code, 1008);
+  await ws.close();
 });
 
 test('클라이언트 close 에 대한 서버 close 에코가 클라이언트에 도달한다', async () => {
