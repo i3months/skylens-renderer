@@ -1,6 +1,9 @@
 // T14.3 건물 외곽 돌출: 외곽(ring) → 프리즘 Mesh. 외부 의존성 없음, 결정적.
 import { TowerAssetError, buildingHeightM, signedArea } from '../../../contracts/tower_assets/index.mjs';
 
+/** 외곽 꼭짓점 수 상한. 자기 교차 검사가 O(n²)이라 입력 크기를 제한한다. */
+export const MAX_RING_VERTICES = 4096;
+
 const fail = (fp, why) => new TowerAssetError(`extrudeBuilding: id=${fp && fp.id} ${why}`);
 
 // 두 선분이 (끝점 접촉 포함) 교차하는지.
@@ -29,6 +32,7 @@ function normalizeRing(fp) {
   const area = signedArea(pts);
   if (area === 0) throw fail(fp, '넓이 0 퇴화 다각형');
   const n = pts.length;
+  if (n > MAX_RING_VERTICES) throw fail(fp, `꼭짓점 수 ${n} 가 상한 ${MAX_RING_VERTICES} 초과`);
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       if (j === i + 1 || (i === 0 && j === n - 1)) continue; // 이웃 변은 건너뜀
@@ -80,6 +84,7 @@ function earClip(pts) {
 export function extrudeBuilding(fp) {
   const ring = normalizeRing(fp);
   const h = buildingHeightM(fp.floors);
+  if (!Number.isFinite(h)) throw fail(fp, '높이가 유한수가 아님');
   const n = ring.length;
   const tris = earClip(ring);
   const pos = [];
@@ -104,5 +109,6 @@ export function extrudeBuilding(fp) {
 /** (fps: Footprint[]) → Array<{ id, mesh }> 입력 순서·동 수 보존. 퇴화 입력은 id 를 담아 던진다. */
 export function extrudeAll(fps) {
   if (!Array.isArray(fps)) throw new TowerAssetError('extrudeAll: 입력이 배열이 아님');
+  for (const fp of fps) if (!fp || typeof fp !== 'object') throw new TowerAssetError('extrudeAll: 항목이 객체가 아님');
   return fps.map((fp) => ({ id: fp.id, mesh: extrudeBuilding(fp) }));
 }

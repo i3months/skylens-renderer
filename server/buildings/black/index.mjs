@@ -1,6 +1,8 @@
 // T14.6 검정 텍스처 건물: 입력 프리즘 메시를 그대로 돌려주고 모서리 선 자산을 만든다.
 // 같은 평면 안의 삼각분할 대각선은 이웃 삼각형 법선 각이 임계 이하이므로 제외한다.
 
+import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
+
 /** 이웃 삼각형 법선 사이 각 임계(도). 이 값 이하이면 같은 평면으로 보고 선에서 제외. */
 export const EDGE_ANGLE_THRESHOLD_DEG = 5;
 /** 정점 위치 일치 판정 격자(m). 벽·지붕이 정점을 따로 가져도 같은 점으로 묶는다. */
@@ -16,11 +18,27 @@ function triNormal(p, a, b, c) {
   return len > 0 ? [n[0] / len, n[1] / len, n[2] / len] : null; // 퇴화 삼각형은 null
 }
 
+// 입력 검증: 형태·유한성·인덱스 범위. 어기면 TowerAssetError.
+function validateMesh(mesh) {
+  if (!mesh || typeof mesh !== 'object') throw new TowerAssetError('buildBlackBuilding: mesh 가 객체가 아님');
+  const { positions: p, indices: idx } = mesh;
+  if (!p || typeof p.length !== 'number' || p.length % 3 !== 0) throw new TowerAssetError('buildBlackBuilding: positions 길이가 3의 배수가 아님');
+  if (!idx || typeof idx.length !== 'number' || idx.length % 3 !== 0) throw new TowerAssetError('buildBlackBuilding: indices 길이가 3의 배수가 아님');
+  for (let i = 0; i < p.length; i++) {
+    if (!Number.isFinite(p[i])) throw new TowerAssetError(`buildBlackBuilding: positions[${i}] 가 유한수가 아님`);
+  }
+  const nv = p.length / 3;
+  for (let i = 0; i < idx.length; i++) {
+    if (!Number.isInteger(idx[i]) || idx[i] < 0 || idx[i] >= nv) throw new TowerAssetError(`buildBlackBuilding: indices[${i}] 가 범위 밖`);
+  }
+}
+
 /**
  * @param {{positions:Float32Array, indices:Uint32Array}} mesh
  * @returns {{mesh: object, edgeLines: Float32Array}} edgeLines = xyz 쌍 연속(선당 6 float)
  */
 export function buildBlackBuilding(mesh) {
+  validateMesh(mesh);
   const { positions: p, indices: idx } = mesh;
   // 위치 격자 키 → 대표 점 id
   const pointId = new Map();
