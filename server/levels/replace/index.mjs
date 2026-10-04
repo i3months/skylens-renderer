@@ -9,7 +9,13 @@ export function createPieceLedger(machine, options = {}) {
     arrive(segmentId, level, pieces) {
       const result = machine.arrive(segmentId, level, pieces);
       if (onRelease) {
-        for (const piece of result.released) onRelease(piece);
+        // 콜백이 던져도 나머지 조각의 해제를 모두 부른 뒤 첫 오류를 던진다.
+        let failed = false;
+        let first;
+        for (const piece of result.released) {
+          try { onRelease(piece); } catch (err) { if (!failed) { failed = true; first = err; } }
+        }
+        if (failed) throw first;
       }
       return result;
     },

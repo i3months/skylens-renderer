@@ -1,14 +1,9 @@
 // "없음" 표시 상태(T10.5). 도착하지 않은 구간은 그리지도 메우지도 않고, 목록에서 숨기지도 않는다.
 // 입력은 계약의 SegmentState 목록이며, 이 모듈은 입력을 바꾸지 않는 순수 함수만 둔다.
-import { NONE, assertLevel, assertSegmentId } from '../../../contracts/levels/index.mjs';
+import { NONE, assertLevel, assertSegmentId, sumPieceCounts } from '../../../contracts/levels/index.mjs';
 
 /** 도착 전 구간에 표시하는 고정 문자열. */
 export const MISSING_LABEL = '없음';
-
-function pieceCount(piece) {
-  const count = piece?.count;
-  return Number.isInteger(count) && count > 0 ? count : 0;
-}
 
 function describeOne(state) {
   if (state === null || typeof state !== 'object') throw new TypeError('SegmentState 는 객체여야 한다');
@@ -24,8 +19,7 @@ function describeOne(state) {
     if (pieces.length !== 0) throw new TypeError(`없음 구간에 조각이 있다: ${segmentId}`);
     return { segmentId, missing: true, renderPointCount: 0, label: MISSING_LABEL };
   }
-  let renderPointCount = 0;
-  for (const piece of pieces) renderPointCount += pieceCount(piece);
+  const renderPointCount = sumPieceCounts(pieces); // pointCount 와 같은 함수
   return { segmentId, missing: false, renderPointCount, label: null };
 }
 
