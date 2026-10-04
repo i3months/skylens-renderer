@@ -54,8 +54,13 @@
 //           재시도가 아니다.
 //     판정은 ackedUpTo·windowLive(추월)를 보지 않는다: 같은 값 재시도는 언제나 true 이고, 기억한 기록과 겹치는 다른 값은
 //     언제나 RangeError 다. 대가: 묘비가 maxEntriesPerSession + 1 개를 넘어 잊힌 범위(창 끝 ≤ 지평이고 기억한 기록과
-//     겹치지 않음)에서는 다른 값도 대조 없이 true 로 받는다(저장하지 않는다). 다른 값의 판정이 RangeError 에서 true 로
-//     바뀌는 것은 그 창과 겹치던 기억한 기록이 모두 잊혔을 때뿐이다(보관 중인 기록은 잊지 않는다). 비용: 판정은 기억한
+//     겹치지 않음)에서는 다른 값도 대조 없이 true 로 받는다(저장하지 않는다). 기록 사이 틈(어떤 창에도 든 적 없는
+//     순번)을 덮는 재시도도 같은 대가 항목이다: 창 끝 ≤ 지평이면 true(blind), 아니면 RangeError 이고, 묘비를 잊어 지평이
+//     오르면 같은 입력의 판정이 RangeError 에서 true 로 바뀐다(ack 진행에 따라). 다른 값의 판정이 RangeError 에서 true 로
+//     바뀌는 것은 그 창과 겹치던 기억한 기록이 모두 잊혔을 때, 또는 틈을 덮는 창의 끝이 지평 아래로 들어왔을 때뿐이다
+//     (보관 중인 기록은 잊지 않는다). 방안 선택(F-247 ⑥): 지평을 '잊은 창 시작 − 1' 까지만 올려 판정을 ack 와 무관하게
+//     만들면 잊은 묘비 자신의 같은 값 재시도(창 끝 > 지평)가 RangeError 가 되어 (b) 가 깨진다. 틈과 잊은 창은 잊고 나면
+//     구별할 정보가 없으므로 (b) 를 지키고 틈의 판정 변화를 대가로 명시해 시험으로 고정한다. 비용: 판정은 기억한
 //     기록 배열의 이진 탐색 하나와 잊은 자리 건너뛰기(경로 압축, 상각 거의 O(1))로 기록 하나 x 만 비교한다
 //     (levelStats().work 가 호출당 1). 모르는 세션이면 false.
 //     확인 규칙: ackedUpTo > last 이면 클라이언트가 그 뒤 조각을 받았으므로(한 연결 안에서 순서 보장, 어댑터는 조각 →
@@ -542,7 +547,9 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
         if (!same) { // (a) 아님
           // (a') 기억한 기록과 겹치는 다른 값, 또는 (c) 지평 뒤. 지평 아래라도 기억한 기록과 겹치면 대조할 정보가 있다(F-241 ⑨).
           if (x || last > s.horizon) {
-            throw new RangeError(`LEVEL_ARRIVED 창 ${firstPieceSeq}..${last} 이 앞선 기록의 창과 겹친다: 창 시작은 앞선 기록의 창 끝(${tail.last})보다 커야 한다`);
+            // 문구는 기존 시험이 기대하는 형태를 유지하되, 실제 이유(기억한 기록과 겹침 / 지평 뒤 순서 위반)를 덧붙인다.
+            const why = x ? `기억한 기록 ${x.firstPieceSeq}..${x.last} 과 값이 다르다` : `기억한 기록과는 겹치지 않으나 지평(${s.horizon})을 넘는 순서 위반이다`;
+            throw new RangeError(`LEVEL_ARRIVED 창 ${firstPieceSeq}..${last} 이 앞선 기록의 창과 겹친다: 창 시작은 앞선 기록의 창 끝(${tail.last})보다 커야 한다 (${why})`);
           }
           s.lv.blind++; // (b) 잊은 묘비의 재시도일 수 있다
         }
