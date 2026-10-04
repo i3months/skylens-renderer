@@ -138,3 +138,51 @@ test('push 한 버퍼를 나중에 바꿔도 결과가 변하지 않는다', () 
   const ev = p.push(w.subarray(5));
   assert.deepEqual([...ev[0].data], [1, 2, 3, 4, 5, 6]);
 });
+
+// F-208: 1 B 조각으로 마스킹된 4 MiB 프레임을 밀어 넣어도 시간·메모리가 프레임 크기에 비례해야 한다.
+// 이전 구현은 조각마다 Buffer 를 만들어 약 1.3 s·550 MB 였다. 측정은 입력 프레임을 만든 뒤의 증가분(heapUsed + external)이다.
+function usedBytes() {
+  if (global.gc) global.gc();
+  const m = process.memoryUsage();
+  return m.heapUsed + m.external;
+}
+
+test('F-208: 마스킹된 4 MiB 프레임을 1 B 조각으로 넣어도 2 s 미만, 메모리 증가 <= 프레임 + 8 MB', () => {
+  const SIZE = 4 * 1024 * 1024;
+  const payload = Buffer.alloc(SIZE);
+  for (let i = 0; i < SIZE; i += 4093) payload[i] = (i >> 8) & 0xff;
+  const frame = encodeFrame(OPCODES.BINARY, payload, { maskKey: KEY });
+  const p = new FrameParser({ maxPayload: SIZE + 1024 });
+  const before = usedBytes();
+  let peak = before;
+  const t0 = performance.now();
+  const ev = [];
+  for (let o = 0; o < frame.length; o++) {
+    ev.push(...p.push(frame.subarray(o, o + 1)));
+    if ((o & 0xffff) === 0) peak = Math.max(peak, process.memoryUsage().heapUsed + process.memoryUsage().external);
+  }
+  const ms = performance.now() - t0;
+  const after = process.memoryUsage();
+  peak = Math.max(peak, after.heapUsed + after.external);
+  const growth = peak - before;
+  console.log(`# 1 B chunks: ${ms.toFixed(0)} ms, growth ${(growth / 1048576).toFixed(1)} MiB`);
+  assert.equal(ev.length, 1);
+  assert.equal(ev[0].type, 'message');
+  assert.ok(Buffer.from(ev[0].data).equals(payload), '내용 보존');
+  assert.ok(ms < 2000, `${ms} ms`);
+  assert.ok(growth <= SIZE + 8 * 1048576, `growth ${growth}`);
+});
+
+test('F-208: 1400 B 조각도 빠르고 내용이 보존된다', () => {
+  const SIZE = 4 * 1024 * 1024;
+  const payload = Buffer.alloc(SIZE, 0x5a);
+  const frame = encodeFrame(OPCODES.BINARY, payload, { maskKey: KEY });
+  const p = new FrameParser({ maxPayload: SIZE + 1024 });
+  const t0 = performance.now();
+  const ev = [];
+  for (let o = 0; o < frame.length; o += 1400) ev.push(...p.push(frame.subarray(o, o + 1400)));
+  const ms = performance.now() - t0;
+  assert.equal(ev.length, 1);
+  assert.ok(Buffer.from(ev[0].data).equals(payload));
+  assert.ok(ms < 500, `${ms} ms`);
+});
