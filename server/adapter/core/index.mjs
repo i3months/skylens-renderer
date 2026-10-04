@@ -14,6 +14,9 @@
 //     first / replace      : 조각마다 PIECE 한 건(pieceSeq 는 어댑터가 PIECE_SEQ_MIN(1)부터 1씩 올리는 u32), 그다음 LEVEL_ARRIVED 한 건.
 //                            순서는 PIECE 들이 먼저이고 LEVEL_ARRIVED 가 마지막이다. 받는 쪽은 LEVEL_ARRIVED 를 "그 수준의
 //                            조각 pieceCount 개가 모두 왔다" 는 완료 표시로 쓰고, 그때 자기 수준 기계에 arrive 한다.
+//                            완료 표시 없이 조각만 온 것은 수준 도착으로 세지 않고 버린다(실패한 송출의 조각이 그런 경우).
+//     실패 뒤 재시도가 skip 이 되면(그 사이 같거나 높은 수준이 도착) 부분 송출된 key 는 onRelease(keys, {abandoned:true})
+//     로 놓고, 끝나지 않은 표시를 지우며, 쓰였을 수 있는 pieceSeq 는 태운다(결과의 abandoned 에도 key 가 담긴다).
 //     replace              : 기계가 released 로 내보낸 이전 수준 조각의 key 목록을 onRelease(keys, info) 로 알린다.
 //   송출과 상태 확정 순서(F-189):
 //     ① 기계 snapshot 과 decideArrival 로 결정을 미리 본다(skip 이면 끝). ② 보낼 메시지를 모두 만들고 부호화까지 마친다.
@@ -225,12 +228,18 @@ export function createCoreAdapter(options = {}) {
       // skip 은 기계에도 알린다(기계 이력 등). 상태는 바뀌지 않는다.
       const r = machine.arrive(segmentId, level, pieces);
       if (r.action !== ACTIONS.SKIP) throw new Error(`수준 기계 결정(${r.action})이 snapshot 으로 본 결정(skip)과 다르다`);
-      // 끝나지 않은 이벤트의 재시도인데 기계가 외부에서 진행돼 skip 이 됐다(F-219 ②). 묶였던 순번을 소비하고 표시를 지운다.
-      if (unfinished) {
-        nextSeq += unfinished.keys.length;
-        unfinished = null;
-      }
-      return { action: 'skip', emitted: 0, released: [] };
+      if (!unfinished) return { action: 'skip', emitted: 0, released: [] };
+      // 실패한 시도의 재시도가 그 사이 더 높거나 같은 수준이 도착해 skip 이 된 경우(F-223 ①). 실패한 시도가 조각 일부를
+      // 이미 내보냈을 수 있다. 그 조각들은 LEVEL_ARRIVED 완료 표시가 없으므로 받는 쪽은 수준 도착으로 세지 않고 버린다
+      // (도착하지 않은 것을 메우지 않는다 — 수준은 교체될 뿐이다). 어댑터는 끝나지 않은 표시를 지우고(안 지우면 이후
+      // 모든 이벤트가 UNFINISHED_EVENT 로 막힌다), 그 pieceSeq 들은 이미 그 key 로 쓰였을 수 있으므로 태워서 다른 key 에
+      // 다시 쓰지 않으며, onRelease 로 그 key 들을 놓는다(info.abandoned = true).
+      const abandonedInfo = { segmentId, level, previousLevel: machine.snapshot(segmentId).level, abandoned: true };
+      const abandoned = pieces.map((p) => ({ ...p.key }));
+      nextSeq += unfinished.keys.length;
+      unfinished = null;
+      notifyRelease(abandoned, abandonedInfo);
+      return { action: 'skip', emitted: 0, released: [], abandoned };
     }
     // ② 메시지를 모두 만들고 부호화까지 마친다. 여기서 던지면 아무것도 나가지 않는다.
     const messages = pieces.map((p, i) => ({ type: 'PIECE', pieceSeq: nextSeq + i, key: { ...p.key }, chunk: p.bytes }));

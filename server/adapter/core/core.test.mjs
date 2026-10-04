@@ -584,6 +584,48 @@ test('F-204: 끝나지 않은 이벤트가 없으면 거부하지 않고, 재시
   assert.deepEqual(out.filter((m) => m.type === 'PIECE').map((m) => m.pieceSeq), [1, 2, 1, 2]);
 });
 
+test('F-223 ①: 실패 뒤 재시도가 skip 이 되면 부분 송출 key 를 놓고, LEVEL_ARRIVED 는 없고, 다음 이벤트가 동작한다', () => {
+  const server = createServerMachine();
+  const out = [];
+  const rel = [];
+  let failAt = 0;
+  let calls = 0;
+  const ad = createCoreAdapter({
+    levelMachine: server,
+    emit: (m) => { calls++; if (calls === failAt) throw new Error('x'); out.push(m); },
+    onRelease: (keys, info) => rel.push({ keys, info }),
+  });
+  const ev = levelEvent(9, 1); // 조각 2 개 + LEVEL_ARRIVED
+  failAt = 2; // 두 번째 PIECE 에서 실패: PIECE 하나만 나갔다
+  assert.throws(() => ad.handle(ev), /x/);
+  assert.equal(out.length, 1);
+  assert.notEqual(ad.unfinishedEvent(), null);
+  // 그 사이 같은 구간의 더 높은 수준이 다른 경로로 확정됐다(공유 기계)
+  server.arrive(9, 3, levelEvent(9, 3).pieces);
+  failAt = 0; calls = 0;
+  const r = ad.handle(ev);
+  assert.deepEqual([r.action, r.emitted], ['skip', 0]);
+  assert.equal(out.length, 1, '더 나간 것 없음');
+  assert.equal(out.filter((m) => m.type === 'LEVEL_ARRIVED').length, 0, '부분 송출 key 에 LEVEL_ARRIVED 없음');
+  assert.equal(rel.length, 1);
+  assert.deepEqual(rel[0].keys.map(pieceKeyString), ev.pieces.map((p) => pieceKeyString(p.key)));
+  assert.equal(rel[0].info.abandoned, true);
+  assert.deepEqual(r.abandoned, rel[0].keys);
+  assert.equal(ad.unfinishedEvent(), null, '끝나지 않은 표시가 지워진다');
+  assert.equal(ad.nextPieceSeq(), PIECE_SEQ_MIN + 2, '쓰였을 수 있는 pieceSeq 는 태운다');
+  // 다음 이벤트가 막히지 않고, 새 pieceSeq 로 나간다
+  assert.equal(ad.handle({ kind: 'segment_expected', segmentId: 7 }).emitted, 1);
+  const r2 = ad.handle(levelEvent(10, 0));
+  assert.equal(r2.action, 'first');
+  const seqs = out.filter((m) => m.type === 'PIECE').map((m) => m.pieceSeq);
+  assert.equal(new Set(seqs).size, seqs.length, 'pieceSeq 중복 없음');
+  assert.ok(seqs[seqs.length - 1] >= PIECE_SEQ_MIN + 2);
+  // 정상 skip(실패 이력 없음)은 놓지 않는다
+  const before = rel.length;
+  assert.equal(ad.handle(levelEvent(10, 0)).action, 'skip');
+  assert.equal(rel.length, before);
+});
+
 test('F-203: 빈 pieces 는 거부, 이전 수준·순번 그대로이고 아무것도 나가지 않는다', () => {
   const server = createServerMachine();
   const out = [];
