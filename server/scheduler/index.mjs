@@ -21,7 +21,7 @@
 //     순서는 전체 정렬과 같다: before() 는 seq 로 전순서. 묶음별로 최고 level 과 level 별 항목 집합을 따로 세어 enqueue 가 묶음 크기에 비례하지 않는다.
 
 import { assertLevel } from '../../contracts/levels/index.mjs';
-import { overtakeGroup } from '../../contracts/proto/index.mjs';
+import { overtakeGroup, CHUNK_INDEX_LIMIT } from '../../contracts/proto/index.mjs';
 
 const KEY_FIELDS = ['segmentId', 'level', 'lod', 'chunkIndex', 'tileX', 'tileY'];
 
@@ -30,9 +30,11 @@ function keyId(key) {
   for (const f of KEY_FIELDS) {
     if (!Number.isInteger(key[f])) throw new TypeError(`key.${f} 는 정수여야 한다: ${key[f]}`);
   }
+  if (key.chunkIndex < 0 || key.chunkIndex >= CHUNK_INDEX_LIMIT) throw new RangeError(`key.chunkIndex 는 0..${CHUNK_INDEX_LIMIT - 1} 이어야 한다: ${key.chunkIndex}`);
   return `${key.segmentId}:${key.level}:${key.lod}:${key.chunkIndex}:${key.tileX}:${key.tileY}`;
 }
 
+// 정렬 순서(규칙 1). pending() 의 전체 정렬에서만 쓰고, 힙은 같은 순서를 less() 로 직접 비교한다.
 function before(a, b) {
   if (a.priority !== b.priority) return b.priority - a.priority;
   if (a.level !== b.level) return b.level - a.level;
@@ -48,7 +50,17 @@ export function createScheduler(options = {}) {
   if (!Number.isInteger(maxPending) || maxPending < 1) throw new RangeError(`maxPending 은 1 이상 정수여야 한다: ${maxPending}`);
   if (!Number.isInteger(maxSentGroups) || maxSentGroups < 1) throw new RangeError(`maxSentGroups 는 1 이상 정수여야 한다: ${maxSentGroups}`);
 
-  const sentLevel = new Map(); // group -> 나간 최고 level (삽입 순서 = LRU 순서)
+  // 나간 level 기억(LRU). Map 의 앞쪽을 지우며 keys().next() 로 가장 오래된 것을 찾으면 지운 자리를 매번 건너뛰어
+  // 상한에 비례해 느려진다(F-213). 그래서 Map 은 조회 전용으로 쓰고, 오래된 순서는 머리 인덱스를 가진 배열 큐로 따로 둔다.
+  // 쓸 때마다 stamp 를 올리고 큐에 (group, stamp) 를 더한다. 큐 앞에서 stamp 가 현재와 다른 것은 낡은 기록이라 버린다.
+  const sentLevel = new Map(); // group -> { level, stamp }
+  let sentQGroup = [];
+  let sentQStamp = [];
+  let sentQHead = 0;
+  let sentClock = 0;
+  // 연산 수 계수(결정적 시험용): compares = 힙 비교, steps = 힙 밖에서 항목·묶음을 한 칸씩 훑은 횟수
+  let compares = 0;
+  let steps = 0;
   const byKey = new Map(); // keyId -> 살아 있는 entry
   const groups = new Map(); // groupId -> { maxLevel, levels: Map<level, Set<entry>> } (묶음별 최고 level·level별 항목)
   let seq = 0;
@@ -56,17 +68,58 @@ export function createScheduler(options = {}) {
   let heap = [];
 
   function remember(group, level) {
-    const prev = sentLevel.get(group);
-    if (prev !== undefined) sentLevel.delete(group); // 다시 넣어 가장 최근으로 옮긴다
-    sentLevel.set(group, prev !== undefined && prev > level ? prev : level);
-    if (sentLevel.size > maxSentGroups) sentLevel.delete(sentLevel.keys().next().value); // 가장 오래된 묶음 축출
+    const rec = sentLevel.get(group);
+    const stamp = ++sentClock;
+    if (rec !== undefined) {
+      if (level > rec.level) rec.level = level;
+      rec.stamp = stamp;
+    } else {
+      sentLevel.set(group, { level, stamp });
+    }
+    sentQGroup.push(group);
+    sentQStamp.push(stamp);
+    while (sentLevel.size > maxSentGroups) { // 가장 오래된 묶음 축출
+      const g = sentQGroup[sentQHead];
+      const st = sentQStamp[sentQHead];
+      sentQGroup[sentQHead++] = undefined;
+      steps++;
+      const r = sentLevel.get(g);
+      if (r !== undefined && r.stamp === st) sentLevel.delete(g);
+    }
+    if (sentQHead >= 1024 && sentQHead * 2 >= sentQGroup.length) { // 지난 머리 부분을 한꺼번에 잘라 낸다
+      sentQGroup = sentQGroup.slice(sentQHead);
+      sentQStamp = sentQStamp.slice(sentQHead);
+      sentQHead = 0;
+    } else if (sentQGroup.length - sentQHead > 2 * maxSentGroups + 64) { // 같은 묶음만 계속 쓰여 낡은 기록만 쌓이는 경우
+      const g2 = [];
+      const s2 = [];
+      for (let i = sentQHead; i < sentQGroup.length; i++) {
+        steps++;
+        const r = sentLevel.get(sentQGroup[i]);
+        if (r !== undefined && r.stamp === sentQStamp[i]) {
+          g2.push(sentQGroup[i]);
+          s2.push(sentQStamp[i]);
+        }
+      }
+      sentQGroup = g2;
+      sentQStamp = s2;
+      sentQHead = 0;
+    }
+  }
+
+  // before(a, b) < 0 과 같다(힙 안에서 함수 호출을 줄이려고 펼쳤다).
+  function less(a, b) {
+    compares++;
+    if (a.priority !== b.priority) return a.priority > b.priority;
+    if (a.level !== b.level) return a.level > b.level;
+    return a.seq < b.seq;
   }
 
   function siftUp(i) {
     const e = heap[i];
     while (i > 0) {
       const parent = (i - 1) >>> 1;
-      if (before(e, heap[parent]) >= 0) break;
+      if (!less(e, heap[parent])) break;
       heap[i] = heap[parent];
       i = parent;
     }
@@ -79,8 +132,8 @@ export function createScheduler(options = {}) {
     for (;;) {
       let c = 2 * i + 1;
       if (c >= n) break;
-      if (c + 1 < n && before(heap[c + 1], heap[c]) < 0) c++;
-      if (before(heap[c], e) >= 0) break;
+      if (c + 1 < n && less(heap[c + 1], heap[c])) c++;
+      if (!less(heap[c], e)) break;
       heap[i] = heap[c];
       i = c;
     }
@@ -108,6 +161,7 @@ export function createScheduler(options = {}) {
 
   function compact() {
     if (heap.length <= 2 * byKey.size + 32) return;
+    steps += heap.length;
     heap = heap.filter((e) => !e.dead);
     for (let i = (heap.length >>> 1) - 1; i >= 0; i--) siftDown(i);
   }
@@ -118,7 +172,10 @@ export function createScheduler(options = {}) {
     let g = groups.get(entry.group);
     if (!g) groups.set(entry.group, (g = { maxLevel: entry.level, bucket: null }));
     let b = g.bucket;
-    while (b && b.level !== entry.level) b = b.nextBucket;
+    while (b && b.level !== entry.level) {
+      steps++;
+      b = b.nextBucket;
+    }
     if (!b) g.bucket = b = { level: entry.level, count: 0, head: null, nextBucket: g.bucket };
     entry.prev = null;
     entry.next = b.head;
@@ -133,6 +190,7 @@ export function createScheduler(options = {}) {
     let b = g.bucket;
     let before = null;
     while (b.level !== entry.level) {
+      steps++;
       before = b;
       b = b.nextBucket;
     }
@@ -147,7 +205,10 @@ export function createScheduler(options = {}) {
       groups.delete(entry.group);
     } else if (entry.level === g.maxLevel) {
       let m = -Infinity;
-      for (let x = g.bucket; x; x = x.nextBucket) if (x.level > m) m = x.level;
+      for (let x = g.bucket; x; x = x.nextBucket) {
+        steps++;
+        if (x.level > m) m = x.level;
+      }
       g.maxLevel = m;
     }
   }
@@ -173,13 +234,16 @@ export function createScheduler(options = {}) {
       if (level !== item.key.level) throw new RangeError(`level(${level}) 이 key.level(${item.key.level}) 과 다르다`);
 
       const group = overtakeGroup(item.key);
-      const sent = sentLevel.get(group);
-      if (sent !== undefined && sent > level) return false; // 이미 더 높은 수준이 나갔다: 추월당한 항목은 받지 않는다
+      const sentRec = sentLevel.get(group);
+      if (sentRec !== undefined && sentRec.level > level) return false; // 이미 더 높은 수준이 나갔다: 추월당한 항목은 받지 않는다
       const g = groups.get(group);
       let lower = 0;
       if (g) {
         if (g.maxLevel > level) return false; // 이미 더 높은 수준이 대기 중: 추월당한 항목은 받지 않는다
-        for (let b = g.bucket; b; b = b.nextBucket) if (b.level < level) lower += b.count;
+        for (let b = g.bucket; b; b = b.nextBucket) {
+          steps++;
+          if (b.level < level) lower += b.count;
+        }
       }
       const existing = byKey.get(id);
       if (existing) {
@@ -198,7 +262,7 @@ export function createScheduler(options = {}) {
       if (lower > 0) {
         const victims = [];
         for (let b = g.bucket; b; b = b.nextBucket) {
-          if (b.level < level) for (let p = b.head; p; p = p.next) victims.push(p);
+          if (b.level < level) for (let p = b.head; p; p = p.next) { steps++; victims.push(p); }
         }
         for (const p of victims) remove(p); // 새 수준이 낮은 수준을 추월
       }
@@ -241,6 +305,11 @@ export function createScheduler(options = {}) {
         if (batch.oversize) break;
       }
       return batch;
+    },
+
+    // 연산 수(시험용). 누적값이며 시간·시계와 무관하다.
+    counters() {
+      return { compares, steps };
     },
 
     pending() {
