@@ -184,13 +184,12 @@ test('terminate 가 던져도 Worker 를 죽이는 시도는 셀 수 있다', as
   assert.equal(s.requests, s.responses + s.errors + s.pending);
 });
 
-test('failAll(messageerror) 뒤 대기열이 비어 새 요청이 시한을 받는다', async () => {
+test('messageerror 뒤 대기열이 비고 새 요청은 거짓 timeout 대신 terminated 로 거부된다', async () => {
   const { c, clock, w } = rig(100);
   const a = c.decode(new Uint8Array(1)).catch((e) => e.message);
   const b = c.decode(new Uint8Array(1)).catch((e) => e.message);
   w.onmessageerror({});
   assert.equal(await a, 'messageerror'); assert.equal(await b, 'messageerror');
   const d = c.decode(new Uint8Array(1)).then(() => 'ok', (e) => e.message);
-  clock.advance(100); // 유령 항목이 남았다면 d 는 맨 앞이 아니라 타이머가 없어 미결이다
-  assert.equal(await d, 'timeout');
+  assert.equal(await d, 'terminated'); // messageerror 는 onerror 와 같이 Worker 를 끝낸다(F-256 ③)
 });
