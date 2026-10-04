@@ -70,7 +70,7 @@ test('서버 복호는 s2c 종류를 direction 으로 거부', () => {
   for (const m of [
     { type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 1 },
     { type: 'PIECE', pieceSeq: 1, key: KEY, chunk: Uint8Array.of(1) },
-    { type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 0 },
+    { type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 1 },
     { type: 'MISSING', segmentId: 0 },
     { type: 'ERROR', code: 1, text: '' },
   ]) assert.equal(code(() => decodeMessage(encodeMessage(m))), 'direction', m.type);
@@ -214,4 +214,12 @@ test('서버 복호: pieceSeq 0 프레임은 s2c 라 direction(1 도 동일)', (
   const w = (seq) => { const e = encodeMessage({ type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 1 }); new DataView(e.buffer).setUint32(13, seq, true); return e; };
   assert.equal(code(() => decodeMessage(w(0))), 'direction');
   assert.equal(code(() => decodeMessage(w(1))), 'direction');
+});
+
+test('LEVEL_ARRIVED pieceCount 0 은 부호화 field, 1 은 통과(계약 >= 1)', () => {
+  const m = (pieceCount) => ({ type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount });
+  assert.equal(code(() => encodeMessage(m(0))), 'field');
+  assert.deepEqual(hex(encodeMessage(m(1))), [...H(7, 9), 5, 0, 0, 0, 2, 1, 0, 0, 0]);
+  // 복호는 s2c 를 direction 으로 거부하므로 서버 코덱에는 복호 경로가 없다.
+  assert.equal(code(() => decodeMessage(encodeMessage(m(1)))), 'direction');
 });

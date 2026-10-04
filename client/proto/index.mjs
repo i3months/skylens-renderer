@@ -156,7 +156,7 @@ export function encodeMessage(message) {
     case MSG.LEVEL_ARRIVED: {
       const seg = int(message.segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId');
       const level = int(message.level, 0, 3, 'level');
-      const cnt = int(message.pieceCount, 0, U32_MAX, 'pieceCount');
+      const cnt = int(message.pieceCount, 1, U32_MAX, 'pieceCount');
       payload = 9;
       write = (dv, b) => { dv.setUint32(b, seg, true); dv.setUint8(b + 4, level); dv.setUint32(b + 5, cnt, true); };
       break;
@@ -233,7 +233,8 @@ export function decodeMessage(bytes) {
       const level = dv.getUint8(b + 4);
       int(segmentId, 0, SEGMENT_ID_LIMIT - 1, 'segmentId');
       int(level, 0, 3, 'level');
-      return { type: 'LEVEL_ARRIVED', segmentId, level, pieceCount: dv.getUint32(b + 5, true) };
+      const pieceCount = int(dv.getUint32(b + 5, true), 1, U32_MAX, 'pieceCount');
+      return { type: 'LEVEL_ARRIVED', segmentId, level, pieceCount };
     }
     case MSG.MISSING: {
       const segmentId = dv.getUint32(b, true);
