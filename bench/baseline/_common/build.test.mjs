@@ -147,7 +147,7 @@ test('install 단계 타임아웃도 timeout', async () => {
 });
 
 // 실제 트리 빌드: SKYLENS_BUILD=1 일 때만 (네트워크·수 분 소요)
-test('실제 skylens 트리 빌드', { skip: process.env.SKYLENS_BUILD !== '1', timeout: 600000 }, async () => {
+test('실제 skylens 트리 빌드', { skip: process.env.SKYLENS_BUILD !== '1' ? 'SKYLENS_BUILD' : false, timeout: 600000 }, async () => {
   const src = process.env.SKYLENS_DIR || '/tmp/skylens';
   const work = await mkdtemp(join(tmpdir(), 'bd-real-'));
   const before = await hashTree(src);
