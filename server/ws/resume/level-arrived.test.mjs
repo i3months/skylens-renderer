@@ -198,7 +198,7 @@ test('F-238 ① 감독 재현: LEVEL_ARRIVED 2개 → open(lastPieceSeq=0) → r
   assert.deepEqual(st.resendPlan(sid), plan);
   rerecord(st, sid, st.resendPlan(sid));
   // 다시 내보낸 계획을 클라이언트가 받으면 두 수준 모두 완료.
-  const client = [{ type: 'WELCOME', sessionId: 77, resumed: true, nextPieceSeq: 6 }, ...resendFrames(plan).map(decodeMessage)];
+  const client = [{ type: 'WELCOME', sessionId: 77, resumed: false, nextPieceSeq: 1 }, { type: 'WELCOME', sessionId: 77, resumed: true, nextPieceSeq: 6 }, ...resendFrames(plan).map(decodeMessage)];
   const r = collectArrivals(client);
   assert.deepEqual(selectDrawable(r.keys, r.arrived), { draw: [...L0_KEYS, ...SEG10_KEYS], pending: [], discard: [] });
   // 창 끝 == ackedUpTo 로 남은 기록(lastPieceSeq=2)도 재기록 멱등.
