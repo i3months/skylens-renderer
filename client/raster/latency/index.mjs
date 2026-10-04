@@ -9,20 +9,22 @@
 //   const events = probe.events();
 
 // marks·measurements 개수 상한: 메모리 누적 방지.
-// 기본값 10000 은 초당 ~100 프레임에서 ~100 초 분량의 기록 보관으로,
+// 기본값 10000 은 초당 ~100 프레임에서 프레임당 4개 마크 기준 약 25 초 분량의 기록 보관으로,
 // 일반적인 성능 계측 시나리오(수십 프레임의 최근 지연 구간 추적)에 충분.
 // 상한 도달 시 가장 오래된 항목을 삭제해서 최근 N개만 유지.
-const MAX_MARKS = 10000;
-const MAX_MEASUREMENTS = 10000;
+const DEFAULT_MAX_MARKS = 10000;
+const DEFAULT_MAX_MEASUREMENTS = 10000;
 
 /**
  * 입력→setView→draw→present 파이프라인의 지연을 계측한다.
  *
  * @param {Object} config - 설정
  * @param {Function} config.now - 현재 시각 반환 함수 (밀리초, 기본값: performance.now)
+ * @param {number} config.maxMarks - 마크 개수 상한 (기본값: 10000)
+ * @param {number} config.maxMeasurements - 측정값 개수 상한 (기본값: 10000)
  * @returns {Object} 계측 객체
  */
-export function createLatencyProbe({ now = () => performance.now() } = {}) {
+export function createLatencyProbe({ now = () => performance.now(), maxMarks = DEFAULT_MAX_MARKS, maxMeasurements = DEFAULT_MAX_MEASUREMENTS } = {}) {
   const marks = new Map(); // name → { time, id }
   const measurements = []; // { name, fromName, toName, id, duration }
 
@@ -39,7 +41,7 @@ export function createLatencyProbe({ now = () => performance.now() } = {}) {
       // 이미 존재하면 삭제해서 삽입 순서를 갱신한 뒤 다시 설정
       if (marks.has(key)) {
         marks.delete(key);
-      } else if (marks.size >= MAX_MARKS) {
+      } else if (marks.size >= maxMarks) {
         // 상한 도달: 가장 오래된 것(삽입 순서의 첫 항목)을 버린다
         const first = marks.keys().next().value;
         marks.delete(first);
@@ -70,7 +72,7 @@ export function createLatencyProbe({ now = () => performance.now() } = {}) {
       const duration = to.time - from.time;
 
       // 측정 개수 상한 확인
-      if (measurements.length >= MAX_MEASUREMENTS) {
+      if (measurements.length >= maxMeasurements) {
         // 상한 도달: 가장 오래된 것(배열의 첫 항목)을 버린다
         measurements.shift();
       }
