@@ -106,6 +106,7 @@ class OrderedMap {
     this.map = new Map(); // key -> 항목 {k, v, dead}
     this.q = [];          // 삽입 순서의 항목(죽은 것 포함)
     this.head = 0;        // q[head] 앞은 이미 버린 자리
+    this.work = 0;        // 진단: oldest() 가 건너뛴 죽은 자리 + 압축이 훑은 자리의 누계(축출 1회당 O(1) 이어야 한다)
   }
   get size() { return this.map.size; }
   has(k) { return this.map.has(k); }
@@ -130,7 +131,7 @@ class OrderedMap {
   /** 가장 오래된 살아 있는 항목 [k, v]. 없으면 undefined. 죽은 머리는 걷어낸다(상각 O(1)). */
   oldest() {
     const q = this.q;
-    while (this.head < q.length && q[this.head].dead) q[this.head++] = undefined;
+    while (this.head < q.length && q[this.head].dead) { q[this.head++] = undefined; this.work++; }
     const e = q[this.head];
     return e ? [e.k, e.v] : undefined;
   }
@@ -139,6 +140,7 @@ class OrderedMap {
   #maybeCompact() {
     // 버린 머리와 가운데의 죽은 항목이 살아 있는 수의 2배(+32)를 넘으면 한 번에 다시 만든다(상각 O(1), 길이 <= 2×살아 있는 수 + 32 + a).
     if (this.q.length - this.head > 2 * this.map.size + 32 || this.head > 1024 + this.map.size) {
+      this.work += this.q.length - this.head;
       this.q = this.q.slice(this.head).filter((e) => !e.dead);
       this.head = 0;
     }
@@ -148,7 +150,7 @@ class OrderedMap {
 // ackedQ: 확인된 살아 있는 항목을 확인 순서로 담는 큐(F-213). 항목은 e.acked 로 소속을 표시하고 remove 는 표시만 바꾼다(해시 조회 없음).
 // 가장 오래된 것은 머리 인덱스로 걷으며 죽은 자리를 버린다 — V8 Map 의 앞쪽 빈자리를 매번 건너뛰는 keys().next() 를 쓰지 않는다.
 class AckedQueue {
-  constructor() { this.q = []; this.head = 0; this.size = 0; }
+  constructor(diag) { this.q = []; this.head = 0; this.size = 0; this.diag = diag; } // diag.ackedWork: 건너뛴 자리 + 압축이 훑은 자리의 진단 누계(모든 세션 합)
   push(e) {
     e.acked = true;
     this.q.push(e);
@@ -160,6 +162,7 @@ class AckedQueue {
     this.size--;
     // 버린 머리와 가운데의 죽은 자리가 살아 있는 수의 2배(+32)를 넘으면 한 번에 다시 만든다(상각 O(1)).
     if (this.q.length - this.head > 2 * this.size + 32 || this.head > 1024 + this.size) {
+      this.diag.ackedWork += this.q.length - this.head;
       this.q = this.q.slice(this.head).filter((x) => x.acked);
       this.head = 0;
     }
@@ -167,7 +170,7 @@ class AckedQueue {
   /** 가장 오래전에 확인된 살아 있는 항목. 없으면 undefined. */
   oldest() {
     const q = this.q;
-    while (this.head < q.length && !q[this.head].acked) q[this.head++] = undefined;
+    while (this.head < q.length && !q[this.head].acked) { q[this.head++] = undefined; this.diag.ackedWork++; }
     return q[this.head];
   }
 }
@@ -181,6 +184,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   const genId = randomId ?? (() => randomInt(1, U32_MAX));
   /** @type {Map<number, any>} 삽입 순서 = 최근 사용 순서(touch 때 다시 넣는다) */
   const sessions = new OrderedMap();
+  const evictionDiag = { sessionEvictions: 0, ackedEvictions: 0, ackedWork: 0 }; // 진단(테스트): 축출 횟수와 그 때 쓴 걸음 수
 
   const expired = (s, t) => t - s.last >= ttlMs;
   function sweep(t) {
@@ -199,14 +203,14 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   }
   function create(t) {
     sweep(t);
-    while (sessions.size >= maxSessions) sessions.delete(sessions.oldest()[0]);
+    while (sessions.size >= maxSessions) { sessions.delete(sessions.oldest()[0]); evictionDiag.sessionEvictions++; }
     let id;
     do { id = genId(); } while (id === 0 || sessions.has(id));
     // sent: keyStr -> 항목 {seq,key,bytes,size,pending,dead}. pendingQ: 미확인 항목(순번 순). ackedQ: 확인된 살아 있는 항목(확인 순, 머리 인덱스 큐; 대체·축출 때 바로 지워 dead 가 쌓이지 않는다).
     // groupRefs: 묶음 -> sent 에 남은 그 묶음 항목 수(0 이 되면 groupMax 도 지운다).
     const s = {
       last: t, nextSeq: PIECE_SEQ_MIN, ackedUpTo: 0, sent: new Map(), groupMax: new Map(), groupRefs: new Map(),
-      pendingQ: new Queue(), ackedQ: new AckedQueue(), retained: 0, deadQ: 0,
+      pendingQ: new Queue(), ackedQ: new AckedQueue(evictionDiag), retained: 0, deadQ: 0,
     };
     sessions.set(id, s);
     return id;
@@ -310,7 +314,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       if (!old && s.sent.size + 1 > maxEntries) {
         const need = s.sent.size + 1 - maxEntries;
         if (s.ackedQ.size < need) return false; // ackedQ 는 살아 있는 항목만 담으므로 O(1)
-        for (let i = 0; i < need; i++) evict(s, s.ackedQ.oldest());
+        for (let i = 0; i < need; i++) { evict(s, s.ackedQ.oldest()); evictionDiag.ackedEvictions++; }
       }
       const g = overtakeGroup(key);
       if (old) drop(s, old); // 같은 key 대체: 묶음 항목 수는 그대로
@@ -366,6 +370,10 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       let unacked = 0;
       for (const e of s.pendingQ) if (!e.dead) unacked++;
       return { entries: s.sent.size, retainedBytes: s.retained, unacked, groups: s.groupMax.size };
+    },
+    /** 진단용(테스트): 축출 횟수와 걸음 수(건너뛴 자리 + 압축이 훑은 자리). 두 work 모두 해당 큐 전체 누계(압축 포함)다. */
+    evictionStats() {
+      return { sessionEvictions: evictionDiag.sessionEvictions, sessionWork: sessions.work, ackedEvictions: evictionDiag.ackedEvictions, ackedWork: evictionDiag.ackedWork };
     },
     /** 진단용(테스트): 세션의 ackedQ 길이. 없는 세션은 -1. */
     ackedQueueLength(sessionId) {

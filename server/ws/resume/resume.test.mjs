@@ -660,18 +660,40 @@ function evictionRatio(kind, ops) {
   return { ratio: best[65536] / best[1000], best };
 }
 
-test('F-213: sessions 가득 찬 뒤 open 25만 회, 상한 65536 의 회당 시간이 상한 1000 에 비례하지 않는다(<= 12배)', () => {
-  // 새 세션 객체가 상한 크기만큼 살아 남아 GC(승격·복사)가 상한에 비례해 비싸진다: 알고리즘 몫이 아니라 끌어올린 하한이다
-  // (측정 1~6배, 옛 구현 25~55배). 알고리즘 몫은 아래 ackedQ·touch 시험과 합쳐 본다.
-  const { ratio, best } = evictionRatio('sessions', 250_000);
-  assert.ok(ratio <= 12, `cap65536/cap1000 = ${ratio.toFixed(2)} ${JSON.stringify(best)}`);
+// 판정 시험(결정적): 걸음 수 = oldest() 가 건너뛴 죽은 자리 + 압축이 훑은 자리. 시계와 무관하다.
+test('F-213: 상한 65536 에서 25만 회 대체해도 세션 축출 1회당 걸음 수는 O(1)(평균 <= 4)', () => {
+  const cap = 65536;
+  let n = 1;
+  const st = createSessionStore({ maxSessions: cap, ttlMs: 1e12, now: () => 0, randomId: () => n++ });
+  for (let i = 0; i < cap + 250_000; i++) st.open({ sessionId: 0, lastPieceSeq: 0 });
+  assert.equal(st.size(), cap);
+  const d = st.evictionStats();
+  assert.equal(d.sessionEvictions, 250_000);
+  assert.ok(d.sessionWork / d.sessionEvictions <= 4, `steps/eviction = ${d.sessionWork / d.sessionEvictions}`);
 });
 
-test('F-213: ackedQ 가 가득 찬 뒤 recordSent+ack 25만 회, 상한 65536 의 회당 시간이 상한 1000 에 비례하지 않는다(<= 8배)', () => {
-  // recordSent 는 상한 크기의 sent Map 해시도 건드려 캐시 때문에 상한 65536 이 자연히 1.5~2.4배 느리다. 옛 구현은 20~55배였다.
-  const { ratio, best } = evictionRatio('acked', 250_000);
-  assert.ok(ratio <= 8, `cap65536/cap1000 = ${ratio.toFixed(2)} ${JSON.stringify(best)}`);
+test('F-213: 상한 65536 에서 25만 회 대체해도 ackedQ 축출 1회당 걸음 수는 O(1)(평균 <= 4)', () => {
+  const cap = 65536;
+  const st = createSessionStore({ maxSessions: 2, ttlMs: 1e12, now: () => 0, maxEntriesPerSession: cap });
+  const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
+  for (let seq = 1; seq <= cap + 250_000; seq++) {
+    assert.ok(st.recordSent(sessionId, { segmentId: 1, level: 0, lod: 0, chunkIndex: seq, tileX: 0, tileY: 0 }, seq, 1));
+    st.ack(sessionId, seq);
+  }
+  assert.equal(st.ackedQueueLength(sessionId), cap);
+  const d = st.evictionStats();
+  assert.equal(d.ackedEvictions, 250_000);
+  assert.ok(d.ackedWork / d.ackedEvictions <= 4, `steps/eviction = ${d.ackedWork / d.ackedEvictions}`);
 });
+
+// 보조 측정(판정 아님): 벽시계 비율을 로그로만 남긴다. 장비·GC 에 따라 흔들리므로 임계값은 터무니없는 회귀(옛 구현 20~55배)만 거르는 상식선이다.
+for (const [kind, label] of [['sessions', 'session cap'], ['acked', 'ackedQ']]) {
+  test(`F-213 (보조 측정): ${label} 축출 벽시계 비율 cap65536/cap1000 을 로그로 남긴다`, () => {
+    const { ratio, best } = evictionRatio(kind, 250_000);
+    console.log(`# F-213 ${label} wall-clock ratio cap65536/cap1000 = ${ratio.toFixed(2)} ${JSON.stringify(best)}`);
+    assert.ok(Number.isFinite(ratio) && ratio < 50, `ratio=${ratio}`);
+  });
+}
 
 test('F-213: 오래된 순서 축출은 최근 사용(touch) 순서와 ackedQ 확인 순서를 지킨다', () => {
   const { c, st } = mk({ maxSessions: 3 });
