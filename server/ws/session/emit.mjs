@@ -113,11 +113,14 @@ export function createRecordingEmit(options) {
     return sid;
   }
 
-  return function recordingEmit(message) {
+  const recordingEmit = function recordingEmit(message) {
     if (message === null || typeof message !== 'object') throw new TypeError('message 는 객체여야 한다');
     const { type } = message;
     if (type !== 'PIECE' && type !== 'LEVEL_ARRIVED' && type !== 'MISSING') {
       throw new TypeError(`기록 규칙이 없는 메시지 type: ${String(type)}`);
+    }
+    if (type === 'PIECE' && !Number.isInteger(message.pieceSeq)) {
+      throw new TypeError(`PIECE pieceSeq 가 정수가 아니다: ${String(message.pieceSeq)}`); // 기록·송출 없음
     }
     const bytes = encode(message); // ① 부호화 실패면 기록·송출 없음
     if (type === 'PIECE') {
@@ -162,4 +165,7 @@ export function createRecordingEmit(options) {
       if (lo === seqs.length) { seqs.length = 0; ids.length = 0; lo = 0; } else if (lo >= 1024 && lo * 2 >= seqs.length) { seqs.splice(0, lo); ids.splice(0, lo); lo = 0; }
     }
   };
+  // 시험용 관찰 수단(비열거): 추적 큐의 살아 있는 항목 수와 실제 배열 길이.
+  Object.defineProperty(recordingEmit, '_tracked', { value: () => ({ live: seqs.length - lo, length: seqs.length }) });
+  return recordingEmit;
 }

@@ -1,5 +1,6 @@
-// F-277 ④: emit 의 sentKeys 정리 비용. 미결(정리 전 sentKeys 크기) N 에서 LEVEL_ARRIVED 당 시간을 두 흐름으로 잰다.
-//   'old' : 오래된 창부터 끝난다(Map 앞쪽에 삭제 구멍이 생긴다)   'new' : 방금 보낸 새 창만 끝난다
+// F-277 ④: emit 의 sentKeys 정리 비용. 정리 전 sentKeys 크기 N 에서 시작해 LEVEL_ARRIVED 당 시간을 두 흐름으로 잰다.
+//   'old' : 오래된 창부터 끝난다(미결 N 이 남는다)   'new' : 방금 보낸 새 창이 끝난다(창 끝 이하 전부 정리되므로
+//           첫 LA 에서 큐가 전부 비워지고, 이후는 미결 N 이 아니라 거의 빈 큐에서 잰다)
 // npm test 밖: node bench/emit_sentkeys_bench.mjs [emit 모듈 경로(기본 ../server/ws/session/emit.mjs)]
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
