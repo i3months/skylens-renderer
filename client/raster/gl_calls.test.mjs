@@ -134,9 +134,15 @@ test('컨텍스트 복구 뒤 첫 프레임에 VAO 를 다시 만들고 다음 �
 test('해제한 조각의 VAO 는 지우고, 같은 key 재업로드는 새 VAO 로 바뀐다', async () => {
   const { r, calls } = await scene(3);
   r.draw();
+  // 첫 draw 에서 VAO 를 만든 뒤, releasePiece 호출하되 draw 하기 전에 재업로드한다.
+  // 그러면 VAO 캐시에 여전히 이전 항목이 남아 있다.
   r.releasePiece('1.1.0.0.0.2');
+  await r.uploadPiece('1.1.0.0.0.2', pieceOf(FORMAT_POINT27, 2));
+  r.setArrived([{ segmentId: 1, level: 1, keys: ['1.1.0.0.0.0', '1.1.0.0.0.1', '1.1.0.0.0.2'] }]);
   calls.length = 0;
   r.draw();
-  assert.equal(count(calls, 'deleteVertexArray'), 1);
+  assert.equal(count(calls, 'createVertexArray'), 1, '재업로드한 조각의 새 VAO 생성');
+  assert.equal(count(calls, 'deleteVertexArray'), 1, '재업로드 전 캐시된 VAO 삭제');
+
   r.dispose();
 });
