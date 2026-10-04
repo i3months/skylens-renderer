@@ -14,6 +14,9 @@ export const MAX_CONTROL_PAYLOAD = 125;
 // 한 메시지를 이루는 데이터 프레임 수 상한(길이 0 포함). 정상 클라이언트는 메시지당 몇 프레임이면 충분하다.
 export const DEFAULT_MAX_FRAGMENTS = 4096;
 
+const TAIL_MIN_BYTES = 16384; // 이보다 작은 입력 조각은 꼬리 버퍼에 합친다
+const FRAME_HEADER_MAX = 14;
+
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
 
 /** close 코드가 선로에 실어도 되는 값인가(RFC 7.4.1/7.4.2). */
@@ -80,6 +83,7 @@ export class FrameParser {
     this.fragBytes = 0;
     this.fragCount = 0; // 길이 0 포함, 이 메시지를 이룬 데이터 프레임 수
     this.fragOpcode = -1;
+    this.tail = null; // 작은 조각을 이어 쓰는 미리 할당한 버퍼 { buf, len }
     this.dead = false;
     this.need = 0; // 현재 프레임이 다 모이기까지 필요한 총 바이트. 모자라면 머리 해석을 다시 하지 않는다(1 B 조각 대비).
   }
@@ -89,7 +93,7 @@ export class FrameParser {
     const events = [];
     if (this.dead) return events;
     if (chunk.length > 0) {
-      this.q.push(Buffer.from(chunk)); // 호출자가 나중에 버퍼를 바꿔도 안전하도록 복사(선형 비용)
+      this.#append(chunk);
       this.qBytes += chunk.length;
     }
     while (!this.dead) {
@@ -99,6 +103,42 @@ export class FrameParser {
       if (ev.type !== 'none') events.push(ev);
     }
     return events;
+  }
+
+  /**
+   * 입력을 q 에 붙인다. 작은 조각은 마지막 조각이 가리키는 미리 할당한 꼬리 버퍼에 이어 쓴다(조각마다 Buffer 를 만들지 않는다).
+   * 꼬리 크기는 머리에서 알게 된 need 까지 남은 바이트(없으면 TAIL_MIN_BYTES). 큰 조각은 한 번 복사해 그대로 쌓는다.
+   * 어느 경우든 호출자 버퍼는 복사되므로 나중에 바꿔도 안전하다.
+   */
+  #append(chunk) {
+    const n = chunk.length;
+    if (n >= TAIL_MIN_BYTES) { this.#flush(); this.q.push(Buffer.from(chunk)); return; }
+    const last = this.qHead < this.q.length ? this.q[this.q.length - 1] : null;
+    let t = this.tail;
+    // 직전 push 가 꼬리에 쓴 뒤 q 를 읽은 적이 없으면(dirty) q 의 마지막 조각 뷰만 낡았을 뿐 꼬리는 여전히 끝 조각이다.
+    if (t !== null && t.dirty && t.len + n <= t.buf.length) { t.buf.set(chunk, t.len); t.len += n; return; }
+    // 아니면 꼬리 버퍼가 아직 q 의 마지막 조각이고(소비되며 앞이 잘렸어도 끝 위치가 같다) 남은 자리가 있는지 확인한다.
+    if (t !== null && last !== null && last.buffer === t.buf.buffer && last.byteOffset + last.length === t.buf.byteOffset + t.len && t.len + n <= t.buf.length) {
+      t.buf.set(chunk, t.len);
+      t.start = last.byteOffset - t.buf.byteOffset;
+      t.len += n;
+      t.dirty = true; // q 의 뷰는 q 를 읽기 직전(#flush)에 갱신한다. 1 B 조각마다 뷰를 만들지 않으려는 것.
+      return;
+    }
+    this.#flush(); // 꼬리가 가득 찼으니 낡은 마지막 뷰를 맞춘 뒤 새 꼬리를 쌓는다
+    const remaining = this.need > this.qBytes ? this.need - this.qBytes : 0;
+    const cap = Math.max(TAIL_MIN_BYTES, Math.min(remaining, this.maxPayload + FRAME_HEADER_MAX));
+    t = this.tail = { buf: Buffer.allocUnsafeSlow(cap), len: n, start: 0, dirty: false };
+    t.buf.set(chunk, 0);
+    this.q.push(t.buf.subarray(0, n));
+  }
+
+  /** 꼬리에 쓴 만큼 q 의 마지막 조각 뷰를 맞춘다. q 를 읽거나 바꾸기 전에 부른다. */
+  #flush() {
+    const t = this.tail;
+    if (t === null || !t.dirty) return;
+    t.dirty = false;
+    this.q[this.q.length - 1] = t.buf.subarray(t.start, t.len);
   }
 
   #fail(code, reason) { return { type: 'error', code, reason }; }
@@ -149,6 +189,7 @@ export class FrameParser {
 
   #next() {
     if (this.qBytes < 2 || this.qBytes < this.need) return null;
+    this.#flush();
     const b = this.#peek(14); // 헤더 최대 길이 = 2 + 8 + 4
     const fin = (b[0] & 0x80) !== 0;
     if ((b[0] & 0x70) !== 0) return this.#fail(1002, 'RSV 비트');
