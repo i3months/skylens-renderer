@@ -37,21 +37,27 @@
 //     segmentId 는 0 이상 SEGMENT_ID_LIMIT(2^30, contracts/asset) 미만이다(F-242 ④). 클라이언트(contracts/client_raster)가
 //     그 밖을 거부하므로 저장소도 RangeError 로 거부한다(recordSent·shouldSend 의 key.segmentId 도 같다). 운영 경로의
 //     어댑터는 수준 기계(contracts/levels)가 먼저 거른다.
-//     기억(F-241): 받은 기록은 모두 네 값(segmentId·level·firstPieceSeq·pieceCount)을 창 끝으로 찾을 수 있게 기억한다 —
-//     보관 중인 기록과, 지운(ack·대체·상한) 또는 보관하지 않은 기록의 묘비. 묘비는 세션당 최대 maxEntriesPerSession + 1
-//     개이고, 넘으면 가장 먼저 묘비가 된 것부터 잊는다. 지평(horizon) = 잊은 묘비의 창 끝 최댓값(처음 0).
-//     재시도(firstPieceSeq ≤ 마지막으로 받은 기록의 last)는 새 기록이 아니다. 다음 순서로 판정하고, 어느 경우든 아무것도
-//     바꾸지 않는다(저장하지 않는다):
-//       (a) 기억한 기록(보관 중이든 묘비든) 가운데 네 값이 모두 같은 것이 있으면 true — 어댑터 재시도와, resendPlan 의
-//           메시지를 다시 내보내며 기록하는 이어받기 재전송. 그 사이 ack·대체로 기록이 지워졌어도 같다.
-//       (b) 창 끝 ≤ 지평이면 true(잊은 묘비의 재시도일 수 있어 대조할 정보가 없다). levelStats().blind 를 센다.
-//       (c) 그 밖은 RangeError(겹침·순서 위반). 지평 뒤에 창 끝이 있는 받은 기록은 모두 기억하므로, (c) 에 오는 입력은 받은
-//           기록의 재시도가 아니다.
-//     판정은 ackedUpTo·windowLive(추월)를 보지 않는다: 같은 값 재시도는 언제나 true 이고, 다른 값은 (b) 범위 밖이면 언제나
-//     RangeError 다. 대가: 묘비가 maxEntriesPerSession + 1 개를 넘어 잊힌 범위(창 끝 ≤ 지평)에서는 다른 값도 대조 없이
-//     true 로 받는다(저장하지 않는다). 지평은 묘비가 생길 때(ack 로 지울 때 포함)만 오르므로, 다른 값의 판정이 RangeError 에서
-//     true 로 바뀌는 것은 그 범위가 잊혔을 때뿐이다. 비용: 판정은 창 끝 Map 조회 하나(levelStats().work 가 호출당 1).
-//     모르는 세션이면 false.
+//     기억(F-241): 받은 기록은 모두 네 값(segmentId·level·firstPieceSeq·pieceCount)을 창 순서대로 기억한다 — 보관 중인
+//     기록과, 지운(ack·대체·상한) 또는 보관하지 않은 기록의 묘비. 묘비는 세션당 최대 maxEntriesPerSession + 1 개이고,
+//     넘으면 가장 먼저 묘비가 된 것부터 잊는다. 지평(horizon) = 잊은 묘비의 창 끝 최댓값(처음 0). 잊는 순서는 창 순서가
+//     아니므로 지평 아래에도 기억한 기록(보관 중이거나 늦게 묘비가 된 것)이 남을 수 있다(F-241 ⑨).
+//     재시도(firstPieceSeq ≤ 마지막으로 받은 기록의 last)는 새 기록이 아니다. 받은 기록의 창은 겹치지 않으므로, 재시도의
+//     창과 겹치는 기억한 기록 가운데 창이 가장 앞선 것 x 하나로 다음과 같이 판정하고, 어느 경우든 아무것도 바꾸지 않는다
+//     (저장하지 않는다):
+//       (a) x 가 있고 네 값이 모두 같으면 true — 어댑터 재시도와, resendPlan 의 메시지를 다시 내보내며 기록하는 이어받기
+//           재전송. 그 사이 ack·대체로 기록이 지워졌어도 같다.
+//       (a') x 가 있는데 값이 다르면(창이 같든 일부만 겹치든) RangeError — 지평과 무관하다.
+//       (b) x 가 없고(기억한 어느 기록과도 겹치지 않고) 창 끝 ≤ 지평이면 true(잊은 묘비의 재시도일 수 있어 대조할 정보가
+//           없다). levelStats().blind 를 센다.
+//       (c) 그 밖(x 가 없고 창 끝 > 지평)은 RangeError(겹침·순서 위반). 잊은 기록은 창 끝 ≤ 지평이고 다른 기록과 겹치지
+//           않으므로 그 재시도는 (b) 로 가고, 기억한 기록의 재시도는 (a) 로 간다 — (a')·(c) 에 오는 입력은 받은 기록의
+//           재시도가 아니다.
+//     판정은 ackedUpTo·windowLive(추월)를 보지 않는다: 같은 값 재시도는 언제나 true 이고, 기억한 기록과 겹치는 다른 값은
+//     언제나 RangeError 다. 대가: 묘비가 maxEntriesPerSession + 1 개를 넘어 잊힌 범위(창 끝 ≤ 지평이고 기억한 기록과
+//     겹치지 않음)에서는 다른 값도 대조 없이 true 로 받는다(저장하지 않는다). 다른 값의 판정이 RangeError 에서 true 로
+//     바뀌는 것은 그 창과 겹치던 기억한 기록이 모두 잊혔을 때뿐이다(보관 중인 기록은 잊지 않는다). 비용: 판정은 기억한
+//     기록 배열의 이진 탐색 하나와 잊은 자리 건너뛰기(경로 압축, 상각 거의 O(1))로 기록 하나 x 만 비교한다
+//     (levelStats().work 가 호출당 1). 모르는 세션이면 false.
 //     확인 규칙: ackedUpTo > last 이면 클라이언트가 그 뒤 조각을 받았으므로(한 연결 안에서 순서 보장, 어댑터는 조각 →
 //     LEVEL_ARRIVED 를 연달아 보낸다) LEVEL_ARRIVED 도 받았다 — 기록을 지운다(묘비). ackedUpTo == last 는 조각은 다
 //     받았지만 LEVEL_ARRIVED 는 모르는 상태라 남긴다.
@@ -274,12 +280,13 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     // groupRefs: 묶음 -> sent 에 남은 그 묶음 항목 수(0 이 되면 groupMax 도 지운다).
     // levels: 확인되지 않은 LEVEL_ARRIVED 기록(창 끝 last 오름차순, 창은 겹치지 않음, F-236·F-238). 정리된 기록은 gone 표시만
     // 남기고(levelsGone 개) 머리에서 걷거나 압축한다. levelsLive = 남은 기록 수. lastLevel: 마지막으로 기록한 것(지워져도 남는다).
-    // byLast: 창 끝 -> 기억한 기록(보관 중 + 묘비, F-241). tombQ: 묘비(묘비가 된 순서, ≤ maxEntries + 1 개). horizon: 잊은
-    // 묘비의 창 끝 최댓값. lv: levelStats 누계.
+    // mem: 기억한 기록(보관 중 + 묘비, F-241)을 받은 순서(= 창 순서)로 담은 배열. 잊은 기록은 forgotten 표시만 하고
+    // memNx(다음 기억한 자리 포인터, 경로 압축)로 건너뛴다. memDead = 잊었지만 아직 배열에 남은 수(절반을 넘으면 압축).
+    // tombQ: 묘비(묘비가 된 순서, ≤ maxEntries + 1 개). horizon: 잊은 묘비의 창 끝 최댓값. lv: levelStats 누계.
     const s = {
       last: t, nextSeq: PIECE_SEQ_MIN, ackedUpTo: 0, sent: new Map(), groupMax: new Map(), groupRefs: new Map(),
       pendingQ: new Queue(), ackedQ: new AckedQueue(evictionDiag), retained: 0, deadQ: 0, levels: new Queue(), levelsGone: 0, levelsLive: 0, lastLevel: null,
-      byLast: new Map(), tombQ: new Queue(), horizon: 0, lv: { unstored: 0, blind: 0, capDropped: 0, work: 0 },
+      mem: [], memNx: [], memDead: 0, tombQ: new Queue(), horizon: 0, lv: { unstored: 0, blind: 0, capDropped: 0, work: 0 },
     };
     sessions.set(id, s);
     return id;
@@ -307,14 +314,44 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     else { r.gone = true; s.levelsLive--; tomb(s, r); }
   }
   // 지웠거나 보관하지 않은 기록을 묘비로 기억한다(F-241). 묘비가 maxEntries + 1 개를 넘으면 가장 먼저 묘비가 된 것부터
-  // 잊고 지평을 올린다. 받은 기록은 창이 겹치지 않아 창 끝이 서로 달라 byLast 의 키가 겹치지 않는다.
+  // 잊고 지평을 올린다.
   function tomb(s, r) {
     s.tombQ.push(r);
     while (s.tombQ.length > maxEntries + 1) {
       const x = s.tombQ.shift();
-      s.byLast.delete(x.last);
+      forget(s, x);
       if (x.last > s.horizon) s.horizon = x.last;
     }
+  }
+  // 받은 기록을 mem 끝에 붙인다(새 기록은 창이 앞선 모든 기록 뒤라 mem 은 창 순서를 지킨다).
+  function remember(s, r) {
+    r.mi = s.mem.length;
+    s.mem.push(r);
+    s.memNx.push(r.mi);
+  }
+  // 기록을 잊는다: 자리를 다음 자리로 잇고, 잊은 자리가 절반을 넘으면 배열을 다시 만든다(상각 O(1), 길이 ≤ 2 × 기억한 수 + 1).
+  function forget(s, r) {
+    r.forgotten = true;
+    s.memNx[r.mi] = r.mi + 1;
+    s.memDead++;
+    if (s.memDead * 2 > s.mem.length) {
+      s.mem = s.mem.filter((x) => !x.forgotten);
+      s.memNx = s.mem.map((x, i) => { x.mi = i; return i; });
+      s.memDead = 0;
+    }
+  }
+  // 창 first..last 와 겹치는 기억한 기록 가운데 창이 가장 앞선 것(F-241 ⑨). 없으면 null. 기억한 기록끼리는 창이 겹치지
+  // 않으므로 '창 끝 ≥ first 인 첫 기억한 기록' 의 창 시작이 last 이하인지만 보면 된다. 잊은 자리는 memNx 를 따라 건너뛰고
+  // 지나온 포인터를 도착점으로 바로 잇는다(경로 압축). 끝 자리(mem.length)는 다음에 붙는 기록을 가리키게 된다.
+  function rememberedOverlap(s, first, last) {
+    const mem = s.mem, nx = s.memNx, n = mem.length;
+    let lo = 0, hi = n;
+    while (lo < hi) { const m = (lo + hi) >>> 1; if (mem[m].last >= first) hi = m; else lo = m + 1; }
+    let j = lo;
+    while (j < n && nx[j] !== j) j = nx[j];
+    for (let i = lo; i < n && nx[i] !== i;) { const k = nx[i]; nx[i] = j; i = k; }
+    const x = j < n ? mem[j] : null;
+    return x && x.firstPieceSeq <= last ? x : null;
   }
   // 가운데 기록을 지운다: gone 표시만 하고, 표시가 살아 있는 수보다 많아지면 압축한다(상각 O(1)).
   function dropLevel(s, r) {
@@ -500,9 +537,11 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       if (tail && firstPieceSeq <= tail.last) {
         // 새 기록이 아니다(F-241, 머리 주석 (a)–(c)). 어느 경우든 아무것도 바꾸지 않는다. ackedUpTo·추월을 보지 않는다.
         s.lv.work++;
-        const x = s.byLast.get(last);
-        if (!(x && x.firstPieceSeq === firstPieceSeq && x.segmentId === segmentId && x.level === level)) { // (a) 아님
-          if (last > s.horizon) { // (c)
+        const x = rememberedOverlap(s, firstPieceSeq, last);
+        const same = x && x.firstPieceSeq === firstPieceSeq && x.last === last && x.segmentId === segmentId && x.level === level;
+        if (!same) { // (a) 아님
+          // (a') 기억한 기록과 겹치는 다른 값, 또는 (c) 지평 뒤. 지평 아래라도 기억한 기록과 겹치면 대조할 정보가 있다(F-241 ⑨).
+          if (x || last > s.horizon) {
             throw new RangeError(`LEVEL_ARRIVED 창 ${firstPieceSeq}..${last} 이 앞선 기록의 창과 겹친다: 창 시작은 앞선 기록의 창 끝(${tail.last})보다 커야 한다`);
           }
           s.lv.blind++; // (b) 잊은 묘비의 재시도일 수 있다
@@ -512,7 +551,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       }
       const r = { segmentId, level, firstPieceSeq, pieceCount, last, gone: false };
       s.lastLevel = r;
-      s.byLast.set(last, r);
+      remember(s, r);
       // last < ackedUpTo 면 이미 받은 것으로 확인됨: 보관할 것 없음. 창 안 미확인 순번이 죽었거나 기록된 적 없으면 다시 보낼
       // 수 없다. 추월은 보지 않는다(F-241 ②). 보관하지 않은 기록은 묘비로 기억한다.
       if (last >= s.ackedUpTo && windowLive(s, r, false)) {

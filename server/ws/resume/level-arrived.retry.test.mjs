@@ -124,6 +124,59 @@ test('F-242 ⑥·F-241 지평: levelStats 의 미저장·대조 없는 수락·�
   assert.deepEqual(laOnly(st.resendPlan(sid)), [la(4, 0, 4, 1)]);
 });
 
+test('F-241 ⑨: 묘비를 잊어 지평이 보관 중인 기록 위로 올라도, 그 기록과 겹치는 다른 값은 RangeError(blind 0)', () => {
+  const st = mk(2); // 묘비 상한 3
+  const sid = st.open({ sessionId: 0 }).sessionId;
+  const A = la(1, 0, 1, 1);
+  sent(st, sid, key(1, 0, 0), 1);
+  assert.equal(st.recordLevelArrived(sid, A), true);
+  // seq 2..7: 같은 key 를 대체하며 창 s..s 기록. 대체마다 앞 창이 묘비가 되고 묘비 상한을 넘으면 가장 먼저 된 것부터 잊는다.
+  for (let q = 2; q <= 7; q++) {
+    sent(st, sid, key(2, 0, 0), q);
+    assert.equal(st.recordLevelArrived(sid, la(2, 0, q, 1)), true);
+  }
+  // 묘비 2..2·3..3 을 잊어 지평 3 > A 의 창 끝 1. A 는 여전히 보관 중.
+  assert.deepEqual(st.levelStats(sid), { stored: 2, tombstones: 3, horizon: 3, unstored: 0, blind: 0, capDropped: 0, work: 0 });
+  assert.throws(() => st.recordLevelArrived(sid, la(99, 3, 1, 1)), OVERLAP, '고치기 전: true, blind 1');
+  assert.equal(st.levelStats(sid).blind, 0);
+  assert.equal(st.recordLevelArrived(sid, A), true, '(a) 같은 값 재시도');
+  assert.equal(st.recordLevelArrived(sid, la(2, 0, 2, 1)), true, '(b) 잊은 묘비 2..2 의 같은 값 재시도');
+  assert.equal(st.recordLevelArrived(sid, la(77, 1, 3, 1)), true, '(b) 잊은 묘비 3..3 범위의 다른 값(대가)');
+  assert.throws(() => st.recordLevelArrived(sid, la(77, 1, 1, 2)), OVERLAP, '잊은 범위에 걸쳐도 기억한 A 와 겹치면 RangeError');
+  assert.deepEqual(st.levelStats(sid), { stored: 2, tombstones: 3, horizon: 3, unstored: 0, blind: 2, capDropped: 0, work: 5 });
+  st.open({ sessionId: sid, lastPieceSeq: 0 });
+  assert.deepEqual(st.resendPlan(sid), [P(1, key(1, 0, 0)), A, P(7, key(2, 0, 0)), la(2, 0, 7, 1)]);
+});
+
+test('F-241 ⑨: 기억한 기록(보관·묘비)과 창 끝이 다르게 일부만 겹치는 다른 값도 지평 아래에서 RangeError', () => {
+  const st = mk(3); // 묘비 상한 4
+  const sid = st.open({ sessionId: 0 }).sessionId;
+  const T = la(1, 0, 1, 2);
+  sent(st, sid, key(1, 0, 0), 1);
+  sent(st, sid, key(1, 0, 1), 2);
+  assert.equal(st.recordLevelArrived(sid, T), true);
+  for (let q = 3; q <= 9; q++) {
+    sent(st, sid, key(2, 0, 0), q);
+    assert.equal(st.recordLevelArrived(sid, la(2, 0, q, 1)), true);
+  }
+  // 대체로 묘비 3..3 ~ 8..8 (6 개), 상한 4 라 먼저 된 3..3·4..4 를 잊었다.
+  assert.equal(st.levelStats(sid).horizon, 4);
+  assert.equal(st.levelStats(sid).stored, 2);
+  // 보관 중인 T(1..2)와 일부 겹침: 창 끝 1 은 어느 기록의 창 끝도 아니다.
+  assert.throws(() => st.recordLevelArrived(sid, la(1, 0, 1, 1)), OVERLAP);
+  assert.throws(() => st.recordLevelArrived(sid, la(1, 0, 2, 2)), OVERLAP, '2..3: T 와 잊은 3..3 에 걸친다');
+  // T 를 ack 로 지워 묘비로 만든 뒤에도 같다(판정은 ackedUpTo 를 보지 않는다). T 가 묘비가 되며 5..5 를 잊어 지평 5.
+  st.ack(sid, 3);
+  assert.equal(st.levelStats(sid).stored, 1);
+  assert.equal(st.levelStats(sid).horizon, 5);
+  assert.throws(() => st.recordLevelArrived(sid, la(1, 0, 1, 1)), OVERLAP);
+  assert.throws(() => st.recordLevelArrived(sid, la(1, 0, 2, 1)), OVERLAP);
+  assert.equal(st.recordLevelArrived(sid, T), true, '묘비 T 의 같은 값 재시도');
+  assert.equal(st.recordLevelArrived(sid, la(5, 2, 3, 3)), true, '잊은 3..3·4..4·5..5 범위의 다른 값은 대가대로 true');
+  assert.throws(() => st.recordLevelArrived(sid, la(5, 2, 4, 3)), OVERLAP, '4..6: 기억한 묘비 6..6 과 겹친다');
+  assert.equal(st.levelStats(sid).blind, 1);
+});
+
 test('F-241 ④: 지워진 기록 재시도 판정은 호출당 1 걸음 — 기록 수 L 에 무관', () => {
   const perCall = (L) => {
     const st = mk(4 * L);
@@ -161,8 +214,8 @@ function rng(seed) {
   };
 }
 
-test('F-241 무작위: 같은 값 재시도 예외 0, 다른 값은 지평 밖이면 RangeError, 보관 기록 ≤ unacked + 1', () => {
-  let retries = 0, blindSeen = 0, rejects = 0;
+test('F-241 무작위: 같은 값 재시도 예외 0, 다른 값은 기억한 기록이면 RangeError·잊은 기록이면 true, 보관 기록 ≤ unacked + 1', () => {
+  let retries = 0, blindSeen = 0, rejects = 0, rememberedBelow = 0;
   for (const seed of [1, 2, 3, 4]) {
     for (const MAX of [3, 8]) {
       const rand = rng(seed * 100 + MAX);
@@ -199,8 +252,25 @@ test('F-241 무작위: 같은 값 재시도 예외 0, 다른 값은 지평 밖�
           const rec = accepted[Math.floor(rand() * accepted.length)];
           const other = { ...rec, segmentId: rec.segmentId + 10 };
           const last = rec.firstPieceSeq + rec.pieceCount - 1;
-          if (last > st.levelStats(sid).horizon) { assert.throws(() => st.recordLevelArrived(sid, other), OVERLAP); rejects++; }
-          else { assert.equal(st.recordLevelArrived(sid, other), true); blindSeen++; }
+          // 기억 여부: 같은 값 재시도가 (a) 로 잡히면 기억(blind 그대로), (b) 로 가면 잊음(blind + 1).
+          const b0 = st.levelStats(sid).blind;
+          assert.equal(st.recordLevelArrived(sid, rec), true);
+          const ls0 = st.levelStats(sid);
+          const forgotten = ls0.blind - b0;
+          assert.ok(forgotten === 0 || forgotten === 1);
+          if (forgotten === 0) {
+            // 기억한 기록과 같은 창의 다른 값: 지평과 무관하게 RangeError.
+            if (last <= ls0.horizon) rememberedBelow++;
+            assert.throws(() => st.recordLevelArrived(sid, other), OVERLAP, `seed ${seed} MAX ${MAX} step ${step} 기억한 기록과 다른 값`);
+            assert.equal(st.levelStats(sid).blind, ls0.blind);
+            rejects++;
+          } else {
+            // 잊은 기록: 창 끝은 지평 이하이고, 다른 값도 대조 없이 true(대가).
+            assert.ok(last <= ls0.horizon, `seed ${seed} MAX ${MAX} step ${step}: 잊은 기록의 창 끝 ${last} > 지평 ${ls0.horizon}`);
+            assert.equal(st.recordLevelArrived(sid, other), true);
+            assert.equal(st.levelStats(sid).blind, ls0.blind + 1);
+            blindSeen++;
+          }
         }
         const s = st.stats(sid);
         const ls = st.levelStats(sid);
@@ -215,4 +285,5 @@ test('F-241 무작위: 같은 값 재시도 예외 0, 다른 값은 지평 밖�
   assert.ok(retries > 1000, `retries ${retries}`);
   assert.ok(blindSeen > 0, `blind ${blindSeen}`);
   assert.ok(rejects > 0, `rejects ${rejects}`);
+  assert.ok(rememberedBelow > 0, `지평 아래에서 기억한 기록 ${rememberedBelow}`); // F-241 ⑨ 의 자리를 지났는지
 });
