@@ -166,3 +166,85 @@ test('잘못된 입력 거부', () => {
   assert.throws(() => unprojectToEnu(v, 0, 0, 0), RangeError);
   assert.throws(() => unprojectToEnu(v, 0, 0, -5), RangeError);
 });
+
+test('화면 아래·오른쪽 경계: v = height, u = width 는 밖이고 바로 안쪽은 안', () => {
+  // fx = fy = 500, d = 12.5 → 500·6/12.5 = 240, 500·8/12.5 = 320 (부동소수로 정확)
+  const out = projectMarkers(identityView(), [
+    { id: 'bottom', enu: [0, 6, 12.5] }, // v = 240+240 = 480 = height → 밖
+    { id: 'right', enu: [8, 0, 12.5] }, // u = 320+320 = 640 = width → 밖
+    { id: 'corner', enu: [8, 6, 12.5] }, // (640, 480) → 밖
+    { id: 'bottomIn', enu: [0, 5.975, 12.5] }, // v = 240+239 = 479 → 안
+    { id: 'rightIn', enu: [7.975, 0, 12.5] }, // u = 320+319 = 639 → 안
+  ]);
+  assert.deepEqual(out[0], { id: 'bottom', u: 320, v: 480, depth: 12.5, visible: false });
+  assert.deepEqual(out[1], { id: 'right', u: 640, v: 240, depth: 12.5, visible: false });
+  assert.deepEqual(out[2], { id: 'corner', u: 640, v: 480, depth: 12.5, visible: false });
+  near(out[3].v, 479, 1e-9, 'bottomIn v');
+  assert.equal(out[3].visible, true);
+  near(out[4].u, 639, 1e-9, 'rightIn u');
+  assert.equal(out[4].visible, true);
+  // 아래 경계 아래(v > height)도 밖
+  const [below] = projectMarkers(identityView(), [{ id: 'below', enu: [0, 10, 10] }]); // v = 740
+  assert.deepEqual(below, { id: 'below', u: 320, v: 740, depth: 10, visible: false });
+});
+
+test('det = +1 전단 행렬(직교 아님)은 직교 검사로 거부', () => {
+  // S = [[1, 0.5, 0],[0,1,0],[0,0,1]]: det = 1 이라 행렬식 검사는 통과하고 S·Sᵀ ≠ I 라 직교 검사에서만 걸린다.
+  const S = [1, 0.5, 0, 0, 1, 0, 0, 0, 1];
+  const det = S[0] * (S[4] * S[8] - S[5] * S[7]) - S[1] * (S[3] * S[8] - S[5] * S[6]) + S[2] * (S[3] * S[7] - S[4] * S[6]);
+  assert.equal(det, 1);
+  const v = { ...identityView(), R: S };
+  assert.throws(() => projectMarkers(v, [{ id: 'a', enu: [0, 0, 1] }]), { name: 'RangeError', message: /직교/ });
+  assert.throws(() => unprojectToEnu(v, 320, 240, 1), { name: 'RangeError', message: /직교/ });
+  // 허용치(1e-6) 밖의 작은 전단도 거부: 0.002 → S·Sᵀ 의 (0,0) 은 1 + 4e-6
+  const small = { ...identityView(), R: [1, 0.002, 0, 0, 1, 0, 0, 0, 1] };
+  assert.throws(() => projectMarkers(small, []), { name: 'RangeError', message: /직교/ });
+});
+
+test('넘침: depth > 0 이어도 u·v·depth 가 비유한이면 visible false, u = v = 0', () => {
+  const out = projectMarkers(identityView(), [
+    { id: 'hugeX', enu: [1e308, 0, 1] }, // X_c.x = 1e308, u = 500·1e308 → Infinity
+    { id: 'hugeY', enu: [0, -1e308, 1] }, // v → −Infinity
+    { id: 'ok', enu: [0, 0, 10] },
+  ]);
+  assert.deepEqual(out[0], { id: 'hugeX', u: 0, v: 0, depth: 1, visible: false });
+  assert.deepEqual(out[1], { id: 'hugeY', u: 0, v: 0, depth: 1, visible: false });
+  assert.deepEqual(out[2], { id: 'ok', u: 320, v: 240, depth: 10, visible: true });
+  // x축 45° 회전: d = (y + z)/√2 가 넘쳐 Infinity 가 되는 유한 입력
+  const c = Math.SQRT1_2;
+  const rot = { ...identityView(), R: [1, 0, 0, 0, c, -c, 0, c, c] };
+  const [p] = projectMarkers(rot, [{ id: 'inf', enu: [0, 1.7e308, 1.7e308] }]);
+  assert.equal(p.depth, Infinity);
+  assert.equal(p.visible, false);
+  assert.equal(p.u, 0);
+  assert.equal(p.v, 0);
+  for (const q of [...out, p]) {
+    assert.ok(Number.isFinite(q.u) && Number.isFinite(q.v), `${q.id} u·v 유한`);
+  }
+});
+
+test('허용 오차 안의 비직교 R, |X_w| 1e4·1e5 m: 왕복 오차 ≤ 1 cm(Rᵀ 로 되돌리면 넘는 입력)', () => {
+  // R = I + E, E 대칭 비대각 e = 4.9e-7 → R·Rᵀ 비대각 ≈ 2e = 9.8e-7 ≤ 1e-6(허용), det ≈ 1 − 3e² + 2e³.
+  // Rᵀ 로 되돌리면 오차 ≈ (RᵀR − I)·X_w ≈ 2E·X_w. X_w = 1e4/√3·(1,1,1) 이면 성분마다 2e·2·5774 ≈ 0.0113 m,
+  // 크기 ≈ 0.0196 m > 0.01 m. 실제 역행렬로 되돌리면 부동소수 반올림(≈1e-16·|X_w|·몇 배)만 남는다.
+  const e = 4.9e-7;
+  const R = [1, e, e, e, 1, e, e, e, 1];
+  for (const mag of [1e4, 1e5]) {
+    const s = mag / Math.sqrt(3);
+    const enu = [s, s, s];
+    // 카메라를 X_w 에서 광축 방향 50 m 뒤에 둔다: t = [−s, −s, 50 − s] 이면 X_c ≈ [0, 0, 50](E 항 제외)
+    const view = { R, t: [-s, -s, 50 - s], K: { fx: 1500, fy: 1500, cx: 960, cy: 540 }, width: 1920, height: 1080, devicePixelRatio: 1 };
+    const [p] = projectMarkers(view, [{ id: 'far', enu }]);
+    assert.ok(p.depth > 0);
+    const back = unprojectToEnu(view, p.u, p.v, p.depth);
+    const err = Math.hypot(back[0] - enu[0], back[1] - enu[1], back[2] - enu[2]);
+    assert.ok(err <= 0.01, `|X_w| ${mag}: 왕복 오차 ${err} m`);
+    // 이 입력이 Rᵀ 역투영을 실제로 가르는지: Rᵀ 로 되돌린 값의 오차는 1 cm 를 넘는다.
+    const a = ((p.u - 960) / 1500) * p.depth + s;
+    const b = ((p.v - 540) / 1500) * p.depth + s;
+    const c = p.depth - (50 - s);
+    const viaT = [R[0] * a + R[3] * b + R[6] * c, R[1] * a + R[4] * b + R[7] * c, R[2] * a + R[5] * b + R[8] * c];
+    const errT = Math.hypot(viaT[0] - enu[0], viaT[1] - enu[1], viaT[2] - enu[2]);
+    assert.ok(errT > 0.01, `Rᵀ 역투영 오차 ${errT} m 가 1 cm 를 넘어야 입력이 의미 있다`);
+  }
+});
