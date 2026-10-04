@@ -103,7 +103,12 @@ export function extrudeBuilding(fp) {
     pos.push(x0, y0, 0, x1, y1, 0, x1, y1, h, x0, y0, h);
     idx.push(base, base + 1, base + 2, base, base + 2, base + 3); // 반시계 링의 바깥 방향 벽
   }
-  return { positions: new Float32Array(pos), indices: new Uint32Array(idx) };
+  const positions = new Float32Array(pos);
+  // 유한한 double 이라도 Float32 로 내리면 Infinity 가 될 수 있다(좌표 1e39, floors 1e300 등). 메시에 넣지 않는다.
+  for (let i = 0; i < positions.length; i++) {
+    if (!Number.isFinite(positions[i])) throw fail(fp, 'Float32 로 변환하면 좌표가 유한수가 아님');
+  }
+  return { positions, indices: new Uint32Array(idx) };
 }
 
 /** (fps: Footprint[]) → Array<{ id, mesh }> 입력 순서·동 수 보존. 퇴화 입력은 id 를 담아 던진다. */

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   samplesFor, sampleBuildingPoints, POINT_DENSITY_PER_M2, POINT_MIN_PER_BUILDING, POINT_MAX_PER_BUILDING,
 } from './index.mjs';
+import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 
 // 시험용 프리즘: 직사각형(w×d) 바닥 z=0, 지붕 z=h, 위에서 볼 때 반시계. 원점 (x0,y0).
 function prism(x0, y0, w, d, h, z0 = 0) {
@@ -127,4 +128,12 @@ test('규칙·입력 검증: rule {}·NaN density·min>max·Infinity 위치는 t
   inf.positions[3] = Infinity;
   assert.throws(() => sampleBuildingPoints(inf, 1));
   assert.throws(() => sampleBuildingPoints({ positions: m.positions, indices: new Uint32Array([0, 1, 99]) }, 1));
+});
+
+test('음수·비정수 인덱스는 TowerAssetError', () => {
+  const m = prism(0, 0, 10, 10, 6);
+  for (const bad of [-1, 0.5, 1.5, NaN]) {
+    const indices = [4, 5, 6, 4, 6, bad];
+    assert.throws(() => sampleBuildingPoints({ positions: m.positions, indices }, 1), (e) => e instanceof TowerAssetError && e.message.includes('인덱스'), String(bad));
+  }
 });
