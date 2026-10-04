@@ -68,9 +68,9 @@ export const STATUSVIEW_API = Object.freeze({
   // T13.5 client/status/overlay
   projectMarkers: {
     fn: 'projectMarkers(view: View, markers: Marker[]) -> ProjectedMarker[]',
-    rule: '입력 순서·개수를 지킨다. contracts/raster 와 같은 투영 u = fx·X_c.x/d + cx. depth ≤ 0 이면 visible=false. unprojectToEnu 로 되돌린 값이 입력 ENU 와 1 cm 이내.',
+    rule: '입력 순서·개수를 지킨다. contracts/raster 와 같은 투영 u = fx·X_c.x/d + cx. depth ≤ 0 이면 visible=false. unprojectToEnu 로 되돌린 값이 입력 ENU 와 1 cm 이내(|X_w|·|t| ≤ 1e5 m). depth·u·v 가 유한하지 않으면(넘침) depth ≤ 0 과 같이 u=v=0, visible=false.',
   },
-  unprojectToEnu: { fn: 'unprojectToEnu(view: View, u: number, v: number, depth: number) -> number[]  X_c = d·K⁻¹[u,v,1]ᵀ, X_w = Rᵀ(X_c − t)' },
+  unprojectToEnu: { fn: 'unprojectToEnu(view: View, u: number, v: number, depth: number) -> number[]  X_c = d·K⁻¹[u,v,1]ᵀ, X_w = R⁻¹(X_c − t)  R⁻¹ 은 실제 역행렬(R 이 정확한 회전이면 Rᵀ 와 같다). R 은 R·Rᵀ=I, det=+1 을 1e-6 안에서 만족해야 한다(client/raster 와 같음)' },
   // T13.6 client/status/missing_ui
   missingNotices: {
     fn: 'missingNotices(states: SegmentState[]) -> {segmentId: number, text: string}[]',
