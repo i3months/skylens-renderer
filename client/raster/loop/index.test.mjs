@@ -88,3 +88,71 @@ test('복호 Worker: 오류 응답과 onerror 는 reject, 메인 쪽 51 ms 작�
   await assert.rejects(q, /boom/); assert.equal(c.stats().pending, 0);
   c.terminate(); assert.equal(w.dead, true);
 });
+
+test('draw 예외 뒤에도 다음 프레임을 예약하고 오류를 알린다', () => {
+  const r = rig(); const errs = []; let n = 0;
+  const loop = createFrameLoop({ draw: () => { n++; if (n === 1) throw new Error('gl'); }, requestFrame: r.requestFrame, now: r.now,
+    onError: (e, where) => errs.push([e.message, where]) });
+  loop.start(); r.step();
+  assert.equal(r.queued(), 1); assert.deepEqual(errs, [['gl', 'draw']]);
+  loop.notifyArrival(); r.step(); assert.equal(n, 2); assert.equal(loop.stats().errors, 1); assert.equal(loop.stats().running, true);
+});
+
+test('onFrame 예외도 루프를 멈추지 않고, onError 가 던져도 계속 돈다', () => {
+  const r = rig();
+  const loop = createFrameLoop({ draw() {}, requestFrame: r.requestFrame, now: r.now,
+    onFrame: () => { throw new Error('cb'); }, onError: () => { throw new Error('again'); } });
+  loop.start(); r.step(); assert.equal(r.queued(), 1); assert.equal(loop.stats().errors, 1);
+});
+
+test('requestFrame 이 던지면 running=false 로 내려 start() 로 다시 켠다', () => {
+  const r = rig(); let fail = true; const errs = [];
+  const loop = createFrameLoop({ draw() {}, requestFrame: (cb) => { if (fail) throw new Error('rf'); r.requestFrame(cb); }, now: r.now,
+    onError: (e, w) => errs.push(w) });
+  loop.start(); assert.equal(loop.stats().running, false); assert.deepEqual(errs, ['requestFrame']);
+  fail = false; loop.start(); assert.equal(loop.stats().running, true); assert.equal(r.queued(), 1);
+});
+
+test('frameMs 0·음수·NaN·Infinity·비숫자는 거부', () => {
+  const base = { draw() {}, requestFrame() {}, now: () => 0 };
+  for (const f of [0, -1, NaN, Infinity, '16']) assert.throws(() => createFrameLoop({ ...base, frameMs: f }), RangeError, String(f));
+});
+
+test('복호: postMessage 가 던지면 pending 0 으로 reject', async () => {
+  const w = { postMessage() { throw new Error('clone'); }, terminate() {} };
+  const c = createDecodeWorkerClient({ spawn: () => w });
+  await assert.rejects(c.decode(new Uint8Array(2)), /clone/);
+  assert.equal(c.stats().pending, 0);
+});
+
+test('복호: terminate 뒤 decode 는 즉시 reject 하고 postMessage 하지 않는다', async () => {
+  let posts = 0; const w = { postMessage() { posts++; }, terminate() {} };
+  const c = createDecodeWorkerClient({ spawn: () => w });
+  const before = c.decode(new Uint8Array(1)); c.terminate();
+  await assert.rejects(before, /terminated/);
+  await assert.rejects(c.decode(new Uint8Array(1)), /terminated/);
+  assert.equal(posts, 1); assert.equal(c.stats().pending, 0);
+});
+
+test('복호: ev.data 가 null 이어도 던지지 않고 대기 항목은 유지', () => {
+  const w = { postMessage() {}, terminate() {} };
+  const c = createDecodeWorkerClient({ spawn: () => w });
+  c.decode(new Uint8Array(1));
+  assert.doesNotThrow(() => w.onmessage({ data: null }));
+  assert.doesNotThrow(() => w.onmessage(null));
+  assert.equal(c.stats().pending, 1);
+});
+
+test('복호: subarray 뷰는 범위만 복사해 넘기고 원본 버퍼는 건드리지 않는다', () => {
+  const sent = [];
+  const w = { postMessage(m, tr) { sent.push([m, tr]); }, terminate() {} };
+  const c = createDecodeWorkerClient({ spawn: () => w });
+  const big = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+  c.decode(big.subarray(2, 5));
+  const [m, tr] = sent[0];
+  assert.deepEqual([...m.bytes], [3, 4, 5]); assert.equal(m.bytes.buffer.byteLength, 3);
+  assert.equal(tr[0], m.bytes.buffer); assert.notEqual(tr[0], big.buffer);
+  assert.equal(big.buffer.byteLength, 8);
+  const whole = new Uint8Array([9, 9]); c.decode(whole);
+  assert.equal(sent[1][1][0], whole.buffer); // 전체 뷰는 복사 없이 그대로 넘긴다
+});
