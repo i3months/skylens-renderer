@@ -366,7 +366,7 @@ const GAP_MAX_CELLS = 1 << 14;
 // length; precision is set by the cell width across the gap, not by a fixed sample cap (F-335: the old uniform grid capped
 // at MAX_GRID samples per axis lost precision on gap cells longer than 16·hideTol and rejected small real gaps).
 // Returns { e, w } upper bounds (e feeds the geometric error), or null when the limit is exceeded or the budget runs out.
-function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
+export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
   const near = [];
   for (const m of members) {
     const ox = Math.max(m.minX - x1, 0, x0 - m.maxX), oy = Math.max(m.minY - y1, 0, y0 - m.maxY);
