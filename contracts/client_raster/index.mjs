@@ -178,10 +178,16 @@ export const MAX_BUFFER_DIMENSION = 16384;
 /** segmentId 상한(배타). server/asset/ids 의 segmentId < 2^30 과 같다. */
 export const SEGMENT_ID_LIMIT = 2 ** 30;
 
-/** maxDimension 으로 주입할 수 있는 값의 상한(장치 픽셀). 이보다 큰 한도는 거부한다. */
+/**
+ * maxDimension 으로 주입할 수 있는 값의 상한(장치 픽셀). 이보다 큰 한도는 거부한다.
+ * 입력 상식 검사용 상한이며 장치 한도가 아니다. 실제 장치 한도는 호출자가 gl.getParameter 로 확인해 maxDimension 에 넘긴다.
+ */
 export const MAX_BUFFER_DIMENSION_LIMIT = 32768;
 
-/** 배율 sx·sy 허용 범위 [1/SCALE_LIMIT, SCALE_LIMIT]. 밖이면 K 가 터무니없는 값이 되므로 거부한다. */
+/**
+ * 배율 sx·sy 허용 범위 [1/SCALE_LIMIT, SCALE_LIMIT]. 밖이면 K 가 터무니없는 값이 되므로 거부한다.
+ * 입력 상식 검사용 상한이며 장치 한도가 아니다(장치 한도는 gl.getParameter 로 호출자가 확인한다).
+ */
 export const SCALE_LIMIT = 4096;
 
 const I32_MIN = -(2 ** 31);
@@ -372,8 +378,11 @@ export function parsePieceKey(key) {
  *            또는 level = M 이지만 완료 집합 밖인 조각(시도가 중간에 버린 abandoned 조각. 그리기 전에 해제된다)
  *   pending: 도착한 수준이 없는 구간의 조각 또는 level > M 인 조각(자기 LEVEL_ARRIVED 를 기다린다. 그리지 않는다)
  * 같은 구간·같은 수준의 항목이 여럿이면 완료 집합은 합집합이다. 결과 배열 순서는 입력 순서를 따른다.
+ * keys 에 같은 key 가 여러 번 있으면 첫 등장만 남기고 나머지는 버린다(draw·pending·discard 어디에도 한 번만 나온다).
+ * 호출 주기: LEVEL_ARRIVED 도착 이벤트마다 부르며 프레임마다 부르지 않는다(결과는 다음 도착까지 재사용한다).
+ * 비용: key 는 한 번만 해석한다(arrived.keys 에서 해석한 결과를 keys 처리에서 재사용한다).
  * @param {string[]} keys ASSET_FORMAT §11 정규 문자열
- * @param {{segmentId: number, level: number, keys?: string[]}[]} arrived 받은 LEVEL_ARRIVED 들(segmentId < SEGMENT_ID_LIMIT = 2^30).
+ * @param {{segmentId: number, level: number, keys?: string[]}[]} arrived 받은 LEVEL_ARRIVED 들(segmentId < SEGMENT_ID_LIMIT = 2^30, -0 은 거부).
  *   keys 는 그 수준의 완료 key 집합이고 모두 (segmentId, level) 의 key 여야 한다. 없으면 빈 집합.
  * @returns {{draw: string[], pending: string[], discard: string[]}}
  */
@@ -381,8 +390,10 @@ export function selectDrawable(keys, arrived) {
   if (!Array.isArray(keys)) throw new ClientRasterError('piece', 'keys 는 배열이어야 함');
   if (!Array.isArray(arrived)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
   const top = new Map(); // segmentId -> {level, done: Set<string>}
+  const EMITTED = -1;
+  const parsed = new Map(); // key -> segmentId * 4 + level(처리한 key 는 EMITTED): 해석 결과 재사용과 중복 제거를 겸한다
   for (const a of arrived) {
-    if (!a || !Number.isInteger(a.segmentId) || a.segmentId < 0 || a.segmentId >= SEGMENT_ID_LIMIT || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
+    if (!a || !Number.isInteger(a.segmentId) || Object.is(a.segmentId, -0) || a.segmentId < 0 || a.segmentId >= SEGMENT_ID_LIMIT || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
       throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
     }
     if (a.keys !== undefined && !Array.isArray(a.keys)) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 는 배열이어야 함: ${JSON.stringify(a)}`);
@@ -390,6 +401,7 @@ export function selectDrawable(keys, arrived) {
     for (const k of a.keys ?? []) {
       const p = parsePieceKey(k);
       if (p.segmentId !== a.segmentId || p.level !== a.level) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 의 key 가 항목의 (segmentId, level) 과 다름: ${k}`);
+      parsed.set(k, a.segmentId * 4 + a.level);
       done.push(k);
     }
     const cur = top.get(a.segmentId);
@@ -398,7 +410,15 @@ export function selectDrawable(keys, arrived) {
   }
   const out = { draw: [], pending: [], discard: [] };
   for (const key of keys) {
-    const { segmentId, level } = parsePieceKey(key);
+    let packed = parsed.get(key);
+    if (packed === EMITTED) continue; // 중복 key: 첫 등장만 남긴다
+    if (packed === undefined) {
+      const p = parsePieceKey(key);
+      packed = p.segmentId * 4 + p.level;
+    }
+    parsed.set(key, EMITTED);
+    const segmentId = Math.floor(packed / 4);
+    const level = packed % 4;
     const m = top.get(segmentId);
     if (m === undefined || level > m.level) out.pending.push(key);
     else if (level === m.level && m.done.has(key)) out.draw.push(key);
