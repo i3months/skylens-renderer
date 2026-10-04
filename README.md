@@ -119,7 +119,7 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 ### 관제탑 자산 (T14)
 
-`contracts/tower_assets/` 가 계약이다. 지형 격자 LOD(`server/terrain/mesh_lod`), 위성 드레이프 타일(`drape`), 타일 색인(`tile_index`), 오프라인 검사(`offline`), 건물 돌출·LOD·점 표본·검정 건물 선·항공뷰 UV(`server/buildings/*`)가 있다. 입력은 모두 합성이며 실제 VWorld 입력은 아직 검증하지 않았다. `bench/tower_assets` 는 6,191동 합성 도시와 1 km² 지형·드레이프의 처리 시간과 직렬화 크기를 잰다. 잡음 DEM 기준 초기 묶음(지형 LOD3 + 드레이프 밉2)은 약 41.97 MB 로 초기 상한 15 MB 를 넘고(초과로 기록), 매끈한 DEM 은 약 4.46 MB 이다. 건물 LOD 는 건물 영역 SSIM ≥ 0.95 를 지키도록 회전 건물은 합치지 않아 8시점 면 수 감소가 0% 이다(결정 0044).
+`contracts/tower_assets/` 가 계약이다. 지형 격자 LOD(`server/terrain/mesh_lod`), 위성 드레이프 타일(`drape`), 타일 색인(`tile_index`), 오프라인 검사(`offline`), 건물 돌출·LOD·점 표본·검정 건물 선·항공뷰 UV(`server/buildings/*`)가 있다. 입력은 모두 합성이며 실제 VWorld 입력은 아직 검증하지 않았다. `bench/tower_assets` 는 6,191동 합성 도시와 1 km² 지형·드레이프의 처리 시간과 직렬화 크기를 잰다. 잡음 DEM 기준 초기 묶음(지형 LOD3 + 드레이프 밉2)은 약 41.97 MB 로 초기 상한 15 MB 를 넘고(초과로 기록), 매끈한 DEM 은 약 4.46 MB 이다. 두 크기는 각각 진폭 5 m 백색잡음 DEM 의 최악 경우와 완만한 언덕의 낙관 경우인 합성 입력 값이며, 실제 크기는 [local] T14L 에서 실제 입력으로 확정한다. 건물 LOD 는 건물 영역 SSIM ≥ 0.95 를 지키도록 회전 건물은 합치지 않아 8시점 면 수 감소가 0% 이다(결정 0044).
 
 ## English
 
@@ -240,5 +240,5 @@ Puts the status-view roles on top of path B. Contract and role map: `contracts/s
 
 ### Tower assets (T14)
 
-The contract lives in `contracts/tower_assets/`. It covers terrain mesh LOD (`server/terrain/mesh_lod`), satellite drape tiles (`drape`), a tile index (`tile_index`), an offline-use check (`offline`), and building extrusion, LOD, point samples, black-building edge lines and aerial UVs (`server/buildings/*`). All inputs are synthetic; real VWorld inputs have not been verified yet. `bench/tower_assets` measures processing time and serialized size for a 6,191-building synthetic city plus 1 km² of terrain and drape. With a noisy DEM the initial bundle (terrain LOD3 + drape mip2) is about 41.97 MB, over the 15 MB initial limit (recorded as exceeded); a smooth DEM gives about 4.46 MB. To keep building-area SSIM ≥ 0.95, rotated buildings are never merged, so face reduction over the 8 views is 0% (decision 0044).
+The contract lives in `contracts/tower_assets/`. It covers terrain mesh LOD (`server/terrain/mesh_lod`), satellite drape tiles (`drape`), a tile index (`tile_index`), an offline-use check (`offline`), and building extrusion, LOD, point samples, black-building edge lines and aerial UVs (`server/buildings/*`). All inputs are synthetic; real VWorld inputs have not been verified yet. `bench/tower_assets` measures processing time and serialized size for a 6,191-building synthetic city plus 1 km² of terrain and drape. With a noisy DEM the initial bundle (terrain LOD3 + drape mip2) is about 41.97 MB, over the 15 MB initial limit (recorded as exceeded); a smooth DEM gives about 4.46 MB. These two sizes are the worst case (5 m amplitude white-noise DEM) and an optimistic case (gentle hill) on synthetic inputs; real sizes will be fixed with real inputs in [local] T14L. To keep building-area SSIM ≥ 0.95, rotated buildings are never merged, so face reduction over the 8 views is 0% (decision 0044).
 

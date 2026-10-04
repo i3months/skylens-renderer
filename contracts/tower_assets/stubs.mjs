@@ -6,7 +6,7 @@ const todo = (n) => () => { throw new TowerAssetError(`${n}: 미구현`); };
 
 /** T14.1 server/terrain/mesh_lod/index.mjs — (dem: Dem, tx, ty, lod) → TerrainTile. 원본 대비 오차 ≤ TERRAIN_LOD_MAX_ERROR_M[lod]. */
 export const buildTerrainTile = todo('buildTerrainTile');
-/** T14.1 — (dem, tile: TerrainTile) → { maxErrorM } 원본 DEM 쌍선형 보간 대비 최대 오차. */
+/** T14.1 — (dem, tile: TerrainTile) → { maxErrorM } mesh surface(같은 대각선 삼각형) 대비 최대 오차. */
 export const measureTerrainError = todo('measureTerrainError');
 /** T14.1 — (tile: TerrainTile) → Mesh. */
 export const terrainTileToMesh = todo('terrainTileToMesh');
@@ -24,7 +24,7 @@ export const buildBuildingLod = todo('buildBuildingLod');
 export const sampleBuildingPoints = todo('sampleBuildingPoints');
 /** T14.6 server/buildings/black/index.mjs — (mesh: Mesh) → { mesh: Mesh, edgeLines: Float32Array }. 모서리 선(xyz 쌍 연속) 수 = 정답. */
 export const buildBlackBuilding = todo('buildBlackBuilding');
-/** T14.7 server/buildings/aerial_uv/index.mjs — (mesh: Mesh, image: {width,height,rgb,bounds: Bounds}) → { uv: Float32Array(정점당 2), wallMask: Uint8Array(정점당 1) }, 값 ∈ [0,1]. wallMask=1 인 정점(벽)은 영상이 없는 면이라 uv 가 무의미하고 검정으로 그린다(결정 0044 §6). */
+/** T14.7 server/buildings/aerial_uv/index.mjs — (mesh: Mesh, image: {width,height,rgb,bounds: Bounds}) → { uv: Float32Array(정점당 2), wallMask: Uint8Array(정점당 1) }, 값 ∈ [0,1]. wallMask=1 인 정점(벽·바닥)은 영상이 없는 면이라 uv 가 무의미하고 검정으로 그린다(결정 0044 §6). */
 export const buildAerialUv = todo('buildAerialUv');
 /** T14.8 server/terrain/tile_index/index.mjs — (bounds: Bounds, items: Array<{ id, bounds }>) → { query(x, y): number[], tilesIn(b: Bounds): Array<{tx,ty}> }. */
 export const buildTileIndex = todo('buildTileIndex');

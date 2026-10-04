@@ -3,7 +3,7 @@
 
 /** 지형 타일 한 변(m). 자산 포맷의 TILE_SIZE_M 과 같다. */
 export const TERRAIN_TILE_SIZE_M = 64;
-/** 지형 LOD 단계 수. 0 = 원본 DEM 격자, 단계가 오를 때마다 한 변 셀 수가 절반. */
+/** 지형 LOD 단계 수. 0 = 원본 DEM 격자, 공칭 간격은 2^k 배이며 셀 수가 상한을 넘으면 간격을 전역으로 한 단계씩 절반으로 줄인다(결정 0044 §5). */
 export const TERRAIN_LOD_COUNT = 4;
 /** 지형 LOD 단계별 높이 오차 상한(m): 내보내는 삼각형 메시 표면과 원본 DEM 표본의 높이 차 최댓값이 이 값 이하다(메시 표면 기준, 결정 0044 §5). */
 export const TERRAIN_LOD_MAX_ERROR_M = Object.freeze([0, 0.5, 1, 2]);
@@ -14,7 +14,7 @@ export const BUILDING_FLOOR_HEIGHT_M = 3;
 export const BUILDING_DEFAULT_HEIGHT_M = 6;
 /** 좌표 정합 허용(픽셀). */
 export const ALIGN_TOLERANCE_PX = 1;
-/** 건물 LOD 병합 시점 SSIM 하한(8시점). */
+/** 건물 LOD 병합 시점 SSIM 하한(8시점). 건물 영역 블록 기준이다(결정 0044 §1). */
 export const BUILDING_LOD_MIN_SSIM = 0.95;
 
 /** 표시 옵션 3종. 기본은 검정 텍스처 건물. */
@@ -35,6 +35,7 @@ export function buildingHeightM(floors) {
  *   DEM 격자. (originX, originY) = 왼쪽 아래 셀 중심 ENU, 셀 (i, j) 중심 = origin + (i·cellM, j·cellM), heights[j·width + i] (m).
  * @typedef {{ tx:number, ty:number, lod:number, cells:number, heights:Float32Array }} TerrainTile
  *   tx = floor(x/64), ty = floor(y/64). cells = 한 변 정점 수(경계 공유, 인접 타일과 같은 가장자리 높이). heights[j·cells + i].
+ *   전제: 한 화면에는 한 LOD 만 쓴다. 이웃 타일의 LOD 가 다를 때의 이음매는 미해결(F-313).
  * @typedef {{ positions:Float32Array, indices:Uint32Array }} Mesh  positions = xyz 연속, indices = 삼각형(반시계, 위에서 볼 때).
  * @typedef {{ id:number, ring:Array<[number,number]>, floors?:number|null }} Footprint
  *   id 는 안정 식별자(u32). ring = 외곽 ENU xy, 닫지 않은 단순 다각형(첫 점 반복 없음), 방향은 임의.
