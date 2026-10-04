@@ -106,6 +106,10 @@ test('합성 1만 항목(시드 고정): 예산 초과 0, 순서 위반 0, 추�
   const s = createScheduler({ budgetBytesPerTick: BUDGET });
   const id = (k) => `${k.segmentId}:${k.level}:${k.lod}:${k.chunkIndex}:${k.tileX}:${k.tileY}`;
   const grp = (k) => `${k.segmentId}:${k.tileX}:${k.tileY}:${k.lod}`;
+  const sentMax = new Map(); // 독립 모델: 묶음별 나간 최고 level
+  let notLiveSent = 0; // 큐에 있어야 할 것이 아닌데 나간 항목(취소됐거나 버려졌는데 나감)
+  let cancelledSent = 0;
+  const cancelled = new Set();
   const live = new Map(); // 독립 모델: 큐에 있었고 아직 안 나가고 취소 안 된 것(스케줄러가 버린 것도 포함)
   let enqueued = 0;
   let budgetViolations = 0;
@@ -139,7 +143,10 @@ test('합성 1만 항목(시드 고정): 예산 초과 0, 순서 위반 0, 추�
       for (const m of live.values()) {
         if (grp(m.key) === grp(b.key) && m.level > b.level) { overtakenSent++; break; }
       }
+      if (!live.has(id(b.key))) notLiveSent++;
+      if (cancelled.has(id(b.key))) cancelledSent++;
       sentIds.add(id(b.key));
+      if ((sentMax.get(grp(b.key)) ?? -1) < b.level) sentMax.set(grp(b.key), b.level);
     }
     for (const b of batch) live.delete(id(b.key));
     sentTotal += batch.length;
@@ -153,7 +160,9 @@ test('합성 1만 항목(시드 고정): 예산 초과 0, 순서 위반 0, 추�
     s.enqueue(item);
     enqueued++;
     // 독립 모델: 높은 수준이 큐에 있으면 받지 않고, 새 높은 수준은 낮은 수준을 밀어낸다
-    const rejected = [...live.values()].some((m) => grp(m.key) === grp(key) && m.level > key.level);
+    const rejected = (sentMax.get(grp(key)) ?? -1) > key.level
+      || [...live.values()].some((m) => grp(m.key) === grp(key) && m.level > key.level);
+    if (!rejected) cancelled.delete(id(key)); // 다시 받아들여진 key 는 더 이상 취소 상태가 아니다
     if (!rejected) {
       for (const m of [...live.values()]) if (grp(m.key) === grp(key) && m.level < key.level) live.delete(id(m.key));
       if (!live.has(id(key)) || live.get(id(key)).priority < item.priority) live.set(id(key), item);
@@ -161,7 +170,11 @@ test('합성 1만 항목(시드 고정): 예산 초과 0, 순서 위반 0, 추�
     const r = rand();
     if (r < 0.05) {
       const victim = [...live.values()][Math.floor(rand() * live.size)];
-      if (victim) { s.cancel(victim.key); live.delete(id(victim.key)); }
+      if (victim) {
+        assert.equal(s.cancel(victim.key), true);
+        live.delete(id(victim.key));
+        cancelled.add(id(victim.key));
+      }
     }
     if (r > 0.7) drain();
   }
@@ -171,5 +184,68 @@ test('합성 1만 항목(시드 고정): 예산 초과 0, 순서 위반 0, 추�
   assert.equal(orderViolations, 0);
   assert.equal(overtakenSent, 0);
   assert.equal(oversizeBad, 0);
+  assert.equal(notLiveSent, 0); // 유실·유령 없음: 나간 것은 전부 큐에 살아 있던 것
+  assert.equal(cancelledSent, 0); // 취소한 것은 나가지 않는다
+  assert.equal(live.size, 0); // 취소·추월 되지 않은 것은 전부 나갔다(유실 0)
+  assert.ok(sentIds.size > 100 && sentIds.size <= sentTotal, `나간 고유 key 수: ${sentIds.size}/${sentTotal}`);
   assert.ok(sentTotal > 100, `전송 수가 너무 적음: ${sentTotal}`);
+});
+
+test('F-190: 수준 3 이 나간 뒤 같은 묶음 수준 1 enqueue 는 false, pending 0', () => {
+  const s = createScheduler({ budgetBytesPerTick: 1000 });
+  assert.equal(s.enqueue(I(K(1, 3, 0, 0, 2, 2), 10, 1)), true);
+  assert.equal(s.nextBatch().length, 1);
+  assert.equal(s.enqueue(I(K(1, 1, 0, 0, 2, 2), 10, 9)), false);
+  assert.equal(s.pending().length, 0);
+  assert.equal(s.enqueue(I(K(1, 3, 0, 5, 2, 2), 10, 1)), true); // 같은 수준 다른 chunk 는 받는다
+  assert.equal(s.enqueue(I(K(1, 1, 0, 0, 3, 2), 10, 1)), true); // 다른 타일 묶음은 영향 없음
+  assert.equal(s.pending().length, 2);
+});
+
+test('F-192: maxPending 초과 enqueue 는 false, 병합·추월 교체는 받는다', () => {
+  const s = createScheduler({ budgetBytesPerTick: 1000, maxPending: 2 });
+  assert.equal(s.enqueue(I(K(1, 0), 10, 1)), true);
+  assert.equal(s.enqueue(I(K(2, 0), 10, 1)), true);
+  assert.equal(s.enqueue(I(K(3, 0), 10, 1)), false);
+  assert.equal(s.pending().length, 2);
+  assert.equal(s.enqueue(I(K(1, 0), 10, 5)), true); // 같은 key 병합: 수 불변
+  assert.equal(s.enqueue(I(K(2, 1), 10, 1)), true); // 낮은 수준 밀어내고 그 자리 사용
+  assert.deepEqual(segs(s.nextBatch()), ['1/0/0', '2/1/0']);
+  assert.equal(s.enqueue(I(K(3, 0), 10, 1)), true); // 비워지면 다시 받는다
+  assert.throws(() => createScheduler({ budgetBytesPerTick: 1, maxPending: 0 }), RangeError);
+});
+
+test('F-192: maxSentGroups 축출은 가장 오래된 묶음부터', () => {
+  const s = createScheduler({ budgetBytesPerTick: 1000, maxSentGroups: 2 });
+  for (const seg of [1, 2, 3]) { s.enqueue(I(K(seg, 3), 10, 1)); s.nextBatch(); }
+  assert.equal(s.enqueue(I(K(3, 1), 10, 1)), false); // 최근 묶음은 기억
+  assert.equal(s.enqueue(I(K(2, 1), 10, 1)), false);
+  assert.equal(s.enqueue(I(K(1, 1), 10, 1)), true); // 묶음 1 은 축출되어 기억 없음
+});
+
+test('F-195: cancel 은 priority 0 항목도 지운다, 취소한 것은 나가지 않는다', () => {
+  const s = createScheduler({ budgetBytesPerTick: 1000 });
+  s.enqueue(I(K(1, 0), 10, 0));
+  s.enqueue(I(K(2, 0), 10, 0));
+  assert.equal(s.cancel(K(1, 0)), true);
+  assert.deepEqual(s.pending().map((p) => p.key.segmentId), [2]);
+  assert.deepEqual(segs(s.nextBatch()), ['2/0/0']);
+  assert.equal(s.cancel(K(2, 0)), false); // 이미 나간 것
+});
+
+test('F-193 ③ oversize: 숫자로 고정(예산 100)', () => {
+  const s = createScheduler({ budgetBytesPerTick: 100 });
+  s.enqueue(I(K(1, 0), 101, 3)); // 맨 앞 + 예산 초과 -> 단독
+  s.enqueue(I(K(2, 0), 1, 2));
+  s.enqueue(I(K(3, 0), 100, 1)); // 정확히 예산 -> oversize 아님
+  const b1 = s.nextBatch();
+  assert.deepEqual(b1.map((b) => b.bytes), [101]);
+  assert.equal(b1.oversize, true);
+  const b2 = s.nextBatch(); // 1 + 100 = 101 > 100 -> 100 은 다음 배치
+  assert.deepEqual(b2.map((b) => b.bytes), [1]);
+  assert.equal(b2.oversize, false);
+  const b3 = s.nextBatch();
+  assert.deepEqual(b3.map((b) => b.bytes), [100]);
+  assert.equal(b3.oversize, false);
+  assert.equal(s.nextBatch().oversize, false); // 빈 배치
 });

@@ -1,5 +1,5 @@
 // 송출 스케줄러(T11.4). 순수 로직: 전송·타이머·시계 모듈 없음. 시간은 이 모듈에 들어오지 않는다(틱은 호출자가 센다).
-//   createScheduler({ budgetBytesPerTick }) -> { enqueue(item), cancel(key), nextBatch(), pending() }
+//   createScheduler({ budgetBytesPerTick, maxPending?, maxSentGroups? }) -> { enqueue(item), cancel(key), nextBatch(), pending() }
 //   item = { key: PieceKey, bytes, priority, level }   (PieceKey 는 contracts/proto 의 16 B 키와 같은 필드)
 // 규칙:
 //   1. 순서: priority 큰 것 먼저, 같으면 level 높은 것 먼저, 같으면 들어온 순서.
@@ -9,10 +9,18 @@
 //   3. 같은 key(여섯 필드 모두 같음) 중복 enqueue 는 하나로 합친다. priority 큰 쪽을 유지하고 순번은 처음 들어온 것을 지킨다.
 //   4. 교체 원칙: 같은 (segmentId, tileX, tileY, lod) 에서 더 높은 level 이 큐에 있으면 낮은 level 항목은 추월당한 것이므로
 //      큐에서 버린다(이미 있던 것은 높은 수준이 들어오는 순간 버리고, 높은 수준이 있는 동안 들어오는 낮은 수준은 받지 않는다).
-//      chunkIndex 는 묶음 기준이 아니다(계약 지시문 그대로). 같은 level 끼리는 서로 버리지 않는다.
-//   5. 배치에서 나간 항목은 큐에서 빠진다. 이미 나간 수준은 기억하지 않는다(도착 쪽 level machine 이 skip 한다).
+//      묶음은 contracts/proto 의 overtakeGroup(key) 로만 정한다. chunkIndex 는 묶음 기준이 아니다. 같은 level 끼리는 서로 버리지 않는다.
+//   5. 배치에서 나간 항목은 큐에서 빠진다. 묶음별로 이미 나간 최고 level 을 기억하고(F-190), 그보다 낮은 level 의
+//      enqueue 는 false 로 거절한다(같은 level 은 받는다). 나간 level 기억은 level 이 높아질 때만 갱신한다.
+// 상한(F-192):
+//   - maxPending(기본 100000): 큐에 새 항목을 더해 이 수를 넘기면 enqueue 는 false(기존 항목은 건드리지 않는다).
+//     같은 key 병합은 항목 수가 늘지 않으므로 항상 받는다. 낮은 level 을 밀어내서 자리가 나는 경우는 그 자리를 센다.
+//   - maxSentGroups(기본 65536): 나간 level 기억 맵의 묶음 수 상한. 넘으면 가장 오래 쓰이지 않은(LRU: 그 묶음에서 마지막으로
+//     항목이 나간 순) 묶음의 기억부터 버린다. 버려진 묶음은 낮은 level 이 다시 들어올 수 있다(상한을 크게 잡아 완화).
+//   - 정렬은 큐가 바뀌어 순서가 흐트러졌을 때만 한다. nextBatch 가 앞에서 떼어내는 것은 순서를 깨지 않으므로 재정렬하지 않는다.
 
 import { assertLevel } from '../../contracts/levels/index.mjs';
+import { overtakeGroup } from '../../contracts/proto/index.mjs';
 
 const KEY_FIELDS = ['segmentId', 'level', 'lod', 'chunkIndex', 'tileX', 'tileY'];
 
@@ -26,10 +34,6 @@ function keyId(key) {
   return parts.join(':');
 }
 
-function groupId(key) {
-  return `${key.segmentId}:${key.tileX}:${key.tileY}:${key.lod}`;
-}
-
 function before(a, b) {
   if (a.priority !== b.priority) return b.priority - a.priority;
   if (a.level !== b.level) return b.level - a.level;
@@ -40,20 +44,33 @@ export function createScheduler(options = {}) {
   const budget = options.budgetBytesPerTick;
   if (!Number.isFinite(budget) || budget <= 0) throw new RangeError(`budgetBytesPerTick 는 0 보다 큰 유한수여야 한다: ${budget}`);
 
+  const maxPending = options.maxPending ?? 100000;
+  const maxSentGroups = options.maxSentGroups ?? 65536;
+  if (!Number.isInteger(maxPending) || maxPending < 1) throw new RangeError(`maxPending 은 1 이상 정수여야 한다: ${maxPending}`);
+  if (!Number.isInteger(maxSentGroups) || maxSentGroups < 1) throw new RangeError(`maxSentGroups 는 1 이상 정수여야 한다: ${maxSentGroups}`);
+
+  const sentLevel = new Map(); // group -> 나간 최고 level (삽입 순서 = LRU 순서)
   const byKey = new Map(); // keyId -> entry
   const byGroup = new Map(); // groupId -> Set<entry>
   let seq = 0;
   let sorted = []; // 정렬된 entry 캐시
   let dirty = false;
 
-  function remove(entry) {
+  function remember(group, level) {
+    const prev = sentLevel.get(group);
+    if (prev !== undefined) sentLevel.delete(group); // 다시 넣어 가장 최근으로 옮긴다
+    sentLevel.set(group, prev !== undefined && prev > level ? prev : level);
+    if (sentLevel.size > maxSentGroups) sentLevel.delete(sentLevel.keys().next().value); // 가장 오래된 묶음 축출
+  }
+
+  function remove(entry, keepOrder = false) {
     byKey.delete(entry.id);
     const set = byGroup.get(entry.group);
     if (set) {
       set.delete(entry);
       if (set.size === 0) byGroup.delete(entry.group);
     }
-    dirty = true;
+    if (!keepOrder) dirty = true;
   }
 
   function view(entry) {
@@ -78,11 +95,15 @@ export function createScheduler(options = {}) {
       assertLevel(level);
       if (level !== item.key.level) throw new RangeError(`level(${level}) 이 key.level(${item.key.level}) 과 다르다`);
 
-      const group = groupId(item.key);
+      const group = overtakeGroup(item.key);
+      const sent = sentLevel.get(group);
+      if (sent !== undefined && sent > level) return false; // 이미 더 높은 수준이 나갔다: 추월당한 항목은 받지 않는다
       const peers = byGroup.get(group);
+      let lower = 0;
       if (peers) {
         for (const p of peers) {
           if (p.level > level) return false; // 이미 더 높은 수준이 대기 중: 추월당한 항목은 받지 않는다
+          if (p.level < level) lower++;
         }
       }
       const existing = byKey.get(id);
@@ -94,6 +115,7 @@ export function createScheduler(options = {}) {
         }
         return true;
       }
+      if (byKey.size - lower >= maxPending) return false; // 큐 상한
       if (peers) {
         for (const p of [...peers]) {
           if (p.level < level) remove(p); // 새 수준이 낮은 수준을 추월
@@ -134,7 +156,12 @@ export function createScheduler(options = {}) {
         batch.push(view(entry));
         taken++;
       }
-      for (let i = 0; i < taken; i++) remove(list[i]);
+      // 앞에서 떼어내는 것은 나머지 순서를 깨지 않으므로 재정렬 표시 없이 캐시만 잘라낸다
+      for (let i = 0; i < taken; i++) {
+        remember(list[i].group, list[i].level);
+        remove(list[i], true);
+      }
+      sorted = list.slice(taken);
       return batch;
     },
 
