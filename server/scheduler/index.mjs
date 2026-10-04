@@ -21,6 +21,8 @@
 //     순서는 전체 정렬과 같다: before() 는 seq 로 전순서. 묶음별로 최고 level 과 level 별 항목 집합을 따로 세어 enqueue 가 묶음 크기에 비례하지 않는다.
 //   - compare(a, b)(선택, 기본 before): 대기열의 유일한 순서 비교. a, b 는 { priority, level, seq } 를 가진 내부 항목이고 음수면 a 가 앞이다.
 //     힙과 pending() 이 모두 이것만 쓴다. 시험은 이것을 감싸 비교 횟수를 시험 쪽에서 센다(구현이 스스로 세는 계수는 없다).
+//   - wrapArray(arr)(선택, 시험 전용, 기본 그대로 돌려줌): 내부 배열 저장소(힙, LRU 큐 둘)를 만들거나 새로 바꿀 때마다 이것을 거친다.
+//     시험은 Proxy 로 감싸 인덱스 대입(heap[i] = ...) 횟수를 시험 쪽에서 센다. 돌려준 값을 배열처럼 그대로 쓴다.
 
 import { assertLevel } from '../../contracts/levels/index.mjs';
 import { overtakeGroup, CHUNK_INDEX_LIMIT } from '../../contracts/proto/index.mjs';
@@ -53,20 +55,22 @@ export function createScheduler(options = {}) {
   if (!Number.isInteger(maxSentGroups) || maxSentGroups < 1) throw new RangeError(`maxSentGroups 는 1 이상 정수여야 한다: ${maxSentGroups}`);
   const compare = options.compare ?? before;
   if (typeof compare !== 'function') throw new TypeError('compare 는 함수여야 한다');
+  const wrapArray = options.wrapArray ?? ((a) => a);
+  if (typeof wrapArray !== 'function') throw new TypeError('wrapArray 는 함수여야 한다');
 
   // 나간 level 기억(LRU). Map 의 앞쪽을 지우며 keys().next() 로 가장 오래된 것을 찾으면 지운 자리를 매번 건너뛰어
   // 상한에 비례해 느려진다(F-213). 그래서 Map 은 조회 전용으로 쓰고, 오래된 순서는 머리 인덱스를 가진 배열 큐로 따로 둔다.
   // 쓸 때마다 stamp 를 올리고 큐에 (group, stamp) 를 더한다. 큐 앞에서 stamp 가 현재와 다른 것은 낡은 기록이라 버린다.
   const sentLevel = new Map(); // group -> { level, stamp }
-  let sentQGroup = [];
-  let sentQStamp = [];
+  let sentQGroup = wrapArray([]);
+  let sentQStamp = wrapArray([]);
   let sentQHead = 0;
   let sentClock = 0;
   const byKey = new Map(); // keyId -> 살아 있는 entry
   const groups = new Map(); // groupId -> { maxLevel, levels: Map<level, Set<entry>> } (묶음별 최고 level·level별 항목)
   let seq = 0;
   // 최소 힙(before() 기준 맨 앞이 루트). 삭제는 dead 표시만 하고(lazy) 루트에 올라올 때 버린다. dead 가 많이 쌓이면 한 번에 정리한다.
-  let heap = [];
+  let heap = wrapArray([]);
 
   function remember(group, level) {
     const rec = sentLevel.get(group);
@@ -87,8 +91,8 @@ export function createScheduler(options = {}) {
       if (r !== undefined && r.stamp === st) sentLevel.delete(g);
     }
     if (sentQHead >= 1024 && sentQHead * 2 >= sentQGroup.length) { // 지난 머리 부분을 한꺼번에 잘라 낸다
-      sentQGroup = sentQGroup.slice(sentQHead);
-      sentQStamp = sentQStamp.slice(sentQHead);
+      sentQGroup = wrapArray(sentQGroup.slice(sentQHead));
+      sentQStamp = wrapArray(sentQStamp.slice(sentQHead));
       sentQHead = 0;
     } else if (sentQGroup.length - sentQHead > 2 * maxSentGroups + 64) { // 같은 묶음만 계속 쓰여 낡은 기록만 쌓이는 경우
       const g2 = [];
@@ -100,8 +104,8 @@ export function createScheduler(options = {}) {
           s2.push(sentQStamp[i]);
         }
       }
-      sentQGroup = g2;
-      sentQStamp = s2;
+      sentQGroup = wrapArray(g2);
+      sentQStamp = wrapArray(s2);
       sentQHead = 0;
     }
   }
@@ -156,7 +160,7 @@ export function createScheduler(options = {}) {
 
   function compact() {
     if (heap.length <= 2 * byKey.size + 32) return;
-    heap = heap.filter((e) => !e.dead);
+    heap = wrapArray(heap.filter((e) => !e.dead));
     for (let i = (heap.length >>> 1) - 1; i >= 0; i--) siftDown(i);
   }
 
