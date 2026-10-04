@@ -296,6 +296,7 @@ test('F-220 ③: chunkIndex 범위 밖(65536, -1)은 enqueue 가 거부한다, �
 //              + 배열·Map·Set 반복자(for-of, 펼침, keys/values/entries)와 forEach 가 내준 원소 수.
 //   - stored: createScheduler({ wrapArray }) 로 내부 배열 저장소(힙, LRU 큐)를 Proxy 로 감싸 센 인덱스 대입(arr[i] = v) 횟수.
 //             메서드 없이 for 루프로 heap[j] = heap[j-1] 을 옮기는 O(n) 삽입·삭제도 여기서 잡힌다(F-229 ①).
+//             wrapArray 로 감쌀 때 들고 들어온 길이는 touched 에 더한다(F-233 ②: 지역 배열을 채운 뒤 새로 감싸는 우회).
 // 측정 구간이 끝나면 패치한 프로토타입은 finally 에서 원래대로 되돌린다. 절대 시간은 bench/scheduler/index.mjs 가 보고만 한다.
 // 상한: check(ops) 는 연산당 상한을, 각 계수기는 측정 전체의 상한(maxOps * 연산당 상한 + SLACK)을 넘는 순간 그 자리에서 던진다.
 // 그래서 nextBatch 한 번 안의 O(n^2) 도 전체 상한에 닿으면 바로 멈춘다.
@@ -303,6 +304,7 @@ test('F-220 ③: chunkIndex 범위 밖(65536, -1)은 enqueue 가 거부한다, �
 // 일반 객체/연결 리스트를 따라가는 루프, 모듈 로드 때 붙잡아 둔 프로토타입 메서드, 순수 산술 루프 - 는 세지 않는다.
 // 그런 변이가 오래 돌 때를 위해 성능 시험마다 { timeout: PERF_TIMEOUT_MS } 를 두고, 측정 루프는 YIELD_EVERY 연산마다
 // 이벤트 루프에 양보해 timeout 이 실제로 끼어들 수 있게 한다(양보하는 동안은 세지 않는다). timeout 은 안전망일 뿐 판정 기준이 아니다.
+// timeout 은 실패 표시만 하므로 check 가 t.signal 의 aborted 를 보고 던져 루프 자체를 끊는다(F-233 ①).
 // 단 nextBatch 한 번처럼 양보 없이 도는 동기 구간 안에서 계수기를 거치지 않는 변이는 timeout 으로도 끊지 못한다(구간이 끝나야 실패).
 const perfKey = (i, extra = {}) => ({ segmentId: i, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0, ...extra });
 const log2 = Math.log2;
@@ -321,13 +323,18 @@ function observe() {
   const mv = (n) => { if (c.on) { c.moved += n; c.touched += n; over(); } };
   const tc = (n) => { if (c.on) { c.touched += n; over(); } };
   // 시험 전용 저장소: 인덱스 대입만 센다(push 가 안에서 하는 대입도 1 로 센다).
-  c.wrap = (arr) => new Proxy(arr, {
-    set(t, k, v) {
-      if (c.on && isIndexKey(k)) { c.stored++; over(); }
-      t[k] = v;
-      return true;
-    },
-  });
+  // 감쌀 때 arr.length 를 touched 에 더한다(F-233 ②): 지역 배열을 다 채운 뒤 새로 감싸면 그 전 대입은 stored 에 안 잡히므로
+  // 감싸는 순간 들고 들어온 칸 수로 센다. 정상 구현은 빈 배열이나 slice/filter 결과만 감싸므로 amortized 상수다.
+  c.wrap = (arr) => {
+    tc(arr.length);
+    return new Proxy(arr, {
+      set(t, k, v) {
+        if (c.on && isIndexKey(k)) { c.stored++; over(); }
+        t[k] = v;
+        return true;
+      },
+    });
+  };
   const restore = [];
   const patch = (proto, name, wrap) => {
     const desc = Object.getOwnPropertyDescriptor(proto, name);
@@ -379,7 +386,9 @@ const SLACK = 1024;
 // check(ops) 는 지금까지의 누계가 ops * 연산당 상한 + SLACK 을 넘으면 바로 실패한다(상한 = 연산당 상수 * log2 n).
 // maxOps 는 body 가 마지막으로 check 할 ops 다. 계수기는 maxOps 기준 전체 상한을 넘는 순간 던진다(check 사이의 동기 구간 보호).
 // check 는 YIELD_EVERY 번째마다 양보 Promise 를 돌려주므로 body 는 await check(...) 로 부른다.
-async function measured(opts, body, bounds, maxOps) {
+// signal(시험의 t.signal)이 aborted 면 check 가 던져 측정 루프를 끊는다(F-233 ①). node:test 의 timeout 은 실패 표시만 하고
+// 루프를 멈추지 않으므로 이것이 없으면 timed out 뒤에도 프로세스가 계속 돈다. 중단용일 뿐 판정 기준이 아니다.
+async function measured(opts, body, bounds, maxOps, signal) {
   const cap = (k) => maxOps * bounds[k] + SLACK;
   const cmp = { n: 0 };
   const c = observe();
@@ -397,6 +406,10 @@ async function measured(opts, body, bounds, maxOps) {
   let calls = 0;
   try {
     out = await body(s, (ops) => {
+      if (signal?.aborted) {
+        c.restore();
+        throw new Error(`측정 중단(ops=${ops}): ${signal.reason?.message ?? signal.reason}`);
+      }
       if (c.moved > ops * bounds.moved + SLACK || c.touched > ops * bounds.touched + SLACK || c.stored > ops * bounds.stored + SLACK || cmp.n > ops * bounds.compares + SLACK) {
         const snap = { moved: c.moved, touched: c.touched, stored: c.stored, compares: cmp.n };
         c.restore();
@@ -419,25 +432,31 @@ const boundsFor = (n) => ({ compares: 2 * log2(n), moved: 2, touched: 2 * log2(n
 const ASC_N = 100000;
 const GROUP_N = 20000;
 
-function ascendingObserved(n) {
-  return measured({ budgetBytesPerTick: 1e9, maxPending: Math.max(n, 100000) }, async (s, check) => {
-    for (let i = 0; i < n; i++) {
-      if (!s.enqueue({ key: perfKey(i), bytes: 1, priority: i, level: 0 })) throw new Error('rejected');
-      await check(i + 1);
-    }
-  }, boundsFor(n), n);
+// 같은 n 의 오름차순 측정은 결정적이라 한 번만 돌리고 결과를 나눠 쓴다(F-233 ③: F-208 이 100k 측정을 다시 돌지 않게).
+// 처음 부른 시험의 signal 로 돈다. 그 측정이 실패·중단되면 나중에 부른 시험도 같은 오류로 실패한다.
+const ascMemo = new Map();
+function ascendingObserved(n, signal) {
+  if (!ascMemo.has(n)) {
+    ascMemo.set(n, measured({ budgetBytesPerTick: 1e9, maxPending: Math.max(n, 100000) }, async (s, check) => {
+      for (let i = 0; i < n; i++) {
+        if (!s.enqueue({ key: perfKey(i), bytes: 1, priority: i, level: 0 })) throw new Error('rejected');
+        await check(i + 1);
+      }
+    }, boundsFor(n), n, signal));
+  }
+  return ascMemo.get(n);
 }
-function oneGroupObserved(n) {
+function oneGroupObserved(n, signal) {
   return measured({ budgetBytesPerTick: 1e9 }, async (s, check) => {
     for (let i = 0; i < n; i++) {
       if (!s.enqueue({ key: perfKey(1, { chunkIndex: i }), bytes: 1, priority: i % 7, level: 0 })) throw new Error('rejected');
       await check(i + 1);
     }
-  }, boundsFor(n), n);
+  }, boundsFor(n), n, signal);
 }
 
-test('F-221 시험 쪽 관측: 100k 오름차순 enqueue 에서 splice/shift/unshift/copyWithin 로 옮긴 원소 수 연산당 <= 2, 배열·Map·Set 이 다룬 원소 수와 주입 비교 횟수 연산당 <= 2 log2 n, 저장소 인덱스 대입 연산당 <= 2 log2 n', { timeout: PERF_TIMEOUT_MS }, async () => {
-  const r = await ascendingObserved(ASC_N);
+test('F-221 시험 쪽 관측: 100k 오름차순 enqueue 에서 splice/shift/unshift/copyWithin 로 옮긴 원소 수 연산당 <= 2, 배열·Map·Set 이 다룬 원소 수와 주입 비교 횟수 연산당 <= 2 log2 n, 저장소 인덱스 대입 연산당 <= 2 log2 n', { timeout: PERF_TIMEOUT_MS }, async (t) => {
+  const r = await ascendingObserved(ASC_N, t.signal);
   console.log(`# asc ${ASC_N}: moved=${r.moved} touched=${r.touched} (${(r.touched / ASC_N).toFixed(2)}/op) stored=${r.stored} (${(r.stored / ASC_N).toFixed(2)}/op) compares=${r.compares} (${(r.compares / ASC_N).toFixed(2)}/op, log2 n=${log2(ASC_N).toFixed(1)})`);
   const b = boundsFor(ASC_N);
   assert.ok(r.moved <= b.moved * ASC_N, `moved ${r.moved}`);
@@ -447,7 +466,7 @@ test('F-221 시험 쪽 관측: 100k 오름차순 enqueue 에서 splice/shift/uns
   assert.equal(r.s.pending().length, ASC_N);
 });
 
-test('F-221 시험 쪽 관측: 100k 오름차순 enqueue 뒤 nextBatch 한 번으로 비우기 - enqueue+pop 2n 연산에 옮긴 원소 수 연산당 <= 2, 다룬 원소·주입 비교 연산당 <= 2 log2 n, 순서는 priority 내림차순', { timeout: PERF_TIMEOUT_MS }, async () => {
+test('F-221 시험 쪽 관측: 100k 오름차순 enqueue 뒤 nextBatch 한 번으로 비우기 - enqueue+pop 2n 연산에 옮긴 원소 수 연산당 <= 2, 다룬 원소·주입 비교 연산당 <= 2 log2 n, 순서는 priority 내림차순', { timeout: PERF_TIMEOUT_MS }, async (t) => {
   const b = boundsFor(ASC_N);
   const r = await measured({ budgetBytesPerTick: 1e9, maxPending: ASC_N }, async (s, check) => {
     for (let i = 0; i < ASC_N; i++) {
@@ -457,7 +476,7 @@ test('F-221 시험 쪽 관측: 100k 오름차순 enqueue 뒤 nextBatch 한 번�
     const batch = s.nextBatch();
     await check(2 * ASC_N);
     return batch;
-  }, b, 2 * ASC_N);
+  }, b, 2 * ASC_N, t.signal);
   console.log(`# asc+drain ${ASC_N}: moved=${r.moved} touched=${r.touched} stored=${r.stored} compares=${r.compares} (${(r.compares / (2 * ASC_N)).toFixed(2)}/op)`);
   const batch = r.out;
   assert.equal(batch.length, ASC_N);
@@ -466,7 +485,7 @@ test('F-221 시험 쪽 관측: 100k 오름차순 enqueue 뒤 nextBatch 한 번�
   for (let i = 1; i < batch.length; i++) assert.ok(batch[i - 1].priority > batch[i].priority);
 });
 
-test('F-221 시험 쪽 관측: 한 묶음 20000 개 enqueue 와 nextBatch 비우기 - 옮긴 원소 수 연산당 <= 2, 배열·Map·Set 이 다룬 원소 수와 주입 비교 횟수 연산당 <= 2 log2 n, 저장소 인덱스 대입 연산당 <= 2 log2 n', { timeout: PERF_TIMEOUT_MS }, async () => {
+test('F-221 시험 쪽 관측: 한 묶음 20000 개 enqueue 와 nextBatch 비우기 - 옮긴 원소 수 연산당 <= 2, 배열·Map·Set 이 다룬 원소 수와 주입 비교 횟수 연산당 <= 2 log2 n, 저장소 인덱스 대입 연산당 <= 2 log2 n', { timeout: PERF_TIMEOUT_MS }, async (t) => {
   const b = boundsFor(GROUP_N);
   const r = await measured({ budgetBytesPerTick: 1e9 }, async (s, check) => {
     for (let i = 0; i < GROUP_N; i++) {
@@ -476,7 +495,7 @@ test('F-221 시험 쪽 관측: 한 묶음 20000 개 enqueue 와 nextBatch 비우
     const batch = s.nextBatch();
     await check(2 * GROUP_N);
     return batch;
-  }, b, 2 * GROUP_N);
+  }, b, 2 * GROUP_N, t.signal);
   console.log(`# group ${GROUP_N}: moved=${r.moved} touched=${r.touched} (${(r.touched / GROUP_N).toFixed(2)}/enqueue) stored=${r.stored} compares=${r.compares} (${(r.compares / GROUP_N).toFixed(2)}/enqueue)`);
   assert.equal(r.out.length, GROUP_N);
   // 순서: priority 내림, 같은 priority 안에서는 들어온 순서(chunkIndex 오름)
@@ -520,6 +539,19 @@ test('F-221 관측기 자체 검사: splice 앞쪽 삽입·shift 는 옮긴 칸�
   assert.ok(c.touched >= 13);
   assert.equal(c.stored, 6);
   assert.deepEqual([...h], [0, 1, 2]);
+  // 이미 채워진 배열을 감싸면 그 길이를 touched 로 센다(F-233 ②)
+  const e = observe();
+  let wrapped;
+  try {
+    const filled = [];
+    filled.length = 7;
+    const t0 = e.touched;
+    e.wrap(filled);
+    wrapped = e.touched - t0;
+  } finally {
+    e.restore();
+  }
+  assert.equal(wrapped, 7);
   // 전체 상한을 넘는 순간 그 자리에서 던진다(동기 구간 안의 O(n^2) 를 끝까지 돌리지 않는다)
   const d = observe();
   let i = 0;
@@ -539,9 +571,9 @@ test('F-221 관측기 자체 검사: splice 앞쪽 삽입·shift 는 옮긴 칸�
   assert.equal(Map.prototype[Symbol.iterator], origMapIter);
 });
 
-test('F-208 2배 크기 증가율(시험 쪽 관측): 다룬 원소 수·저장소 인덱스 대입·주입 비교 횟수 합이 n 2배에서 2.3배 이하', { timeout: PERF_TIMEOUT_MS }, async () => {
-  const a1 = await ascendingObserved(ASC_N / 2), a2 = await ascendingObserved(ASC_N);
-  const g1 = await oneGroupObserved(GROUP_N / 2), g2 = await oneGroupObserved(GROUP_N);
+test('F-208 2배 크기 증가율(시험 쪽 관측): 다룬 원소 수·저장소 인덱스 대입·주입 비교 횟수 합이 n 2배에서 2.3배 이하', { timeout: PERF_TIMEOUT_MS }, async (t) => {
+  const a1 = await ascendingObserved(ASC_N / 2, t.signal), a2 = await ascendingObserved(ASC_N, t.signal); // a2 는 위 100k 시험의 측정을 재사용
+  const g1 = await oneGroupObserved(GROUP_N / 2, t.signal), g2 = await oneGroupObserved(GROUP_N, t.signal);
   const w = (r) => r.touched + r.stored + r.compares;
   console.log(`# growth asc ${(w(a2) / w(a1)).toFixed(3)} group ${(w(g2) / w(g1)).toFixed(3)}`);
   assert.ok(w(a2) / w(a1) <= 2.3, `asc ratio ${w(a2) / w(a1)}`);
@@ -551,7 +583,7 @@ test('F-208 2배 크기 증가율(시험 쪽 관측): 다룬 원소 수·저장�
 // F-213: 상한에 닿은 뒤 교체가 계속돼도 한 번당 비용이 상한 크기에 비례하지 않아야 한다.
 // 교체 한 번 = 힙 push 1 + 루트 비우기 + LRU 큐 push 2 + 축출 머리 지우기 1 + 일괄 잘라 내기(amortized) 정도의 상수 대입이다.
 const STORED_PER_REPLACEMENT = 12;
-test('F-213 시험 쪽 관측: maxSentGroups 65536 에서 교체 25만 회의 옮긴 원소 수 0·다룬 원소 수 회당 <= 24(상수), 주입 비교 회당 <= 4, 저장소 인덱스 대입 회당 <= STORED_PER_REPLACEMENT(상수)', { timeout: PERF_TIMEOUT_MS }, async () => {
+test('F-213 시험 쪽 관측: maxSentGroups 65536 에서 교체 25만 회의 옮긴 원소 수 0·다룬 원소 수 회당 <= 24(상수), 주입 비교 회당 <= 4, 저장소 인덱스 대입 회당 <= STORED_PER_REPLACEMENT(상수)', { timeout: PERF_TIMEOUT_MS }, async (ctx) => {
   const N = 250000;
   const r = await measured({ budgetBytesPerTick: 1e9, maxSentGroups: 65536 }, async (s, check) => {
     for (let i = 0; i < N; i++) {
@@ -559,7 +591,7 @@ test('F-213 시험 쪽 관측: maxSentGroups 65536 에서 교체 25만 회의 �
       s.nextBatch();
       await check(i + 1);
     }
-  }, { moved: 0, touched: 24, compares: 4, stored: STORED_PER_REPLACEMENT }, N);
+  }, { moved: 0, touched: 24, compares: 4, stored: STORED_PER_REPLACEMENT }, N, ctx.signal);
   console.log(`# replacements ${N}: moved=${r.moved} touched=${r.touched} (${(r.touched / N).toFixed(2)}/op) stored=${r.stored} (${(r.stored / N).toFixed(2)}/op) compares=${r.compares}`);
   // 기억 묶음 수가 상한을 넘지 않는다: 가장 오래된 묶음부터 버려져 낮은 level 이 다시 들어올 수 있다
   const t = createScheduler({ budgetBytesPerTick: 1e9, maxSentGroups: 4 });
