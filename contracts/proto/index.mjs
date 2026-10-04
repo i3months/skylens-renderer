@@ -5,7 +5,7 @@
 //   [2:4] u16 reserved    0 이어야 한다(아니면 'reserved')
 //   [4:8] u32 payloadLength  본문 길이. MAX_PAYLOAD_BYTES 이하. 프레임 전체 길이 = 8 + payloadLength 와 정확히 같아야 한다('length').
 // 본문 배치(종류별, 고정 크기는 정확히 일치해야 한다. 어긋나면 'length'):
-//   HELLO(1, c→s)         9 B   sessionId u32 (0 = 새 접속), lastPieceSeq u32 (이미 받은 마지막 조각 순번, 새 접속이면 0), flags u8 (0)
+//   HELLO(1, c→s)         9 B   sessionId u32 (0 = 새 접속), lastPieceSeq u32 (이미 받은 마지막 조각 순번. 0 = 받은 것 없음), flags u8 (0)
 //   VIEW_UPDATE(2, c→s)   40 B  viewSeq u32, pos f32×3 (ENU m), quat f32×4 (x,y,z,w, 단위), fovY f32 (rad, 0<fovY<π), width u16, height u16
 //   PIECE_REQUEST(3, c→s) 6 + 16·n B  reqId u32, count u16 (≤ MAX_REQUEST_ITEMS), 항목 n 개: PieceKey 16 B
 //   ACK(4, c→s)           4 B   upToPieceSeq u32 (여기까지 받았음)
@@ -14,7 +14,11 @@
 //   LEVEL_ARRIVED(7, s→c) 9 B   segmentId u32, level u8 (0..3), pieceCount u32
 //   MISSING(8, s→c)       4 B   segmentId u32  (도착하지 않은 구간. 메우거나 꾸미지 않는다)
 //   ERROR(9, s→c)         4 + n B  code u16 (ERR_CODES), msgLen u16, utf8 메시지(msgLen ≤ MAX_ERROR_TEXT)
+// pieceSeq 는 1 부터 매긴다(PIECE_SEQ_MIN). 0 은 'ACK·HELLO 에서 받은 것 없음' 전용이라 조각 순번으로 쓰지 않는다. nextPieceSeq 도 1 이상이다.
 // PieceKey 16 B: segmentId u32, level u8, lod u8, chunkIndex u16, tileX i32, tileY i32 (contracts/asset ChunkKey 와 같은 값).
+// VIEW_UPDATE quat: 카메라→ENU 회전(x,y,z,w). 카메라 축 규약은 contracts/raster 와 같다(그쪽이 정본, 여기서 따로 정하지 않는다).
+// 스케줄러 예산: 한 배치 합계가 예산을 넘지 않는다. 단 배치가 비어 있고 맨 앞 항목 하나가 예산보다 크면 그 항목만 단독으로
+//   내보내고 batch.oversize = true 로 표시한다(굶지 않게). '예산 초과 0' 은 oversize 단독 배치를 제외한 배치에 대한 말이다(F-193).
 // 검사 순서(서버·클라이언트 같다): 길이 < 8 'short' → type 모름 'type' → version 다름 'version' → reserved≠0 'reserved'
 //   → payloadLength > MAX_PAYLOAD_BYTES 'limit' → 프레임 길이 불일치 'length' → 본문 값 범위 'field'.
 // 방향 검사는 프레임 길이 검사 다음, 고정 크기 검사 앞이다. 서버 복호는 c→s 종류만, 클라이언트 복호는 s→c 종류만 받는다. 반대 방향 type 은 'direction'.
@@ -27,6 +31,10 @@ export const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 /** 조각 요청 한 번에 담을 수 있는 항목 수(F-175 ⑥). */
 export const MAX_REQUEST_ITEMS = 256;
 export const MAX_ERROR_TEXT = 256;
+/** 첫 조각 순번. 0 은 '받은 것 없음' 과 겹치므로 쓰지 않는다(F-184). */
+export const PIECE_SEQ_MIN = 1;
+/** PieceKey chunkIndex 상한(u16). contracts/asset 은 더 큰 chunkIndex 를 허용하지만 PIECE 로는 보낼 수 없다(F-193). */
+export const CHUNK_INDEX_LIMIT = 65536;
 
 export const MSG = Object.freeze({
   HELLO: 1,
@@ -77,9 +85,19 @@ export class ProtoError extends Error {
  * 부호화·복호 서명(서버 server/proto/codec, 클라이언트 client/proto 가 같은 서명을 내보낸다):
  *   encodeMessage(message) -> Uint8Array          범위 밖이면 ProtoError('field')
  *   decodeMessage(bytes) -> Message               서버는 c2s 만, 클라이언트는 s2c 만 받는다
- * 값 범위: segmentId 0..SEGMENT_ID_LIMIT-1, level 0..3, lod 0..LOD_MAX, chunkIndex 0..65535, tile 은 i32,
+ * 값 범위: segmentId 0..SEGMENT_ID_LIMIT-1, level 0..3, lod 0..LOD_MAX, chunkIndex 0..CHUNK_INDEX_LIMIT-1, tile 은 i32,
  *   fovY 는 유한하고 0<fovY<π, pos·quat 는 유한 실수(quat 노름 1±1e-3), width·height 1..65535, 순번 u32.
  */
+
+/**
+ * 추월 묶음 키(F-185). 같은 묶음 안에서는 더 높은 level 이 낮은 level 을 교체한다(contracts/levels: 누적 아님).
+ * 묶음 = (segmentId, tileX, tileY, lod). chunkIndex 는 묶음 기준이 아니다: 한 level 의 모든 chunk 는 같은 수준의 조각 집합이라,
+ * 높은 level 의 chunk 가 하나라도 나간 묶음에 낮은 level 의 어떤 chunk 도 다시 나가지 않는다.
+ * scheduler·resume 은 이 함수 하나만 쓴다.
+ */
+export function overtakeGroup(k) {
+  return `${k.segmentId}:${k.tileX}:${k.tileY}:${k.lod}`;
+}
 
 /** 조각 키의 문자열 형태(중복 검사용). */
 export function pieceKeyString(k) {
