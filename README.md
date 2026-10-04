@@ -176,6 +176,13 @@ Header codec value 1 (SKLC1) compresses 27 B point chunks. Quantized values stay
 ### Level state machine (T10)
 The four delay-pattern levels (steps 250, 1,000, 3,500, 7,000) are replaced per segment. A new level releases the lower-level pieces of the same segment (no accumulation), and a lower or equal level arriving after a higher one is skipped. A segment that has not arrived is "missing" (zero render points), and state changes only on arrival events, never with time. The contract is `contracts/levels/` (`decideArrival`), the server machine is `server/levels/state/` (`createLevelMachine`), the client machine is `client/levels/`, and the missing-segment display is `client/levels/missing/`.
 
+### LOD (T07)
+
+A hierarchy that thins the source cloud (format 1) by distance. It never creates points; it only uses a subset of the input points.
+- `server/lod/hierarchy` `buildHierarchy(cloud, {edge0M, levelCount})`: level l keeps one representative per grid cell of edge `edge0M·2^l`, split at leaf boundaries (one per leaf×cell piece; level 0 is the full cloud).
+- `server/lod/distance_table`, `select`, `budget`, `progressive`: level choice by screen-space error `f·edge/d_eff ≤ τ` (f=max(fx,fy), d_eff bounded below by d·cMin² over the on-screen part of the box, off-axis correction in `select/screen_error.mjs`), a point-budget cap, and coarse-first delivery (replacement, not accumulation).
+- `server/lod/view_score`: neighbour-view scoring (shared points, ray angle, scale). `server/lod/no_fill`: hole-preservation check. `bench/lod`: per-segment size tally and materialize timing (`node bench/lod/cli.mjs`). Per-level representative positions are precomputed in leaf order (12 B per representative); materializing 1.84 M selected points peaks at 51–70 ms including the first call (shared 4-core machine, 7 runs).
+
 ### Protocol (T11)
 A single binary WebSocket (TCP) framing: 8-byte header plus payload, nine message types (hello, view update, piece request, ack, welcome, piece, level arrived, missing, error). The contract is `contracts/proto/`; encode/decode lives in `server/proto/codec/` and `client/proto/` (same check order and error codes). The server skeleton is `server/ws/` (dependency-free RFC 6455; host and port come from the environment variables `SKYLENS_WS_HOST` and `SKYLENS_WS_PORT`), with backpressure in `server/ws/backpressure/`, reconnect in `server/ws/resume/`, the send scheduler in `server/scheduler/` (priority, byte budget, overtaken-level drop) and the initial bundle in `server/scheduler/initial/`, the skylens event adapter in `server/adapter/core/`, a mock client in `tools/mock_client/`, a fuzzer in `server/proto/fuzz/` and byte accounting in `bench/proto/`.
 
@@ -204,13 +211,6 @@ The ENU conversion differs from skylens geo.ts in two ways. First, after wrappin
 **Camera paths:** `fixtures/paths/index.mjs` provides camera path generators: drone tracking (circular flight with jitter) and free navigation (Catmull-Rom waypoints). Both use deterministic seeding (contracts/scenes mulberry32, subSeed).
 
 **Preview generation:** Use `node tools/scene_preview/cli.mjs <scene-name> <seed> <output-directory>` to generate a preview image (PNG) of a scene with the specified seed. `<scene-name>` is one of the 8 scene keys. Output directory is created if needed.
-
-### LOD (T07)
-
-A hierarchy that thins the source cloud (format 1) by distance. It never creates points; it only uses a subset of the input points.
-- `server/lod/hierarchy` `buildHierarchy(cloud, {edge0M, levelCount})`: level l keeps one representative per grid cell of edge `edge0M·2^l`, split at leaf boundaries (one per leaf×cell piece; level 0 is the full cloud).
-- `server/lod/distance_table`, `select`, `budget`, `progressive`: level choice by screen-space error `f·edge/d_eff ≤ τ` (f=max(fx,fy), d_eff bounded below by d·cMin² over the on-screen part of the box, off-axis correction in `select/screen_error.mjs`), a point-budget cap, and coarse-first delivery (replacement, not accumulation).
-- `server/lod/view_score`: neighbour-view scoring (shared points, ray angle, scale). `server/lod/no_fill`: hole-preservation check. `bench/lod`: per-segment size tally and materialize timing (`node bench/lod/cli.mjs`). Per-level representative positions are precomputed in leaf order (12 B per representative); materializing 1.84 M selected points peaks at 51–70 ms including the first call (shared 4-core machine, 7 runs).
 
 ### Development setup
 ```
