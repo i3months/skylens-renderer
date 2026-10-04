@@ -76,8 +76,29 @@ export function createRecordingEmit(options) {
   if (minPieceSeq !== undefined && typeof minPieceSeq !== 'function' && !Number.isInteger(minPieceSeq)) {
     throw new TypeError(`minPieceSeq 는 정수 또는 함수여야 한다: ${String(minPieceSeq)}`);
   }
-  /** 이 emit 이 기록한 PIECE 의 pieceSeq → keyId. 하한이 함수(올라갈 수 있음)일 때만 쓴다. */
-  const sentKeys = typeof minPieceSeq === 'function' ? new Map() : null;
+  // 이 emit 이 기록한 PIECE 의 pieceSeq → keyId. 하한이 함수(올라갈 수 있음)일 때만 쓴다.
+  // Map 대신 순번 오름차순 평행 배열 seqs/ids 와 하한 커서 lo(F-277 ④)로 둔다: 정리는 lo 만 올리므로
+  // Map 앞쪽 삭제 구멍도 전체 순회도 없다. 살아 있는 항목은 [lo, seqs.length) 이다.
+  const track = typeof minPieceSeq === 'function';
+  const seqs = [];
+  const ids = [];
+  let lo = 0;
+
+  /** seqs[lo..] 에서 seq 이상인 첫 위치(이분 탐색). */
+  function lowerBound(seq) {
+    let a = lo;
+    let b = seqs.length;
+    while (a < b) {
+      const m = (a + b) >>> 1;
+      if (seqs[m] < seq) a = m + 1; else b = m;
+    }
+    return a;
+  }
+
+  function sentId(seq) {
+    const at = lowerBound(seq);
+    return at < seqs.length && seqs[at] === seq ? ids[at] : undefined;
+  }
 
   function currentFloor() {
     if (minPieceSeq === undefined) return null;
@@ -104,14 +125,22 @@ export function createRecordingEmit(options) {
       const floor = currentFloor();
       const id = keyId(message.key);
       if (floor !== null && message.pieceSeq < floor
-        && !(sentKeys !== null && sentKeys.get(message.pieceSeq) === id)) {
+        && !(track && sentId(message.pieceSeq) === id)) {
         throw new SeqFloorError(message.pieceSeq, floor); // ② 전: 기록·송출 없음
       }
       if (store.recordSent(sid, message.key, message.pieceSeq, message.chunk) !== true) {
         throw new RecordRejectedError('recordSent', sid, `pieceSeq ${message.pieceSeq}`);
       }
       // 기록했으면 선에 나갔을 수 있다(send 가 던져도). 재시도를 알아보도록 남긴다.
-      if (sentKeys !== null) sentKeys.set(message.pieceSeq, id);
+      if (track) {
+        const n = seqs.length;
+        if (n === lo || seqs[n - 1] < message.pieceSeq) { seqs.push(message.pieceSeq); ids.push(id); } // 보통 경로: 끝에 덧붙임
+        else {
+          const at = lowerBound(message.pieceSeq);
+          if (seqs[at] === message.pieceSeq) ids[at] = id; // 재시도: 자리 유지
+          else { seqs.splice(at, 0, message.pieceSeq); ids.splice(at, 0, id); }
+        }
+      }
     } else if (type === 'LEVEL_ARRIVED') {
       const sid = currentSessionId();
       const rec = {
@@ -126,15 +155,11 @@ export function createRecordingEmit(options) {
       }
     }
     send(bytes); // ③ 반환값은 보지 않는다. 던지면 그대로 전파
-    if (type === 'LEVEL_ARRIVED' && sentKeys !== null && sentKeys.size > 0) {
-      // 이벤트가 끝났다: 그 창 끝 이하 순번은 재시도로 다시 오지 않는다.
-      // Map 은 순번 오름차순으로 삽입된다(새 순번은 언제나 앞 순번보다 크고, 재시도의 set 은 기존 자리를 유지한다).
-      // 그래서 첫 seq > last 에서 멈춘다 — LEVEL_ARRIVED 마다 Map 전체를 돌지 않는다(F-277 ④).
+    if (type === 'LEVEL_ARRIVED' && track && lo < seqs.length) {
+      // 이벤트가 끝났다: 그 창 끝 이하 순번은 재시도로 다시 오지 않는다. 오름차순이라 lo 부터 seq > last 에서 멈춘다.
       const last = message.firstPieceSeq + message.pieceCount - 1;
-      for (const seq of sentKeys.keys()) {
-        if (seq > last) break;
-        sentKeys.delete(seq);
-      }
+      while (lo < seqs.length && seqs[lo] <= last) lo++;
+      if (lo === seqs.length) { seqs.length = 0; ids.length = 0; lo = 0; } else if (lo >= 1024 && lo * 2 >= seqs.length) { seqs.splice(0, lo); ids.splice(0, lo); lo = 0; }
     }
   };
 }
