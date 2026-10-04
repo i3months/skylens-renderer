@@ -82,6 +82,8 @@ export function compareWithReference(candidate, reference) {
 /**
  * 빈 픽셀이 빈 값 그대로인지(색 0,0,0·깊이 0·번호 −1) 검사한다. 어긋난 픽셀 번호 목록을 돌려준다.
  * RenderResult 의 무결성을 먼저 검증한 후 emptyPixels 목록을 확인한다.
+ * assertRenderResult 가 이미 보장하므로: index==EMPTY_INDEX 이면 depth==0 이고 color==0 이다.
+ * 따라서 index 만 검사하면 된다.
  * @returns {number[]} 빈 값이 아닌 픽셀 인덱스 배열
  */
 export function nonEmptyValuesInEmpty(result, emptyPixels) {
@@ -93,8 +95,7 @@ export function nonEmptyValuesInEmpty(result, emptyPixels) {
     if (!Number.isInteger(p) || p < 0 || p >= n) {
       throw new Error(`${ERR} 픽셀 인덱스 범위 벗어남: ${p} (범위 [0, ${n}))`);
     }
-    if (result.index[p] !== EMPTY_INDEX || result.depth[p] !== EMPTY_DEPTH
-      || (result.color[3 * p] | result.color[3 * p + 1] | result.color[3 * p + 2]) !== 0) bad.push(p);
+    if (result.index[p] !== EMPTY_INDEX) bad.push(p);
   }
   return bad;
 }

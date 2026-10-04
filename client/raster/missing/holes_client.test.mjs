@@ -139,8 +139,8 @@ test('도우미: nonEmptyValuesInEmpty 는 번호·깊이·색 중 하나라도 
   const a = mk(); a.index[1] = 3; a.depth[1] = 5;
   assert.deepEqual(nonEmptyValuesInEmpty(a, [0, 1, 2]), [1]);
 
-  // 픽셀 2의 깊이를 설정하면(하지만 빈 번호는 유지) 감지됨
-  // 유효한 RenderResult 를 위해 색도 설정하고 깊이를 설정할 때는 색이 0 이어야 함
+  // 픽셀 2를 칠하면(index 설정) 감지됨
+  // 유효한 RenderResult 를 위해 깊이와 색도 함께 설정한다
   const b = mk(); b.depth[2] = 4; b.index[2] = 0;  // 칠한 픽셀로 만들기
   assert.deepEqual(nonEmptyValuesInEmpty(b, [0, 1, 2]), [2]);
 

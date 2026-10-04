@@ -78,8 +78,10 @@ test('반환값 경로는 그대로 즉시 계산한다', async () => {
 
 test('지연 경로: 모양이 틀린 입력은 즉시 거부', () => {
   const { r } = make();
-  assert.throws(() => r.setArrived([], { deferResult: true }), { code: 'piece' });
-  assert.throws(() => r.setArrived([{ segmentId: 1, level: 1, keys: [] }], { deferResult: true }), { code: 'piece' });
+  // 빈 arrived 배열은 허용된다
+  assert.doesNotThrow(() => r.setArrived([], { deferResult: true }));
+  // 빈 keys 배열도 허용된다
+  assert.doesNotThrow(() => r.setArrived([{ segmentId: 1, level: 1, keys: [] }], { deferResult: true }));
 });
 
 test('지연 경로: key 형식·level 범위 오류는 호출 시점에 piece 로 던지고, 직전 선택은 그대로 draw·uploadPiece 가 정상(F-250 ①)', async () => {

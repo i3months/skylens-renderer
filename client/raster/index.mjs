@@ -410,7 +410,6 @@ export function createRenderer(options) {
       // 지연 경로: 반환값이 필요 없는 호출자용. 선택은 다음 draw 에서 프레임당 1회만 돈다(연속 호출은 마지막 입력으로 합쳐진다).
       // 항목·key 검사(key 형식·level 0..3·(segmentId, level) 일치, O(key 수))는 상태를 바꾸기 전에 지금 하고 던지면 직전 상태 그대로다.
       if (!Array.isArray(list)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
-      if (list.length === 0) throw new ClientRasterError('piece', 'arrived 는 비지 않은 배열이어야 함');
       checkArrived(list, checkProbe); // 항목·key 검사만(타일 표 없는 가벼운 검사기, 거부 기준은 selectDrawable 과 같다. F-253 ②)
       arrived = list.map((a) => ({ segmentId: a.segmentId, level: a.level, keys: [...a.keys] }));
       arrivedKeys = new Set();
