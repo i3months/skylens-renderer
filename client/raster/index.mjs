@@ -209,7 +209,10 @@ export function createRenderer(options) {
     delete(k) { metaGen += 1; return super.delete(k); }
     clear() { metaGen += 1; super.clear(); }
   })();
-  let roomCache = null; // makeRoom 전용: 직전 지역 선택의 (세대, 도착 객체, key) → draw Set. selection 계열 상태와 무관
+  // makeRoom 전용 캐시(selection 계열 상태와 무관). setArrived 두 경로·dispose 에서 null 로 돌려 도착 입력 사본을 붙잡지 않는다.
+  // {tiles: 도착 입력의 타일 표, gen: resident·base 를 만든 metaGen, resident: 타일 → 상주 도착 key, base: 새 key 를 넣지 않은 보호 Set,
+  //  key·drawing: 직전 거부/판정의 올리는 key 와 보호 집합}
+  let roomCache = null;
   /** @type {Map<string, number>} 올리는 중인 key → 토큰(해제·소실 뒤 늦게 끝난 업로드를 버린다) */
   const inflight = new Map();
   let nextToken = 1;
@@ -314,19 +317,98 @@ export function createRenderer(options) {
     return { input, cam, values };
   }
 
+  // --- makeRoom 의 보호 집합(F-259 ②) ---
+  // key 하나를 더해도 바뀌는 것은 그 key 의 타일뿐이다(selectDrawable 의 LOD 고르기는 타일마다). 도착 입력에서 타일 표(타일 → 후보 여부·LOD 별 완료 chunk 수)를
+  // 한 번 만들고, 상주 key 에서 타일별 상주 수·고른 LOD 를 metaGen 마다 한 번 만든 뒤, 새 key 마다 그 타일 하나만 본다.
+  // select 호출은 없고 key 당 비용은 그 타일의 상주 chunk 수다. 규칙은 selectDrawable 과 같다(시험이 맞대어 본다).
+  const keyTile = (k) => k.slice(0, k.lastIndexOf('.', k.lastIndexOf('.') - 1));
+  const keyLod = (k) => Number(k.slice(k.lastIndexOf('.', k.lastIndexOf('.') - 1) + 1, k.lastIndexOf('.')));
+  function chooseLod(have, need) { // 완전한 LOD 중 가장 세밀한 것, 없으면 상주 chunk 가 있는 LOD 중 가장 세밀한 것(-1 = 없음)
+    let best = -1;
+    let bestComplete = -1;
+    for (let lod = 7; lod >= 0; lod--) {
+      if (have[lod] === 0) continue;
+      best = lod;
+      if (have[lod] === need[lod]) bestComplete = lod;
+    }
+    return bestComplete !== -1 ? bestComplete : best;
+  }
+  function buildRoomTiles() {
+    const top = new Map();
+    for (const a of arrived) {
+      const cur = top.get(a.segmentId);
+      if (cur === undefined || a.level > cur) top.set(a.segmentId, a.level);
+    }
+    const tiles = new Map(); // 타일 → {cand: 그 구간의 가장 높은 수준이면 true, need: LOD 별 완료 chunk 수}
+    const seen = new Set();
+    for (const a of arrived) {
+      for (const k of a.keys) {
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const id = keyTile(k);
+        let t = tiles.get(id);
+        if (t === undefined) { t = { cand: a.level === top.get(a.segmentId), need: new Int32Array(8) }; tiles.set(id, t); }
+        t.need[keyLod(k)]++;
+      }
+    }
+    return tiles;
+  }
+  function roomProtection(key) {
+    let rc = roomCache;
+    if (rc === null) rc = { tiles: buildRoomTiles(), gen: -1, resident: null, base: null, key: null, drawing: null };
+    if (rc.gen !== metaGen) { // 상주 목록이 바뀌었다: 타일별 상주 수와 새 key 없는 보호 집합을 다시 만든다
+      const resident = new Map(); // 타일 → {have, ks: [[key, lod]], set, chosen}
+      for (const k of meta.keys()) {
+        if (!arrivedKeys.has(k)) continue;
+        const id = keyTile(k);
+        const t = rc.tiles.get(id);
+        if (t === undefined || !t.cand) continue;
+        let e = resident.get(id);
+        if (e === undefined) { e = { have: new Int32Array(8), ks: [], set: new Set(), chosen: -1 }; resident.set(id, e); }
+        const lod = keyLod(k);
+        e.have[lod]++;
+        e.ks.push([k, lod]);
+        e.set.add(k);
+      }
+      const base = new Set();
+      for (const [id, e] of resident) {
+        e.chosen = chooseLod(e.have, rc.tiles.get(id).need);
+        for (const [k, lod] of e.ks) if (lod === e.chosen) base.add(k);
+      }
+      rc = { tiles: rc.tiles, gen: metaGen, resident, base, key: null, drawing: null };
+    }
+    // key 를 더했을 때 같은 타일의 보호 집합이 달라지는가
+    let drawing = rc.base;
+    const id = keyTile(key);
+    const t = rc.tiles.get(id);
+    const e = rc.resident.get(id);
+    if (t !== undefined && t.cand && e !== undefined) {
+      const have = Int32Array.from(e.have);
+      have[keyLod(key)]++;
+      const chosen = chooseLod(have, t.need);
+      if (chosen !== e.chosen) {
+        const own = new Set();
+        for (const [k, lod] of e.ks) if (lod === chosen) own.add(k);
+        const base = rc.base;
+        drawing = { has: (k) => (e.set.has(k) ? own.has(k) : base.has(k)) };
+      }
+    }
+    return { tiles: rc.tiles, gen: rc.gen, resident: rc.resident, base: rc.base, key, drawing };
+  }
+
   // 그리지 않는 상주 조각을 오래된 것부터 해제해 need 바이트를 만든다. 모자라면 'memory'.
   function makeRoom(key, bytes) {
     // 한도 여유가 있으면 크기 표·선택을 만들지 않고 돌아간다(F-246 ⑦). key 별 크기는 meta 에 둔다
     const resident = pool.residentBytes() - (meta.get(key)?.bytes ?? 0);
     if (resident + bytes <= maxResidentBytes) return;
-    // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 지금 올리는 key 도 목록에 넣어
-    // 그 key 가 완성할 LOD 의 상주 조각이 draw 에 들어 보호된다. 낡지 않았으면 직전 선택을 그대로 쓴다
-    // 지금 올리는 key 가 도착 집합에 들고 meta 에 없으면 낡음 여부와 관계없이 그 key 를 넣은 지역 선택으로 돈다(저장하지 않는다)
+    // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 낡지 않았으면 직전 선택을 그대로 쓴다.
+    // 지금 올리는 key 가 도착 집합에 들고 meta 에 없으면 낡음 여부와 관계없이 그 key 를 넣은 보호 집합으로 고른다.
+    // 이 보호 집합은 select 를 부르지 않고 그 key 의 타일 하나만 다시 계산한다(roomProtection). 결과는 roomCache 에 저장하고,
+    // 같은 (meta 세대, key) 로 이어진 거부는 그대로 다시 쓴다(도착 입력이 바뀌면 setArrived 가 roomCache 를 비운다)
     let drawing;
     if (arrived !== null && !meta.has(key) && arrivedKeys.has(key)) {
-      // 같은 (meta 세대, 도착 객체, key) 로 이어진 거부는 직전 지역 결과를 다시 쓴다
-      if (!(roomCache && roomCache.gen === metaGen && roomCache.arrived === arrived && roomCache.key === key)) {
-        roomCache = { gen: metaGen, arrived, key, drawing: new Set(select([...meta.keys(), key], arrived).draw) };
+      if (!(roomCache && roomCache.gen === metaGen && roomCache.key === key)) {
+        roomCache = roomProtection(key);
       }
       drawing = roomCache.drawing;
     } else {
@@ -447,6 +529,7 @@ export function createRenderer(options) {
       for (const a of arrived) for (const k of a.keys) arrivedKeys.add(k);
       if (selection === null) selection = { draw: [], pending: [], discard: [] };
       selectionStale = true;
+      roomCache = null;
       return undefined;
     }
     const res = select([...meta.keys()], list); // 입력 검사 겸 결과(도착 이벤트마다 한 번)
@@ -455,6 +538,7 @@ export function createRenderer(options) {
     for (const a of arrived) for (const k of a.keys) arrivedKeys.add(k);
     selection = res;
     selectionStale = false;
+    roomCache = null;
     return { draw: [...res.draw], pending: [...res.pending], discard: [...res.discard] };
   }
 
@@ -564,6 +648,7 @@ export function createRenderer(options) {
     pieceVaos.clear();
     meta.clear();
     meter.reset();
+    roomCache = null;
     lostKeys = new Set();
     lostCbs.clear();
     restoredCbs.clear();
