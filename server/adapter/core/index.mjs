@@ -18,6 +18,15 @@
 //     실패 뒤 재시도가 skip 이 되면(그 사이 같거나 높은 수준이 도착) 부분 송출된 key 는 onRelease(keys, {abandoned:true})
 //     로 놓고, 끝나지 않은 표시를 지우며, 쓰였을 수 있는 pieceSeq 는 태운다(결과의 abandoned 에도 key 가 담긴다).
 //     replace              : 기계가 released 로 내보낸 이전 수준 조각의 key 목록을 onRelease(keys, info) 로 알린다.
+//   onRelease 계약: info 는 {segmentId, level, previousLevel} 이고, skip 의 부분 송출 해제에는 abandoned:true 가 더 붙는다.
+//     받는 쪽은 같은 key 의 중복 해제를 견뎌야 한다(이미 놓은 key 를 또 놓으라는 알림은 아무 일도 하지 않아야 한다).
+//     알림이 실패해 다시 알리는 경우(아래 재통지)와 onRelease 여럿 중 일부만 던진 경우에 같은 key 가 두 번 올 수 있다.
+//   재통지(F-229 ②, F-231): skip(abandoned)·replace 의 onRelease 가 던지면 그 알림을 보관하고 예외를 그대로 던진다.
+//     이후 handle() 호출마다 이벤트를 처리하기 전에 보관한 알림을 다시 알린다. 재통지의 실패는 삼키고(이벤트는 언제나 처리된다
+//     — 계속 던지는 onRelease 하나가 어댑터를 영구히 멈추게 하지 않도록), 재통지 횟수가 releaseRetryLimit(기본
+//     RELEASE_RETRY_LIMIT)에 닿으면 그 알림을 버리고 그다음 돌려주는 결과의 releaseDropped 에 {keys, info, error} 로 싣는다.
+//     재통지 때는 기계를 다시 보고, 기계의 현재 수준이 그 key 의 수준과 같고 그 key 를 쥐고 있으면(그 사이 같은 수준·같은
+//     key 가 확정돼 지금 그려지는 조각) 그 key 는 알리지 않는다. 남은 key 가 없으면 알림을 끝난 것으로 지운다.
 //   송출과 상태 확정 순서(F-189):
 //     ① 기계 snapshot 과 decideArrival 로 결정을 미리 본다(skip 이면 끝). ② 보낼 메시지를 모두 만들고 부호화까지 마친다.
 //     ③ 전부 emit 한다. ④ 그다음에야 nextSeq 를 올리고 machine.arrive 로 상태를 확정한다. ⑤ onRelease 를 부른다.
@@ -67,6 +76,13 @@ export const MAX_PIECE_BYTES = MAX_PAYLOAD_BYTES - PIECE_PREFIX_BYTES;
 const U32_MAX = 0xffffffff;
 const I32_MIN = -0x80000000;
 const I32_MAX = 0x7fffffff;
+/**
+ * 보관한 해제 알림을 다시 알리는 최대 횟수(첫 알림 제외, F-231). 재통지는 타이머 없이 handle() 호출 때만 일어나므로 횟수는
+ * "그 뒤 이벤트 몇 개" 이다. 3 의 근거: 동기 콜백의 일시 실패(받는 쪽이 잠깐 바쁨·한 번 튄 예외)는 다음 한두 이벤트 안에
+ * 풀리는 것이 보통이라 그 여유를 주고, 영구히 던지는 onRelease 에는 알림 하나당 추가 호출을 3 번으로 묶는다. 이벤트 하나가
+ * 보관 알림을 많아야 하나 더하고 각 알림은 많아야 3 번의 handle 동안 남으므로 보관 목록 길이도 4 이하로 묶인다.
+ */
+export const RELEASE_RETRY_LIMIT = 3;
 
 /**
  * 송출 중 실패한 level_arrived 가 끝나지 않았는데 다른 이벤트가 들어왔을 때 던진다(F-204).
@@ -95,6 +111,9 @@ export class UnfinishedEventError extends Error {
  * @property {'expect'|'first'|'replace'|'skip'} action
  * @property {number} emitted        이 이벤트로 emit 한 메시지 수
  * @property {PieceKey[]} released   교체로 내보낸 이전 수준 조각 key(replace 일 때만, 아니면 [])
+ * @property {PieceKey[]} [abandoned]  실패 뒤 재시도가 skip 이 되어 놓은 부분 송출 key(그 경우에만 있음, F-223 ①)
+ * @property {{keys:PieceKey[], info:ReleaseInfo, error:unknown}[]} [releaseDropped]
+ *   재통지 상한에 닿아 버린 해제 알림(지난 결과 이후 버린 것이 있을 때만 있음, F-231). 받는 쪽은 그 key 를 스스로 놓아야 한다.
  */
 
 function intIn(v, lo, hi, name) {
@@ -144,7 +163,11 @@ function checkPiece(p, i, segmentId, level) {
  * @param {(message: Message) => Uint8Array} [options.encode]      주입 코덱. 주면 emit 에 encode(message) 를 넘긴다
  * @param {ReleaseFn | ReleaseFn[]} [options.onRelease]  교체 알림. 배열이면 순서대로 모두 부른다
  * @param {number} [options.firstPieceSeq]  첫 pieceSeq(PIECE_SEQ_MIN..u32 최대, 기본 PIECE_SEQ_MIN). 0 은 '받은 것 없음' 전용이라 RangeError
- * @typedef {(keys: PieceKey[], info: {segmentId:number, level:number, previousLevel:number}) => void} ReleaseFn
+ * @param {number} [options.releaseRetryLimit]  실패한 해제 알림의 최대 재통지 횟수(0 이상 정수, 기본 RELEASE_RETRY_LIMIT)
+ * @typedef {{segmentId:number, level:number, previousLevel:number, abandoned?:true}} ReleaseInfo
+ *   abandoned 는 실패 뒤 재시도가 skip 이 되어 부분 송출 key 를 놓을 때만 true 로 붙는다(replace 에는 없다).
+ * @typedef {(keys: PieceKey[], info: ReleaseInfo) => void} ReleaseFn
+ *   같은 key 의 중복 해제를 견뎌야 한다(재통지·여러 onRelease 중 일부 실패 때 같은 key 가 다시 온다).
  */
 export function createCoreAdapter(options = {}) {
   if (!isObject(options)) throw new TypeError('options 는 객체여야 한다');
@@ -159,25 +182,85 @@ export function createCoreAdapter(options = {}) {
   const releaseFns = onRelease === undefined ? [] : Array.isArray(onRelease) ? onRelease.slice() : [onRelease];
   if (!releaseFns.every((f) => typeof f === 'function')) throw new TypeError('onRelease 는 함수 또는 함수 배열이어야 한다');
   let nextSeq = checkFirstSeq(options.firstPieceSeq);
+  const releaseRetryLimit = options.releaseRetryLimit === undefined ? RELEASE_RETRY_LIMIT : options.releaseRetryLimit;
+  if (!Number.isInteger(releaseRetryLimit) || releaseRetryLimit < 0) {
+    throw new RangeError(`releaseRetryLimit 는 0 이상 정수여야 한다: ${String(releaseRetryLimit)}`);
+  }
   /**
    * 송출(③) 중 실패한 level_arrived(F-204). null 이면 없음. pieceSeq nextSeq..nextSeq+keys.length-1 은 이 key 들에 묶였다.
    * @type {null | {segmentId:number, level:number, keys:string[], bytes:Uint8Array[]}}
    */
   let unfinished = null;
   /**
-   * 같은 수준 skip 에서 onRelease 가 던져 알림이 끝나지 못한 abandoned key 들(F-229 ②). 상태는 이미 정리됐으므로 이
-   * 알림만 남는다. 다음 handle() 호출이 다른 일을 하기 전에 다시 알리고, 또 던지면 그대로 남긴 채 던진다(이벤트는
-   * 처리하지 않는다). 여러 onRelease 중 일부만 던졌어도 다시 알릴 때는 전부 부른다(받는 쪽은 같은 key 의 두 번째
-   * 해제에 견뎌야 한다).
-   * @type {null | {keys:object[], info:object}}
+   * onRelease 가 던져 끝나지 못한 해제 알림들(skip 의 abandoned·replace 모두, F-229 ②·F-231). 상태는 이미 정리됐으므로 이
+   * 알림만 남는다. 다음 handle() 호출이 이벤트를 처리하기 전에 다시 알린다. 여러 onRelease 중 일부만 던졌어도 다시 알릴
+   * 때는 전부 부른다(받는 쪽은 같은 key 의 두 번째 해제에 견뎌야 한다). retries 는 재통지 실패 횟수다.
+   * @type {{keys:object[], info:object, retries:number}[]}
    */
-  let pendingRelease = null;
+  const pendingReleases = [];
+  /** 재통지 상한에 닿아 버렸고 아직 결과로 알리지 못한 알림(다음에 돌려주는 결과의 releaseDropped 로 나간다). */
+  let dropped = [];
 
-  function flushPendingRelease() {
-    if (!pendingRelease) return;
-    const { keys, info } = pendingRelease;
-    notifyRelease(keys, info); // 던지면 pendingRelease 가 남는다
-    pendingRelease = null;
+  function removePending(entry) {
+    const i = pendingReleases.indexOf(entry);
+    if (i >= 0) pendingReleases.splice(i, 1);
+  }
+
+  function dropPending(entry, error) {
+    removePending(entry);
+    dropped.push({ keys: entry.keys.map((k) => ({ ...k })), info: { ...entry.info }, error });
+  }
+
+  /** 알림을 보관한 채 알리고, 끝나면 보관에서 뺀다. 던지면 보관한 채(상한 0 이면 버리고) 다시 던진다. */
+  function notifyRetained(keys, info) {
+    const entry = { keys, info, retries: 0 };
+    pendingReleases.push(entry); // 알림이 끝나야 뺀다(F-229 ②)
+    try {
+      notifyRelease(keys, info);
+    } catch (e) {
+      if (releaseRetryLimit === 0) dropPending(entry, e);
+      throw e;
+    }
+    removePending(entry);
+  }
+
+  /**
+   * 기계가 지금 쥔 key 는 걸러낸다(F-231 ②). 보관하는 동안 공유 기계가 같은 수준·같은 key 를 확정했으면 그 조각은 지금
+   * 그려지고 있을 수 있으므로 놓으라고 알리면 안 된다. key 의 수준(abandoned 는 이벤트 수준, replace 는 이전 수준)과 기계의
+   * 현재 수준이 같을 때만 본다. live 판정은 skip 경로와 같이 key 문자열만 본다(F-229 ③).
+   */
+  function notLive(entry) {
+    const snap = machine.snapshot(entry.info.segmentId);
+    const live = new Set();
+    for (const p of snap.pieces || []) live.add(pieceKeyString(p.key));
+    return entry.keys.filter((k) => !(k.level === snap.level && live.has(pieceKeyString(k))));
+  }
+
+  /**
+   * 보관한 알림을 다시 알린다. 던지지 않는다: 재통지 실패는 삼키고 횟수만 센다(F-231 ①). 재통지 실패가 예외로 handle 을
+   * 끊으면 계속 던지는 onRelease 하나가 이후 이벤트를 하나도 처리하지 못하게 만든다(영구 먹통). 상한에 닿으면 버리고
+   * 결과의 releaseDropped 로 알린다.
+   */
+  function flushPendingReleases() {
+    for (const entry of pendingReleases.slice()) {
+      try {
+        const keys = notLive(entry);
+        if (keys.length > 0) notifyRelease(keys, entry.info);
+      } catch (e) {
+        entry.retries++;
+        if (entry.retries >= releaseRetryLimit) dropPending(entry, e);
+        continue;
+      }
+      removePending(entry);
+    }
+  }
+
+  /** 버린 알림이 있으면 결과에 releaseDropped 로 싣고 비운다(없으면 결과 모양 그대로). */
+  function withDropped(result) {
+    if (dropped.length === 0) return result;
+    const out = { ...result, releaseDropped: dropped };
+    dropped = [];
+    return out;
   }
 
   function unfinishedInfo() {
@@ -261,11 +344,7 @@ export function createCoreAdapter(options = {}) {
       const abandoned = pieces.filter((p) => !live.has(pieceKeyString(p.key))).map((p) => ({ ...p.key }));
       nextSeq += unfinished.keys.length;
       unfinished = null;
-      if (abandoned.length > 0) {
-        pendingRelease = { keys: abandoned, info: abandonedInfo }; // 알림이 끝나야 지운다(F-229 ②)
-        notifyRelease(abandoned, abandonedInfo);
-        pendingRelease = null;
-      }
+      if (abandoned.length > 0) notifyRetained(abandoned, abandonedInfo);
       return { action: 'skip', emitted: 0, released: [], abandoned };
     }
     // ② 메시지를 모두 만들고 부호화까지 마친다. 여기서 던지면 아무것도 나가지 않는다.
@@ -287,8 +366,9 @@ export function createCoreAdapter(options = {}) {
     let released = [];
     if (r.action === ACTIONS.REPLACE) {
       released = r.released.map((p) => ({ ...p.key }));
-      // ⑤ 상태 확정 뒤 알림. 하나가 던져도 전부 부르고 다시 던진다.
-      notifyRelease(released, { segmentId, level, previousLevel: r.previousLevel });
+      // ⑤ 상태 확정 뒤 알림. 하나가 던져도 전부 부르고 다시 던진다. 던지면 skip 의 abandoned 와 같은 규칙으로 보관했다가
+      // 다음 handle 에서 다시 알린다(F-231 ③). 이전 수준 조각을 놓으라는 알림이 사라지면 받는 쪽이 그 조각을 영영 쥐게 된다.
+      notifyRetained(released, { segmentId, level, previousLevel: r.previousLevel });
     }
     return { action: r.action, emitted: pieces.length + 1, released };
   }
@@ -297,9 +377,9 @@ export function createCoreAdapter(options = {}) {
     /** @param {CoreEvent} event @returns {HandleResult} */
     handle(event) {
       if (!isObject(event)) throw new TypeError('event 는 객체여야 한다');
-      flushPendingRelease();
-      if (event.kind === 'segment_expected') return onExpected(event);
-      if (event.kind === 'level_arrived') return onArrived(event);
+      flushPendingReleases(); // 던지지 않는다(F-231 ①)
+      if (event.kind === 'segment_expected') return withDropped(onExpected(event));
+      if (event.kind === 'level_arrived') return withDropped(onArrived(event));
       throw new RangeError(`모르는 이벤트 kind: ${String(event.kind)}`);
     },
     /** 다음에 쓸 pieceSeq. */
@@ -309,6 +389,10 @@ export function createCoreAdapter(options = {}) {
     /** 송출 중 실패해 끝나지 않은 이벤트 요약(F-204). 없으면 null. 있으면 같은 이벤트의 재시도만 받는다. */
     unfinishedEvent() {
       return unfinished ? unfinishedInfo() : null;
+    },
+    /** 보관 중인 해제 알림 사본(F-231). 각 항목 {keys, info, retries}. */
+    pendingReleases() {
+      return pendingReleases.map((e) => ({ keys: e.keys.map((k) => ({ ...k })), info: { ...e.info }, retries: e.retries }));
     },
   };
 }

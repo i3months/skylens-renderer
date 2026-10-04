@@ -699,10 +699,195 @@ test('F-228 ⑥·F-229 ②: skip 의 onRelease 가 던져도 표시는 먼저 �
   const r = ad.handle(ev);
   assert.equal(r.action, 'skip');
   assert.equal(rel.length, 2, '재시도에서 다시 통지');
-  assert.deepEqual(rel[1], rel[0]);
-  assert.deepEqual(rel[1].keys.map(pieceKeyString), ev.pieces.map((p) => pieceKeyString(p.key)));
+  // 값으로 비교한다(rel[0] 과 견주면 둘 다 틀려도 통과한다). levelEvent 의 tileY 는 -c 라 chunkIndex 0 에서 -0 이다.
+  assert.deepEqual(rel[1].info, { segmentId: 9, level: 1, previousLevel: 3, abandoned: true });
+  assert.deepEqual(rel[1].keys, [
+    { segmentId: 9, level: 1, lod: 1, chunkIndex: 0, tileX: -1, tileY: -0 },
+    { segmentId: 9, level: 1, lod: 1, chunkIndex: 1, tileX: -1, tileY: -1 },
+  ]);
   // 성공한 통지는 더 반복되지 않는다
   ad.handle({ kind: 'segment_expected', segmentId: 7 });
+  assert.equal(rel.length, 2);
+});
+
+// ── 재통지의 남은 경계(F-231) ─────────────────────────────────────────
+// 구간 9 수준 1 조각 2 개(piecesEvent: key 를 숫자 리터럴로 그대로 적을 수 있다)를 두 번째 emit 에서 실패시키고, 공유 기계에
+// 수준 3 을 확정한 뒤 재시도해 skip(abandoned 두 key)을 만든다.
+const F231_KEYS = [
+  { segmentId: 9, level: 1, lod: 0, chunkIndex: 0, tileX: 9, tileY: 0 },
+  { segmentId: 9, level: 1, lod: 0, chunkIndex: 1, tileX: 9, tileY: 1 },
+];
+const F231_INFO = { segmentId: 9, level: 1, previousLevel: 3, abandoned: true };
+
+/** onRelease 가 throwPlan[i] 가 참인 i 번째(0부터) 호출에서 던지는 어댑터. 기본 기계는 서버 기계. */
+function releaseHarness(throwPlan, { levelMachine = createServerMachine(), releaseRetryLimit } = {}) {
+  const rel = [];
+  const out = [];
+  let failAt = 0;
+  let calls = 0;
+  const ad = createCoreAdapter({
+    levelMachine, releaseRetryLimit,
+    emit: (m) => { calls++; if (calls === failAt) throw new Error('x'); out.push(m); },
+    onRelease: (keys, info) => {
+      const i = rel.length;
+      rel.push({ keys, info });
+      if (typeof throwPlan === 'function' ? throwPlan(i) : throwPlan[i]) throw new Error(`알림 실패 ${i}`);
+    },
+  });
+  return {
+    ad, rel, out, levelMachine,
+    /** 실패한 시도 → 기계에 수준 3 확정(arriveHigh) → 재시도 skip. 재시도 결과나 던진 오류를 돌려준다. */
+    abandon(arriveHigh = () => levelMachine.arrive(9, 3, levelEvent(9, 3).pieces)) {
+      failAt = 2; calls = 0;
+      assert.throws(() => ad.handle(piecesEvent(9, 1, 2)), /x/);
+      failAt = 0;
+      arriveHigh();
+      try { return ad.handle(piecesEvent(9, 1, 2)); } catch (e) { return e; }
+    },
+  };
+}
+
+test('F-231: skip 의 통지가 성공하면 보관하지 않고 이후 이벤트에서 다시 알리지 않는다', () => {
+  const h = releaseHarness([]);
+  const r = h.abandon();
+  assert.deepEqual(r, { action: 'skip', emitted: 0, released: [], abandoned: F231_KEYS });
+  assert.equal(h.rel.length, 1);
+  assert.deepEqual(h.ad.pendingReleases(), []);
+  assert.deepEqual(h.ad.handle({ kind: 'segment_expected', segmentId: 7 }), { action: 'expect', emitted: 1, released: [] });
+  assert.equal(h.ad.handle(levelEvent(10, 0)).action, 'first');
+  assert.equal(h.ad.handle(levelEvent(10, 0)).action, 'skip');
+  assert.equal(h.rel.length, 1, '성공한 통지는 반복되지 않는다');
+});
+
+test('F-231: segment_expected 도 이벤트 처리 전에 보관한 abandoned 를 재통지한다', () => {
+  const h = releaseHarness([true]);
+  const e = h.abandon();
+  assert.equal(e.message, '알림 실패 0');
+  assert.deepEqual(h.ad.pendingReleases(), [{ keys: F231_KEYS, info: F231_INFO, retries: 0 }]);
+  const r = h.ad.handle({ kind: 'segment_expected', segmentId: 7 });
+  assert.deepEqual(r, { action: 'expect', emitted: 1, released: [] }, '이벤트는 그대로 처리된다');
+  assert.equal(h.rel.length, 2, 'segment_expected 에서 재통지');
+  assert.deepEqual(h.rel[1], { keys: F231_KEYS, info: F231_INFO });
+  assert.deepEqual(h.ad.pendingReleases(), []);
+  h.ad.handle({ kind: 'segment_expected', segmentId: 8 });
+  h.ad.handle(levelEvent(10, 0));
+  assert.equal(h.rel.length, 2, '성공 뒤 더 반복되지 않는다');
+});
+
+test('F-231: 재통지도 던지면 보관한 채 이벤트를 처리하고, 세 번째 호출에서 다시 통지하며, 성공 뒤 rel.length 는 고정', () => {
+  const h = releaseHarness([true, true]);
+  h.abandon(); // 호출 0: 던짐
+  const r1 = h.ad.handle({ kind: 'segment_expected', segmentId: 7 }); // 호출 1: 재통지도 던짐(삼킴)
+  assert.deepEqual(r1, { action: 'expect', emitted: 1, released: [] });
+  assert.equal(h.rel.length, 2);
+  assert.deepEqual(h.ad.pendingReleases(), [{ keys: F231_KEYS, info: F231_INFO, retries: 1 }]);
+  const r2 = h.ad.handle(levelEvent(10, 0)); // 호출 2: 재통지 성공
+  assert.deepEqual([r2.action, r2.emitted], ['first', 2]);
+  assert.equal(h.rel.length, 3);
+  assert.deepEqual(h.rel[2], { keys: F231_KEYS, info: F231_INFO });
+  assert.deepEqual(h.ad.pendingReleases(), []);
+  for (const ev of [{ kind: 'segment_expected', segmentId: 8 }, levelEvent(10, 0), levelEvent(11, 0)]) h.ad.handle(ev);
+  assert.equal(h.rel.length, 3, '성공 뒤 고정');
+});
+
+test('F-231: 항상 던지는 onRelease 에서도 이벤트는 매번 처리되고, 재통지 3 번 뒤 버려 releaseDropped 로 알린다', () => {
+  const h = releaseHarness(() => true);
+  assert.equal(h.abandon().message, '알림 실패 0');
+  for (const s of [7, 8]) {
+    assert.deepEqual(h.ad.handle({ kind: 'segment_expected', segmentId: s }), { action: 'expect', emitted: 1, released: [] });
+  }
+  assert.equal(h.rel.length, 3);
+  assert.deepEqual(h.ad.pendingReleases().map((p) => p.retries), [2]);
+  const r = h.ad.handle({ kind: 'segment_expected', segmentId: 12 }); // 재통지 3 번째 실패 → 버림
+  assert.deepEqual([r.action, r.emitted, r.released], ['expect', 1, []]);
+  assert.equal(r.releaseDropped.length, 1);
+  assert.deepEqual([r.releaseDropped[0].keys, r.releaseDropped[0].info], [F231_KEYS, F231_INFO]);
+  assert.equal(r.releaseDropped[0].error.message, '알림 실패 3');
+  assert.equal(h.rel.length, 4);
+  assert.deepEqual(h.ad.pendingReleases(), []);
+  // 버린 뒤에는 다시 알리지 않고, releaseDropped 도 한 번만 나간다
+  assert.deepEqual(h.ad.handle({ kind: 'segment_expected', segmentId: 13 }), { action: 'expect', emitted: 1, released: [] });
+  assert.deepEqual(h.ad.handle(levelEvent(10, 0)).action, 'first');
+  assert.equal(h.rel.length, 4);
+  assert.deepEqual(h.out.filter((m) => m.type === 'MISSING').map((m) => m.segmentId), [7, 8, 12, 13]);
+});
+
+test('F-231: releaseRetryLimit 옵션(0 이면 첫 실패에서 바로 버림), 잘못된 값은 RangeError', () => {
+  const h = releaseHarness(() => true, { releaseRetryLimit: 0 });
+  assert.equal(h.abandon().message, '알림 실패 0');
+  assert.deepEqual(h.ad.pendingReleases(), []);
+  const r = h.ad.handle({ kind: 'segment_expected', segmentId: 7 });
+  assert.deepEqual([r.releaseDropped[0].keys, r.releaseDropped[0].info], [F231_KEYS, F231_INFO]);
+  assert.equal(h.rel.length, 1, '재통지 없음');
+  for (const bad of [-1, 1.5, '3', null, NaN]) {
+    assert.throws(() => createCoreAdapter({ emit() {}, releaseRetryLimit: bad }), RangeError, String(bad));
+  }
+});
+
+/** 서버 기계에 위임하되 snapshot 을 덮어쓸 수 있는 공유 기계(다른 경로가 기계를 다시 세운 경우를 흉내 낸다). */
+function overridableMachine() {
+  const inner = createServerMachine();
+  let override = null;
+  return {
+    expect: (s) => inner.expect(s),
+    arrive: (s, l, p) => inner.arrive(s, l, p),
+    snapshot: (s) => (override && s === override.segmentId ? override.snap : inner.snapshot(s)),
+    setSnapshot(segmentId, level, keys) {
+      override = { segmentId, snap: { level, missing: false, final: false, pieces: keys.map((key) => ({ key, bytes: Uint8Array.of(1) })) } };
+    },
+  };
+}
+
+test('F-231 ②: skip → onRelease 실패 → 공유 기계가 같은 수준·같은 key 확정 → 다음 handle 은 그 key 를 재통지하지 않는다', () => {
+  const m = overridableMachine();
+  const h = releaseHarness([true], { levelMachine: m });
+  assert.equal(h.abandon().message, '알림 실패 0');
+  // 그 사이 공유 기계의 구간 9 가 수준 1, 첫 key 하나로 확정됐다(지금 그려지는 조각)
+  m.setSnapshot(9, 1, [F231_KEYS[0]]);
+  h.ad.handle({ kind: 'segment_expected', segmentId: 7 });
+  assert.equal(h.rel.length, 2);
+  assert.deepEqual(h.rel[1], { keys: [F231_KEYS[1]], info: F231_INFO }, '확정된 key 는 빠진다');
+  assert.deepEqual(h.ad.pendingReleases(), []);
+
+  // 모든 key 가 확정됐으면 알리지 않고 보관에서 지운다
+  const m2 = overridableMachine();
+  const h2 = releaseHarness([true], { levelMachine: m2 });
+  h2.abandon();
+  m2.setSnapshot(9, 1, F231_KEYS);
+  assert.deepEqual(h2.ad.handle({ kind: 'segment_expected', segmentId: 7 }), { action: 'expect', emitted: 1, released: [] });
+  assert.equal(h2.rel.length, 1, '재통지 없음');
+  assert.deepEqual(h2.ad.pendingReleases(), []);
+  h2.ad.handle({ kind: 'segment_expected', segmentId: 8 });
+  assert.equal(h2.rel.length, 1);
+
+  // 같은 key 라도 기계 수준이 다르면(수준 3) 그대로 알린다
+  const m3 = overridableMachine();
+  const h3 = releaseHarness([true], { levelMachine: m3 });
+  h3.abandon();
+  m3.setSnapshot(9, 3, F231_KEYS);
+  h3.ad.handle({ kind: 'segment_expected', segmentId: 7 });
+  assert.deepEqual(h3.rel[1], { keys: F231_KEYS, info: F231_INFO });
+});
+
+test('F-231 ③: replace 의 onRelease 실패도 보관했다가 다음 handle 에서 같은 info 로 재통지한다', () => {
+  const rel = [];
+  let n = 0;
+  const ad = createCoreAdapter({
+    emit() {},
+    onRelease: (keys, info) => { rel.push({ keys, info }); if (n++ === 0) throw new Error('알림 실패'); },
+  });
+  ad.handle(piecesEvent(6, 0, 2));
+  assert.throws(() => ad.handle(piecesEvent(6, 2, 1)), /알림 실패/);
+  const keys = [
+    { segmentId: 6, level: 0, lod: 0, chunkIndex: 0, tileX: 6, tileY: 0 },
+    { segmentId: 6, level: 0, lod: 0, chunkIndex: 1, tileX: 6, tileY: 1 },
+  ];
+  const info = { segmentId: 6, level: 2, previousLevel: 0 };
+  assert.deepEqual(ad.pendingReleases(), [{ keys, info, retries: 0 }]);
+  assert.deepEqual(ad.handle({ kind: 'segment_expected', segmentId: 7 }), { action: 'expect', emitted: 1, released: [] });
+  assert.equal(rel.length, 2);
+  assert.deepEqual(rel[1], { keys, info });
+  ad.handle({ kind: 'segment_expected', segmentId: 8 });
   assert.equal(rel.length, 2);
 });
 

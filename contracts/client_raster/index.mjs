@@ -65,10 +65,17 @@
 //
 // ④ 그리기 규칙(수준 도착, contracts/proto LEVEL_ARRIVED): 조각(PIECE)은 받는 것만으로 그리지 않는다.
 //   - 조각은 그 (segmentId, level) 의 LEVEL_ARRIVED 를 받은 뒤에만 그린다. 뒤따르는 LEVEL_ARRIVED 가 없는 조각은 절대 그리지 않는다.
-//   - LEVEL_ARRIVED 항목은 {segmentId, level, keys} 이고 keys 는 그 수준에서 완료된 조각 key 집합(ASSET_FORMAT §11 정규 문자열,
+//   - arrived 항목은 {segmentId, level, keys} 이고 keys 는 그 수준에서 완료된 조각 key 집합(ASSET_FORMAT §11 정규 문자열,
 //     모두 같은 segmentId·level)이다. 가장 높은 수준 M 의 조각 중 그 집합에 든 key 만 그린다. 집합 밖의 M 수준 key 는 시도가
 //     중간에 버린(abandoned) 조각이라 그리지 않고 discard 로 돌려준다. 곧 abandoned key 는 그리기 전에 해제된다(호출자가
-//     releasePiece). keys 가 없는 항목은 빈 집합으로 본다(완료가 확인되지 않은 조각은 그리지 않는다).
+//     releasePiece). keys 가 없거나 빈 배열인 항목은 ClientRasterError('piece')다(LEVEL_ARRIVED 는 pieceCount ≥ 1).
+//   - 선의 LEVEL_ARRIVED 는 {segmentId, level, pieceCount} 뿐이라 keys 는 받은 PIECE 열로 만든다(./arrival.mjs completedKeys·
+//     collectArrivals). 규칙: 같은 pieceSeq·같은 PieceKey 의 PIECE 는 한 조각(재전송), 같은 pieceSeq 에 다른 PieceKey 는 거부.
+//     s = 그 LEVEL_ARRIVED 전까지 받은 가장 큰 pieceSeq, n = pieceCount 일 때 완료 집합은 pieceSeq s−n+1..s 의 조각 n 개의 key 다.
+//     그 n 개를 다 받지 못했거나(모자람) 다른 (segmentId, level) 이 섞였거나 key 가 겹치면 ClientRasterError('piece').
+//     server/adapter/core 는 한 수준을 PIECE f..f+n−1 → LEVEL_ARRIVED 로 연달아 내고 그 사이 다른 이벤트를 내지 않으므로(F-204)
+//     창은 정확히 그 수준의 조각이다. 실패한 시도가 남긴 조각(재시도 skip 으로 pieceSeq 를 태운 것, 교체된 어댑터의 것)은 뒤
+//     LEVEL_ARRIVED 의 창 밖이라 완료가 아니다(같거나 낮은 수준이면 discard, 도착 수준이 없거나 높으면 pending).
 //   - 수준은 쌓이지 않고 바뀐다: 한 구간에서 도착한 가장 높은 수준 M 의 조각만 그린다. 더 높은 수준이 도착하면 낮은 수준의
 //     조각은(도착했든 아직 LEVEL_ARRIVED 를 기다리든) 버린다(releasePiece). M 보다 높은 수준의 조각은 자기 LEVEL_ARRIVED 를
 //     기다리며 그리지 않는다.
@@ -106,6 +113,7 @@
  * @typedef {Object} Renderer  클라이언트 경량 래스터라이저 인스턴스
  * @property {(key: string, bytes: Uint8Array) => Promise<void>} uploadPiece  .skla 조각을 비동기로 업로드(복호는 Worker 에서). key 는 ASSET_FORMAT §11 정규 문자열
  * @property {(key: string) => void} releasePiece  조각 메모리 해제
+ *   같은 key 중복 해제를 견뎌야 한다(어댑터 info.abandoned 재통지 때문).
  * @property {(view: View) => void} setView  카메라 뷰 설정
  * @property {() => FrameStats} draw  프레임 렌더링 및 통계 반환
  * @property {() => number} memoryBytes  현재 GPU 메모리 사용량(바이트)
@@ -148,7 +156,7 @@ export const PIECE_KEY_PATTERN = /^(0|[1-9][0-9]*)\.[0-3]\.(0|-?[1-9][0-9]*)\.(0
 export const CLIENT_RASTER_API = Object.freeze({
   createRenderer: { fn: 'createRenderer(options) -> Renderer  options: {canvas, maxPieceBytes, maxResidentBytes}' },
   uploadPiece: { fn: 'renderer.uploadPiece(key, bytes) -> Promise<void>  key: ASSET_FORMAT §11 "seg.level.tileX.tileY.lod.chunk", bytes: .skla piece (format 1|2)' },
-  releasePiece: { fn: 'renderer.releasePiece(key) -> void' },
+  releasePiece: { fn: 'renderer.releasePiece(key) -> void  같은 key 중복 해제를 견뎌야 한다(어댑터 info.abandoned 재통지 때문)' },
   setView: { fn: 'renderer.setView(view) -> void  view: {R, t, K, width, height, devicePixelRatio}  K·width·height in CSS px' },
   draw: { fn: 'renderer.draw() -> FrameStats  {drawnPoints, drawnPieces, droppedFrames, drawMs}' },
   memoryBytes: { fn: 'renderer.memoryBytes() -> number' },
@@ -161,7 +169,7 @@ export const CLIENT_RASTER_API = Object.freeze({
   cvToGlExtrinsics: { fn: 'cvToGlExtrinsics(R, t) -> {R, t}  diag(1,-1,-1)·R, diag(1,-1,-1)·t' },
   cameraPointToGl: { fn: 'cameraPointToGl(xc) -> [x, -y, -z] | null  null when d = xc[2] <= 0 or not finite' },
   pixelToNdc: { fn: 'pixelToNdc(u, v, bw, bh) -> [2u/bw - 1, 1 - 2v/bh]' },
-  selectDrawable: { fn: 'selectDrawable(keys, arrived) -> {draw, pending, discard}  arrived: [{segmentId, level, keys}] from LEVEL_ARRIVED (keys = completed key set)' },
+  selectDrawable: { fn: 'selectDrawable(keys, arrived) -> {draw, pending, discard}  arrived: [{segmentId, level, keys}] built by arrival.mjs completedKeys(PIECE list, LEVEL_ARRIVED) (keys = completed key set, non-empty)' },
 });
 
 function posFinite(n, x) {
@@ -178,10 +186,16 @@ export const MAX_BUFFER_DIMENSION = 16384;
 /** segmentId 상한(배타). server/asset/ids 의 segmentId < 2^30 과 같다. */
 export const SEGMENT_ID_LIMIT = 2 ** 30;
 
-/** maxDimension 으로 주입할 수 있는 값의 상한(장치 픽셀). 이보다 큰 한도는 거부한다. */
+/**
+ * maxDimension 으로 주입할 수 있는 값의 상한(장치 픽셀). 이보다 큰 한도는 거부한다.
+ * 입력 상식 검사용 상한이며 장치 한도가 아니다. 실제 장치 한도는 호출자가 gl.getParameter 로 확인해 maxDimension 에 넘긴다.
+ */
 export const MAX_BUFFER_DIMENSION_LIMIT = 32768;
 
-/** 배율 sx·sy 허용 범위 [1/SCALE_LIMIT, SCALE_LIMIT]. 밖이면 K 가 터무니없는 값이 되므로 거부한다. */
+/**
+ * 배율 sx·sy 허용 범위 [1/SCALE_LIMIT, SCALE_LIMIT]. 밖이면 K 가 터무니없는 값이 되므로 거부한다.
+ * 입력 상식 검사용 상한이며 장치 한도가 아니다(장치 한도는 gl.getParameter 로 호출자가 확인한다).
+ */
 export const SCALE_LIMIT = 4096;
 
 const I32_MIN = -(2 ** 31);
@@ -372,24 +386,31 @@ export function parsePieceKey(key) {
  *            또는 level = M 이지만 완료 집합 밖인 조각(시도가 중간에 버린 abandoned 조각. 그리기 전에 해제된다)
  *   pending: 도착한 수준이 없는 구간의 조각 또는 level > M 인 조각(자기 LEVEL_ARRIVED 를 기다린다. 그리지 않는다)
  * 같은 구간·같은 수준의 항목이 여럿이면 완료 집합은 합집합이다. 결과 배열 순서는 입력 순서를 따른다.
+ * keys 에 같은 key 가 여러 번 있으면 첫 등장만 남기고 나머지는 버린다(draw·pending·discard 어디에도 한 번만 나온다).
+ * 호출 주기: LEVEL_ARRIVED 도착 이벤트마다 부르며 프레임마다 부르지 않는다(결과는 다음 도착까지 재사용한다).
+ * 비용: key 는 한 번만 해석한다(arrived.keys 에서 해석한 결과를 keys 처리에서 재사용한다).
  * @param {string[]} keys ASSET_FORMAT §11 정규 문자열
- * @param {{segmentId: number, level: number, keys?: string[]}[]} arrived 받은 LEVEL_ARRIVED 들(segmentId < SEGMENT_ID_LIMIT = 2^30).
- *   keys 는 그 수준의 완료 key 집합이고 모두 (segmentId, level) 의 key 여야 한다. 없으면 빈 집합.
+ * @param {{segmentId: number, level: number, keys: string[]}[]} arrived 받은 LEVEL_ARRIVED 마다 completedKeys 로 만든 항목
+ *   (segmentId < SEGMENT_ID_LIMIT = 2^30, -0 은 거부). keys 는 그 수준의 완료 key 집합이고 모두 (segmentId, level) 의 key 여야 한다.
+ *   없거나 빈 배열이면 ClientRasterError('piece')(LEVEL_ARRIVED pieceCount ≥ 1).
  * @returns {{draw: string[], pending: string[], discard: string[]}}
  */
 export function selectDrawable(keys, arrived) {
   if (!Array.isArray(keys)) throw new ClientRasterError('piece', 'keys 는 배열이어야 함');
   if (!Array.isArray(arrived)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
   const top = new Map(); // segmentId -> {level, done: Set<string>}
+  const EMITTED = -1;
+  const parsed = new Map(); // key -> segmentId * 4 + level(처리한 key 는 EMITTED): 해석 결과 재사용과 중복 제거를 겸한다
   for (const a of arrived) {
-    if (!a || !Number.isInteger(a.segmentId) || a.segmentId < 0 || a.segmentId >= SEGMENT_ID_LIMIT || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
+    if (!a || !Number.isInteger(a.segmentId) || Object.is(a.segmentId, -0) || a.segmentId < 0 || a.segmentId >= SEGMENT_ID_LIMIT || !Number.isInteger(a.level) || a.level < 0 || a.level > 3) {
       throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
     }
-    if (a.keys !== undefined && !Array.isArray(a.keys)) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 는 배열이어야 함: ${JSON.stringify(a)}`);
+    if (!Array.isArray(a.keys) || a.keys.length === 0) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 는 비지 않은 배열이어야 함: ${JSON.stringify(a)}`);
     const done = [];
-    for (const k of a.keys ?? []) {
+    for (const k of a.keys) {
       const p = parsePieceKey(k);
       if (p.segmentId !== a.segmentId || p.level !== a.level) throw new ClientRasterError('piece', `LEVEL_ARRIVED keys 의 key 가 항목의 (segmentId, level) 과 다름: ${k}`);
+      parsed.set(k, a.segmentId * 4 + a.level);
       done.push(k);
     }
     const cur = top.get(a.segmentId);
@@ -398,7 +419,15 @@ export function selectDrawable(keys, arrived) {
   }
   const out = { draw: [], pending: [], discard: [] };
   for (const key of keys) {
-    const { segmentId, level } = parsePieceKey(key);
+    let packed = parsed.get(key);
+    if (packed === EMITTED) continue; // 중복 key: 첫 등장만 남긴다
+    if (packed === undefined) {
+      const p = parsePieceKey(key);
+      packed = p.segmentId * 4 + p.level;
+    }
+    parsed.set(key, EMITTED);
+    const segmentId = Math.floor(packed / 4);
+    const level = packed % 4;
     const m = top.get(segmentId);
     if (m === undefined || level > m.level) out.pending.push(key);
     else if (level === m.level && m.done.has(key)) out.draw.push(key);

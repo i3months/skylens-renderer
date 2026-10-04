@@ -1,5 +1,5 @@
 // 송출 스케줄러(T11.4). 순수 로직: 전송·타이머·시계 모듈 없음. 시간은 이 모듈에 들어오지 않는다(틱은 호출자가 센다).
-//   createScheduler({ budgetBytesPerTick, maxPending?, maxSentGroups?, compare? }) -> { enqueue(item), cancel(key), nextBatch(), pending() }
+//   createScheduler({ budgetBytesPerTick, maxPending?, maxSentGroups?, compare?, wrapArray?(시험 전용) }) -> { enqueue(item), cancel(key), nextBatch(), pending() }
 //   item = { key: PieceKey, bytes, priority, level }   (PieceKey 는 contracts/proto 의 16 B 키와 같은 필드)
 // 규칙:
 //   1. 순서: priority 큰 것 먼저, 같으면 level 높은 것 먼저, 같으면 들어온 순서.

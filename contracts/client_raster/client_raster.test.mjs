@@ -324,7 +324,7 @@ test('selectDrawable: LEVEL_ARRIVED 없는 조각은 그리지 않고, 높은 �
     () => selectDrawable([], [{ segmentId: 2 ** 30, level: 0 }]),
     () => selectDrawable([], [{ segmentId: 2 ** 53, level: 0 }]),
     () => selectDrawable(['1073741824.1.0.0.0.0'], []),
-    () => selectDrawable([`${2 ** 30}.0.0.0.0.0`], [{ segmentId: 7, level: 0 }]),
+    () => selectDrawable([`${2 ** 30}.0.0.0.0.0`], [{ segmentId: 7, level: 0, keys: ['7.0.0.0.0.0'] }]),
     () => selectDrawable(['7.0.100000000000000000000.0.0.0'], []),
     () => selectDrawable(['7.0.0.-2147483649.0.0'], []),
     () => selectDrawable(['7.0.2147483648.0.0.0'], []),
@@ -342,8 +342,10 @@ test('selectDrawable(F-227): 완료 key 집합 밖의 같은 수준 key 는 그�
   const k1 = '9.1.0.0.0.1';
   // 두 번째 key 가 시도 중간에 abandoned: 완료 집합은 첫 번째뿐
   assert.deepEqual(selectDrawable([k0, k1], [{ segmentId: 9, level: 1, keys: [k0] }]), { draw: [k0], pending: [], discard: [k1] });
-  // keys 가 없는 항목은 빈 집합: 아무것도 그리지 않고 두 key 는 해제 대상
-  assert.deepEqual(selectDrawable([k0, k1], [{ segmentId: 9, level: 1 }]), { draw: [], pending: [], discard: [k0, k1] });
+  // keys 가 없거나 빈 배열인 항목은 거부한다(LEVEL_ARRIVED pieceCount ≥ 1, F-230)
+  for (const a of [{ segmentId: 9, level: 1 }, { segmentId: 9, level: 1, keys: [] }]) {
+    assert.throws(() => selectDrawable([k0, k1], [a]), (e) => e instanceof ClientRasterError && e.code === 'piece', JSON.stringify(a));
+  }
   // 같은 수준 항목이 둘이면 완료 집합은 합집합, 낮은 수준 항목의 집합은 쓰이지 않는다
   const low = '9.0.0.0.0.0';
   assert.deepEqual(
@@ -421,7 +423,7 @@ test('CLIENT_RASTER_API 서명은 문자열 전체가 기대값과 같다(순서
   const expected = {
     createRenderer: 'createRenderer(options) -> Renderer  options: {canvas, maxPieceBytes, maxResidentBytes}',
     uploadPiece: 'renderer.uploadPiece(key, bytes) -> Promise<void>  key: ASSET_FORMAT §11 "seg.level.tileX.tileY.lod.chunk", bytes: .skla piece (format 1|2)',
-    releasePiece: 'renderer.releasePiece(key) -> void',
+    releasePiece: 'renderer.releasePiece(key) -> void  같은 key 중복 해제를 견뎌야 한다(어댑터 info.abandoned 재통지 때문)',
     setView: 'renderer.setView(view) -> void  view: {R, t, K, width, height, devicePixelRatio}  K·width·height in CSS px',
     draw: 'renderer.draw() -> FrameStats  {drawnPoints, drawnPieces, droppedFrames, drawMs}',
     memoryBytes: 'renderer.memoryBytes() -> number',
@@ -434,7 +436,7 @@ test('CLIENT_RASTER_API 서명은 문자열 전체가 기대값과 같다(순서
     cvToGlExtrinsics: 'cvToGlExtrinsics(R, t) -> {R, t}  diag(1,-1,-1)·R, diag(1,-1,-1)·t',
     cameraPointToGl: 'cameraPointToGl(xc) -> [x, -y, -z] | null  null when d = xc[2] <= 0 or not finite',
     pixelToNdc: 'pixelToNdc(u, v, bw, bh) -> [2u/bw - 1, 1 - 2v/bh]',
-    selectDrawable: 'selectDrawable(keys, arrived) -> {draw, pending, discard}  arrived: [{segmentId, level, keys}] from LEVEL_ARRIVED (keys = completed key set)',
+    selectDrawable: 'selectDrawable(keys, arrived) -> {draw, pending, discard}  arrived: [{segmentId, level, keys}] built by arrival.mjs completedKeys(PIECE list, LEVEL_ARRIVED) (keys = completed key set, non-empty)',
   };
   assert.equal(Object.isFrozen(contract.CLIENT_RASTER_API), true);
   assert.deepEqual(Object.keys(contract.CLIENT_RASTER_API), Object.keys(expected));
