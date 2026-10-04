@@ -4,6 +4,7 @@
 //   (A) 기준: onStopped 를 쓰지 않으면 open 이 TTL 을 갱신해 세션이 만료되지 않고 매번 같은 정지가 반복된다.
 //   (B) 호출자가 onStopped 에서 store.close 하면 첫 정지에서 sessionId·stoppedAt 을 받고 세션이 닫히며,
 //       다음 같은 sid HELLO 는 resumed:false·reason UNKNOWN_SESSION 이 된다.
+//   (E) replay 중 접속이 닫힌 뒤 replay 가 정지를 보고해도 onStopped 를 부른다(onSession 은 안 부름, ERROR·close 없음).
 //   (C) 정지 1011 은 사유 'replay-stopped', 그 밖의 1011 은 'internal-error' 로 구별된다.
 // 시계는 주입(now)만 쓴다. 벽시계 대기 없음.
 import test from 'node:test';
@@ -143,4 +144,29 @@ test('(D) onStopped 가 던져도 정지 처리(ERROR·close 1회)는 그대로'
   assert.deepEqual(h.msgs.map((m) => m.type), ['WELCOME', 'PIECE', 'ERROR']);
   assert.deepEqual(h.conn.closes, [{ code: CLOSE_INTERNAL, reason: CLOSE_REASON_REPLAY_STOPPED }]);
   assert.equal(h.stops.length, 1);
+});
+
+test('(E) replay 중 접속이 닫힌 뒤 replay 가 정지를 보고해도 onStopped 1회, onSession 0회, 추가 송신·close 없음', async () => {
+  const conn = fakeConn();
+  const stops = [];
+  const sessions = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const api = attachConnection({
+    conn, store: { ack() {} }, loadPiece: () => null,
+    replay: async () => { await gate; return { sessionId: 77, resumed: true, nextPieceSeq: 3, stoppedAt: 2 }; },
+    onSession: (id) => sessions.push(id),
+    onStopped: (id, info) => stops.push([id, info]),
+  });
+  const pending = conn.msgCb(clientEncode({ type: 'HELLO', sessionId: 77, lastPieceSeq: 0 }));
+  await new Promise((r) => setImmediate(r)); // handleHello 가 replay 를 기다리는 중이 되게 한다
+  conn.closeCb({ code: 1011, reason: '' }); // 피어 close 에코: reason 이 비어 있다
+  release();
+  await pending;
+  assert.deepEqual(stops, [[77, { stoppedAt: 2 }]]);
+  assert.deepEqual(sessions, []);
+  assert.deepEqual(conn.sent, []);
+  assert.deepEqual(conn.closes, []);
+  assert.equal(api.sessionId(), 77);
+  assert.throws(() => api.emit({ type: 'MISSING', segmentId: SEG }));
 });
