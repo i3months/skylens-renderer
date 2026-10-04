@@ -23,16 +23,19 @@
  * createRecordingEmit({ store, sessionId, send, encode? }) -> (message: Message) => void
  *   sessionId: 정수 또는 () => 정수(HELLO 뒤에야 정해지는 경우). send: (bytes: Uint8Array) => unknown(던지면 실패). encode: 기본 server/proto/codec 의 encodeMessage.
  *
- * replayAfterHello({ store, hello, send, loadPiece, encode? }) -> { sessionId, resumed, nextPieceSeq, reason, replayed: number }
+ * replayAfterHello({ store, hello, send, loadPiece, encode? }) -> { sessionId, resumed, nextPieceSeq, reason, replayed: number, stoppedAt: number|null, replayedBytes: number }
  *   hello: { sessionId, lastPieceSeq }. send: (bytes) => unknown. loadPiece: (key: PieceKey) => Uint8Array | null.
- *   WELCOME 을 보내고 재전송한 메시지 수(replayed)를 돌려준다. 재전송 중 loadPiece 가 바이트를 못 주면(null) 거기서 재전송을 멈춘다:
- *   그 순번 뒤는 보내지 않고 LEVEL_ARRIVED 도 보내지 않으며, 반환의 stoppedAt 에 빠진 순번이 들어 있다.
+ *   WELCOME 을 보내고 재전송한 메시지 수(replayed)와 재전송한 메시지의 부호화 바이트 합(replayedBytes, WELCOME 은 제외)을 돌려준다. 재전송 중 loadPiece 가 바이트를 못 주면(null) 거기서 재전송을 멈춘다:
+ *   그 순번 뒤는 보내지 않고 LEVEL_ARRIVED 도 보내지 않으며, 반환의 stoppedAt 에 빠진 순번이 들어 있다(멈춘 곳이 없으면 null).
  *
  * attachConnection({ conn, store, loadPiece, onSession?, onMessage?, onClose?, replay?, makeEmit?, encode?, decode? })
  *     -> { emit: (message) => void, sessionId: () => number }
  *   conn: server/ws 접속 객체. 첫 메시지가 HELLO 가 아니면 ERROR(BAD_MESSAGE) 후 close(1002). 둘째 HELLO 도 ERROR(BAD_MESSAGE) + close(1002).
- *   emit 은 HELLO 처리 전에는 던진다.
- *   onSession(sessionId, { resumed, nextPieceSeq }) 는 WELCOME 과 재전송이 끝난 뒤 한 번 불린다(WELCOME 직후가 아니다).
+ *   emit 은 HELLO 처리 전에는 던지고, 닫는 중에도 던진다. 첫 메시지 또는 HELLO 뒤에 복호가 실패해도 ERROR(BAD_MESSAGE) 후 close(1002).
+ *   정지 정책: replayAfterHello 가 stoppedAt !== null 을 돌려주면 onSession·makeEmit 없이 ERROR(UNAVAILABLE) 후 close(1011) 로 닫고,
+ *   이 연결에서는 생방송 송출을 허용하지 않는다(같은 연결에서 생방송이 이어지면 누적 ACK 가 빠진 조각과 그 창의 LEVEL_ARRIVED 기록을 지운다).
+ *   대가: 영구히 못 얻는 바이트가 있으면 재접속해도 같은 멈춤이 반복되므로, 호출자가 그 세션을 닫고 새 세션으로 받게 해야 한다.
+ *   onSession(sessionId, { resumed, nextPieceSeq }) 는 WELCOME 과 재전송이 끝난 뒤 한 번(정지가 없을 때만) 불린다(WELCOME 직후가 아니다).
  *   어댑터는 이어받기 뒤 firstPieceSeq 를 nextPieceSeq 이상으로 만들어야 한다. 어기면 emit 이 minPieceSeq 하한으로 send 없이 던진다.
  *   createRecordingEmit 에는 minPieceSeq 옵션(정수 또는 함수)이 있다.
  */
