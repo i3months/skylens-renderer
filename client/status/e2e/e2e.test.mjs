@@ -119,7 +119,7 @@ test('ERROR code 5 → fallback, 이어받기 WELCOME → live. 폴백 중에도
   assert.deepEqual(view.frame().drawKeys, ['0.2.0.0.0.0', '0.2.0.0.0.1']);
 });
 
-test('새 세션 WELCOME(resumed=false)은 pieceSeq 색인을 비우고 도착 상태는 남긴다', () => {
+test('새 세션 WELCOME(resumed=false)은 앞 세션 그림을 해제하고 새 세션이 도착시키지 않은 칸은 비운다', () => {
   const view = newView();
   const a = createMockRenderServer({ sessionId: 3 });
   feed(view, a.welcome(false));
@@ -128,10 +128,32 @@ test('새 세션 WELCOME(resumed=false)은 pieceSeq 색인을 비우고 도착 �
   feed(view, b.welcome(false));
   feed(view, b.levelArrival(1, 0));
   const f = view.frame();
-  assert.deepEqual(f.drawKeys, ['0.1.0.0.0.0', '0.1.0.0.0.1', '1.0.0.0.0.0']);
-  assert.equal(f.reveal.renderPointCount, 75);
+  // 구간 0 은 앞 세션 수준 1 이 남지 않고 도착 전 칸, 구간 1 은 새 세션 수준 0 조각(점 5)만
+  assert.deepEqual(f.drawKeys, ['1.0.0.0.0.0']);
+  assert.deepEqual(f.reveal, { visible: [1], hidden: [0], renderPointCount: 5 });
+  assert.deepEqual(f.notices, [{ segmentId: 0, text: '없음' }]);
+  assert.deepEqual(f.releasedKeys, ['0.1.0.0.0.0', '0.1.0.0.0.1']);
+  // 새 세션의 구간 0 수준 0 은 앞 세션 수준 1 에 추월당한 것으로 보지 않고 받아들인다
+  feed(view, b.levelArrival(0, 0));
+  assert.deepEqual(view.frame().drawKeys, ['0.0.0.0.0.0', '0.0.0.0.0.1', '1.0.0.0.0.0']);
   // 다른 sessionId 로 resumed=true 는 거부
   assert.throws(() => view.handle({ type: 'WELCOME', sessionId: 9, resumed: true, nextPieceSeq: 1 }), TypeError);
+});
+
+test('새 세션이 앞 세션과 같은 key 를 다시 도착시키면 그 key 는 releasedKeys 에 나오지 않는다(drawKeys 와 겹치지 않음)', () => {
+  const view = newView();
+  const a = createMockRenderServer({ sessionId: 3 });
+  feed(view, a.welcome(false));
+  feed(view, a.levelArrival(0, 0));
+  feed(view, a.levelArrival(1, 0));
+  view.frame();
+  const b = createMockRenderServer({ sessionId: 4 });
+  feed(view, b.welcome(false));
+  feed(view, b.levelArrival(0, 0)); // frame 전에 같은 key 0.0.0.0.0.0·0.0.0.0.0.1 이 다시 도착
+  const f = view.frame();
+  assert.deepEqual(f.drawKeys, ['0.0.0.0.0.0', '0.0.0.0.0.1']);
+  assert.deepEqual(f.releasedKeys, ['1.0.0.0.0.0']);
+  assert.deepEqual(f.reveal, { visible: [0], hidden: [1], renderPointCount: 30 });
 });
 
 test('setCamera 뒤 frame().view·markers 가 반영된다', () => {
@@ -178,23 +200,56 @@ test('재전송 PIECE(같은 pieceSeq·같은 key)는 한 조각으로 센다', 
   // LEVEL_ARRIVED 재전송도 같은 창이라 아무것도 늘지 않는다
   feed(view, [frames[2]]);
   assert.equal(view.frame().reveal.renderPointCount, 70);
-  // 요청은 같은 PieceKey 를 한 번만
-  const req = view.requests();
-  assert.equal(req.length, 1);
-  assert.equal(req[0].type, 'PIECE_REQUEST');
-  assert.equal(req[0].reqId, 0);
-  assert.deepEqual(req[0].items, [pieceKeyOf(0, 1, 0), pieceKeyOf(0, 1, 1)]);
+  // 받은 조각은 다시 요청하지 않는다
   assert.deepEqual(view.requests(), []);
 });
 
-test('재생 전체의 요청: 받아들인 도착 7 번의 조각 14 개를 한 요청으로', () => {
+test('재생 전체에서 받은 조각은 요청에 하나도 나오지 않는다(자산 색인 없음 → 요청 0)', () => {
   const view = newView();
   playScenario(view, createMockRenderServer());
-  const req = view.requests();
+  assert.deepEqual(view.requests(), []);
+});
+
+test('요청은 MISSING 구간의 자산 색인 중 아직 받지 않은 PieceKey 만, 같은 key 는 한 번만', () => {
+  // 색인: 구간마다 수준 0..3 × 조각 2 개 = 8 key
+  const index = (seg) => [0, 1, 2, 3].flatMap((lv) => [pieceKeyOf(seg, lv, 0), pieceKeyOf(seg, lv, 1)]);
+  const view = createStatusView({ modules: FAKE_MODULES, countOf: countOfTestChunk, pieceIndex: index });
+  const server = createMockRenderServer();
+  feed(view, server.welcome(false));
+  // 구간 0 수준 1 의 조각 두 개를 받았지만 LEVEL_ARRIVED 는 아직(구간 0 도착 전)
+  const frames = server.levelArrival(0, 1);
+  feed(view, frames.slice(0, 2));
+  feed(view, server.missing(0));
+  let req = view.requests();
   assert.equal(req.length, 1);
-  // (0,0) 2 + (1,3) 1 + (2,1) 2 + (0,1) 2 + (0,2) 2 + (2,3) 3 + (0,3) 2 = 14
-  assert.equal(req[0].items.length, 14);
-  assert.deepEqual(req[0].items[2], pieceKeyOf(1, 3, 0));
+  assert.equal(req[0].reqId, 0);
+  // 8 key 중 받은 0.1.* 두 개를 뺀 6 개
+  assert.deepEqual(req[0].items, [pieceKeyOf(0, 0, 0), pieceKeyOf(0, 0, 1), pieceKeyOf(0, 2, 0), pieceKeyOf(0, 2, 1), pieceKeyOf(0, 3, 0), pieceKeyOf(0, 3, 1)]);
+  // 같은 MISSING 이 다시 와도 이미 요청한 key 는 다시 내지 않는다
+  feed(view, server.missing(0));
+  assert.deepEqual(view.requests(), []);
+  // 구간 0 이 도착한 뒤의 MISSING 은 요청하지 않는다
+  feed(view, [frames[2]]);
+  feed(view, server.missing(0));
+  assert.deepEqual(view.requests(), []);
+  // 다른 구간 key 를 돌려주는 색인은 TypeError, 상태 불변
+  const bad = createStatusView({ modules: FAKE_MODULES, countOf: countOfTestChunk, pieceIndex: () => [pieceKeyOf(9, 0, 0)] });
+  assert.throws(() => bad.handle({ type: 'MISSING', segmentId: 1 }), TypeError);
+  assert.deepEqual(bad.frame().reveal.hidden, []);
+  assert.throws(() => createStatusView({ modules: FAKE_MODULES, pieceIndex: 1 }), TypeError);
+});
+
+test('해제된 key 의 pieceSeq 색인은 지워진다: 해제된 창의 LEVEL_ARRIVED 재전송은 받지 못한 창이다', () => {
+  const view = newView();
+  const server = createMockRenderServer();
+  feed(view, server.welcome(false));
+  feed(view, server.levelArrival(0, 0)); // pieceSeq 1, 2
+  feed(view, server.levelArrival(0, 1)); // pieceSeq 3, 4 → 0.0.* 해제
+  assert.deepEqual(view.frame().releasedKeys, ['0.0.0.0.0.0', '0.0.0.0.0.1']);
+  // 1..2 색인이 없어 창이 모자라다(TypeError). 3..4(그리는 수준)는 남아 재전송이 그대로 받아진다
+  assert.throws(() => view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 0, pieceCount: 2, firstPieceSeq: 1 }), TypeError);
+  view.handle({ type: 'LEVEL_ARRIVED', segmentId: 0, level: 1, pieceCount: 2, firstPieceSeq: 3 });
+  assert.deepEqual(view.frame().drawKeys, ['0.1.0.0.0.0', '0.1.0.0.0.1']);
 });
 
 function stateOf(view) {
