@@ -17,8 +17,8 @@ function fallbackEncode(m) {
   if (m.type === 'MISSING') {
     body = new Uint8Array(4); new DataView(body.buffer).setUint32(0, m.segmentId, true);
   } else if (m.type === 'LEVEL_ARRIVED') {
-    body = new Uint8Array(9); const v = new DataView(body.buffer);
-    v.setUint32(0, m.segmentId, true); v.setUint8(4, m.level); v.setUint32(5, m.pieceCount, true);
+    body = new Uint8Array(13); const v = new DataView(body.buffer);
+    v.setUint32(0, m.segmentId, true); v.setUint8(4, m.level); v.setUint32(5, m.pieceCount, true); v.setUint32(9, m.firstPieceSeq, true);
   } else if (m.type === 'PIECE') {
     body = new Uint8Array(20 + m.chunk.length); const v = new DataView(body.buffer);
     v.setUint32(0, m.pieceSeq, true);
@@ -39,7 +39,7 @@ function fallbackDecode(bytes) {
   const v = new DataView(bytes.buffer, bytes.byteOffset + FRAME_HEADER_BYTES, bytes.length - FRAME_HEADER_BYTES);
   if (type === MSG.MISSING) return { type: 'MISSING', segmentId: v.getUint32(0, true) };
   if (type === MSG.LEVEL_ARRIVED) {
-    return { type: 'LEVEL_ARRIVED', segmentId: v.getUint32(0, true), level: v.getUint8(4), pieceCount: v.getUint32(5, true) };
+    return { type: 'LEVEL_ARRIVED', segmentId: v.getUint32(0, true), level: v.getUint8(4), pieceCount: v.getUint32(5, true), firstPieceSeq: v.getUint32(9, true) };
   }
   if (type === MSG.PIECE) {
     return {
@@ -249,7 +249,7 @@ test('고정 사례: 정확한 메시지 순서와 수', () => {
   assert.deepEqual([r.action, r.emitted], ['first', 4]);
   assert.deepEqual(out.map((m) => m.type), ['PIECE', 'PIECE', 'PIECE', 'LEVEL_ARRIVED']);
   assert.deepEqual(out.slice(0, 3).map((m) => m.pieceSeq), [1, 2, 3]);
-  assert.deepEqual(out[3], { type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount: 3 });
+  assert.deepEqual(out[3], { type: 'LEVEL_ARRIVED', segmentId: 5, level: 2, pieceCount: 3, firstPieceSeq: 1 });
   assert.equal(out[0].chunk, l2.pieces[0].bytes);
   out.length = 0;
 
@@ -433,7 +433,7 @@ for (const viaCodec of [false, true]) {
         const last = delivered.slice(-5);
         assert.deepEqual(last.map((m) => [m.type, m.pieceSeq]),
           [['PIECE', 3], ['PIECE', 4], ['PIECE', 5], ['PIECE', 6], ['LEVEL_ARRIVED', undefined]], `n=${n}`);
-        assert.deepEqual(last[4], { type: 'LEVEL_ARRIVED', segmentId: 9, level: 3, pieceCount: 4 });
+        assert.deepEqual(last[4], { type: 'LEVEL_ARRIVED', segmentId: 9, level: 3, pieceCount: 4, firstPieceSeq: 3 });
         assert.deepEqual(last.slice(0, 4).map((m) => pieceKeyString(m.key)), ev.pieces.map((p) => pieceKeyString(p.key)));
         // unacked: 1..6 빈칸·중복 없음, key 도 그 순서
         const un = store.unacked(sessionId);
@@ -1194,7 +1194,7 @@ test('상한값 수용: segmentId SEGMENT_ID_LIMIT-1, chunkIndex 0xffff (F-195)'
     assert.deepEqual(msgs[0], { type: 'MISSING', segmentId: top });
     assert.equal(msgs[1].type, 'PIECE');
     assert.deepEqual(msgs[1].key, key);
-    assert.deepEqual(msgs[2], { type: 'LEVEL_ARRIVED', segmentId: top, level: 0, pieceCount: 1 });
+    assert.deepEqual(msgs[2], { type: 'LEVEL_ARRIVED', segmentId: top, level: 0, pieceCount: 1, firstPieceSeq: 1 });
     assert.equal(server.snapshot(top).level, 0);
   }
   // 한 칸 넘으면 거부

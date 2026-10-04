@@ -376,7 +376,7 @@ export function createCoreAdapter(options = {}) {
     }
     // ② 메시지를 모두 만들고 부호화까지 마친다. 여기서 던지면 아무것도 나가지 않는다.
     const messages = pieces.map((p, i) => ({ type: 'PIECE', pieceSeq: nextSeq + i, key: { ...p.key }, chunk: p.bytes }));
-    messages.push({ type: 'LEVEL_ARRIVED', segmentId, level, pieceCount: pieces.length });
+    messages.push({ type: 'LEVEL_ARRIVED', segmentId, level, pieceCount: pieces.length, firstPieceSeq: nextSeq });
     const outgoing = encode ? messages.map((m) => encode(m)) : messages;
     // ③ 전부 송출한다. 던지면 상태·nextSeq 를 확정하지 않고, 이 이벤트를 끝나지 않은 이벤트로 남긴 채 다시 던진다.
     if (!unfinished) {

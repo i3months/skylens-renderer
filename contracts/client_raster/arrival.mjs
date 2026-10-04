@@ -14,6 +14,8 @@
 //      단조(F-234): 재전송이 아닌(처음 보는) pieceSeq 는 그때까지 받은 가장 큰 pieceSeq 보다 커야 한다. 아니면
 //      ClientRasterError('piece')(completedKeys 도 같다). 서버는 한 세션에서 순번을 늘리기만 하고(server/ws/resume
 //      recordSent) 선은 순서를 지키므로, 작은 새 순번은 다른 세션의 조각이거나 계약 위반이다.
+//   ②-0 (F-236) LEVEL_ARRIVED 에 firstPieceSeq 가 있으면 창은 pieceSeq firstPieceSeq..firstPieceSeq+n−1 로 명시되고(단독 재전송이
+//      멱등), 아래 ② 의 "가장 큰 pieceSeq" 추론은 firstPieceSeq 가 없을 때의 대체 규칙이다.
 //   ② 창: s = 그 LEVEL_ARRIVED 전까지 받은 가장 큰 pieceSeq, n = pieceCount. 완료 key 집합은 pieceSeq s−n+1..s 의 조각
 //      n 개의 key 다(pieceSeq 순). 그 n 개는 모두 받았어야 하고, 모두 LEVEL_ARRIVED 의 (segmentId, level) 이어야 하며,
 //      key 가 서로 달라야 한다. 어기면 ClientRasterError('piece')(조각 모자람·다른 수준 섞임·key 중복).
