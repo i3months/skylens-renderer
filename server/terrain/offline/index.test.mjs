@@ -231,7 +231,7 @@ test('fetch 는 Network access blocked 로 거부된다', async () => {
 
 test('dns.lookup 은 원본에 위임하지 않고 콜백에 blocked 오류를 준다', async () => {
   const { result } = await runOffline(() => new Promise((resolve) => {
-    dns.lookup('localhost', (err, address) => resolve({ err, address }));
+    dns.lookup('blocked.example.invalid', (err, address) => resolve({ err, address }));
   }));
   assert.ok(result.err instanceof Error);
   assert.match(result.err.message, /blocked/);
@@ -240,14 +240,14 @@ test('dns.lookup 은 원본에 위임하지 않고 콜백에 blocked 오류를 �
 
 test('dns.lookup 옵션 인자 형태도 blocked 오류', async () => {
   const { result } = await runOffline(() => new Promise((resolve) => {
-    dns.lookup('localhost', { all: true }, (err) => resolve(err));
+    dns.lookup('blocked.example.invalid', { all: true }, (err) => resolve(err));
   }));
   assert.match(result.message, /blocked/);
 });
 
 test('dns.promises.lookup 은 blocked 로 거부된다', async () => {
   await runOffline(async () => {
-    await assert.rejects(() => dns.promises.lookup('localhost'), /blocked/);
+    await assert.rejects(() => dns.promises.lookup('blocked.example.invalid'), /blocked/);
   });
 });
 
@@ -310,8 +310,8 @@ test('끝난 뒤 붙들린 http/dns 스텁도 던지지 않는다', async () => 
   let h;
   await runOffline(() => { h = { get: http.get, lookup: dns.lookup, plookup: dns.promises.lookup }; });
   assert.doesNotThrow(() => h.get('http://example.com'));
-  await assert.rejects(() => h.plookup('localhost'), /blocked/);
-  const err = await new Promise((resolve) => h.lookup('localhost', (e) => resolve(e)));
+  await assert.rejects(() => h.plookup('blocked.example.invalid'), /blocked/);
+  const err = await new Promise((resolve) => h.lookup('blocked.example.invalid', (e) => resolve(e)));
   assert.match(err.message, /blocked/);
 });
 
