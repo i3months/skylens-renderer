@@ -59,11 +59,12 @@ export const BODY_VERSION = 1;
  * 오류 코드 표(CodecError.code):
  *   'stream': rawLen 최소 표현 위반, LEB128 잘림, mode 0·1 payload 검증 실패, mode 1 code ≠ 0, 범위 복호 실패.
  *   'mode': mode가 0·1이 아님.
- *   'limit': rawLen > maxRawBytes(기본 STREAM_RAW_BYTES_MAX) 또는 LEB128 상한 초과.
+ *   'limit': rawLen > maxRawBytes(기본 STREAM_RAW_BYTES_MAX), 조각 경로에서 rawLen < min(streamRawBounds 의 하한), 또는 LEB128 상한 초과.
  *   'range': 입력 형식 오류(Uint8Array 아님, maxRawBytes가 음이 아닌 정수가 아님).
  *
- * 검증 순서(서버·클라이언트 모두):
- *   ① rawLen 범위 확인(limit) — rawLen > maxRawBytes 면 거부
+ * 검증 순서(서버·클라이언트 모두. 오류 code 가 정해지는 순서만 적는다. payloadLen < 5·첫 바이트 0·mode 0 길이 같은 중간 검사는 이 목록 밖이다):
+ *   ① rawLen 범위 확인(limit) — rawLen ∉ [min, max] 면 거부(조각 경로는 streamRawBounds 의 [min, max],
+ *      entropyDecode 단독은 max 만 본다. 따라서 조각 경로의 mode 1·rawLen=0 은 ② 가 아니라 ① 에서 'limit')
  *   ② mode 1 정규성(stream) — rawLen === 0 또는 payloadLen > rawLen 이면 거부
  *   ③ 조기 거부(stream) — rawLen > 64·payloadLen + 64 이면 거부
  *   ④ 실제 복호
