@@ -43,7 +43,9 @@ test('compareWithReference: 메운 픽셀과 사라진 픽셀을 따로 센다',
   assert.throws(() => compareWithReference({ width: 1, height: 1, drawn: new Uint8Array(1) }, ref), /^Error: missing:/);
 });
 
-test('holes: 도달 가능 픽셀 1703, 빈 픽셀 75097 이고 빈 픽셀은 빈 값 그대로', () => {
+// 서버 참조 회귀 고정: 아래 1703·75097 은 정답이 아니라 server/raster_ref 렌더러가 이 장면(시드 1, 5000 점)에서 낸 현재 출력이다.
+// 참조 래스터라이저가 바뀌면 이 값도 의도적으로 다시 확인하고 고쳐야 한다.
+test('서버 참조 회귀 고정: holes 도달 가능 픽셀 1703, 빈 픽셀 75097 이고 빈 픽셀은 빈 값 그대로', () => {
   const r = renderPoints(cam, scene.cloud, { pointSizeM: SIZE });
   const c = computeCoverage(r);
   assert.equal(c.drawn, 1703);
@@ -103,4 +105,25 @@ test('속성: 점이 하나도 도착하지 않으면 모든 픽셀이 빈 값(�
   const r = renderPoints(cam, { format: 1, count: 0, positions: new Float32Array(0), colors: new Uint8Array(0) }, { pointSizeM: SIZE });
   assert.equal(computeCoverage(r).empty, 320 * 240);
   assert.equal(r.index.every((v) => v === -1) && r.depth.every((v) => v === 0) && r.color.every((v) => v === 0), true);
+});
+
+// 입력 방어: 0×0·음수 크기·null 은 NaN 이나 TypeError 로 새지 않고 'missing:' 오류가 된다.
+test('computeCoverage: 0×0·음수 크기 마스크는 emptyFraction NaN 대신 missing: 오류', () => {
+  for (const [w, h] of [[0, 0], [0, 3], [3, 0], [-2, -2], [-2, 2], [2, -2]]) {
+    assert.throws(() => computeCoverage({ width: w, height: h, drawn: new Uint8Array(Math.max(0, w * h)) }), /^Error: missing:/, `${w}×${h}`);
+  }
+  assert.throws(() => computeCoverage({ width: 0, height: 0, color: new Uint8Array(0), depth: new Float32Array(0), index: new Int32Array(0) }), /^Error: missing:/);
+  assert.throws(() => compareWithReference({ width: 0, height: 0, drawn: new Uint8Array(0) }, { width: 0, height: 0, drawn: new Uint8Array(0) }), /^Error: missing:/);
+});
+
+test('null·원시값 입력은 TypeError 가 아니라 missing: 오류', () => {
+  const ok = { width: 1, height: 1, drawn: new Uint8Array(1) };
+  for (const bad of [null, undefined, 5, 'x']) {
+    assert.throws(() => computeCoverage(bad), /^Error: missing:/);
+    assert.throws(() => compareWithReference(bad, ok), /^Error: missing:/);
+    assert.throws(() => compareWithReference(ok, bad), /^Error: missing:/);
+    assert.throws(() => assertNoFilled(bad, ok), /^Error: missing:/);
+    assert.throws(() => drawnMask(bad), /^Error: missing:/);
+    assert.throws(() => nonEmptyValuesInEmpty(bad, [0]), /^Error: missing:/);
+  }
 });
