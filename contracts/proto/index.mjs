@@ -16,12 +16,12 @@
 //     완료 창은 pieceSeq firstPieceSeq..firstPieceSeq+pieceCount−1 이다(선에 명시, F-236·decisions 0032). 받는 쪽은 창을
 //     '그때까지 받은 가장 큰 pieceSeq' 로 추정하지 않는다 — 그래서 같은 LEVEL_ARRIVED 를 뒤늦게 혼자 다시 받아도 같은 창이다(멱등).
 //     LEVEL_ARRIVED 는 pieceSeq 를 쓰지 않는다. 이어받기 때 서버는 창 끝이 클라이언트 lastPieceSeq 이상인 LEVEL_ARRIVED 를
-//     자기 조각들 뒤에 다시 보낸다(server/ws/resume resendPlan). (현재 미배선, F-238 ④)
+//     자기 조각들 뒤에 다시 보낸다(server/ws/resume resendPlan). 배선됨: server/ws/session — 어댑터 emit 은 LEVEL_ARRIVED 를 send 보다 먼저 recordLevelArrived 로 기록하고, HELLO 이어받기 때 resendPlan 을 다시 보낸다(F-238 ④).
 //   재전송 규약: 송출 실패 뒤 같은 pieceSeq·같은 PieceKey 로 다시 보낸 PIECE 는 같은 조각이다(수신측은 하나로 센다).
 //     한 pieceSeq 는 절대 서로 다른 두 PieceKey 에 쓰이지 않는다(F-204). 송출이 실패한 수준 도착의 pieceSeq 는 그 key 들에
 //     묶이고, 서버(server/adapter/core)는 그 수준 도착을 같은 pieceSeq·key 로 다시 보내 끝내기 전에는 다른 이벤트를 보내지
 //     않는다(다른 이벤트는 UNFINISHED_EVENT 로 거부).
-//   현재 미배선: 어댑터 emit 뒤 recordLevelArrived 호출과 이어받기 때 resendPlan 사용은 T12 ws 배선에서 한다(F-238 ④).
+//   배선됨: server/ws/session — 어댑터 emit 은 LEVEL_ARRIVED 를 send 보다 먼저 recordLevelArrived 로 기록하고, HELLO 이어받기 때 resendPlan 을 다시 보낸다(F-238 ④).
 //   마지막 pieceSeq 가 0xFFFFFFFF 인 세션은 재개할 수 없고 서버는 새 세션(resumed=0)으로 답한다.
 //   MISSING(8, s→c)       4 B   segmentId u32  (도착하지 않은 구간. 메우거나 꾸미지 않는다)
 //   ERROR(9, s→c)         4 + n B  code u16 (ERR_CODES), msgLen u16, utf8 메시지(msgLen ≤ MAX_ERROR_TEXT)

@@ -50,7 +50,7 @@
 //     시도가 쓰려던 pieceSeq 부터 같은 key 로 다시 매긴다(끊김 없음). 이미 나간 emit 은 같은 pieceSeq·key 로 다시 나가므로
 //     받는 쪽은 그것을 같은 조각으로 다룬다. 재시도가 ③ 을 다 마치면 끝나지 않은 이벤트 표시가 지워진다.
 //     이어받기 저장소(server/ws/resume)의 recordSent 는 같은 key·같은 seq 재기록을 멱등으로 받으므로(F-197) emit 안에서
-//     recordSent 를 불러도 재시도가 막히지 않는다. 실패한 시도 사이에 ack·축출로 그 항목이 지워졌어도(seq <= ackedUpTo)
+//     recordSent 를 불러도 재시도가 막히지 않는다. emit 배선(server/ws/session/emit.mjs)이 LEVEL_ARRIVED 도 recordLevelArrived 로 먼저 기록한다. 실패한 시도 사이에 ack·축출로 그 항목이 지워졌어도(seq <= ackedUpTo)
 //     recordSent 는 멱등 true 다(F-219 ③).
 //     "같은 bytes" 는 실패한 시도 때의 내용이다. 어댑터는 실패 시점의 bytes 를 실제로 복사해 둔다(new Uint8Array,
 //     F-219 ①) — Buffer.prototype.slice 는 뷰라서 호출자가 원본(pool Buffer 등)을 덮어쓰면 재시도가 내용이 다른 조각을
