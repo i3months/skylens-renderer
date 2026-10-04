@@ -11,6 +11,11 @@ export const INITIAL_BUDGET_BYTES = 15_000_000;
 export const PIECE_HEADER_BYTES = 28;
 export const WS_HEADER_MAX_BYTES = 10;
 export const PIECE_FRAME_OVERHEAD_BYTES = PIECE_HEADER_BYTES + WS_HEADER_MAX_BYTES;
+// F-209: SPEC §4 의 '연결 → 첫 프레임' 은 WELCOME 과 LEVEL_ARRIVED 도 포함하므로 예산에서 먼저 떼어 둔다.
+//   WELCOME 은 항상 1개, LEVEL_ARRIVED 는 담긴 (segmentId, level) 마다 1개. 둘 다 본문 9 B + 프레임 머리 4 B + ws 머리 상한.
+export const FRAME_HEADER_BYTES = 4;
+export const WELCOME_FRAME_BYTES = FRAME_HEADER_BYTES + 9 + WS_HEADER_MAX_BYTES;
+export const LEVEL_ARRIVED_FRAME_BYTES = FRAME_HEADER_BYTES + 9 + WS_HEADER_MAX_BYTES;
 const ASPECT_GUARD = 2;
 
 function forwardOf(q) {
@@ -45,9 +50,13 @@ function boxDistance(pos, bbox) {
  *          catalog:{key:{segmentId:number,level:number,lod:number,chunkIndex:number,tileX:number,tileY:number},bytes:number,bbox:{min:number[],max:number[]},lod?:number}[],
  *          budgetBytes?:number}} input
  * @returns {{items:object[], totalBytes:number, frameBytes:number, droppedCount:number}} totalBytes = 담긴 .skla 바이트 합,
- *   frameBytes = 조각당 프레임 머리 상한을 더한 송출 바이트 상한(예산 판정 대상, 항상 ≤ budgetBytes)
+ *   frameBytes = WELCOME·LEVEL_ARRIVED 프레임과 조각당 프레임 머리 상한을 더한 송출 바이트 상한(예산 판정 대상, 항상 ≤ budgetBytes)
  */
 export function buildInitialBundle({ pose, catalog, budgetBytes = INITIAL_BUDGET_BYTES }) {
+  if (!Number.isSafeInteger(budgetBytes) || budgetBytes <= 0) throw new RangeError(`budgetBytes 는 양의 정수여야 한다: ${budgetBytes}`);
+  for (const it of catalog) {
+    if (!Number.isSafeInteger(it.bytes) || it.bytes < 0) throw new RangeError(`bytes 는 0 이상의 정수여야 한다: ${it.bytes}`);
+  }
   const { pos, quat, fovY } = pose;
   const fwd = forwardOf(quat);
   const half = Math.min(Math.PI / 2, Math.atan(Math.tan(fovY / 2) * ASPECT_GUARD));
@@ -71,12 +80,15 @@ export function buildInitialBundle({ pose, catalog, budgetBytes = INITIAL_BUDGET
 
   const items = [];
   let totalBytes = 0;
-  let frameBytes = 0;
+  let frameBytes = WELCOME_FRAME_BYTES;
   let droppedCount = 0;
+  const levels = new Set();
   for (const { it } of cand) {
-    const frame = it.bytes + PIECE_FRAME_OVERHEAD_BYTES;
+    const lv = `${it.key.segmentId}/${it.key.level}`;
+    const frame = it.bytes + PIECE_FRAME_OVERHEAD_BYTES + (levels.has(lv) ? 0 : LEVEL_ARRIVED_FRAME_BYTES);
     if (frameBytes + frame <= budgetBytes) {
       items.push(it);
+      levels.add(lv);
       totalBytes += it.bytes;
       frameBytes += frame;
     } else droppedCount++;
