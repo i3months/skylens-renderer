@@ -54,3 +54,9 @@ test('구간 번호 중복은 TypeError', () => {
   assert.throws(() => computeReveal([arrived(1, 0, [{ count: 5 }]), arrived(1, 1, [{ count: 5 }])]), TypeError);
   assert.throws(() => computeReveal([absent(2), absent(2)]), TypeError);
 });
+
+test('renderPointCount 가 안전 정수를 넘으면 RangeError', () => {
+  const maxSafe = Number.MAX_SAFE_INTEGER;
+  // 두 조각의 count 합이 MAX_SAFE_INTEGER를 넘기도록 구성
+  assert.throws(() => computeReveal([arrived(0, 0, [{ count: maxSafe - 100 }]), arrived(1, 1, [{ count: 200 }])]), RangeError);
+});
