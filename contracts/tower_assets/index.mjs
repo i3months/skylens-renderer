@@ -3,7 +3,7 @@
 
 /** 지형 타일 한 변(m). 자산 포맷의 TILE_SIZE_M 과 같다. */
 export const TERRAIN_TILE_SIZE_M = 64;
-/** 지형 LOD 단계 수. 0 = 원본 DEM 격자, 공칭 간격은 2^k 배이며 셀 수가 상한을 넘으면 간격을 전역으로 한 단계씩 절반으로 줄인다(결정 0044 §5). */
+/** 지형 LOD 단계 수. 0 = 원본 DEM 격자, 공칭 간격은 2^k 배이며 그 간격에서 높이 오차 상한을 넘는 타일이 하나라도 있으면 간격을 전역으로 절반으로 줄여 다시 잰다(DEM 하나·LOD 하나에 간격 하나, 결정 0044 §5). */
 export const TERRAIN_LOD_COUNT = 4;
 /** 지형 LOD 단계별 높이 오차 상한(m): 내보내는 삼각형 메시 표면과 원본 DEM 표본의 높이 차 최댓값이 이 값 이하다(메시 표면 기준, 결정 0044 §5). */
 export const TERRAIN_LOD_MAX_ERROR_M = Object.freeze([0, 0.5, 1, 2]);
