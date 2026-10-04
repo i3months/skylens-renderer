@@ -28,6 +28,21 @@
 //     추월당한 조각(같은 overtakeGroup 에서 더 높은 수준을 이미 기록: groupMax > key.level)은 빼고 돌려준다 — 추월당한
 //     수준은 다시 보내지 않는다. 같은 수준의 다른 chunk 는 추월이 아니라 남는다. stats().unacked 는 보관 계측용이라
 //     추월당한 미확인 항목도 센다.
+//   recordLevelArrived(sessionId, {segmentId, level, firstPieceSeq, pieceCount}) -> boolean   LEVEL_ARRIVED 송출 기록(F-236).
+//     LEVEL_ARRIVED 는 pieceSeq 를 쓰지 않아 lastPieceSeq·ACK 로 수신을 확인할 수 없다. 끊김으로 잃으면 그 수준이 영구히
+//     완료되지 않으므로 저장소가 따로 기록했다가 이어받기 때 다시 보낸다(resendPlan). 창 = firstPieceSeq..last
+//     (last = firstPieceSeq + pieceCount − 1). 자기 조각을 모두 recordSent 한 뒤에 부른다: last 는 이미 기록한 최대 순번
+//     이하여야 하고, 앞서 기록한 LEVEL_ARRIVED 의 last 보다 커야 한다(어댑터는 수준 도착마다 더 큰 순번을 쓴다). 같은
+//     기록(네 값 모두 같음) 재기록은 멱등 true(어댑터 재시도). 어기면 RangeError. 모르는 세션이면 false.
+//     확인 규칙: ackedUpTo > last 이면 클라이언트가 그 뒤 조각을 받았으므로(한 연결 안에서 순서 보장, 어댑터는 조각 →
+//     LEVEL_ARRIVED 를 연달아 보낸다) LEVEL_ARRIVED 도 받았다 — 기록을 지운다. ackedUpTo == last 는 조각은 다 받았지만
+//     LEVEL_ARRIVED 는 모르는 상태라 남긴다. 그래서 남은 기록 수 ≤ 미확인 조각 수 + 1 (항목 상한에 묶인다).
+//   resendPlan(sessionId) -> Message[]   이어받기 뒤 다시 보낼 순서(F-236). 순번 오름차순의 PIECE {type, pieceSeq, key}
+//     (unacked 와 같은 조각, chunk 는 호출자가 붙인다)와 LEVEL_ARRIVED {type, segmentId, level, pieceCount, firstPieceSeq}.
+//     LEVEL_ARRIVED 는 자기 창의 마지막 조각 뒤, 더 큰 순번의 PIECE 앞에 둔다(어댑터 송출 순서 그대로). 창 안의
+//     미확인 순번(> ackedUpTo)이 모두 다시 보낼 조각에 들어 있을 때만 넣는다 — 추월·대체로 빠진 조각이 있으면 완료 표시를
+//     보내지 않는다(받는 쪽이 조각 모자람으로 거부하므로). 다시 받은 LEVEL_ARRIVED 는 firstPieceSeq 로 창이 명시돼
+//     이미 받은 것이어도 같은 완료 집합이다(멱등, contracts/client_raster/arrival.mjs).
 //   close(sessionId)                         세션을 지운다(이어받기 불가).
 //   size() -> 살아 있는 세션 수. stats(sessionId) -> { entries, retainedBytes, unacked, groups } | null (계측용).
 //     groups = groupMax 에 남은 묶음 수.
@@ -208,9 +223,10 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     do { id = genId(); } while (id === 0 || sessions.has(id));
     // sent: keyStr -> 항목 {seq,key,bytes,size,pending,dead}. pendingQ: 미확인 항목(순번 순). ackedQ: 확인된 살아 있는 항목(확인 순, 머리 인덱스 큐; 대체·축출 때 바로 지워 dead 가 쌓이지 않는다).
     // groupRefs: 묶음 -> sent 에 남은 그 묶음 항목 수(0 이 되면 groupMax 도 지운다).
+    // levels: 확인되지 않은 LEVEL_ARRIVED 기록(창 끝 last 오름차순, F-236). lastLevel: 마지막으로 기록한 것(확인돼 지워져도 남는다).
     const s = {
       last: t, nextSeq: PIECE_SEQ_MIN, ackedUpTo: 0, sent: new Map(), groupMax: new Map(), groupRefs: new Map(),
-      pendingQ: new Queue(), ackedQ: new AckedQueue(evictionDiag), retained: 0, deadQ: 0,
+      pendingQ: new Queue(), ackedQ: new AckedQueue(evictionDiag), retained: 0, deadQ: 0, levels: new Queue(), lastLevel: null,
     };
     sessions.set(id, s);
     return id;
@@ -227,6 +243,19 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       e.pending = false;
       s.ackedQ.push(e);
     }
+    // 창 끝보다 뒤 순번까지 확인됐으면 그 LEVEL_ARRIVED 도 받았다(F-236).
+    while (s.levels.length > 0 && s.levels.peek().last < s.ackedUpTo) s.levels.shift();
+  }
+
+  // 다시 보낼 조각(unacked 와 같은 규칙): 죽지 않았고 추월당하지 않은 미확인 항목, 순번 오름차순.
+  function resendable(s) {
+    const out = [];
+    for (const e of s.pendingQ) {
+      if (e.dead) continue;
+      if ((s.groupMax.get(overtakeGroup(e.key)) ?? -1) > e.key.level) continue; // 추월당한 조각(F-199)
+      out.push(e);
+    }
+    return out;
   }
   // 항목 하나를 sent 에서 뺀다(같은 key 로 다시 기록돼 대체된 경우 포함). pendingQ 에는 dead 표시만 남기고(release 가 걷는다),
   // ackedQ 에서는 O(1) 로 바로 지운다.
@@ -349,13 +378,49 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
     unacked(sessionId) {
       const s = live(sessionId);
       if (!s) return [];
-      const out = [];
-      for (const e of s.pendingQ) {
-        if (e.dead) continue;
-        if ((s.groupMax.get(overtakeGroup(e.key)) ?? -1) > e.key.level) continue; // 추월당한 조각(F-199)
-        out.push({ seq: e.seq, key: { ...e.key } });
+      return resendable(s).map((e) => ({ seq: e.seq, key: { ...e.key } })); // pendingQ 는 순번 오름차순
+    },
+    recordLevelArrived(sessionId, la) {
+      if (la === null || typeof la !== 'object') throw new TypeError('LEVEL_ARRIVED 기록은 객체여야 한다');
+      const { segmentId, level, firstPieceSeq, pieceCount } = la;
+      assertU32(segmentId, 'segmentId');
+      if (!Number.isInteger(level) || level < 0 || level > 3) throw new RangeError(`level 범위 밖: ${level}`);
+      assertU32(firstPieceSeq, 'firstPieceSeq');
+      assertU32(pieceCount, 'pieceCount');
+      if (firstPieceSeq < PIECE_SEQ_MIN || pieceCount < 1) throw new RangeError(`firstPieceSeq·pieceCount 는 1 이상: ${firstPieceSeq}, ${pieceCount}`);
+      const last = firstPieceSeq + pieceCount - 1;
+      if (last > U32_MAX) throw new RangeError(`창 끝 ${last} 이 u32 밖`);
+      const s = live(sessionId);
+      if (!s) return false;
+      if (last >= s.nextSeq) throw new RangeError(`LEVEL_ARRIVED 창 끝 ${last} 은 이미 기록한 최대 순번(${s.nextSeq - 1}) 이하여야 한다(조각 먼저 기록)`);
+      const tail = s.lastLevel;
+      if (tail && last <= tail.last) {
+        const same = tail.last === last && tail.firstPieceSeq === firstPieceSeq && tail.segmentId === segmentId && tail.level === level;
+        if (!same) throw new RangeError(`LEVEL_ARRIVED 창 끝 ${last} 은 앞선 기록의 창 끝(${tail.last})보다 커야 한다`);
+        touch(sessionId, s, now());
+        return true; // 같은 기록 재기록(어댑터 재시도·이어받기 재전송) = 멱등. 확인돼 지운 기록이면 그대로 둔다.
       }
-      return out; // pendingQ 는 순번 오름차순
+      const r = { segmentId, level, firstPieceSeq, pieceCount, last };
+      s.lastLevel = r;
+      if (last >= s.ackedUpTo) s.levels.push(r); // last < ackedUpTo 면 이미 받은 것으로 확인됨: 보관할 것 없음
+      touch(sessionId, s, now());
+      return true;
+    },
+    resendPlan(sessionId) {
+      const s = live(sessionId);
+      if (!s) return [];
+      const pieces = resendable(s);
+      const have = new Set(pieces.map((e) => e.seq));
+      const out = [];
+      let i = 0;
+      for (const r of s.levels) {
+        while (i < pieces.length && pieces[i].seq <= r.last) { const e = pieces[i++]; out.push({ type: 'PIECE', pieceSeq: e.seq, key: { ...e.key } }); }
+        let complete = true;
+        for (let q = Math.max(r.firstPieceSeq, s.ackedUpTo + 1); q <= r.last; q++) if (!have.has(q)) { complete = false; break; }
+        if (complete) out.push({ type: 'LEVEL_ARRIVED', segmentId: r.segmentId, level: r.level, pieceCount: r.pieceCount, firstPieceSeq: r.firstPieceSeq });
+      }
+      while (i < pieces.length) { const e = pieces[i++]; out.push({ type: 'PIECE', pieceSeq: e.seq, key: { ...e.key } }); }
+      return out;
     },
     close(sessionId) {
       sessions.delete(sessionId);
