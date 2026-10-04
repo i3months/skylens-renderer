@@ -14,9 +14,11 @@
 //   setArrived 는 계약 Renderer 에 올라 있는 도착 입력 메서드다(결정 0034). 결과의 discard 는
 //   호출자가 releasePiece 로 해제한다(해제 근거). 렌더러는 discard 를 스스로 해제하지 않는다.
 //   setArrived(list, {deferResult: true}) 는 반환값이 필요 없는 호출자용 지연 경로다(선택은 다음 draw 에서 1회).
-//   재계산 주기(F-246 ⑦, 계약 '프레임마다 부르지 않는다'): selectDrawable 은 setArrived 때만 돈다. 업로드가 끝난 key 가 직전
+//   재계산 주기(F-246 ⑦, 계약 '프레임마다 부르지 않는다'): selectDrawable 은 setArrived(즉시 경로)와, 선택이 낡았을 때(지연 경로
+//   입력 직후·도착 집합 key 가 올라온 뒤) 다음 draw 또는 한도 초과 업로드의 자리 만들기에서 한 번 돈다. 업로드가 끝난 key 가 직전
 //   선택에 없으면(도착 집합에 없는 새 key) 직전 선택에서 pending 으로 보고 다시 돌지 않는다. 도착 집합에 든 key 가 올라오면
-//   다음 draw 에서 프레임당 최대 1회 다시 돈다. 해제·퇴출은 선택을 건드리지 않는다(draw 가 상주하지 않는 key 를 건너뛴다).
+//   다음 draw 에서 프레임당 최대 1회 다시 돈다. 자리 만들기의 재계산은 지금 올리는 key 를 상주 목록에 넣어 돈다(그 key 가
+//   완성할 LOD 를 불완전으로 보고 상주 조각을 퇴출하지 않게). 해제·퇴출은 선택을 건드리지 않는다(draw 가 상주하지 않는 key 를 건너뛴다).
 // 메모리(계약 ④·머리 주석 끝): maxResidentBytes 를 넘게 될 업로드는 그리지 않는 상주 조각(pending·discard)을 오래된 것부터
 //   해제해 자리를 만든다(onEvict 로 알린다). 그려도 모자라면 그리는 조각은 건드리지 않고 ClientRasterError('memory').
 // GPU 평면: 복호 결과에 Worker 가 만든 gpu({format,count,planes,origin})가 있으면 toGpuPlanes 를 다시 돌리지 않고 가벼운 검증만
@@ -205,7 +207,6 @@ export function createRenderer(options) {
   let selection = null; // 마지막 selectDrawable 결과(setArrived 가 채운다)
   let arrivedKeys = new Set(); // 마지막 setArrived 의 도착 key 전체(새로 올라온 key 가 재계산을 요하는지 가린다)
   let selectionStale = false; // 도착 집합에 든 key 가 선택 뒤에 올라옴 → 다음 draw 에서 한 번 다시 돈다
-  const fresh = new Set(); // 선택 뒤에 올라온 도착 집합 key(다시 돌기 전까지 퇴출에서 보호)
   let droppedFrames = 0;
   let lostKeys = new Set();
   const lostCbs = new Set();
@@ -225,12 +226,14 @@ export function createRenderer(options) {
     throw new ClientRasterError('context', `점 프로그램 생성 실패: ${e.message}`);
   }
 
-  function currentSelection() {
+  // extraKey: 지금 올리는 중이라 meta 에 아직 없는 key(도착 집합에 든 것만 상주 목록에 넣어 돈다)
+  function currentSelection(extraKey) {
     if (arrived === null) return { draw: [], pending: meta.size ? [...meta.keys()] : [], discard: [] };
     if (selectionStale) {
-      selection = select([...meta.keys()], arrived);
+      const keys = [...meta.keys()];
+      if (extraKey !== undefined && !meta.has(extraKey) && arrivedKeys.has(extraKey)) keys.push(extraKey);
+      selection = select(keys, arrived);
       selectionStale = false;
-      fresh.clear();
     }
     return selection;
   }
@@ -259,7 +262,6 @@ export function createRenderer(options) {
     meter.reset();
     meta.clear();
     gpu = null;
-    fresh.clear(); // 선택은 그대로 둔다: 복구 뒤 다시 올라온 key 가 같은 도착 집합으로 바로 그려진다
     fire(lostCbs);
   });
   ctx.onRestored(() => {
@@ -297,9 +299,9 @@ export function createRenderer(options) {
     // 한도 여유가 있으면 크기 표·선택을 만들지 않고 돌아간다(F-246 ⑦). key 별 크기는 meta 에 둔다
     const resident = pool.residentBytes() - (meta.get(key)?.bytes ?? 0);
     if (resident + bytes <= maxResidentBytes) return;
-    // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 직전 선택에서 pending 이던 LOD 가
-    // 방금 완전해졌다면 그 조각이 새 draw 에 들어 보호된다. 낡지 않았으면 직전 선택을 그대로 쓴다
-    const drawing = new Set(currentSelection().draw);
+    // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 지금 올리는 key 도 목록에 넣어
+    // 그 key 가 완성할 LOD 의 상주 조각이 draw 에 들어 보호된다. 낡지 않았으면 직전 선택을 그대로 쓴다
+    const drawing = new Set(currentSelection(key).draw);
     const victims = [];
     let free = 0;
     for (const [k, info] of meta) {
@@ -371,7 +373,6 @@ export function createRenderer(options) {
     // 도착 집합에 없는 새 key 는 직전 선택에서 pending 이라 다시 돌지 않는다. 도착 집합에 든 key 만 다음 draw 에서 1회 다시 돈다
     if (arrived !== null && arrivedKeys.has(key)) {
       selectionStale = true;
-      fresh.add(key);
     }
   }
 
@@ -392,28 +393,21 @@ export function createRenderer(options) {
     inflight.delete(key);
     lostKeys.delete(key);
     if (meta.has(key)) dropPiece(key); // 선택은 그대로 둔다: draw 가 상주하지 않는 key 를 건너뛴다
-    fresh.delete(key);
   }
 
   function setArrived(list, opts) {
     assertAlive();
     if (opts !== undefined && opts !== null && opts.deferResult === true) {
       // 지연 경로: 반환값이 필요 없는 호출자용. 선택은 다음 draw 에서 프레임당 1회만 돈다(연속 호출은 마지막 입력으로 합쳐진다).
-      // 항목 모양(segmentId·level·keys 배열)만 지금 검사하고 key 해석 오류는 draw 에서 ClientRasterError('piece') 로 난다.
+      // 항목·key 검사(key 형식·level 0..3·(segmentId, level) 일치, O(key 수))는 상태를 바꾸기 전에 지금 하고 던지면 직전 상태 그대로다.
       if (!Array.isArray(list)) throw new ClientRasterError('piece', 'arrived 는 배열이어야 함');
       if (list.length === 0) throw new ClientRasterError('piece', 'arrived 는 비지 않은 배열이어야 함');
-      for (const a of list) {
-        if (!a || !Number.isInteger(a.segmentId) || !Number.isInteger(a.level) || !Array.isArray(a.keys) || a.keys.length === 0) {
-          throw new ClientRasterError('piece', `LEVEL_ARRIVED 항목이 틀림: ${JSON.stringify(a)}`);
-        }
-      }
+      selectDrawable([], list); // 상주 key 없이 돌려 항목·key 검사만 한다(계약 검사와 같은 규칙)
       arrived = list.map((a) => ({ segmentId: a.segmentId, level: a.level, keys: [...a.keys] }));
       arrivedKeys = new Set();
       for (const a of arrived) for (const k of a.keys) arrivedKeys.add(k);
       if (selection === null) selection = { draw: [], pending: [], discard: [] };
       selectionStale = true;
-      fresh.clear(); // 새 도착 집합에 든 상주 key 는 다시 고르기 전까지 그리는 조각으로 보호한다
-      for (const k of arrivedKeys) if (meta.has(k)) fresh.add(k);
       return undefined;
     }
     const res = select([...meta.keys()], list); // 입력 검사 겸 결과(도착 이벤트마다 한 번)
@@ -422,7 +416,6 @@ export function createRenderer(options) {
     for (const a of arrived) for (const k of a.keys) arrivedKeys.add(k);
     selection = res;
     selectionStale = false;
-    fresh.clear();
     return { draw: [...res.draw], pending: [...res.pending], discard: [...res.discard] };
   }
 

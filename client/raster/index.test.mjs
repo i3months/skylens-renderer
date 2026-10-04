@@ -229,6 +229,26 @@ test('메모리 한도: 선택이 낡았으면 희생을 고르기 전에 다시
   r.dispose();
 });
 
+test('메모리 한도: 지금 올리는 key 가 완성할 LOD 의 상주 chunk 는 퇴출하지 않는다(F-250 ③)', async () => {
+  const evicted = [];
+  const { r } = make({ maxResidentBytes: 51, maxPieceBytes: 40, onEvict: (keys) => evicted.push(...keys) });
+  const c = '3.1.0.0.1.0';
+  const a = '3.1.0.0.0.0';
+  const b = '3.1.0.0.0.1';
+  const x = '4.1.0.0.0.0'; // 도착 집합 밖(미도착 segment): pending
+  await r.uploadPiece(c, piece1(c, [0.5, 0.5, 5]));
+  r.setArrived([{ segmentId: 3, level: 1, keys: [c, a, b] }]);
+  await r.uploadPiece(a, piece1(a, [0.5, 0.5, 5])); // lod0 는 b 가 없어 아직 불완전
+  await r.uploadPiece(x, piece1(x, [0.5, 0.5, 5]));
+  assert.equal(r.memoryBytes(), 51);
+  // 넘침: b 가 lod0 를 완성하므로 a 는 그리는 조각으로 보호된다. 더 성긴 c 는 discard 가 되어 가장 오래된 비그림 조각으로 나가고,
+  // 재계산이 b 를 몰랐다면 a 가 먼저 나갔을 것이다
+  await r.uploadPiece(b, piece1(b, [1, 1, 5]));
+  assert.deepEqual(evicted, [c]);
+  assert.deepEqual(r.residentKeys(), [a, x, b]);
+  r.dispose();
+});
+
 test('컨텍스트 소실: GPU 자원을 버리고 그리기를 건너뛰며, 복구 때 다시 올릴 key 를 콜백으로 준다', async () => {
   const { r, canvas, calls } = make();
   const k1 = '3.1.0.0.0.0';
