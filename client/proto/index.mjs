@@ -3,13 +3,13 @@
 // 복호는 s2c 종류(WELCOME, PIECE, LEVEL_ARRIVED, MISSING, ERROR)만 받고 c2s 는 ProtoError('direction').
 // 부호화는 9종 모두 한다(교차 시험·모의 클라이언트용).
 //
-// 검사 순서(계약): 길이 < 8 'short' → type 모름 'type' → 방향 'direction'(type 직후) → version 'version'
+// 검사 순서(계약): 길이 < 8 'short' → type 모름 'type' → version 'version'
 //   → reserved 'reserved' → payloadLength > MAX 'limit' → 프레임 길이 불일치 'length' → 본문 값 범위 'field'.
 // 가변 종류의 본문: 최소 크기 미만 또는 항목 수·글자 수와 본문 길이 불일치는 'length', 값 범위 위반은 'field'.
-//   PIECE_REQUEST 의 count > MAX_REQUEST_ITEMS 와 같은 키 중복, ERROR 의 알 수 없는 code·잘못된 utf8 은 'field'.
+//   PIECE_REQUEST 의 count > MAX_REQUEST_ITEMS, ERROR 의 알 수 없는 code·잘못된 utf8 은 'field'.
 import {
   PROTO_VERSION, FRAME_HEADER_BYTES, PIECE_KEY_BYTES, MAX_PAYLOAD_BYTES, MAX_REQUEST_ITEMS, MAX_ERROR_TEXT,
-  MSG, MSG_NAMES, DIRECTION, FIXED_PAYLOAD_BYTES, ERR_CODES, ProtoError, pieceKeyString,
+  MSG, MSG_NAMES, DIRECTION, FIXED_PAYLOAD_BYTES, ERR_CODES, ProtoError,
 } from '../../contracts/proto/index.mjs';
 import { SEGMENT_ID_LIMIT, LOD_MAX } from '../../contracts/asset/index.mjs';
 
@@ -116,12 +116,8 @@ export function encodeMessage(message) {
       const items = message.items;
       if (!Array.isArray(items)) fail('field', 'items 가 배열이 아님');
       if (items.length > MAX_REQUEST_ITEMS) fail('field', `항목 수 ${items.length} > ${MAX_REQUEST_ITEMS}`);
-      const seen = new Set();
       items.forEach((k, i) => {
         checkKey(k, `items[${i}]`);
-        const s = pieceKeyString(k);
-        if (seen.has(s)) fail('field', `items[${i}] 키 중복`);
-        seen.add(s);
       });
       payload = 6 + PIECE_KEY_BYTES * items.length;
       write = (dv, b) => {
@@ -205,13 +201,13 @@ export function decodeMessage(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const type = dv.getUint8(0);
   if (MSG_NAMES[type] === undefined) fail('type', `알 수 없는 type: ${type}`);
-  if (DIRECTION[type] !== 's2c') fail('direction', `${MSG_NAMES[type]} 는 클라이언트가 받을 수 없다`);
   const version = dv.getUint8(1);
   if (version !== PROTO_VERSION) fail('version', `version ${version} != ${PROTO_VERSION}`);
   if (dv.getUint16(2, true) !== 0) fail('reserved', 'reserved 가 0 이 아님');
   const payload = dv.getUint32(4, true);
   if (payload > MAX_PAYLOAD_BYTES) fail('limit', `payloadLength ${payload} > ${MAX_PAYLOAD_BYTES}`);
   if (bytes.length !== FRAME_HEADER_BYTES + payload) fail('length', `프레임 ${bytes.length} B != ${FRAME_HEADER_BYTES + payload}`);
+  if (DIRECTION[type] !== 's2c') fail('direction', `${MSG_NAMES[type]} 는 클라이언트가 받을 수 없다`);
   const fixed = FIXED_PAYLOAD_BYTES[type];
   if (fixed !== undefined && payload !== fixed) fail('length', `${MSG_NAMES[type]} 본문 ${payload} B != ${fixed}`);
   const b = FRAME_HEADER_BYTES;

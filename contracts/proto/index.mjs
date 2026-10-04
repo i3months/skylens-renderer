@@ -17,7 +17,7 @@
 // PieceKey 16 B: segmentId u32, level u8, lod u8, chunkIndex u16, tileX i32, tileY i32 (contracts/asset ChunkKey 와 같은 값).
 // 검사 순서(서버·클라이언트 같다): 길이 < 8 'short' → type 모름 'type' → version 다름 'version' → reserved≠0 'reserved'
 //   → payloadLength > MAX_PAYLOAD_BYTES 'limit' → 프레임 길이 불일치 'length' → 본문 값 범위 'field'.
-// 방향 검사: 서버 복호는 c→s 종류만, 클라이언트 복호는 s→c 종류만 받는다. 반대 방향 type 은 'direction'.
+// 방향 검사는 프레임 길이 검사 다음, 고정 크기 검사 앞이다. 서버 복호는 c→s 종류만, 클라이언트 복호는 s→c 종류만 받는다. 반대 방향 type 은 'direction'.
 
 export const PROTO_VERSION = 1;
 export const FRAME_HEADER_BYTES = 8;

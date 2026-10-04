@@ -5,8 +5,7 @@
 //     반대 방향 복호는 ProtoError('direction') 이다.
 //  2) 부호화 오류 입력 1,000개(유효 메시지를 무작위 변조): 양쪽의 (성공/실패, code) 가 같다.
 //  3) 복호 오류 입력 1,000개(유효 프레임 바이트를 무작위 변조): 두 복호기가 같은 (성공/실패, code) 를 낸다 — 단 방향 검사는
-//     서로 반대이므로, 방향이 맞는 쪽의 결과를 기준으로 반대쪽은 'direction'(type 검사까지 통과한 경우) 이거나 같은 code
-//     (short·type)여야 한다. 방향이 맞는 쪽이 성공하면 상대 부호화기로 다시 부호화한 바이트가 변조 입력과 같아야 한다.
+//     서로 반대이므로, 프레임 검사(length 까지)에서 거절되면 두 쪽 code 가 같고, 통과하면 반대쪽은 'direction' 이다. 방향이 맞는 쪽이 성공하면 상대 부호화기로 다시 부호화한 바이트가 변조 입력과 같아야 한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -112,8 +111,6 @@ function corruptBytes(b, r) {
   return x;
 }
 
-const DIR_OF = (bytes) => (bytes.length >= 1 ? DIRECTION[bytes[0]] : undefined);
-
 test('교차: 전 종류 왕복·바이트 일치', { skip }, () => {
   const r = rng(20260101);
   const g = gen(r);
@@ -155,16 +152,21 @@ test('교차: 복호 오류 입력 1,000개 — 방향이 맞는 쪽 기준 (성
     const bytes = corruptBytes(client.encodeMessage(g[t]()), r);
     const c = outcome(() => client.decodeMessage(bytes));
     const s = outcome(() => server.decodeMessage(bytes));
-    const dir = DIR_OF(bytes);
     const label = `사례 ${i} ${t} [${Buffer.from(bytes.slice(0, 24)).toString('hex')}]`;
-    if (bytes.length < 8 || dir === undefined) {
-      assert.equal(sig(c), sig(s), label); // short·type 은 방향과 무관하게 같다
+    // 서버 순서: short→type→version→reserved→limit→length(프레임)→direction→본문 length→field.
+    // 프레임 검사(방향 앞)까지는 두 복호기의 (성공/실패, code) 가 정확히 같다.
+    const dv = bytes.length >= 8 ? new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength) : null;
+    const frameOk = dv && DIRECTION[bytes[0]] !== undefined && bytes[1] === 1 && dv.getUint16(2, true) === 0
+      && dv.getUint32(4, true) <= 4 * 1024 * 1024 && bytes.length === 8 + dv.getUint32(4, true);
+    if (!frameOk) {
+      assert.equal(sig(c), sig(s), label);
+      assert.ok(!c.ok, label);
     } else {
-      const [own, other, ownMod, otherMod] = dir === 's2c' ? [c, s, client, server] : [s, c, server, client];
-      assert.equal(sig(other), 'direction', label); // type 검사까지 통과했으므로 반대쪽은 방향 거부
+      const dir = DIRECTION[bytes[0]];
+      const [own, other, otherMod] = dir === 's2c' ? [c, s, server] : [s, c, client];
+      assert.equal(sig(other), 'direction', label); // 프레임 검사를 통과했으므로 반대쪽은 방향 거부
+      assert.ok(own.ok || own.code === 'length' || own.code === 'field', label);
       if (own.ok) assert.deepEqual(otherMod.encodeMessage(own.value), bytes, label + ' 재부호화');
-      assert.ok(own.ok || own.code !== 'direction', label);
-      void ownMod;
     }
     if (!(c.ok && s.ok)) { fails++; seenCodes.add(sig(c)); seenCodes.add(sig(s)); }
   }

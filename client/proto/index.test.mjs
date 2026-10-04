@@ -51,8 +51,13 @@ test('오류 type', () => {
 });
 test('오류 direction', () => {
   assert.equal(code(() => decodeMessage(hex('04 01 0000 04000000 00000000'))), 'direction');
-  // 방향 검사는 version 검사보다 앞(type 직후)
-  assert.equal(code(() => decodeMessage(hex('04 02 0000 04000000 00000000'))), 'direction');
+  // 방향 검사는 프레임 length 검사 다음, 고정 크기 검사 앞이다.
+  assert.equal(code(() => decodeMessage(hex('04 01 0000 03000000 000000'))), 'direction'); // 고정 크기 불일치여도 direction
+  assert.equal(code(() => decodeMessage(hex('04 01 0000 04000000 000000'))), 'length'); // 프레임 길이 불일치가 먼저
+  assert.equal(code(() => decodeMessage(hex('04 02 0000 04000000 00000000'))), 'version'); // version 이 먼저
+  assert.equal(code(() => decodeMessage(hex('04 01 0100 04000000 00000000'))), 'reserved');
+  const h = hex('04 01 0000 00000000'); new DataView(h.buffer).setUint32(4, MAX_PAYLOAD_BYTES + 1, true);
+  assert.equal(code(() => decodeMessage(h)), 'limit');
 });
 test('오류 version', () => assert.equal(code(() => decodeMessage(hex('08 02 0000 04000000 00000000'))), 'version'));
 test('오류 reserved', () => {
@@ -105,7 +110,6 @@ test('오류 field(부호화)', () => {
     { ...v, quat: [0, 0, 0, 1.01] }, { ...v, quat: [0, 0, 0] }, { ...v, quat: [NaN, 0, 0, 1] }, { ...v, pos: [Infinity, 0, 0] },
     { ...v, pos: [1e300, 0, 0] }, { ...v, width: 0 }, { ...v, height: 65536 }, { ...v, width: 1.5 },
     { type: 'PIECE_REQUEST', reqId: 0, items: Array.from({ length: MAX_REQUEST_ITEMS + 1 }, (_, i) => ({ segmentId: 0, level: 0, lod: 0, chunkIndex: i, tileX: 0, tileY: 0 })) },
-    { type: 'PIECE_REQUEST', reqId: 0, items: [CASES[2][1].items[0], CASES[2][1].items[0]] },
     { type: 'PIECE_REQUEST', reqId: 0, items: [{ ...CASES[2][1].items[0], tileX: 2 ** 31 }] },
     { type: 'PIECE_REQUEST', reqId: 0, items: [{ ...CASES[2][1].items[0], chunkIndex: 65536 }] },
     { type: 'WELCOME', sessionId: 0, resumed: 1, nextPieceSeq: 0 },
@@ -114,6 +118,8 @@ test('오류 field(부호화)', () => {
     { type: 'ERROR', code: 99, text: '' }, { type: 'ERROR', code: 1, text: 'a'.repeat(MAX_ERROR_TEXT + 1) }, { type: 'ERROR', code: 1, text: 5 },
   ];
   bad.forEach((m, i) => assert.equal(code(() => encodeMessage(m)), 'field', `사례 ${i}`));
+  // 같은 키 중복은 계약에 없어 부호화가 통과한다
+  assert.equal(encodeMessage({ type: 'PIECE_REQUEST', reqId: 0, items: [CASES[2][1].items[0], CASES[2][1].items[0]] }).length, 8 + 6 + 32);
   // 경계값은 통과
   encodeMessage({ ...v, quat: [0, 0, 0, 1.0005] });
   encodeMessage({ type: 'ERROR', code: 1, text: 'a'.repeat(MAX_ERROR_TEXT) });
