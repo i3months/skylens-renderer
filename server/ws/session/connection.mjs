@@ -6,12 +6,17 @@
 //   근거: 같은 접속에서 생방송이 이어져 클라이언트가 빠진 순번 너머를 ACK 하면, 누적 ACK 가 ackedUpTo 를 빠진 순번 너머로
 //   올려 빠진 조각과 그 창의 LEVEL_ARRIVED 기록, 뒤의 재전송 후보가 영구히 지워진다.
 //   대가: 영구히 얻을 수 없는 바이트가 있으면 재접속해도 같은 정지가 반복된다. 호출자는 그 세션을 닫고(store.close)
-//   클라이언트가 새 세션으로 처음부터 받게 해야 한다.
+//   클라이언트가 새 세션을 열게 해야 한다(이후 새로 도착하는 것만 받는다, contract.mjs 참조).
 // 정지 알림(F-279): 정지하면 close(1011, 'replay-stopped') 로 닫아 다른 1011('internal-error')과 사유 문자열로 구별하고,
 //   onStopped(sessionId, { stoppedAt }) 를 한 번 부른다. 정지 뒤에도 api.sessionId() 는 값을 돌려준다.
 //   store.close 는 여기서 부르지 않는다(세션을 지울지는 호출자 판단, 위 정책 유지). 호출자는 onStopped 에서 store.close 한다.
 // 비동기 콜백(F-282): onSession 이 thenable 을 돌려주고 거부하면 동기 예외와 같이 close(1011) 로 닫는다(기다리지는 않는다).
 //   onClose·onStopped 의 거부는 삼킨다(이미 닫는 중).
+// 정지 판별(F-285): 서버 쪽 정지 판별은 onStopped 로만 한다. onClose 의 reason 은 믿지 않는다(실제 서버는 피어 close 에코가
+//   reason 을 덮어 {code:1011, reason:""} 로 알린다). onStopped 와 onClose 의 호출 순서는 보장하지 않는다
+//   (닫힌 뒤 replay 가 정지를 보고하면 onClose 가 먼저 오고, 정지 중 닫으면 close 에코에 따라 어느 쪽이 먼저일 수 있다).
+// onSession 미호출 조건(F-281): 재전송 정지(replay 가 stoppedAt 을 돌려줄 때), replay 중 접속이 닫힌 경우, replay·onSession 예외.
+//   replay 중 닫혔는데 replay 가 정지를 보고했다면 onSession 은 부르지 않지만 onStopped 는 부른다(sessionId() 도 값을 돌려준다).
 import { decodeMessage, encodeMessage } from '../../proto/codec/index.mjs';
 import { ERR_CODES } from '../../../contracts/proto/index.mjs';
 import { createRecordingEmit } from './emit.mjs';
@@ -38,7 +43,7 @@ function notifyQuietly(fn, ...args) {
  * @param {object} o.store 이어받기 저장소(ack 를 쓴다)
  * @param {Function} o.loadPiece (key) => Uint8Array | null
  * @param {(sessionId:number, info:{resumed:boolean,nextPieceSeq:number}) => void} [o.onSession] WELCOME 과 재전송이 끝난 뒤 한 번
- *   (재전송 정지가 없을 때만 — 정지하면 부르지 않는다, F-275).
+ *   (재전송 정지가 없을 때만 — 정지하면 부르지 않는다, F-275. replay 중 접속이 닫힌 경우도 부르지 않는다, F-281).
  *   thenable 을 돌려주고 거부하면 close(1011, 'internal-error') 로 닫는다(F-282).
  *   nextPieceSeq 는 store.open 이 돌려준 값이다. 이 접속에서 새로 매길 pieceSeq 는 이 값 이상이어야 한다(F-270) —
  *   어댑터를 만들 때 firstPieceSeq 로 넘긴다. emit 도 이 값을 하한(minPieceSeq)으로 검사한다.
@@ -46,6 +51,8 @@ function notifyQuietly(fn, ...args) {
  * @param {(info:{code:number,reason:string}) => void} [o.onClose] 접속이 닫혔을 때(던지거나 거부해도 무시)
  * @param {(sessionId:number, info:{stoppedAt:number}) => void} [o.onStopped] 재전송 정지로 닫을 때 한 번(F-279).
  *   ERROR(UNAVAILABLE) 와 close(1011, 'replay-stopped') 뒤에 부른다. 호출자는 여기서 store.close(sessionId) 해야 한다.
+ *   replay 중 접속이 이미 닫혔는데 replay 가 정지를 보고해도 부른다(ERROR·close 없이). onClose 와의 순서는 보장하지 않고,
+ *   서버 쪽 정지 판별은 onClose reason 이 아니라 onStopped 로만 한다(F-285).
  * @param {Function} [o.encode] 기본 encodeMessage
  * @param {Function} [o.decode] 기본 decodeMessage
  * @param {Function} [o.replay] 기본 replayAfterHello
@@ -85,10 +92,16 @@ export function attachConnection({
   async function handleHello(hello) {
     try {
       const result = await replay({ store, hello, send, loadPiece, encode });
-      // replay 를 기다리는 동안 접속이 닫혔으면 송출 배선을 만들지 않는다(F-277 ①).
-      if (closing) return;
       sessionId = result.sessionId;
       sessionKnown = true;
+      // replay 를 기다리는 동안 접속이 닫혔으면 송출 배선을 만들지 않는다(F-277 ①). 다만 replay 가 정지를 보고했다면
+      // 닫힌 뒤여도 호출자가 세션을 닫을 수 있게 onStopped 는 부른다(F-285 ③; ERROR·close 는 이미 닫혀 보내지 않는다).
+      if (closing) {
+        if (result.stoppedAt !== null && result.stoppedAt !== undefined && onStopped) {
+          notifyQuietly(onStopped, sessionId, { stoppedAt: result.stoppedAt });
+        }
+        return;
+      }
       if (result.stoppedAt !== null && result.stoppedAt !== undefined) {
         // 재전송 정지: 이 접속에서는 생방송을 허용하지 않는다(F-275, 머리 주석의 정책 (a)). emitFn 은 null 로 남는다.
         try {
