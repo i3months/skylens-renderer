@@ -221,3 +221,73 @@ test('CONTRACT: createRenderer 옵션이 계약 또는 시험 전용 확장에�
     assert.ok(readKeys.has(key), `계약 옵션 '${key}' 가 createRenderer 에서 읽혀야 함`);
   }
 });
+
+test('CONTRACT: draw 중 options deferred 접근 추적', () => {
+  const contractOptionKeys = new Set([
+    'canvas', 'maxPieceBytes', 'maxResidentBytes', 'decode', 'onEvict',
+    'shading', 'now', 'contextAttributes',
+  ]);
+  const testOnlyExtensions = new Set(['testHooks']);
+  const allowedKeys = new Set([...contractOptionKeys, ...testOnlyExtensions]);
+
+  const accessLog = { get: new Set(), has: new Set(), ownKeys: [] };
+  const canvas = fakeCanvas();
+  const baseOptions = {
+    canvas,
+    maxPieceBytes: 1 << 20,
+    maxResidentBytes: 1 << 20,
+    decode: (bytes) => ({
+      header: {
+        format: 1, pointCount: 1, bboxMin: [0, 0, 0], quantExp: 0,
+        segmentId: 1, level: 0, tileX: 0, tileY: 0, lod: 0, chunkIndex: 0,
+      },
+      planes: {
+        pos_e: new Float32Array(1), pos_n: new Float32Array(1), pos_u: new Float32Array(1),
+        color_r: new Uint8Array(1), color_g: new Uint8Array(1), color_b: new Uint8Array(1),
+        normal_oct_x: new Int8Array(1), normal_oct_y: new Int8Array(1),
+      },
+    }),
+    shading: { lightDirWorld: [0, 0, 1] },
+    contextAttributes: {},
+    onEvict: () => {},
+    now: () => 0,
+    testHooks: {},
+  };
+
+  const proxiedOptions = new Proxy(baseOptions, {
+    get(target, key) {
+      if (typeof key === 'string' && key !== 'toJSON' && key !== 'constructor') {
+        accessLog.get.add(key);
+      }
+      return target[key];
+    },
+    has(target, key) {
+      if (typeof key === 'string') {
+        accessLog.has.add(key);
+      }
+      return key in target;
+    },
+    ownKeys(target) {
+      accessLog.ownKeys.push(Object.getOwnPropertyNames(target));
+      return Object.getOwnPropertyNames(target);
+    },
+  });
+
+  const renderer = createRenderer(proxiedOptions);
+  renderer.draw();
+  renderer.dispose();
+
+  const getList = [...accessLog.get];
+  for (const key of getList) {
+    assert.ok(
+      allowedKeys.has(key),
+      `get 으로 접근한 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함 (추적: ${getList})`,
+    );
+  }
+  for (const key of accessLog.has) {
+    assert.ok(
+      allowedKeys.has(key),
+      `has 로 확인한 옵션 '${key}' 가 계약 또는 시험 전용 확장에 있어야 함`,
+    );
+  }
+});
