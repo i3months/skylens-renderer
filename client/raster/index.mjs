@@ -226,13 +226,10 @@ export function createRenderer(options) {
     throw new ClientRasterError('context', `점 프로그램 생성 실패: ${e.message}`);
   }
 
-  // extraKey: 지금 올리는 중이라 meta 에 아직 없는 key(도착 집합에 든 것만 상주 목록에 넣어 돈다)
-  function currentSelection(extraKey) {
+  function currentSelection() {
     if (arrived === null) return { draw: [], pending: meta.size ? [...meta.keys()] : [], discard: [] };
     if (selectionStale) {
-      const keys = [...meta.keys()];
-      if (extraKey !== undefined && !meta.has(extraKey) && arrivedKeys.has(extraKey)) keys.push(extraKey);
-      selection = select(keys, arrived);
+      selection = select([...meta.keys()], arrived);
       selectionStale = false;
     }
     return selection;
@@ -308,7 +305,10 @@ export function createRenderer(options) {
     if (resident + bytes <= maxResidentBytes) return;
     // 선택이 낡았으면(도착 집합 key 가 선택 뒤에 올라옴) 희생을 고르기 전에 한 번 다시 돈다. 지금 올리는 key 도 목록에 넣어
     // 그 key 가 완성할 LOD 의 상주 조각이 draw 에 들어 보호된다. 낡지 않았으면 직전 선택을 그대로 쓴다
-    const drawing = drawingSet(currentSelection(key));
+    // 지금 올리는 key 가 도착 집합에 들고 meta 에 없으면 낡음 여부와 관계없이 그 key 를 넣은 지역 선택으로 돈다(저장하지 않는다)
+    const drawing = arrived !== null && !meta.has(key) && arrivedKeys.has(key)
+      ? new Set(select([...meta.keys(), key], arrived).draw)
+      : drawingSet(currentSelection());
     const victims = [];
     let free = 0;
     for (const [k, info] of meta) {
