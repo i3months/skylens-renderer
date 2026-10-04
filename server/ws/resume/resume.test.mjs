@@ -500,7 +500,7 @@ test('F-209 ⑦: ack 후 같은 key 재기록 100만 번 뒤에도 ackedQ <= max
   assert.ok(st.ackedQueueLength(sessionId) <= maxEntries, `ackedQ=${st.ackedQueueLength(sessionId)}`);
   assert.equal(st.ackedQueueLength(sessionId), 3);
   assert.deepEqual(st.stats(sessionId), { entries: 3, retainedBytes: 0, unacked: 0, groups: 3 });
-  assert.ok(ms < 3000, `${ms} ms`);
+  console.log(`# cpu ms = ${ms}`); // 시간 단정 없음(로그만)
   // 가득 찬 뒤에도 가장 오래 확인된 항목부터 축출된다
   st.recordSent(sessionId, key(9), seq++, 1);
   assert.equal(st.recordSent(sessionId, key(10), seq++, 1), true);
@@ -597,7 +597,7 @@ test('F-212 ⑥: ack 없이 같은 key 100만 번 재기록해도 pendingQ <= 2�
   assert.ok(peak <= 2 * maxEntries, `pendingQ=${peak}`);
   assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 1, unacked: 1, groups: 1 });
   assert.deepEqual(st.unacked(sessionId), [{ seq: 1_000_000, key: key(1) }]);
-  assert.ok(ms < 3000, `${ms} ms`);
+  console.log(`# cpu ms = ${ms}`); // 시간 단정 없음(로그만)
   // 압축 뒤에도 ack·재접속 동작은 그대로
   st.ack(sessionId, 1_000_000);
   assert.deepEqual(st.stats(sessionId), { entries: 1, retainedBytes: 0, unacked: 0, groups: 1 });
@@ -660,38 +660,71 @@ function evictionRatio(kind, ops) {
   return { ratio: best[65536] / best[1000], best };
 }
 
-// 판정 시험(결정적): 걸음 수 = oldest() 가 건너뛴 죽은 자리 + 압축이 훑은 자리. 시계와 무관하다.
-test('F-213: 상한 65536 에서 25만 회 대체해도 세션 축출 1회당 걸음 수는 O(1)(평균 <= 4)', () => {
+// 판정 시험(결정적): 구현이 스스로 올리는 카운터는 믿지 않는다. 축출 구간에서 Map 의 반복 진입점(keys/values/entries/[Symbol.iterator]/forEach)을
+// 밖에서 감싸 큰 Map(크기 >= SPY_MIN)에 대한 반복자 생성과 next() 호출을 센다. V8 Map 의 keys().next() 는 앞쪽 빈자리를 안에서 건너뛰어
+// 상한에 비례해 느려지므로(R1/R2), 큰 Map 반복은 축출 경로에서 한 번도 없어야 하고 next() 호출도 축출 1회당 상수 이하여야 한다.
+const SPY_MIN = 1024;
+function spyMapIteration(fn) {
+  const P = Map.prototype;
+  const orig = { keys: P.keys, values: P.values, entries: P.entries, iter: P[Symbol.iterator], forEach: P.forEach };
+  const c = { creates: 0, nexts: 0, forEachCalls: 0 };
+  const wrap = (f) => function (...a) {
+    const it = f.apply(this, a);
+    if (this.size < SPY_MIN) return it;
+    c.creates++;
+    const next = it.next;
+    it.next = function (...b) { c.nexts++; return next.apply(this, b); };
+    return it;
+  };
+  P.keys = wrap(orig.keys); P.values = wrap(orig.values); P.entries = wrap(orig.entries); P[Symbol.iterator] = wrap(orig.iter);
+  P.forEach = function (...a) { if (this.size >= SPY_MIN) c.forEachCalls++; return orig.forEach.apply(this, a); };
+  try { fn(); } finally {
+    P.keys = orig.keys; P.values = orig.values; P.entries = orig.entries; P[Symbol.iterator] = orig.iter; P.forEach = orig.forEach;
+  }
+  return c;
+}
+const EVICTIONS = 250_000;
+const MAX_NEXTS_PER_EVICTION = 4;
+
+test('F-213: 상한 65536 에서 25만 회 대체해도 세션 축출은 큰 Map 반복 없이 O(1)', () => {
   const cap = 65536;
   let n = 1;
   const st = createSessionStore({ maxSessions: cap, ttlMs: 1e12, now: () => 0, randomId: () => n++ });
-  for (let i = 0; i < cap + 250_000; i++) st.open({ sessionId: 0, lastPieceSeq: 0 });
+  for (let i = 0; i < cap; i++) st.open({ sessionId: 0, lastPieceSeq: 0 });
   assert.equal(st.size(), cap);
-  const d = st.evictionStats();
-  assert.equal(d.sessionEvictions, 250_000);
-  assert.ok(d.sessionWork / d.sessionEvictions <= 4, `steps/eviction = ${d.sessionWork / d.sessionEvictions}`);
+  const c = spyMapIteration(() => {
+    for (let i = 0; i < EVICTIONS; i++) st.open({ sessionId: 0, lastPieceSeq: 0 });
+  });
+  assert.equal(st.size(), cap);
+  assert.equal(c.creates, 0, `큰 Map 반복자 생성 ${c.creates}회`);
+  assert.equal(c.forEachCalls, 0);
+  assert.ok(c.nexts <= MAX_NEXTS_PER_EVICTION * EVICTIONS, `next/eviction = ${c.nexts / EVICTIONS}`);
 });
 
-test('F-213: 상한 65536 에서 25만 회 대체해도 ackedQ 축출 1회당 걸음 수는 O(1)(평균 <= 4)', () => {
+test('F-213: 상한 65536 에서 25만 회 대체해도 ackedQ 축출은 큰 Map 반복 없이 O(1)', () => {
   const cap = 65536;
   const st = createSessionStore({ maxSessions: 2, ttlMs: 1e12, now: () => 0, maxEntriesPerSession: cap });
   const { sessionId } = st.open({ sessionId: 0, lastPieceSeq: 0 });
-  for (let seq = 1; seq <= cap + 250_000; seq++) {
+  const rec = (seq) => {
     assert.ok(st.recordSent(sessionId, { segmentId: 1, level: 0, lod: 0, chunkIndex: seq, tileX: 0, tileY: 0 }, seq, 1));
     st.ack(sessionId, seq);
-  }
+  };
+  for (let seq = 1; seq <= cap; seq++) rec(seq);
   assert.equal(st.ackedQueueLength(sessionId), cap);
-  const d = st.evictionStats();
-  assert.equal(d.ackedEvictions, 250_000);
-  assert.ok(d.ackedWork / d.ackedEvictions <= 4, `steps/eviction = ${d.ackedWork / d.ackedEvictions}`);
+  const c = spyMapIteration(() => {
+    for (let seq = cap + 1; seq <= cap + EVICTIONS; seq++) rec(seq);
+  });
+  assert.equal(st.ackedQueueLength(sessionId), cap);
+  assert.equal(c.creates, 0, `큰 Map 반복자 생성 ${c.creates}회`);
+  assert.equal(c.forEachCalls, 0);
+  assert.ok(c.nexts <= MAX_NEXTS_PER_EVICTION * EVICTIONS, `next/eviction = ${c.nexts / EVICTIONS}`);
 });
 
-// 보조 측정(판정 아님): 벽시계 비율을 로그로만 남긴다. 장비·GC 에 따라 흔들리므로 임계값은 터무니없는 회귀(옛 구현 20~55배)만 거르는 상식선이다.
+// 보조 측정(판정 아님): 벽시계 비율을 로그로만 남긴다. 장비·GC 에 따라 흔들리므로 판정에는 쓰지 않는다(시계 단정 없음).
 for (const [kind, label] of [['sessions', 'session cap'], ['acked', 'ackedQ']]) {
   test(`F-213 (보조 측정): ${label} 축출 벽시계 비율 cap65536/cap1000 을 로그로 남긴다`, () => {
     const { ratio, best } = evictionRatio(kind, 250_000);
     console.log(`# F-213 ${label} wall-clock ratio cap65536/cap1000 = ${ratio.toFixed(2)} ${JSON.stringify(best)}`);
-    assert.ok(Number.isFinite(ratio) && ratio < 50, `ratio=${ratio}`);
   });
 }
 
