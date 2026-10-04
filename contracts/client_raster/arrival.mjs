@@ -8,17 +8,19 @@
 //      순번과 섞으면 창이 엉뚱한 조각을 가리킨다. 그래서 collectArrivals 는 WELCOME resumed=false 를 PIECE 를 하나라도 받은
 //      뒤에 만나면 ClientRasterError('piece') 로 거부한다(첫 PIECE 앞의 WELCOME 은 통과). 새 세션의 수신은 새 입력으로
 //      넣고, 앞 세션에서 받은 key 는 ./index.mjs ④ 정리 규칙(재개 재시작 = 시도 끝)대로 호출자가 해제한다.
-//      WELCOME resumed=true 는 같은 세션의 이어받기라 이력을 그대로 잇는다(앞서 본 WELCOME 과 sessionId 가 다르면 거부).
+//      WELCOME resumed=true 는 같은 세션의 이어받기라 이력을 그대로 잇는다(앞서 본 WELCOME 과 sessionId 가 다르거나,
+//      앞서 본 sessionId 가 없으면 거부). sessionId 는 u32 정수여야 한다.
 //   ① 중복: 같은 pieceSeq·같은 PieceKey 의 PIECE 는 한 조각이다(proto 재전송 규약). 같은 pieceSeq 에 다른 PieceKey 가
 //      오면 계약 위반(F-204)이라 거부한다. 같은 key 가 다른 pieceSeq 로 다시 오는 것은 허용한다(새 어댑터의 재송출 등).
 //      단조(F-234): 재전송이 아닌(처음 보는) pieceSeq 는 그때까지 받은 가장 큰 pieceSeq 보다 커야 한다. 아니면
 //      ClientRasterError('piece')(completedKeys 도 같다). 서버는 한 세션에서 순번을 늘리기만 하고(server/ws/resume
 //      recordSent) 선은 순서를 지키므로, 작은 새 순번은 다른 세션의 조각이거나 계약 위반이다.
-//   ②-0 (F-236) LEVEL_ARRIVED 에 firstPieceSeq 가 있으면 창은 pieceSeq firstPieceSeq..firstPieceSeq+n−1 로 명시되고(단독 재전송이
-//      멱등), 아래 ② 의 "가장 큰 pieceSeq" 추론은 firstPieceSeq 가 없을 때의 대체 규칙이다.
-//   ② 창: s = 그 LEVEL_ARRIVED 전까지 받은 가장 큰 pieceSeq, n = pieceCount. 완료 key 집합은 pieceSeq s−n+1..s 의 조각
-//      n 개의 key 다(pieceSeq 순). 그 n 개는 모두 받았어야 하고, 모두 LEVEL_ARRIVED 의 (segmentId, level) 이어야 하며,
-//      key 가 서로 달라야 한다. 어기면 ClientRasterError('piece')(조각 모자람·다른 수준 섞임·key 중복).
+//   ② 창(F-236): n = pieceCount. LEVEL_ARRIVED 에 firstPieceSeq 가 있으면(선을 거친 것은 항상) 기본 규칙으로 창이 pieceSeq
+//      firstPieceSeq..firstPieceSeq+n−1 로 명시되고 받은 PIECE 의 가장 큰 pieceSeq 와 무관하다(단독 재전송이 멱등).
+//      firstPieceSeq 가 없는 항목(선을 거치지 않은 입력)만 대체 규칙을 쓴다: s = 그 LEVEL_ARRIVED 전까지 받은 가장 큰
+//      pieceSeq 로 추정한 창 s−n+1..s. 어느 쪽이든 완료 key 집합은 창의 조각 n 개의 key 다(pieceSeq 순). 그 n 개는 모두
+//      받았어야 하고, 모두 LEVEL_ARRIVED 의 (segmentId, level) 이어야 하며, key 가 서로 달라야 한다. 어기면
+//      ClientRasterError('piece')(조각 모자람·다른 수준 섞임·key 중복).
 //   근거(server/adapter/core 의 출력): 어댑터는 한 수준 도착을 PIECE pieceSeq f..f+n−1 → LEVEL_ARRIVED(n) 순서로 연달아
 //   내보내고, 끝나지 않은 이벤트가 있는 동안 다른 이벤트를 내보내지 않는다(F-204). 그래서 LEVEL_ARRIVED 직전의 가장 큰
 //   pieceSeq 는 언제나 f+n−1 이고, 그 창 안에는 그 수준의 조각만 있다.
@@ -137,7 +139,8 @@ function windowKeys(index, a) {
  * LEVEL_ARRIVED 하나의 완료 key 집합(헤더 규칙 ①②). 순수 함수.
  * @param {{type?: 'PIECE', pieceSeq: number, key: import('../proto/index.mjs').PieceKey}[]} pieces
  *   그 LEVEL_ARRIVED 전까지 받은 PIECE 전부(받은 순서, 재전송 포함. chunk 는 보지 않는다)
- * @param {{type?: 'LEVEL_ARRIVED', segmentId: number, level: number, pieceCount: number}} levelArrived
+ * @param {{type?: 'LEVEL_ARRIVED', segmentId: number, level: number, pieceCount: number, firstPieceSeq?: number}} levelArrived
+ *   firstPieceSeq 가 있으면 창은 firstPieceSeq..firstPieceSeq+pieceCount−1(기본), 없을 때만 가장 큰 pieceSeq 로 추정(대체)
  * @returns {string[]} 완료 key(§11 정규 문자열, pieceSeq 순)
  */
 export function completedKeys(pieces, levelArrived) {
@@ -171,7 +174,13 @@ export function collectArrivals(messages) {
       if (!m.resumed && index.bySeq.size > 0) {
         throw new ClientRasterError('piece', 'WELCOME resumed=false(새 세션)가 PIECE 뒤에 옴: 새 세션의 수신은 새 입력으로 넣는다(F-234)');
       }
-      if (m.resumed && sessionId !== undefined && m.sessionId !== sessionId) {
+      if (!Number.isInteger(m.sessionId) || m.sessionId < 0 || m.sessionId > U32_MAX) {
+        throw new ClientRasterError('piece', `WELCOME sessionId 는 u32 정수여야 함: ${String(m.sessionId)}`);
+      }
+      if (m.resumed && sessionId === undefined) {
+        throw new ClientRasterError('piece', 'WELCOME resumed=true 인데 앞 WELCOME 의 sessionId 가 없음(이어받을 세션을 알 수 없다)');
+      }
+      if (m.resumed && m.sessionId !== sessionId) {
         throw new ClientRasterError('piece', `WELCOME resumed=true 의 sessionId ${String(m.sessionId)} 가 앞 세션 ${sessionId} 와 다름`);
       }
       sessionId = m.sessionId;
