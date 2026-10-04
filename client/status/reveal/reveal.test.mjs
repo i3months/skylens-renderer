@@ -60,3 +60,14 @@ test('renderPointCount 가 안전 정수를 넘으면 RangeError', () => {
   // 두 조각의 count 합이 MAX_SAFE_INTEGER를 넘기도록 구성
   assert.throws(() => computeReveal([arrived(0, 0, [{ count: maxSafe - 100 }]), arrived(1, 1, [{ count: 200 }])]), RangeError);
 });
+
+test('renderPointCount 합이 정확히 MAX_SAFE_INTEGER 이면 받는다(경계 포함)', () => {
+  const maxSafe = Number.MAX_SAFE_INTEGER;
+  const r = computeReveal([arrived(0, 0, [{ count: maxSafe - 200 }]), arrived(1, 1, [{ count: 200 }])]);
+  assert.equal(r.renderPointCount, maxSafe);
+  assert.deepEqual(r.visible, [0, 1]);
+  // 한 조각이 정확히 MAX_SAFE_INTEGER 인 경우도 받는다
+  assert.equal(computeReveal([arrived(0, 0, [{ count: maxSafe }])]).renderPointCount, maxSafe);
+  // 1 만 더해도 거부한다
+  assert.throws(() => computeReveal([arrived(0, 0, [{ count: maxSafe - 200 }]), arrived(1, 1, [{ count: 201 }])]), RangeError);
+});
