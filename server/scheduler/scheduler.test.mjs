@@ -258,3 +258,47 @@ test('F-193 ③ oversize: 숫자로 고정(예산 100)', () => {
   assert.equal(b3.oversize, false);
   assert.equal(s.nextBatch().oversize, false); // 빈 배치
 });
+
+// F-208 성능. 코드 목표: 100000 오름차순 enqueue 0.3 s 이하, 한 묶음 20000 개 enqueue 합계 50 ms 이하.
+// CI 잡음을 감안해 묶음 테스트의 임계값은 목표의 3배(150 ms)로 둔다.
+// 다른 프로세스가 CPU 를 나눠 쓰는 CI 에서 벽시계는 흔들리므로, 이 프로세스가 실제로 쓴 CPU 시간(user+system)으로 잰다.
+function cpuNow() {
+  const u = process.cpuUsage();
+  return (u.user + u.system) / 1000;
+}
+
+function perfKey(i, extra = {}) {
+  return { segmentId: i, level: 0, lod: 0, chunkIndex: 0, tileX: 0, tileY: 0, ...extra };
+}
+
+test('F-208: maxPending 100000 오름차순 priority enqueue 가 0.3 s 이하(내림차순과 같은 규모)', () => {
+  const run = (prio) => {
+    const s = createScheduler({ budgetBytesPerTick: 1e9, maxPending: 100000 });
+    const t0 = cpuNow();
+    for (let i = 0; i < 100000; i++) assert.equal(s.enqueue({ key: perfKey(i), bytes: 1, priority: prio(i), level: 0 }), true);
+    return [cpuNow() - t0, s];
+  };
+  const [desc] = run((i) => -i); // 옛 구현에서도 빨랐던 쪽: 이 기계의 속도 기준
+  const [ms, s] = run((i) => i);
+  console.log(`# 100k enqueue: ascending ${ms.toFixed(1)} ms, descending ${desc.toFixed(1)} ms`);
+  // 0.3 s 가 목표. 느린 CI 에서는 같은 기계의 내림차순 시간의 3배까지 허용한다(옛 구현의 오름차순은 내림차순의 약 35배였다).
+  assert.ok(ms <= 300 || ms <= 3 * desc, `${ms} ms (descending ${desc} ms)`);
+  const t1 = cpuNow();
+  const batch = s.nextBatch();
+  console.log(`# 100k nextBatch drain: ${(cpuNow() - t1).toFixed(1)} ms`);
+  assert.equal(batch.length, 100000);
+  assert.equal(batch[0].priority, 99999);
+  assert.equal(batch[99999].priority, 0);
+});
+
+test('F-208: 한 묶음 20000 개 enqueue 합계 150 ms 이하(코드 목표 50 ms, 임계값 3배)', () => {
+  const s = createScheduler({ budgetBytesPerTick: 1e9 });
+  const t0 = cpuNow();
+  for (let i = 0; i < 20000; i++) {
+    assert.equal(s.enqueue({ key: perfKey(1, { chunkIndex: i }), bytes: 1, priority: i % 7, level: 0 }), true);
+  }
+  const ms = cpuNow() - t0;
+  console.log(`# 20k one-bundle enqueue: ${ms.toFixed(1)} ms`);
+  assert.ok(ms <= 150, `${ms} ms`);
+  assert.equal(s.pending().length, 20000);
+});
