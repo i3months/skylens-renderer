@@ -1,7 +1,7 @@
 // F-255 3차: GL 구간 경계 hook(testHooks.onGlUploadStart/End·onDrawStart/End)의 위치를 고정한다.
 // T12.5 실측(loop/worker.browser.test.mjs)은 GL 구간과 겹친 시간을 long task 에서 빼므로, 경계 안에 비-GL 작업이 들어가면
 // 그 시간이 판정에서 빠진다. 그래서 가짜 gl(버퍼 풀의 GL 호출 기록)과 spy 로 한 줄 사건 기록을 만들어 순서를 단언한다.
-//  - 업로드: toGpuPlanes·지역 선택·makeRoom(희생 deleteBuffer·onEvict) → onGlUploadStart → pool.upload(createBuffer·bindBuffer·
+//  - 업로드: toGpuPlanes·보호 집합(roomProtection)·makeRoom(희생 deleteBuffer·onEvict) → onGlUploadStart → pool.upload(createBuffer·bindBuffer·
 //    bufferData 만) → onGlUploadEnd. Start 바로 다음이 pool.upload 의 첫 GL 호출이고, 그 사이 다른 작업이 없다.
 //  - draw: currentSelection(지연 선택 select)이 onDrawStart 앞이고, Start~End 안에는 select 가 없다.
 // 시간 단언은 없다(사건 순서만 본다).
@@ -84,7 +84,7 @@ test('업로드: makeRoom(희생 해제·onEvict) → onGlUploadStart → pool.u
   await r.uploadPiece(N1, piece(N1));
   const { s } = assertUploadSpan(log, 3);
   const before = log.slice(0, s);
-  // 변환·지역 선택·희생 해제·알림이 모두 Start 앞이고, makeRoom 의 마지막 일(onEvict) 바로 다음이 Start 다
+  // 변환·보호 집합(roomProtection)·희생 해제·알림이 모두 Start 앞이고, makeRoom 의 마지막 일(onEvict) 바로 다음이 Start 다
   assert.deepEqual(before, ['toGpuPlanes', 'gl.deleteBuffer', 'gl.deleteBuffer', 'gl.deleteBuffer', `onEvict:${C0}`], `Start 앞 순서: ${log.join(' ')}`);
   assert.equal(log[s - 1], `onEvict:${C0}`);
   assert.deepEqual(log.slice(log.indexOf('onGlUploadEnd') + 1), [], 'onGlUploadEnd 뒤 기록 없음');
