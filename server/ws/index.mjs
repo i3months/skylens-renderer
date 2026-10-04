@@ -29,7 +29,7 @@ export function acceptKey(key) {
   return createHash('sha1').update(key + HANDSHAKE_GUID).digest('base64');
 }
 
-function createConnection(socket, head) {
+function createConnection(socket, head, onError) {
   const parser = new FrameParser();
   let msgCb = () => {};
   let closeCb = () => {};
@@ -37,13 +37,35 @@ function createConnection(socket, head) {
   let finished = false;
   let timer = null;
   let result = { code: 1006, reason: '' };
+  let failed = false;
+
+  // onError 자체가 던져도 서버는 멈추지 않는다.
+  const report = (err, where) => {
+    try { onError?.(err, where); } catch { /* 오류 보고 실패는 삼킨다 */ }
+  };
+  // 소비자 콜백 호출: 던지거나 거절된 약속은 이 연결만 1011 로 닫는다.
+  const guarded = (fn, arg, where) => {
+    try {
+      const r = fn(arg);
+      if (r && typeof r.then === 'function') r.then(undefined, (err) => fail(err, where));
+    } catch (err) {
+      fail(err, where);
+    }
+  };
+  const fail = (err, where) => {
+    report(err, where);
+    if (failed || finished) return;
+    failed = true;
+    result = { code: 1011, reason: '' };
+    startClose(1011, 'internal error');
+  };
 
   const finish = () => {
     if (finished) return;
     finished = true;
     if (timer) clearTimeout(timer);
     socket.destroy();
-    closeCb(result);
+    try { closeCb(result); } catch (err) { report(err, 'onClose'); }
   };
   const sendClose = (code, reason = '') => {
     if (closeSent || socket.destroyed) return;
@@ -57,14 +79,14 @@ function createConnection(socket, head) {
 
   const feed = (chunk) => {
     for (const ev of parser.push(chunk)) {
-      if (finished) return;
-      if (ev.type === 'message') msgCb(ev.data);
+      if (finished || failed) return;
+      if (ev.type === 'message') { guarded(msgCb, ev.data, 'onMessage'); if (failed) return; }
       else if (ev.type === 'ping') { if (!closeSent) socket.write(encodeFrame(OPCODES.PONG, ev.data)); }
       else if (ev.type === 'close') {
         result = { code: ev.code, reason: ev.reason };
         if (!closeSent) sendClose(ev.code === 1005 ? 1000 : ev.code);
-        socket.end();
-        finish();
+        // close 에코가 소켓으로 나간 뒤(end 의 완료 콜백)에 끝낸다. 바로 destroy 하면 에코가 유실될 수 있다.
+        socket.end(finish);
         return;
       } else if (ev.type === 'error') {
         result = { code: ev.code, reason: ev.reason };
@@ -93,10 +115,10 @@ function createConnection(socket, head) {
 }
 
 /**
- * @param {{host: string, port: number, onConnection: (conn: object) => void}} options
+ * @param {{host: string, port: number, onConnection: (conn: object) => void, onError?: (err: unknown, where: string) => void}} options
  * @returns {Promise<{server: http.Server, address(): object, close(): Promise<void>}>} listen 이 끝난 뒤 반환.
  */
-export function createWsServer({ host, port, onConnection }) {
+export function createWsServer({ host, port, onConnection, onError }) {
   if (typeof onConnection !== 'function') throw new TypeError('onConnection 필요');
   const server = http.createServer((req, res) => {
     res.writeHead(426, { Upgrade: 'websocket', 'Content-Length': 0 });
@@ -119,7 +141,13 @@ export function createWsServer({ host, port, onConnection }) {
     socket.setNoDelay(true);
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
-    onConnection(createConnection(socket, head));
+    try {
+      onConnection(createConnection(socket, head, onError));
+    } catch (err) {
+      // onConnection 이 던지면 그 소켓만 닫는다.
+      try { onError?.(err, 'onConnection'); } catch { /* 보고 실패는 삼킨다 */ }
+      socket.destroy();
+    }
   });
   return new Promise((resolve, reject) => {
     server.once('error', reject);

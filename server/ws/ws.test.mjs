@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import http from 'node:http';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -243,6 +244,95 @@ test('규약 위반: RSV 비트·알 수 없는 opcode·분할된 제어 프레�
 test('핸드셰이크 오류는 400, 일반 요청은 426', async () => {
   const ws = await start(() => {});
   await assert.rejects(connect(ws, { wsKey: 'AAAA' }), /400/);
+  // 일반 HTTP 요청은 상태 코드 426 과 Upgrade 머리말로 답한다(200 등으로 바뀌면 실패).
+  const { address, port } = ws.address();
+  const res = await new Promise((resolve, reject) => {
+    http.get({ host: address, port, path: '/' }, (r) => { r.resume(); r.on('end', () => resolve(r)); }).on('error', reject);
+  });
+  assert.equal(res.statusCode, 426);
+  assert.equal(res.headers.upgrade, 'websocket');
+  await ws.close();
+});
+
+test('onMessage 가 던지면 그 연결만 1011 로 닫히고 uncaughtException 0, 다른 연결은 왕복 계속', async () => {
+  const uncaught = [];
+  const onUncaught = (e) => uncaught.push(e);
+  process.on('uncaughtException', onUncaught);
+  try {
+    const errors = [];
+    const closes = [];
+    let n = 0;
+    const ws = await createWsServer({
+      host: loopbackHost(), port: 0,
+      onError: (err, where) => errors.push([err.message, where]),
+      onConnection: (c) => {
+        const id = n++;
+        c.onClose((r) => closes.push([id, r.code]));
+        c.onMessage((m) => {
+          if (m[0] === 0xee) throw new Error('boom');
+          c.send(m);
+        });
+      },
+    });
+    const bad = await connect(ws);
+    const good = await connect(ws);
+    bad.send(OPCODES.BINARY, Uint8Array.of(0xee));
+    const ev = await bad.next();
+    assert.equal(ev.type, 'close');
+    assert.equal(ev.code, 1011);
+    bad.send(OPCODES.CLOSE, encodeClosePayload(1011));
+    await bad.closed();
+    // 다른 연결은 계속 왕복한다.
+    for (const b of [1, 2, 3]) {
+      good.send(OPCODES.BINARY, Uint8Array.of(b));
+      const echo = await good.next();
+      assert.equal(echo.type, 'message');
+      assert.deepEqual([...echo.data], [b]);
+    }
+    await waitFor(() => closes.length === 1);
+    assert.deepEqual(errors, [['boom', 'onMessage']]);
+    assert.equal(closes[0][0], 0);
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(uncaught, []);
+    good.sock.destroy();
+    await ws.close();
+  } finally {
+    process.off('uncaughtException', onUncaught);
+  }
+});
+
+test('onClose 가 던져도 uncaughtException 없이 onError 로 보고된다', async () => {
+  const uncaught = [];
+  const onUncaught = (e) => uncaught.push(e);
+  process.on('uncaughtException', onUncaught);
+  try {
+    const errors = [];
+    const ws = await createWsServer({
+      host: loopbackHost(), port: 0,
+      onError: (err, where) => errors.push([err.message, where]),
+      onConnection: (c) => c.onClose(() => { throw new Error('closeboom'); }),
+    });
+    const cl = await connect(ws);
+    cl.send(OPCODES.CLOSE, encodeClosePayload(1000));
+    await cl.closed();
+    await waitFor(() => errors.length === 1);
+    assert.deepEqual(errors, [['closeboom', 'onClose']]);
+    assert.deepEqual(uncaught, []);
+    await ws.close();
+  } finally {
+    process.off('uncaughtException', onUncaught);
+  }
+});
+
+test('클라이언트 close 에 대한 서버 close 에코가 클라이언트에 도달한다', async () => {
+  const ws = await start(() => {});
+  for (let i = 0; i < 20; i++) {
+    const cl = await connect(ws);
+    cl.send(OPCODES.CLOSE, encodeClosePayload(1000, 'x'));
+    const ev = await cl.next();
+    assert.deepEqual([ev?.type, ev?.code], ['close', 1000]);
+    await cl.closed();
+  }
   await ws.close();
 });
 
@@ -271,16 +361,22 @@ test('loadConfig: 두 환경 변수가 없으면 오류, 있으면 값 그대로
   assert.deepEqual(loadConfig({ SKYLENS_WS_HOST: 'h', SKYLENS_WS_PORT: '0' }), { host: 'h', port: 0 });
 });
 
-test('저장소 grep: server/ws 아래 소스에 주소·포트 리터럴 0', () => {
+test('저장소 grep: server/·tools/ 아래 소스에 주소·포트 리터럴 0', () => {
+  const root = path.resolve(here, '..', '..');
+  // 제외(유일): 점으로 구분한 청크 키 문자열이 IPv4 패턴과 겹치는 오탐. 주소가 아니며 다른 담당 파일이라 여기서 고치지 않고 제외만 한다.
+  const excluded = new Set([path.join(root, 'server', 'asset', 'ids', 'ids.test.mjs')]);
   const files = [];
   const walk = (d) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p); else if (e.name.endsWith('.mjs')) files.push(p);
+      if (excluded.has(p)) continue;
+      if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); } else if (e.name.endsWith('.mjs')) files.push(p);
     }
   };
-  walk(here);
-  assert.ok(files.length >= 3);
+  walk(path.join(root, 'server'));
+  walk(path.join(root, 'tools'));
+  assert.ok(files.length >= 20);
+  assert.ok(files.some((f) => f.includes(`${path.sep}tools${path.sep}`)));
   const patterns = [
     /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/, // IPv4 리터럴
     new RegExp(['local', 'host'].join(''), 'i'),
@@ -291,7 +387,7 @@ test('저장소 grep: server/ws 아래 소스에 주소·포트 리터럴 0', ()
   const hits = [];
   for (const f of files) {
     const lines = fs.readFileSync(f, 'utf8').split('\n');
-    lines.forEach((ln, i) => { for (const re of patterns) if (re.test(ln)) hits.push(`${path.relative(here, f)}:${i + 1}: ${ln.trim()}`); });
+    lines.forEach((ln, i) => { for (const re of patterns) if (re.test(ln)) hits.push(`${path.relative(root, f)}:${i + 1}: ${ln.trim()}`); });
   }
   assert.deepEqual(hits, []);
 });
