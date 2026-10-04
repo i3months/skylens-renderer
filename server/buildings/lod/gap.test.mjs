@@ -89,3 +89,12 @@ test('long gap check stays fast: 20 pairs of 300 m buildings at 5 km in under 1 
   assert.equal(boxCount(out), 1);
   assert.ok(ms < 1000, `${ms.toFixed(0)} ms`);
 });
+
+test('F-338: chained merge re-measures the earlier cluster gap, 1.8 m trapped gap at 5 km is not roofed over', () => {
+  // a1 [0,2]×[0,2] 와 a3 [0,3.2]×[2,2.5] 가 먼저 합쳐지면 [2,3.2]×[0,2] 는 바깥으로 열린 홈(깊이 1.2 m ≤ 1.212 m)이다.
+  // a2 [3.8,5.8]×[0,2] 가 붙으면 그 홈과 새 틈 칸 [3.2,3.8]×[0,2] 가 폭 1.8 m · 깊이 2 m 의 끼인 틈 [2,3.8]×[0,2] 가 된다.
+  // 1.8 m > hideTol(1.212 m) 이므로 상자 하나로 메우면 안 된다.
+  const out = buildBuildingLod([rect(1, 0, 0, 2, 2), rect(2, 3.8, 0, 5.8, 2), rect(3, 0, 2, 3.2, 2.5)], 5000);
+  assert.deepEqual(out.flatMap((g) => g.ids).sort(), [1, 2, 3]);
+  assert.ok(boxCount(out) >= 2, `${boxCount(out)} box(es), the 1.8 m gap was filled`);
+});

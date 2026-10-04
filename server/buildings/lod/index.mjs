@@ -312,8 +312,9 @@ function reframe(c, phi2, tol, hideTol) {
   if (!L) return null;
   const R = reframe(c.right, phi2, tol, hideTol);
   if (!R) return null;
-  const err = mergeError(L, R, tol, hideTol);
-  return err <= tol ? makeCluster(L.members.concat(R.members), err, L, R) : null;
+  const gaps = [];
+  const err = mergeError(L, R, tol, hideTol, gaps);
+  return err <= tol ? makeCluster(L.members.concat(R.members), err, L, R, gaps) : null;
 }
 
 // 건물 하나를 자기 φ 좌표계 상자로 바꿀 때의 오차. 메시 안 높이 차(maxZ − roofMin)가 hideTol 을 넘으면 Infinity(원본 유지):
@@ -324,7 +325,9 @@ function singleError(m, tol, hideTol) {
   return rectError(m.minX, m.minY, m.maxX, m.maxY, [m], tol, tol, step);
 }
 
-function makeCluster(members, err, left = null, right = null) {
+// gaps: 이 군집 상자 안의 빈 땅 칸 목록 { x0, y0, x1, y1, e } (앞선 병합들의 틈 칸, e 는 잰 거리 상한). F-338: 나중 병합이
+// 상자를 키우면 열린 홈이던 칸이 끼인 틈이 될 수 있어 mergeError 가 새 상자 기준으로 다시 잰다.
+function makeCluster(members, err, left = null, right = null, gaps = []) {
   let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity, minTop = Infinity, first = Infinity;
   for (const m of members) {
     if (m.minX < minX) minX = m.minX; if (m.maxX > maxX) maxX = m.maxX;
@@ -333,7 +336,7 @@ function makeCluster(members, err, left = null, right = null) {
     if (m.roofMin < minTop) minTop = m.roofMin;
     if (m.order < first) first = m.order;
   }
-  return { members, minX, minY, minZ, maxX, maxY, maxZ, minTop, first, err, alive: true, left, right };
+  return { members, minX, minY, minZ, maxX, maxY, maxZ, minTop, first, err, alive: true, left, right, gaps };
 }
 
 // 두 군집을 합칠 후보인지(값싼 조건): 두 상자 사이 틈 ≤ hideTol 이고 높이 차(계단) ≤ hideTol.
@@ -425,12 +428,13 @@ function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
 // 틈 칸(A·B 어느 상자에도 들지 않는 칸)은 어느 구성 건물에도 속하지 않는 빈 땅이라, 메우면 테두리가 옮겨지는 것이 아니라
 // 그 땅(과 그 너머로 보이던 벽)이 통째로 지붕이 된다. 그래서 틈 칸은 tol 이 아니라 hideTol 로 잰다: 메워지는 폭
 // w(p) = min(2·e, e + x) (gapCellError) 가 hideTol 이하여야 한다(넘으면 Infinity, 합치지 않는다).
-// Scope of the invariant: only the new gap cells are measured. Empty land inside a member's own box (an L-shaped
-// building's notch) is bounded by singleError at tol, not by hideTol. Empty land inside an earlier cluster box was
-// measured against that earlier box; when a later merge closes such an open notch into a trapped gap, the part of the
-// gap that lies inside the earlier box is not measured again, so a gap formed that way can exceed hideTol by up to the
-// earlier notch depth (≤ hideTol). The direct case of F-334 (the gap centre line lies in the new gap cells) is measured.
-function mergeError(A, B, tol, hideTol) {
+// Scope of the invariant: the new gap cells and the gap cells carried by A and B (empty land inside the earlier cluster
+// boxes, A.gaps / B.gaps) are measured against the merged box (F-338: an open notch of an earlier box can become a
+// trapped gap after a later merge). A carried cell whose e bound satisfies 2·e ≤ hideTol cannot exceed the limit for any
+// box (w ≤ 2·e), so only the others are measured again. Empty land inside a member's own box (an L-shaped building's
+// notch) is bounded by singleError at tol, not by hideTol.
+// gapsOut (선택): 합친 상자의 틈 칸 목록(이어받은 칸 + 새 칸)을 여기에 채운다(makeCluster 의 gaps).
+function mergeError(A, B, tol, hideTol, gapsOut = null) {
   const step = Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop);
   const err = Math.max(A.err, B.err, step);
   if (err > tol) return err;
@@ -442,16 +446,30 @@ function mergeError(A, B, tol, hideTol) {
   const budget = { cells: GAP_MAX_CELLS };
   let members = null;
   let gapErr = 0;
+  const gaps = [];
+  const measure = (x0, y0, x1, y1) => {
+    if (!members) members = A.members.concat(B.members);
+    const g = gapCellError(x0, y0, x1, y1, members, hideTol, box, budget);
+    if (!g) return false;
+    if (g.e > gapErr) gapErr = g.e;
+    gaps.push({ x0, y0, x1, y1, e: g.e });
+    return true;
+  };
+  // 앞선 군집 상자 안의 틈 칸: 새 상자 기준으로 x 가 커져 w = min(2e, e + x) 가 늘 수 있다(F-338).
+  for (const C of [A, B]) {
+    for (const c of C.gaps) {
+      if (2 * c.e <= hideTol) { gaps.push(c); continue; }
+      if (!measure(c.x0, c.y0, c.x1, c.y1)) return Infinity;
+    }
+  }
   for (let j = 0; j + 1 < ys.length; j++) {
     for (let i = 0; i + 1 < xs.length; i++) {
       const mx = (xs[i] + xs[i + 1]) / 2, my = (ys[j] + ys[j + 1]) / 2;
       if (inBox(A, mx, my) || inBox(B, mx, my)) continue;
-      if (!members) members = A.members.concat(B.members);
-      const g = gapCellError(xs[i], ys[j], xs[i + 1], ys[j + 1], members, hideTol, box, budget);
-      if (!g) return Infinity;
-      if (g.e > gapErr) gapErr = g.e;
+      if (!measure(xs[i], ys[j], xs[i + 1], ys[j + 1])) return Infinity;
     }
   }
+  if (gapsOut) gapsOut.push(...gaps);
   return Math.max(err, gapErr);
 }
 
@@ -509,10 +527,11 @@ function agglomerate(singles, tol, hideTol) {
   while (heap.length) {
     const top = heapPop(heap);
     if (!top.a.alive || !top.b.alive) continue;
-    const err = mergeError(top.a, top.b, tol, hideTol);
+    const gaps = [];
+    const err = mergeError(top.a, top.b, tol, hideTol, gaps);
     if (err > tol) continue;
     top.a.alive = false; top.b.alive = false;
-    const C = makeCluster(top.a.members.concat(top.b.members), err, top.a, top.b);
+    const C = makeCluster(top.a.members.concat(top.b.members), err, top.a, top.b, gaps);
     list = list.filter((c) => c.alive);
     for (const D of list) push(C, D);
     list.push(C);
