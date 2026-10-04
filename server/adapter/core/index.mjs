@@ -164,6 +164,21 @@ export function createCoreAdapter(options = {}) {
    * @type {null | {segmentId:number, level:number, keys:string[], bytes:Uint8Array[]}}
    */
   let unfinished = null;
+  /**
+   * 같은 수준 skip 에서 onRelease 가 던져 알림이 끝나지 못한 abandoned key 들(F-229 ②). 상태는 이미 정리됐으므로 이
+   * 알림만 남는다. 다음 handle() 호출이 다른 일을 하기 전에 다시 알리고, 또 던지면 그대로 남긴 채 던진다(이벤트는
+   * 처리하지 않는다). 여러 onRelease 중 일부만 던졌어도 다시 알릴 때는 전부 부른다(받는 쪽은 같은 key 의 두 번째
+   * 해제에 견뎌야 한다).
+   * @type {null | {keys:object[], info:object}}
+   */
+  let pendingRelease = null;
+
+  function flushPendingRelease() {
+    if (!pendingRelease) return;
+    const { keys, info } = pendingRelease;
+    notifyRelease(keys, info); // 던지면 pendingRelease 가 남는다
+    pendingRelease = null;
+  }
 
   function unfinishedInfo() {
     return { segmentId: unfinished.segmentId, level: unfinished.level, firstPieceSeq: nextSeq, pieceCount: unfinished.keys.length };
@@ -237,13 +252,20 @@ export function createCoreAdapter(options = {}) {
       // 같은 수준(L == M)이면 공유 기계가 같은 key 의 조각을 이미 확정해 지금 그려지고 있을 수 있다(F-227). 기계의 현재 수준이
       // 쥔 key 는 놓지 않는다. L < M 이면 그 수준의 조각이 아니므로 그대로 모두 놓는다.
       const snap = machine.snapshot(segmentId);
+      // live 판정은 key 문자열만 본다(F-229 ③). 같은 key 인데 실패한 시도가 다른 bytes·pieceSeq 로 이미 내보냈다면 받는
+      // 쪽이 쥔 조각과 기계가 쥔 조각이 다를 수 있다. 규칙: 같은 key 는 같은 bytes 라는 것이 계약이고(조각 key 가 내용을
+      // 식별한다), 어댑터는 bytes 를 비교하지 않는다. 같은 key 에 다른 bytes 를 보내는 호출자는 계약 위반이다.
       const live = new Set();
       if (snap.level === level) for (const p of snap.pieces) live.add(pieceKeyString(p.key));
       const abandonedInfo = { segmentId, level, previousLevel: snap.level, abandoned: true };
       const abandoned = pieces.filter((p) => !live.has(pieceKeyString(p.key))).map((p) => ({ ...p.key }));
       nextSeq += unfinished.keys.length;
       unfinished = null;
-      if (abandoned.length > 0) notifyRelease(abandoned, abandonedInfo);
+      if (abandoned.length > 0) {
+        pendingRelease = { keys: abandoned, info: abandonedInfo }; // 알림이 끝나야 지운다(F-229 ②)
+        notifyRelease(abandoned, abandonedInfo);
+        pendingRelease = null;
+      }
       return { action: 'skip', emitted: 0, released: [], abandoned };
     }
     // ② 메시지를 모두 만들고 부호화까지 마친다. 여기서 던지면 아무것도 나가지 않는다.
@@ -275,6 +297,7 @@ export function createCoreAdapter(options = {}) {
     /** @param {CoreEvent} event @returns {HandleResult} */
     handle(event) {
       if (!isObject(event)) throw new TypeError('event 는 객체여야 한다');
+      flushPendingRelease();
       if (event.kind === 'segment_expected') return onExpected(event);
       if (event.kind === 'level_arrived') return onArrived(event);
       throw new RangeError(`모르는 이벤트 kind: ${String(event.kind)}`);

@@ -106,7 +106,7 @@ class OrderedMap {
     this.map = new Map(); // key -> 항목 {k, v, dead}
     this.q = [];          // 삽입 순서의 항목(죽은 것 포함)
     this.head = 0;        // q[head] 앞은 이미 버린 자리
-    this.work = 0;        // 진단: oldest() 가 건너뛴 죽은 자리 + 압축이 훑은 자리의 누계(축출 1회당 O(1) 이어야 한다)
+    this.work = 0;        // BENCH-ONLY: 진단: oldest() 가 건너뛴 죽은 자리 + 압축이 훑은 자리의 누계(축출 1회당 O(1) 이어야 한다)
   }
   get size() { return this.map.size; }
   has(k) { return this.map.has(k); }
@@ -184,7 +184,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
   const genId = randomId ?? (() => randomInt(1, U32_MAX));
   /** @type {Map<number, any>} 삽입 순서 = 최근 사용 순서(touch 때 다시 넣는다) */
   const sessions = new OrderedMap();
-  const evictionDiag = { sessionEvictions: 0, ackedEvictions: 0, ackedWork: 0 }; // 진단(테스트): 축출 횟수와 그 때 쓴 걸음 수
+  const evictionDiag = { sessionEvictions: 0, ackedEvictions: 0, ackedWork: 0 }; // BENCH-ONLY: 진단(테스트): 축출 횟수와 그 때 쓴 걸음 수
 
   const expired = (s, t) => t - s.last >= ttlMs;
   function sweep(t) {
@@ -371,7 +371,7 @@ export function createSessionStore({ maxSessions, ttlMs, now, randomId, maxEntri
       for (const e of s.pendingQ) if (!e.dead) unacked++;
       return { entries: s.sent.size, retainedBytes: s.retained, unacked, groups: s.groupMax.size };
     },
-    /** 진단용(테스트): 축출 횟수와 걸음 수(건너뛴 자리 + 압축이 훑은 자리). 두 work 모두 해당 큐 전체 누계(압축 포함)다. */
+    /** BENCH-ONLY: 진단용(테스트): 축출 횟수와 걸음 수(건너뛴 자리 + 압축이 훑은 자리). 두 work 모두 해당 큐 전체 누계(압축 포함)다. */
     evictionStats() {
       return { sessionEvictions: evictionDiag.sessionEvictions, sessionWork: sessions.work, ackedEvictions: evictionDiag.ackedEvictions, ackedWork: evictionDiag.ackedWork };
     },

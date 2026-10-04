@@ -155,13 +155,15 @@ test('scaleIntrinsics: 버퍼 반올림이 있는 dpr 에서 CSS 위치 차이 �
   assert(Math.abs(ue - uce * 1.25) <= 0.5 + 1e-9 && Math.abs(ve - vce * 1.25) <= 0.5 + 1e-9);
 });
 
-test('버퍼 반올림 공식의 예: 반올림이 없으면 333×222@1.25 에서 cy 가 139 대신 138.75 가 된다(기대 식의 예시)', () => {
-  // 이 시험은 실제 코드를 시험하지 않는 예시 식이다(변이 시험이 아니다). 실제 반올림은 위 시험의 deepEqual 이 고정한다.
+test('버퍼 반올림: 333×222@1.25 에서 cy 는 138.75 가 아니라 139 이고 버퍼는 416×278 이다', () => {
+  // 반올림 없는 sy 는 (222·1.25)/222 = 1.25 이고 cy = 111·1.25 = 138.75 다. 실제 sy 는 round(277.5)/222 = 278/222 이므로
+  // cy = 111·278/222 = 139. 같은 값을 위 시험은 assertK(허용 오차 1e-9)로, 여기는 정확히 같음(===)으로 고정한다.
   const Kc = fitIntrinsics(K_REF, REF_W, REF_H, 333, 222, 1);
-  const unrounded = (Kc.cy * (222 * 1.25)) / 222; // 반올림 없는 sy
-  assert(near(unrounded, 138.75));
-  assert(near(scaleIntrinsics(Kc, 333, 222, 333, 222, 1.25).cy, 139));
-  assert.notDeepEqual({ width: 333 * 1.25, height: 222 * 1.25 }, drawingBufferSize(333, 222, 1.25));
+  assert.equal(Kc.cy, 111);
+  const Kd = scaleIntrinsics(Kc, 333, 222, 333, 222, 1.25);
+  assert.equal(Kd.cy, 139);
+  assert.notEqual(Kd.cy, Kc.cy * 1.25);
+  assert.deepEqual(drawingBufferSize(333, 222, 1.25), { width: 416, height: 278 });
 });
 
 test('fitIntrinsics: sx > sy 화면(가로 화면 844×390@3)에서 contain·cover 손계산', () => {
@@ -292,15 +294,16 @@ test('selectDrawable: LEVEL_ARRIVED 없는 조각은 그리지 않고, 높은 �
   // 아무 수준도 도착하지 않음: 모두 대기, 그리는 것 없음
   assert.deepEqual(selectDrawable(keys, []), { draw: [], pending: keys, discard: [] });
   // 7 의 수준 0 도착: 수준 0 만 그림, 1·2 는 자기 LEVEL_ARRIVED 대기
-  assert.deepEqual(selectDrawable(keys, [{ segmentId: 7, level: 0 }]), {
+  const A = (segmentId, level, ...ks) => ({ segmentId, level, keys: ks });
+  assert.deepEqual(selectDrawable(keys, [A(7, 0, k(7, 0), k(7, 0, 1))]), {
     draw: [k(7, 0), k(7, 0, 1)], pending: [k(7, 1), k(7, 2), k(9, 1)], discard: [],
   });
   // 7 의 수준 1 도착: 수준 0 은 바뀌어 버림(쌓지 않음), 수준 1 만 그림
-  assert.deepEqual(selectDrawable(keys, [{ segmentId: 7, level: 0 }, { segmentId: 7, level: 1 }]), {
+  assert.deepEqual(selectDrawable(keys, [A(7, 0, k(7, 0), k(7, 0, 1)), A(7, 1, k(7, 1))]), {
     draw: [k(7, 1)], pending: [k(7, 2), k(9, 1)], discard: [k(7, 0), k(7, 0, 1)],
   });
   // 7 의 수준 2 가 1 없이 도착: LEVEL_ARRIVED 를 못 받은 수준 1 조각도 그리지 않고 버린다. 구간 9 는 따로다
-  const arrived = [{ segmentId: 7, level: 2 }, { segmentId: 7, level: 0 }, { segmentId: 9, level: 1 }];
+  const arrived = [A(7, 2, k(7, 2)), A(7, 0, k(7, 0), k(7, 0, 1)), A(9, 1, k(9, 1))];
   const want = { draw: [k(7, 2), k(9, 1)], pending: [], discard: [k(7, 0), k(7, 0, 1), k(7, 1)] };
   assert.deepEqual(selectDrawable(keys, arrived), want);
   // 도착 순서와 무관
@@ -308,7 +311,10 @@ test('selectDrawable: LEVEL_ARRIVED 없는 조각은 그리지 않고, 높은 �
   // 수준 3 조각은 아직 대기
   assert.deepEqual(selectDrawable([k(7, 3)], arrived), { draw: [], pending: [k(7, 3)], discard: [] });
   // segmentId 상한(2^30 배타): 2^30 − 1 은 받는다
-  assert.deepEqual(selectDrawable([`${2 ** 30 - 1}.0.0.0.0.0`], [{ segmentId: 2 ** 30 - 1, level: 0 }]).draw, [`${2 ** 30 - 1}.0.0.0.0.0`]);
+  assert.deepEqual(selectDrawable([`${2 ** 30 - 1}.0.0.0.0.0`], [{ segmentId: 2 ** 30 - 1, level: 0, keys: [`${2 ** 30 - 1}.0.0.0.0.0`] }]).draw, [`${2 ** 30 - 1}.0.0.0.0.0`]);
+  // i32 끝값과 chunkIndex 65535 는 받는다(손계산: 2^31 − 1 = 2147483647)
+  const edge = '7.0.2147483647.-2147483648.0.65535';
+  assert.deepEqual(selectDrawable([edge], [A(7, 0, edge)]).draw, [edge]);
   // 잘못된 입력은 ClientRasterError(piece)
   for (const f of [
     () => selectDrawable('7.0.0.0.0.0', []),
@@ -317,8 +323,68 @@ test('selectDrawable: LEVEL_ARRIVED 없는 조각은 그리지 않고, 높은 �
     () => selectDrawable([], [{ segmentId: -1, level: 0 }]),
     () => selectDrawable([], [{ segmentId: 2 ** 30, level: 0 }]),
     () => selectDrawable([], [{ segmentId: 2 ** 53, level: 0 }]),
+    () => selectDrawable(['1073741824.1.0.0.0.0'], []),
+    () => selectDrawable([`${2 ** 30}.0.0.0.0.0`], [{ segmentId: 7, level: 0 }]),
+    () => selectDrawable(['7.0.100000000000000000000.0.0.0'], []),
+    () => selectDrawable(['7.0.0.-2147483649.0.0'], []),
+    () => selectDrawable(['7.0.2147483648.0.0.0'], []),
+    () => selectDrawable(['7.0.0.0.0.65536'], []),
+    () => selectDrawable([], [{ segmentId: 7, level: 0, keys: ['1073741824.0.0.0.0.0'] }]),
+    () => selectDrawable([], [{ segmentId: 7, level: 0, keys: ['8.0.0.0.0.0'] }]),
+    () => selectDrawable([], [{ segmentId: 7, level: 0, keys: ['7.1.0.0.0.0'] }]),
+    () => selectDrawable([], [{ segmentId: 7, level: 0, keys: 'x' }]),
     () => selectDrawable([], null),
   ]) assert.throws(f, (e) => e instanceof ClientRasterError && e.code === 'piece');
+});
+
+test('selectDrawable(F-227): 완료 key 집합 밖의 같은 수준 key 는 그리지 않고 discard 로 해제된다', () => {
+  const k0 = '9.1.0.0.0.0';
+  const k1 = '9.1.0.0.0.1';
+  // 두 번째 key 가 시도 중간에 abandoned: 완료 집합은 첫 번째뿐
+  assert.deepEqual(selectDrawable([k0, k1], [{ segmentId: 9, level: 1, keys: [k0] }]), { draw: [k0], pending: [], discard: [k1] });
+  // keys 가 없는 항목은 빈 집합: 아무것도 그리지 않고 두 key 는 해제 대상
+  assert.deepEqual(selectDrawable([k0, k1], [{ segmentId: 9, level: 1 }]), { draw: [], pending: [], discard: [k0, k1] });
+  // 같은 수준 항목이 둘이면 완료 집합은 합집합, 낮은 수준 항목의 집합은 쓰이지 않는다
+  const low = '9.0.0.0.0.0';
+  assert.deepEqual(
+    selectDrawable([low, k0, k1], [{ segmentId: 9, level: 1, keys: [k0] }, { segmentId: 9, level: 0, keys: [low] }, { segmentId: 9, level: 1, keys: [k1] }]),
+    { draw: [k0, k1], pending: [], discard: [low] },
+  );
+  // 더 높은 수준이 도착하면 낮은 수준의 집합은 버려진다
+  const k2 = '9.2.0.0.0.0';
+  assert.deepEqual(selectDrawable([k0, k2], [{ segmentId: 9, level: 1, keys: [k0] }, { segmentId: 9, level: 2, keys: [k2] }]), { draw: [k2], pending: [], discard: [k0] });
+  // 다른 구간의 집합은 영향이 없다
+  assert.deepEqual(selectDrawable(['8.1.0.0.0.0', k1], [{ segmentId: 9, level: 1, keys: [k0] }]), { draw: [], pending: ['8.1.0.0.0.0'], discard: [k1] });
+});
+
+test('maxDimension: 상한 32768, options=null 허용, 잘못된 options 는 거부(F-229 ⑥)', () => {
+  assert.deepEqual(drawingBufferSize(20000, 1, 1, { maxDimension: 32768 }), { width: 20000, height: 1 });
+  assert.throws(() => drawingBufferSize(1, 1, 1, { maxDimension: 32769 }), (e) => e instanceof ClientRasterError && e.code === 'view');
+  assert.throws(() => drawingBufferSize(1, 1, 1, { maxDimension: 1e300 }), (e) => e instanceof ClientRasterError && e.code === 'view');
+  assert.deepEqual(drawingBufferSize(1920, 1080, 2, null), { width: 3840, height: 2160 });
+  assert.deepEqual(drawingBufferSize(1920, 1080, 2, undefined), { width: 3840, height: 2160 });
+  assert.deepEqual(drawingBufferSize(1920, 1080, 2, {}), { width: 3840, height: 2160 });
+  assert.throws(() => drawingBufferSize(1, 1, 1, 5), (e) => e instanceof ClientRasterError && e.code === 'view');
+});
+
+test('배율 범위 [1/4096, 4096]: 범위 밖 sx·sy 는 ClientRasterError(view)(F-229 ⑥)', () => {
+  const K1 = { fx: 1, fy: 1, cx: 0, cy: 0 };
+  // 경계는 정확히 표현되는 값: 4096/1, 1/4096
+  assert.deepEqual(scaleIntrinsics(K1, 1, 1, 4096, 1, 1), { fx: 4096, fy: 1, cx: 0, cy: 0 });
+  assert.deepEqual(scaleIntrinsics(K1, 4096, 1, 1, 1, 1), { fx: 1 / 4096, fy: 1, cx: 0, cy: 0 });
+  const bad = [
+    () => scaleIntrinsics(K1, 1, 1, 4097, 1, 1),
+    () => scaleIntrinsics(K1, 4097, 1, 1, 1, 1),
+    () => scaleIntrinsics(K1, 1e-300, 1152, 960, 540, 2),
+    () => fitIntrinsics(K_REF, 1e-300, REF_H, 375, 667, 3, 'cover'),
+    () => fitIntrinsics(K_REF, 1e-300, REF_H, 375, 667, 3, 'contain'),
+    () => fitIntrinsics(K_REF, REF_W, 1e300, 375, 667, 3),
+    () => fitIntrinsics(K1, 1, 1, 4097, 1, 1),
+  ];
+  for (const f of bad) assert.throws(f, (e) => e instanceof ClientRasterError && e.code === 'view');
+  // 범위 안 contain·cover 는 그대로: refW = 1, W = 4096 → sx = 4096, sy = 1 → contain s = 1, cover s = 4096
+  assert.deepEqual(fitIntrinsics(K1, 1, 1, 4096, 1, 1, 'contain'), { fx: 1, fy: 1, cx: 2047.5, cy: 0 });
+  assert.deepEqual(fitIntrinsics(K1, 1, 1, 4096, 1, 1, 'cover'), { fx: 4096, fy: 4096, cx: 0 + (4096 - 4096) / 2, cy: (1 - 4096) / 2 });
 });
 
 test('key 는 ASSET_FORMAT §11 정규 문자열(server/asset/ids encodeChunkKey)이고 proto 의 a:b 형식이 아니다', () => {
@@ -368,7 +434,7 @@ test('CLIENT_RASTER_API 서명은 문자열 전체가 기대값과 같다(순서
     cvToGlExtrinsics: 'cvToGlExtrinsics(R, t) -> {R, t}  diag(1,-1,-1)·R, diag(1,-1,-1)·t',
     cameraPointToGl: 'cameraPointToGl(xc) -> [x, -y, -z] | null  null when d = xc[2] <= 0 or not finite',
     pixelToNdc: 'pixelToNdc(u, v, bw, bh) -> [2u/bw - 1, 1 - 2v/bh]',
-    selectDrawable: 'selectDrawable(keys, arrived) -> {draw, pending, discard}  arrived: [{segmentId, level}] from LEVEL_ARRIVED',
+    selectDrawable: 'selectDrawable(keys, arrived) -> {draw, pending, discard}  arrived: [{segmentId, level, keys}] from LEVEL_ARRIVED (keys = completed key set)',
   };
   assert.equal(Object.isFrozen(contract.CLIENT_RASTER_API), true);
   assert.deepEqual(Object.keys(contract.CLIENT_RASTER_API), Object.keys(expected));

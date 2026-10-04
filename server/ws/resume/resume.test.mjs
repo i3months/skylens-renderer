@@ -665,6 +665,9 @@ function evictionRatio(kind, ops) {
 // 상한에 비례해 느려지므로(R1/R2), 큰 Map 반복은 축출 경로에서 한 번도 없어야 하고 next() 호출도 축출 1회당 상수 이하여야 한다.
 const SPY_MIN = 1024;
 function spyMapIteration(fn) {
+  // NOTE: This spy catches only prototype method lookups at call time by wrapping Map.prototype methods.
+  // It cannot detect mutations that capture methods at module load time (e.g., const keys = Map.prototype.keys; keys.call(map)).
+  // Methods bound or captured before spyMapIteration() runs will not be intercepted.
   const P = Map.prototype;
   const orig = { keys: P.keys, values: P.values, entries: P.entries, iter: P[Symbol.iterator], forEach: P.forEach };
   const c = { creates: 0, nexts: 0, forEachCalls: 0 };
