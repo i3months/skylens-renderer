@@ -11,17 +11,25 @@
 //     이미 수준이 도착한 구간이면 아무것도 내보내지 않는다(도착한 구간을 없음이라 거짓으로 알리지 않는다).
 //   level_arrived → machine.arrive(segmentId, level, pieces).
 //     skip(추월·중복)      : 아무것도 내보내지 않는다.
-//     first / replace      : 조각마다 PIECE 한 건(pieceSeq 는 어댑터가 0부터 1씩 올리는 u32), 그다음 LEVEL_ARRIVED 한 건.
+//     first / replace      : 조각마다 PIECE 한 건(pieceSeq 는 어댑터가 PIECE_SEQ_MIN(1)부터 1씩 올리는 u32), 그다음 LEVEL_ARRIVED 한 건.
 //                            순서는 PIECE 들이 먼저이고 LEVEL_ARRIVED 가 마지막이다. 받는 쪽은 LEVEL_ARRIVED 를 "그 수준의
 //                            조각 pieceCount 개가 모두 왔다" 는 완료 표시로 쓰고, 그때 자기 수준 기계에 arrive 한다.
 //     replace              : 기계가 released 로 내보낸 이전 수준 조각의 key 목록을 onRelease(keys, info) 로 알린다.
+//   송출과 상태 확정 순서(F-189):
+//     ① 기계 snapshot 과 decideArrival 로 결정을 미리 본다(skip 이면 끝). ② 보낼 메시지를 모두 만들고 부호화까지 마친다.
+//     ③ 전부 emit 한다. ④ 그다음에야 machine.arrive 로 상태를 확정하고 nextSeq 를 올린다. ⑤ onRelease 를 부른다.
+//     ②·③ 에서 던지면 기계 상태·nextSeq 는 그대로이고 예외를 다시 던진다. 같은 이벤트를 다시 넣으면 결정이 그대로
+//     first/replace 로 나오고, 실패한 시도가 쓰려던 pieceSeq 부터 다시 매긴다(끊김 없음). 실패한 시도에서 일부 emit 이
+//     이미 나갔다면 같은 pieceSeq·key 로 다시 나가므로 받는 쪽은 그것을 같은 조각으로 다룬다.
+//     ⑤ 는 상태 확정 뒤라 실패해도 되돌리지 않는다(메시지는 이미 다 나갔다). onRelease 는 함수 또는 함수 배열이며,
+//     하나가 던져도 나머지를 모두 부른 다음 예외를 다시 던진다(하나면 그 예외, 둘 이상이면 AggregateError).
 //   도착하지 않은 것을 만들거나 메우지 않는다. 시간·타이머를 쓰지 않는다. 상태는 handle 호출로만 바뀐다.
 // 입력 검사: 이벤트 전체를 기계에 넘기기 전에 검사한다(검사 실패 시 상태·순번은 그대로).
 //   모양이 틀리면 TypeError, 값이 범위 밖이면 RangeError.
 import { createLevelMachine } from '../../levels/state/index.mjs';
-import { LEVEL_COUNT, ACTIONS } from '../../../contracts/levels/index.mjs';
+import { LEVEL_COUNT, ACTIONS, decideArrival } from '../../../contracts/levels/index.mjs';
 import { SEGMENT_ID_LIMIT, LOD_MAX } from '../../../contracts/asset/index.mjs';
-import { MAX_PAYLOAD_BYTES, PIECE_KEY_BYTES, pieceKeyString } from '../../../contracts/proto/index.mjs';
+import { MAX_PAYLOAD_BYTES, PIECE_KEY_BYTES, PIECE_SEQ_MIN, pieceKeyString } from '../../../contracts/proto/index.mjs';
 
 /** PIECE 본문에서 조각 바이트 앞에 오는 부분(pieceSeq u32 + PieceKey). */
 const PIECE_PREFIX_BYTES = 4 + PIECE_KEY_BYTES;
@@ -48,6 +56,15 @@ const I32_MAX = 0x7fffffff;
 function intIn(v, lo, hi, name) {
   if (!Number.isInteger(v)) throw new TypeError(`${name} 는 정수여야 한다: ${v}`);
   if (v < lo || v > hi) throw new RangeError(`${name} 범위 밖: ${v}`);
+  return v;
+}
+
+/** firstPieceSeq 검사. 없으면 PIECE_SEQ_MIN, 정수가 아니거나 범위 밖(0 포함)이면 RangeError. */
+function checkFirstSeq(v) {
+  if (v === undefined) return PIECE_SEQ_MIN;
+  if (!Number.isInteger(v) || v < PIECE_SEQ_MIN || v > U32_MAX) {
+    throw new RangeError(`firstPieceSeq 는 ${PIECE_SEQ_MIN} 이상 u32 최대 이하 정수여야 한다: ${String(v)}`);
+  }
   return v;
 }
 
@@ -81,8 +98,9 @@ function checkPiece(p, i, segmentId, level) {
  * @param {import('../../../contracts/levels/index.mjs').LevelMachine} [options.levelMachine]  기본: server/levels/state 의 새 기계
  * @param {(message: Message | Uint8Array) => void} options.emit   내보낼 메시지를 받는다(encode 가 있으면 부호화된 바이트)
  * @param {(message: Message) => Uint8Array} [options.encode]      주입 코덱. 주면 emit 에 encode(message) 를 넘긴다
- * @param {(keys: PieceKey[], info: {segmentId:number, level:number, previousLevel:number}) => void} [options.onRelease]
- * @param {number} [options.firstPieceSeq]  첫 pieceSeq(u32, 기본 0)
+ * @param {ReleaseFn | ReleaseFn[]} [options.onRelease]  교체 알림. 배열이면 순서대로 모두 부른다
+ * @param {number} [options.firstPieceSeq]  첫 pieceSeq(PIECE_SEQ_MIN..u32 최대, 기본 PIECE_SEQ_MIN). 0 은 '받은 것 없음' 전용이라 RangeError
+ * @typedef {(keys: PieceKey[], info: {segmentId:number, level:number, previousLevel:number}) => void} ReleaseFn
  */
 export function createCoreAdapter(options = {}) {
   if (!isObject(options)) throw new TypeError('options 는 객체여야 한다');
@@ -94,11 +112,22 @@ export function createCoreAdapter(options = {}) {
   const { emit, encode, onRelease } = options;
   if (typeof emit !== 'function') throw new TypeError('emit 은 함수여야 한다');
   if (encode !== undefined && typeof encode !== 'function') throw new TypeError('encode 는 함수여야 한다');
-  if (onRelease !== undefined && typeof onRelease !== 'function') throw new TypeError('onRelease 는 함수여야 한다');
-  let nextSeq = options.firstPieceSeq === undefined ? 0 : intIn(options.firstPieceSeq, 0, U32_MAX, 'firstPieceSeq');
+  const releaseFns = onRelease === undefined ? [] : Array.isArray(onRelease) ? onRelease.slice() : [onRelease];
+  if (!releaseFns.every((f) => typeof f === 'function')) throw new TypeError('onRelease 는 함수 또는 함수 배열이어야 한다');
+  let nextSeq = checkFirstSeq(options.firstPieceSeq);
 
   function send(message) {
     emit(encode ? encode(message) : message);
+  }
+
+  /** onRelease 를 모두 부르고, 던진 것이 있으면 다 부른 뒤 다시 던진다. */
+  function notifyRelease(keys, info) {
+    const errors = [];
+    for (const f of releaseFns) {
+      try { f(keys.map((k) => ({ ...k })), { ...info }); } catch (e) { errors.push(e); }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, `onRelease ${errors.length} 개가 던졌다`);
   }
 
   function onExpected(ev) {
@@ -123,17 +152,29 @@ export function createCoreAdapter(options = {}) {
     // pieceSeq 는 u32 이다. 넘치면 되감지 않고 거부한다(받은 쪽 순번이 거꾸로 가지 않게).
     if (pieces.length > 0 && nextSeq + pieces.length - 1 > U32_MAX) throw new RangeError('pieceSeq 가 u32 범위를 넘는다');
 
-    const r = machine.arrive(segmentId, level, pieces);
-    if (r.action === ACTIONS.SKIP) return { action: 'skip', emitted: 0, released: [] };
-    for (const p of pieces) {
-      send({ type: 'PIECE', pieceSeq: nextSeq, key: { ...p.key }, chunk: p.bytes });
-      nextSeq++;
+    // ① 결정을 미리 본다. 상태는 아직 바꾸지 않는다.
+    const planned = decideArrival(machine.snapshot(segmentId).level, level);
+    if (planned === ACTIONS.SKIP) {
+      // skip 은 기계에도 알린다(기계 이력 등). 상태는 바뀌지 않는다.
+      const r = machine.arrive(segmentId, level, pieces);
+      if (r.action !== ACTIONS.SKIP) throw new Error(`수준 기계 결정(${r.action})이 snapshot 으로 본 결정(skip)과 다르다`);
+      return { action: 'skip', emitted: 0, released: [] };
     }
-    send({ type: 'LEVEL_ARRIVED', segmentId, level, pieceCount: pieces.length });
+    // ② 메시지를 모두 만들고 부호화까지 마친다. 여기서 던지면 아무것도 나가지 않는다.
+    const messages = pieces.map((p, i) => ({ type: 'PIECE', pieceSeq: nextSeq + i, key: { ...p.key }, chunk: p.bytes }));
+    messages.push({ type: 'LEVEL_ARRIVED', segmentId, level, pieceCount: pieces.length });
+    const outgoing = encode ? messages.map((m) => encode(m)) : messages;
+    // ③ 전부 송출한다. 던지면 상태·nextSeq 를 확정하지 않은 채로 다시 던진다.
+    for (const m of outgoing) emit(m);
+    // ④ 송출이 끝난 뒤 상태와 순번을 확정한다.
+    const r = machine.arrive(segmentId, level, pieces);
+    if (r.action !== planned) throw new Error(`수준 기계 결정(${r.action})이 snapshot 으로 본 결정(${planned})과 다르다`);
+    nextSeq += pieces.length;
     let released = [];
     if (r.action === ACTIONS.REPLACE) {
       released = r.released.map((p) => ({ ...p.key }));
-      if (onRelease) onRelease(released.map((k) => ({ ...k })), { segmentId, level, previousLevel: r.previousLevel });
+      // ⑤ 상태 확정 뒤 알림. 하나가 던져도 전부 부르고 다시 던진다.
+      notifyRelease(released, { segmentId, level, previousLevel: r.previousLevel });
     }
     return { action: r.action, emitted: pieces.length + 1, released };
   }
