@@ -58,7 +58,8 @@ function fakeWorker(r, costMs) {
   const w = { onmessage: null, onerror: null, sent: [],
     postMessage(m) { r.advance(1); w.sent.push(m); },
     terminate() { w.dead = true; } };
-  w.reply = (data) => { r.advance(costMs); w.onmessage({ data }); };
+  // 응답 배달 중 메인 스레드가 costMs 를 쓴 것으로 흉내(data 접근 시 시계가 간다)
+  w.reply = (data) => { w.onmessage({ get data() { r.advance(costMs); return data; } }); };
   return w;
 }
 
