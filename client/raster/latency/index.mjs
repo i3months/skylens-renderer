@@ -33,8 +33,10 @@ export function createLatencyProbe({ now = () => performance.now() } = {}) {
     mark(name, id) {
       const time = now();
       const key = id !== undefined ? `${name}:${id}` : name;
-      // 이미 존재하지 않으면 개수 확인
-      if (!marks.has(key) && marks.size >= MAX_MARKS) {
+      // 이미 존재하면 삭제해서 삽입 순서를 갱신한 뒤 다시 설정
+      if (marks.has(key)) {
+        marks.delete(key);
+      } else if (marks.size >= MAX_MARKS) {
         // 상한 도달: 가장 오래된 것(삽입 순서의 첫 항목)을 버린다
         const first = marks.keys().next().value;
         marks.delete(first);
