@@ -92,12 +92,23 @@ test('깨진 복호기 4: 느린 복호 -> time 검출(checkOne)', () => {
 
 const spin = (ms) => { const t = performance.now(); while (performance.now() - t < ms) { /* spin */ } };
 
-test('time 주입 1: 250 ms 1회 정지는 재현되지 않아 위반 0(일회성 정지는 오탐 아님)', () => {
+// 계측 진입(checkOne 안의 decode)인지 호출 스택으로 판별한다. runFuzz 는 stackTraceLimit 을 0 으로 두므로 잠시 올려서 읽는다.
+const inCheckOne = (marker = 'checkOne') => {
+  const saved = Error.stackTraceLimit; Error.stackTraceLimit = 8;
+  const stack = new Error().stack ?? ''; Error.stackTraceLimit = saved;
+  return stack.includes(marker);
+};
+
+test('time 주입 1: 첫 계측 decode 에서 250 ms 1회 정지는 재현되지 않아 위반 0(일회성 정지는 오탐 아님)', () => {
   const ok = makeDecoder('c2s');
-  let calls = 0;
-  const hiccup = (b) => { if (++calls === 500) spin(250); return ok(b); };
+  let stalls = 0, instrumented = 0;
+  const hiccup = (b) => {
+    if (inCheckOne()) { instrumented++; if (stalls === 0) { stalls++; spin(250); } }
+    return ok(b);
+  };
   const r = runFuzz({ ...refCodec('c2s'), decode: hiccup }, { iterations: 2000, seed: SEED });
-  assert.ok(calls > 500, `정지 지점까지 도달해야 한다: ${calls}`);
+  assert.equal(stalls, 1, `정지는 계측 decode 에서 정확히 한 번 주입되어야 한다: ${stalls}`);
+  assert.ok(instrumented >= 2000, `계측 decode 가 반복마다 불려야 한다(재실행 포함): ${instrumented}`);
   assert.equal(r.violations.length, 0, JSON.stringify(r.violations.slice(0, 2)));
 });
 
