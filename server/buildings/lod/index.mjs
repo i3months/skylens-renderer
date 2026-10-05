@@ -40,6 +40,7 @@
 //   빈 땅이 메워져, 줄 사이 틈의 벽 띠가 지붕으로 덮였다(이전 시드 180 top-high 건물 영역 SSIM 0.9496, F-326·F-331).
 // 계산량: 한 칸 k 동에 대해 쌍 선검사 O(k²)(값싼 상자 비교), 오차 평가는 꺼낸 쌍만, 틈 칸만 표본한다.
 import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
+import { foldContained } from './dedupe_boxes.mjs';
 
 /** 기준 화면의 한 픽셀 각(rad): 세로 시야 60°, 세로 1080 px 화면. 관제탑 표준 화면을 가정한 값. */
 export const BUILDING_LOD_REF_PIXEL_RAD = (Math.PI / 3) / 1080;
@@ -720,7 +721,7 @@ export function buildBuildingLod(buildings, cameraDistM) {
         m.err = singleError(m, tol, hideTol);
         if (m.err > tol) keepOriginal(it); else singles.push(m);
       }
-      for (const c of agglomerate(singles, tol, hideTol)) {
+      for (const c of agglomerate(foldContained(singles), tol, hideTol)) {
         // 혼자 남은 건물의 원본이 상자(삼각형 10개)보다 작으면(벽만 있는 퇴화 입력 등) 바꿔도 줄지 않으므로 원본 유지.
         if (c.members.length === 1 && c.members[0].it.mesh.indices.length / 3 < 10) {
           keepOriginal(c.members[0].it);
