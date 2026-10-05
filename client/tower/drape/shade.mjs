@@ -59,3 +59,72 @@ export function applyRatio(rgb, ratio) {
     Math.max(0, Math.min(255, Math.round(rgb[2] * ratio))),
   ];
 }
+
+/**
+ * 화소 루프용 음영 비율(검사 없음, 할당 없음). color[offset..offset+2] 를 지형 색으로 읽는다.
+ * shadeRatio 와 같은 순서로 같은 연산을 하므로 결과가 같다. baseRgb 는 호출자가 미리(프레임당 1 회) 검사한다.
+ * @param {ArrayLike<number>} color 지형 색 배열(rgb 연속)
+ * @param {number} offset 화소의 첫 채널 위치(3·p)
+ * @param {ArrayLike<number>} baseRgb 기준색
+ * @returns {number}
+ */
+export function shadeRatioAt(color, offset, baseRgb) {
+  const terrainAvg = (color[offset] + color[offset + 1] + color[offset + 2]) / 3;
+  const baseAvg = (baseRgb[0] + baseRgb[1] + baseRgb[2]) / 3;
+  if (baseAvg === 0) return 1;
+  const ratio = terrainAvg / baseAvg;
+  return Math.max(0, Math.min(1.4, ratio));
+}
+
+/**
+ * applyRatio 의 할당 없는 판. src[srcOff..+2] 에 비율을 곱해 dst[dstOff..+2] 에 쓴다(결과는 applyRatio 와 같다).
+ * @param {ArrayLike<number>} src
+ * @param {number} srcOff
+ * @param {number} ratio
+ * @param {Uint8Array|number[]} dst
+ * @param {number} dstOff
+ */
+export function applyRatioInto(src, srcOff, ratio, dst, dstOff) {
+  // Math.max/min 대신 비교로 제한한다(값은 같다: 반올림 결과가 0..255 밖일 때만 바뀐다).
+  let v = Math.round(src[srcOff] * ratio);
+  dst[dstOff] = v < 0 ? 0 : v > 255 ? 255 : v;
+  v = Math.round(src[srcOff + 1] * ratio);
+  dst[dstOff + 1] = v < 0 ? 0 : v > 255 ? 255 : v;
+  v = Math.round(src[srcOff + 2] * ratio);
+  dst[dstOff + 2] = v < 0 ? 0 : v > 255 ? 255 : v;
+}
+
+/**
+ * 프레임당 한 번 만드는 음영 비율 표. 표[c0 + c1 + c2] = shadeRatio([c0, c1, c2], baseRgb) (c 는 0..255 정수).
+ * shadeRatio 는 채널 합(정수, 정확)에만 의존하므로 표를 써도 결과가 같다. baseRgb 는 호출자가 미리 검사한다.
+ * @param {ArrayLike<number>} baseRgb
+ * @returns {Float64Array} 길이 766
+ */
+export function shadeRatioTable(baseRgb) {
+  const table = new Float64Array(766);
+  const baseAvg = (baseRgb[0] + baseRgb[1] + baseRgb[2]) / 3;
+  for (let sum = 0; sum < 766; sum++) {
+    if (baseAvg === 0) { table[sum] = 1; continue; }
+    const ratio = sum / 3 / baseAvg;
+    table[sum] = Math.max(0, Math.min(1.4, ratio));
+  }
+  return table;
+}
+
+/**
+ * 음영 적용 표. 표[(c0 + c1 + c2)·256 + c] = applyRatio 를 비율 shadeRatio([c0, c1, c2], baseRgb) 로 c 에 적용한 값.
+ * 표본 색·지형 색이 모두 0..255 정수이므로 화소마다 곱셈·반올림 대신 표를 읽어도 결과가 같다.
+ * 크기 766·256 바이트(약 196 KB). baseRgb 가 같으면 다시 쓸 수 있다(호출자가 보관). baseRgb 는 호출자가 미리 검사한다.
+ * @param {ArrayLike<number>} baseRgb
+ * @returns {Uint8Array}
+ */
+export function shadeLut(baseRgb) {
+  const ratios = shadeRatioTable(baseRgb);
+  const lut = new Uint8Array(766 * 256);
+  for (let sum = 0; sum < 766; sum++) {
+    const ratio = ratios[sum];
+    const row = sum * 256;
+    for (let c = 0; c < 256; c++) lut[row + c] = Math.max(0, Math.min(255, Math.round(c * ratio)));
+  }
+  return lut;
+}
