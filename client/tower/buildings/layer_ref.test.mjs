@@ -12,10 +12,16 @@ const SEEDS = [1, 2, 3, 4, 5, 6];
 // 덮인 화소 일치율 하한 0.99(측정값에 맞춰 조정하지 않은 고정값). aerial·points 는 선이 없어 경계 화소 몇 개뿐이어야 한다.
 // black 은 선 폭 규칙이 층(주축 한 화소)과 참조(중심에서 0.5 px)에서 달라 선 가장자리 화소가 갈린다. 그래서 선 화소는 대칭 허용을 둔다:
 // 층만 선이면 참조 선이, 참조만 선이면 층 선이 1 px 안에 있을 때 일치로 센다. 둘 다 선이면 index 같고 깊이 차가 상대 1 % 안이어야 한다.
+// 선·선 불일치 개수와 참조 면 위 층 선 화소 수는 아래 상한 단언으로 따로 막는다(일치율에만 섞이지 않게).
 // 이 허용 아래 측정 최저 일치율은 0.9973(시드 1~6 × 카메라 3). 허용 없이 쓰던 0.95 는 유도 근거가 없었다.
 const MIN_COVERED_AGREE = { aerial: 0.99, points: 0.99, black: 0.99 };
 const MIN_LINE_OVERLAP = 0.9; // 층 선 화소 중 참조 선(1 px 안)과 겹치는 비율 하한
 const MAX_LINE_DEPTH_REL = 0.01; // 둘 다 선인 화소의 깊이 차 상대 허용(선 표본 위치가 화소 안에서 달라 생기는 차)
+// 선·선 불일치(index 다름 또는 깊이 차 1 % 초과) 화소 수 상한. 원본 측정 최대 5(시드 1~6 × 카메라 3, top 카메라 시드 3), 여유 포함 8.
+const MAX_LINE_MISMATCH = 8;
+// 층 선이 참조 '면' 화소(참조는 선 아님) 위에 찍힌 화소 수 상한. 원본 측정 최대 24(eye17 시드 2), 여유 포함 32.
+// 선 깊이 편향이 커지면 면 뒤의 선이 앞으로 나와 이 수가 늘어난다.
+const MAX_LINE_ON_REF_SURFACE = 32;
 const MAX_DEPTH_ERR = 1e-3; // 같은 화소를 둘 다 덮을 때 깊이 오차(m)
 const LINE = BUILDINGS_DEFAULTS.lineRgb;
 const isLine = (r, p) => r.color[3 * p] === LINE[0] && r.color[3 * p + 1] === LINE[1] && r.color[3 * p + 2] === LINE[2];
@@ -34,7 +40,7 @@ function lineNear(cam, r, p) {
 
 function compare(cam, got, ref, mode) {
   const n = cam.width * cam.height;
-  let covered = 0; let agree = 0; let worst = 0; let lineGot = 0; let lineOverlap = 0; let worstLine = 0;
+  let covered = 0; let agree = 0; let worst = 0; let lineGot = 0; let lineOverlap = 0; let worstLine = 0; let lineMismatch = 0; let lineOnSurface = 0;
   for (let p = 0; p < n; p++) {
     const g = got.depth[p] > 0; const r = ref.depth[p] > 0;
     if (!g && !r) continue;
@@ -42,12 +48,13 @@ function compare(cam, got, ref, mode) {
       // 둘 다 선인 화소: 묶음 번호가 같고 깊이 차가 허용 안이어야 일치.
       lineGot++; lineOverlap++; covered++;
       const dd = Math.abs(got.depth[p] - ref.depth[p]);
-      if (got.index[p] === ref.index[p] && dd <= MAX_LINE_DEPTH_REL * ref.depth[p]) { agree++; worstLine = Math.max(worstLine, dd); }
+      if (got.index[p] === ref.index[p] && dd <= MAX_LINE_DEPTH_REL * ref.depth[p]) { agree++; worstLine = Math.max(worstLine, dd); } else lineMismatch++;
       continue;
     }
     if (mode === 'black' && g && isLine(got, p)) {
       // 층만 선인 화소: 참조 선이 1 px 안에 있으면 겹침(선 폭 규칙 차이 허용)이라 일치로 센다.
       lineGot++; covered++;
+      if (r) lineOnSurface++; // 참조는 선이 아닌 면 화소(위 분기에서 선·선은 이미 처리됨)
       if (lineNear(cam, ref, p)) { lineOverlap++; agree++; }
       continue;
     }
@@ -64,7 +71,7 @@ function compare(cam, got, ref, mode) {
       worst = Math.max(worst, Math.abs(got.depth[p] - ref.depth[p]));
     }
   }
-  return { covered, agree, worst, lineGot, lineOverlap, worstLine };
+  return { covered, agree, worst, lineGot, lineOverlap, worstLine, lineMismatch, lineOnSurface };
 }
 
 test('층 render 는 광선 추적 참조와 일치한다(덮인 화소 기준, 시드 6 × 카메라 3 × 옵션 3)', () => {
@@ -88,6 +95,8 @@ test('층 render 는 광선 추적 참조와 일치한다(덮인 화소 기준, 
         if (mode === 'black') {
           assert.ok(s.lineGot > 0, `${tag}: 층 선 화소 0`);
           assert.ok(s.lineOverlap / s.lineGot >= MIN_LINE_OVERLAP, `${tag}: 선 겹침 ${(s.lineOverlap / s.lineGot).toFixed(3)} < ${MIN_LINE_OVERLAP}`);
+          assert.ok(s.lineMismatch <= MAX_LINE_MISMATCH, `${tag}: 선·선 불일치 ${s.lineMismatch} > ${MAX_LINE_MISMATCH}`);
+          assert.ok(s.lineOnSurface <= MAX_LINE_ON_REF_SURFACE, `${tag}: 참조 면 위 층 선 ${s.lineOnSurface} > ${MAX_LINE_ON_REF_SURFACE}`);
         }
         total++;
       }
