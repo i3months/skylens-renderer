@@ -14,6 +14,27 @@ function fail(message) {
   return new RangeError(`terrain: ${message}`);
 }
 
+/**
+ * 타일 하나의 모양 검증(cells·heights·tx·ty). levels.mjs 도 같은 검사를 쓰려고 내보낸다.
+ * tx·ty 는 정수일 뿐 아니라 Float32 위치(64·tx, 64·(tx+1))가 유한해야 한다(아니면 Infinity 가 되어 래스터가 던진다).
+ */
+export function assertTileShape(t, n) {
+  if (!t || typeof t !== 'object') throw fail(`타일 ${n} 이 객체가 아니다`);
+  if (!Number.isInteger(t.cells) || t.cells < 2) throw fail(`타일 ${n} 의 cells 는 2 이상 정수여야 한다`);
+  if (!(t.heights instanceof Float32Array) || t.heights.length !== t.cells * t.cells) {
+    throw fail(`타일 ${n} 의 heights 길이가 cells² 가 아니다`);
+  }
+  if (!Number.isInteger(t.tx) || !Number.isInteger(t.ty)) throw fail(`타일 ${n} 의 tx, ty 는 정수여야 한다`);
+  for (const [name, v] of [['tx', t.tx], ['ty', t.ty]]) {
+    if (!Number.isFinite(Math.fround(v * TILE_SIZE_M)) || !Number.isFinite(Math.fround((v + 1) * TILE_SIZE_M))) {
+      throw fail(`타일 ${n} 의 ${name} 가 Float32 위치로 표현 가능한 범위를 넘는다`);
+    }
+  }
+  for (let k = 0; k < t.heights.length; k++) {
+    if (!Number.isFinite(t.heights[k])) throw fail(`타일 ${n} 의 heights[${k}] 가 유한수가 아니다`);
+  }
+}
+
 /** 입력 검증. 통과하면 공통 cells(빈 배열이면 0)를 돌려준다. */
 function validate(tiles) {
   if (!Array.isArray(tiles)) throw fail('tiles 는 배열이어야 한다');
@@ -21,15 +42,7 @@ function validate(tiles) {
   let cells = 0;
   for (let n = 0; n < tiles.length; n++) {
     const t = tiles[n];
-    if (!t || typeof t !== 'object') throw fail(`타일 ${n} 이 객체가 아니다`);
-    if (!Number.isInteger(t.cells) || t.cells < 2) throw fail(`타일 ${n} 의 cells 는 2 이상 정수여야 한다`);
-    if (!(t.heights instanceof Float32Array) || t.heights.length !== t.cells * t.cells) {
-      throw fail(`타일 ${n} 의 heights 길이가 cells² 가 아니다`);
-    }
-    if (!Number.isInteger(t.tx) || !Number.isInteger(t.ty)) throw fail(`타일 ${n} 의 tx, ty 는 정수여야 한다`);
-    for (let k = 0; k < t.heights.length; k++) {
-      if (!Number.isFinite(t.heights[k])) throw fail(`타일 ${n} 의 heights[${k}] 가 유한수가 아니다`);
-    }
+    assertTileShape(t, n);
     const key = `${t.tx},${t.ty}`;
     if (seen.has(key)) throw fail(`타일 (${t.tx},${t.ty}) 가 중복이다`);
     seen.add(key);

@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildLayerMesh } from './mesh.mjs';
+import { createTerrainLayer } from './index.mjs';
 import { buildTerrainTile, terrainTileToMesh } from '../../../server/terrain/mesh_lod/index.mjs';
 
 // 257×257 표본, 1 m 셀 → 64 m 타일 4×4 = 16장.
@@ -148,6 +149,8 @@ test('입력 검증 음성 사례는 terrain: 접두의 RangeError', () => {
     'heights NaN': [bad({ heights: new Float32Array([0, 0, 0, 0, NaN, 0, 0, 0, 0]) })],
     'heights Infinity': [bad({ heights: new Float32Array([0, 0, 0, 0, 0, 0, 0, Infinity, 0]) })],
     'tx 비정수': [bad({ tx: 0.5 })],
+    'tx Float32 초과': [bad({ tx: 1e37 })],
+    'ty Float32 초과': [bad({ ty: -1e37 })],
     'ty NaN': [bad({ ty: NaN })],
     '(tx,ty) 중복': [ok(), ok()],
     'cells 가 타일마다 다름': [ok(), bad({ tx: 1, cells: 2, heights: new Float32Array(4) })],
@@ -155,4 +158,25 @@ test('입력 검증 음성 사례는 terrain: 접두의 RangeError', () => {
   for (const [name, input] of Object.entries(cases)) {
     assert.throws(() => buildLayerMesh(input), (e) => e instanceof RangeError && e.message.startsWith('terrain:'), name);
   }
+});
+
+// Float32 로 유한한 최대 타일 번호: 64·(tx+1) 이 Float32 최댓값 이하인 가장 큰 정수.
+const MAX_F32 = 3.4028234663852886e38;
+const MAX_TX = Math.floor(MAX_F32 / 64) - 1;
+
+test('위치가 Float32 로 유한한 최대 타일 번호는 통과하고 조금 넘으면 RangeError', () => {
+  assert.ok(Number.isFinite(Math.fround((MAX_TX + 1) * 64)));
+  const heights = new Float32Array(4);
+  const m = buildLayerMesh([{ tx: MAX_TX, ty: 0, cells: 2, heights }, { tx: -MAX_TX - 1, ty: -MAX_TX - 1, cells: 2, heights }]);
+  assert.ok(m.positions.every(Number.isFinite));
+  assert.throws(() => buildLayerMesh([{ tx: MAX_TX * 1.01, ty: 0, cells: 2, heights }]), RangeError);
+  assert.throws(() => buildLayerMesh([{ tx: 0, ty: MAX_TX * 1.01, cells: 2, heights }]), RangeError);
+});
+
+test('범위 밖 tx 는 층 accept 가 RangeError 로 거부하고 수준 -1 이 유지되며 render 는 빈 결과다', () => {
+  const L = createTerrainLayer();
+  assert.throws(() => L.accept(0, [{ tx: 1e37, ty: 0, cells: 3, heights: new Float32Array(9) }]), RangeError);
+  assert.equal(L.state().level, -1);
+  const out = L.render({ width: 8, height: 8, K: { fx: 8, fy: 8, cx: 4, cy: 4 }, R: [1, 0, 0, 0, -1, 0, 0, 0, -1], t: [0, 0, 100] });
+  assert.ok(out.index.every((v) => v === -1) && out.color.every((v) => v === 0));
 });
