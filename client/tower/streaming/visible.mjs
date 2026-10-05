@@ -22,7 +22,7 @@ import { TOWER_STREAMING_LIMITS } from '../../../contracts/controlview/streaming
 
 const S = TERRAIN_TILE_SIZE_M;
 
-/** 맞닿은 경계를 놓치지 않게 넓히는 폭(m). 좌표 크기에 비례하는 몫은 rangeEps 가 더한다. */
+/** 맞닿은 경계를 놓치지 않게 넓히는 폭(m). 좌표 크기에 비례하는 몫(1e-12·|v|)은 rangeEps 가 더하는 예방 여유이며, 현재 시험 중 그 몫이 없으면 실패하는 것은 없다(시험 시점에서 부동소수 오차가 EDGE_EPS_M 안에 든다). */
 export const EDGE_EPS_M = 1e-6;
 
 function rangeEps(v) {
@@ -166,9 +166,10 @@ function stripRange(poly, y0, y1) {
  * 시점에서 보이는 타일 번호.
  * @param {{R:number[], t:number[], K:{fx:number, fy:number, cx:number, cy:number}, width:number, height:number}} view  poseToView 결과
  * @param {{maxDistM:number, zRangeM:number[], nearM:number}} opts
+ * @param {{rows:number, cells:number}} [stats] 시험용 작업량 계수기(행·칸 방문 수를 더해 준다). 결과에는 영향이 없다.
  * @returns {{tx:number, ty:number}[]} 카메라 (x,y) 에서 타일 중심까지 거리 오름차순, 같으면 (tx,ty) 사전순
  */
-export function tilesInView(view, opts) {
+export function tilesInView(view, opts, stats) {
   checkArgs(view, opts);
   const limit = TOWER_STREAMING_LIMITS.maxTilesPerUpdate;
 
@@ -189,8 +190,8 @@ export function tilesInView(view, opts) {
     if (!(Math.abs(v) <= IMAX + 1)) throw new RangeError(`${name} 가 ±tileIndexMax(${IMAX}) 를 벗어난다: ${v}`);
     return Math.min(IMAX, Math.max(-IMAX, v));
   };
-  const ty0 = clampIdx(Math.floor((ymin - rangeEps(ymin)) / S), 'ty');
-  const ty1 = clampIdx(Math.floor((ymax + rangeEps(ymax)) / S), 'ty');
+  let ty0 = clampIdx(Math.floor((ymin - rangeEps(ymin)) / S), 'ty');
+  let ty1 = clampIdx(Math.floor((ymax + rangeEps(ymax)) / S), 'ty');
 
   // 직육면체-구 판정: 최소 거리² ≤ (maxDistM + 여유)²
   const D = opts.maxDistM + rangeEps(opts.maxDistM) + rangeEps(Math.hypot(camX, camY, camZ));
@@ -198,17 +199,32 @@ export function tilesInView(view, opts) {
   const [zMin, zMax] = opts.zRangeM;
   const gap = (c, lo, hi) => (c < lo ? lo - c : c > hi ? c - hi : 0);
   const dz = gap(camZ, zMin, zMax);
+  // z 판이 구 밖이면 어떤 타일도 구와 만나지 않는다(빈 행을 수백만 번 도는 일을 막는다)
+  if (dz > D) return [];
+  // 구가 닿는 y 는 camY ± √(D²−dz²) 뿐이므로 행 범위를 먼저 좁힌다
+  const hy = Math.sqrt(Math.max(0, D2 - dz * dz));
+  ty0 = Math.max(ty0, clampIdx(Math.floor((camY - hy - rangeEps(camY - hy)) / S), 'ty'));
+  ty1 = Math.min(ty1, clampIdx(Math.floor((camY + hy + rangeEps(camY + hy)) / S), 'ty'));
 
   const out = [];
   for (let ty = ty0; ty <= ty1; ty += 1) {
+    if (stats) stats.rows += 1;
     const y0 = ty * S;
     const y1 = (ty + 1) * S;
     const r = stripRange(poly, y0 - rangeEps(y0), y1 + rangeEps(y1));
     if (r === null) continue;
     const dy = gap(camY, y0, y1);
-    const tx0 = clampIdx(Math.floor((r[0] - rangeEps(r[0])) / S), 'tx');
-    const tx1 = clampIdx(Math.floor((r[1] + rangeEps(r[1])) / S), 'tx');
+    const rem = D2 - dy * dy - dz * dz;
+    if (rem < 0) continue;
+    // 이 행에서 구가 닿는 x 는 camX ± √(D²−dy²−dz²) 이므로 띠 범위와 교집합만 훑는다
+    const hx = Math.sqrt(rem);
+    const lo = Math.max(r[0], camX - hx);
+    const hi = Math.min(r[1], camX + hx);
+    if (lo - rangeEps(lo) > hi + rangeEps(hi)) continue;
+    const tx0 = clampIdx(Math.floor((lo - rangeEps(lo)) / S), 'tx');
+    const tx1 = clampIdx(Math.floor((hi + rangeEps(hi)) / S), 'tx');
     for (let tx = tx0; tx <= tx1; tx += 1) {
+      if (stats) stats.cells += 1;
       const dx = gap(camX, tx * S, (tx + 1) * S);
       if (dx * dx + dy * dy + dz * dz > D2) continue; // 구와 만나지 않는다
       if (out.length >= limit) throw new RangeError('maxTilesPerUpdate');
