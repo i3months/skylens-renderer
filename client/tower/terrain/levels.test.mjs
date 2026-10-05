@@ -124,3 +124,22 @@ test('tiles() 는 복사본이라 바깥에서 바꿔도 상태가 불변이다'
   assert.ok(Object.isFrozen(s.tiles()[0]));
   assert.notEqual(s.tiles(), s.tiles());
 });
+
+test('peek 는 상태를 바꾸지 않고 결정만 돌려준다', () => {
+  const s = createTerrainState();
+  assert.equal(s.peek(2), 'first');
+  assert.equal(s.level(), -1);
+  s.accept(2, [tile(0, 0, 2)]);
+  assert.equal(s.peek(1), 'skip');
+  assert.equal(s.peek(2), 'skip');
+  assert.equal(s.peek(3), 'replace');
+  assert.equal(s.level(), 2);
+  assert.throws(() => s.peek(4));
+});
+
+test('묶음은 수준별 화면 전체 완전 묶음이다: 높은 수준이 이전 묶음에 없는 타일을 남기지 않는다(누적 없음)', () => {
+  const s = createTerrainState();
+  s.accept(0, [tile(0, 0, 2), tile(1, 0, 2), tile(2, 0, 2)]);
+  s.accept(1, [tile(0, 0, 4)]);
+  assert.deepEqual(coords(s), ['0,0']);
+});

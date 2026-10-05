@@ -25,6 +25,7 @@ function validateTiles(tiles) {
   });
 }
 
+// 계약: tiles 는 그 수준의 화면 전체 완전 묶음이다(누적·병합 없음, 지역별 수준 상태 없음). 자세한 이유는 index.mjs 머리말.
 export function createTerrainState() {
   let currentLevel = NONE;
   let stored = Object.freeze([]);
@@ -39,6 +40,11 @@ export function createTerrainState() {
       stored = Object.freeze(tiles.map((tile) => Object.freeze({ ...tile })));
       currentLevel = level;
       return action;
+    },
+    /** 상태를 바꾸지 않고 결정만 본다: 'first' | 'replace' | 'skip'. 수준이 잘못이면 던진다. */
+    peek(level) {
+      assertLevel(level);
+      return decideArrival(currentLevel, level);
     },
     /** 현재 수준: -1(없음) 또는 0..3. */
     level() {
