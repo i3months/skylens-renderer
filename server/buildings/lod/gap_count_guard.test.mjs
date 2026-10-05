@@ -11,7 +11,8 @@ const member = (x0, y0, x1, y1) => ({
 const A = member(0, 0, 1, 2), B = member(2, 0, 3, 2);
 const box = { minX: 0, minY: 0, maxX: 3, maxY: 2 };
 const delta = (budget, members = [A, B]) => {
-  const before = distStats.gapCells;
+  distStats.gapCells = 0; // 시험마다 초기화: 앞 시험의 NaN 이 전역 차이를 오염시키지 않게
+  const before = 0;
   const res = gapCellError(1, 0, 2, 2, members, 1, box, budget);
   return { res, d: distStats.gapCells - before };
 };
@@ -23,7 +24,7 @@ test('음수 예산: 계수 증가 0', () => {
 });
 
 test('near 빈 호출: 계수 증가 0', () => {
-  const { res, d } = delta({ cells: 100 }, [member(100, 100, 101, 101)]);
+  const { res, d } = delta({ cells: -1 }, [member(100, 100, 101, 101)]);
   assert.equal(res, null);
   assert.equal(d, 0);
 });
