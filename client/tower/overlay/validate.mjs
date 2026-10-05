@@ -40,7 +40,7 @@ function rawVec(v, name) {
 function snap(o, fields) {
   const keys = Object.keys(o);
   const vals = {};
-  for (const f of fields) vals[f] = o[f];
+  for (const f of fields) if (hasOwn(o, f)) vals[f] = o[f];
   return { keys, vals };
 }
 
