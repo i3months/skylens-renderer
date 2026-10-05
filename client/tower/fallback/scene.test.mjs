@@ -195,12 +195,12 @@ test('index: 수동 view 일 때도 banner 가 나온다(데이터 있음·clear
 });
 
 test('index: opts 의 minSpanM·marginPx 가 맞춤에 쓰인다(기본값으로 바뀌지 않는다)', () => {
-  // 점 하나·100×100: span = max(0, 1000) = 1000, avail = 100 - 0 = 100 → metersPerPx 10 (기본값이면 100/68)
+  // 점 하나·100×100: span = max(0, 1000) = 1000, marginPx 0 은 끝 점이 보이도록 하한 1 px 로 올라 avail = 100 - 2 = 98 → metersPerPx 1000/98 (F-443 ①, 기본값이면 100/68)
   const f = createTowerFallback({ minSpanM: 1000, marginPx: 0 });
   f.setDrones([{ id: 'd', enu: [7, 9, 0] }]);
   f.setAvailable(false);
   const r = f.frame({ width: 100, height: 100 });
-  near(r.view.metersPerPx, 10, 'metersPerPx');
+  near(r.view.metersPerPx, 1000 / 98, 'metersPerPx');
   near(r.drones[0].x, 50, 'x'); near(r.drones[0].y, 50, 'y');
 });
 
