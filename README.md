@@ -139,6 +139,10 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 드론 목표를 지수 감쇠로 따라가는 카메라. 계약 `contracts/controlview/chase.mjs`, 구현 `client/tower/chase/`(감쇠 수학·카메라 배치·상태·조립). a = 1 − exp(−dt/tau) 라서 프레임 길이와 무관하고, 방위는 ±π 경계에서도 최단 호로 돈다. 목표가 없으면 `camera()` 는 null 이다. 기본값(tau 0.35 s, 뒤 30 m, 위 10 m)과 감쇠 의미는 원본 대조 전 추정이다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/chase/*.test.mjs"`.
 
+### 관제탑 드론·경로·탐지 마커 (T15.6)
+
+드론·경로·탐지 마커의 ENU 위치를 화면(CSS 픽셀) 좌표 목록으로 바꾸는 계산 전용 모듈. 계약 `contracts/controlview/overlay.mjs`, 구현 `client/tower/overlay/`(검사·저장·투영·근평면 자르기·조립). 목록은 호출마다 교체되고 받지 않은 위치는 보간·외삽하지 않는다. 경로는 근평면(0.1 m)에서 잘라 카메라 뒤 조각을 버린다. ENU 왕복 오차는 시험에서 1 cm 이내(측정 최대 4.2e-9 m)다. 원본 대조 전 추정이다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/overlay/*.test.mjs"`.
+
 ## English
 
 Server-side renderer for SkyLens. Work in progress.
@@ -277,3 +281,8 @@ Arrow-key steering and Q/E altitude are handled locally with no server round tri
 ### Tower chase camera (T15.5)
 
 A camera that follows the drone target with exponential damping. Contract: `contracts/controlview/chase.mjs`; implementation: `client/tower/chase/` (damping math, camera rig, state, assembly). The factor a = 1 − exp(−dt/tau) is frame-rate independent, and yaw takes the shortest arc across the ±π boundary. `camera()` returns null until a target exists. Defaults (tau 0.35 s, 30 m behind, 10 m above) and the damping semantics are estimates until compared with the original. No network or timers. Tests: `node --test "client/tower/chase/*.test.mjs"`.
+
+### Tower drone, path and detection markers (T15.6)
+
+A compute-only module that turns the ENU positions of drones, paths and detection markers into screen (CSS pixel) coordinates. Contract: `contracts/controlview/overlay.mjs`; implementation: `client/tower/overlay/` (validation, store, projection, near-plane clipping, assembly). Lists are replaced on every call and positions that were not received are never interpolated or extrapolated. Paths are cut at the near plane (0.1 m) and the part behind the camera is dropped. The ENU round trip stays within 1 cm in tests (measured maximum 4.2e-9 m). Estimated until compared with the original. No network or timers. Tests: `node --test "client/tower/overlay/*.test.mjs"`.
+
