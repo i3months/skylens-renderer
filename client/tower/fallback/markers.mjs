@@ -3,6 +3,7 @@
 // 수식(view.mjs 를 부르지 않고 여기서 직접 계산한다):
 //   x = width/2 + (e − centerE)/metersPerPx,  y = height/2 − (n − centerN)/metersPerPx,
 //   visible = 0 ≤ x < width 이고 0 ≤ y < height(경계 x = width 는 밖). 화면 밖이어도 x, y 는 계산값 그대로.
+// yaw 는 ENU 방위(0=북, 시계 방향 +, rad)이고 그대로 돌려준다. 화면 방향은 (sin yaw, −cos yaw), 그릴 때 시계 방향 양의 회전이면 +yaw(계약 참조).
 // 높이(u)는 지도에서 쓰지 않는다. 받은 위치만 옮기며 보간·외삽은 없다.
 // 입력 검사는 overlay 검사(checkDrones·checkDetections)가 이미 끝낸 형태를 받는다.
 // 입력 순서·개수·id 를 지키고 입력을 바꾸지 않는다. 결과는 새 객체다.
