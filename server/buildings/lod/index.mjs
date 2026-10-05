@@ -325,8 +325,9 @@ function singleError(m, tol, hideTol) {
   return rectError(m.minX, m.minY, m.maxX, m.maxY, [m], tol, tol, step);
 }
 
-// gaps: 이 군집 상자 안의 빈 땅 칸 목록 { x0, y0, x1, y1, e } (앞선 병합들의 틈 칸, e 는 잰 거리 상한). F-338: 나중 병합이
-// 상자를 키우면 열린 홈이던 칸이 끼인 틈이 될 수 있어 mergeError 가 새 상자 기준으로 다시 잰다.
+// gaps: 이 군집 상자 안의 빈 땅 칸 목록 { x0, y0, x1, y1, e, ref } (앞선 병합들의 틈 칸, e 는 잰 거리 상한, ref 는 칸의 w 가
+// hideTol 이하임을 확인한 기준 상자). F-338: 나중 병합이 상자를 키우면 열린 홈이던 칸이 끼인 틈이 될 수 있어 mergeError 가
+// 새 상자 기준으로 다시 잰다(F-345: x 를 정한 변이 그대로인 칸과 2·e ≤ hideTol 인 칸은 빼고).
 function makeCluster(members, err, left = null, right = null, gaps = []) {
   let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity, minTop = Infinity, first = Infinity;
   for (const m of members) {
@@ -348,7 +349,7 @@ function mayMerge(A, B, hideTol) {
   return Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop) <= hideTol;
 }
 
-/** 한 번의 틈-칸 분기-한계 호출의 칸 예산. 부족하면 병합을 거부한다(안전한 쪽: 두 상자 유지). */
+/** 병합 한 번의 틈-칸 분기-한계 칸 예산. 새 틈 칸과 이어받은 칸 재측정이 따로 하나씩 쓴다(F-345). 부족하면 병합을 거부한다(안전한 쪽: 두 상자 유지). */
 const GAP_MAX_CELLS = 1 << 14;
 
 // 합친 상자 `box`(minX..maxY)가 새로 덮는 빈 직사각형 [x0,x1]×[y0,y1]에 대한 틈-칸 측도.
@@ -367,7 +368,7 @@ const GAP_MAX_CELLS = 1 << 14;
 // 변 한계는 벽을 따라 칸 길이가 늘어나도 커지지 않아서, 길쭉한 틈은 길이를 따라 몇 칸만 필요;
 // 정밀도는 틈을 가로지르는 칸 폭이 정하고(F-335: 예전 균등 격자는 축당 MAX_GRID 표본으로 한계를 두어 16·hideTol 보다 긴 틈 칸의 정밀도를 잃고 작은 실제 틈을 거부했음),
 // 고정 표본 상한이 아니다.
-// 한계를 넘거나 예산을 소진했을 때 null, 아니면 { e, w } 상한(e 는 기하 오차에 쓰임)을 돌려준다.
+// 한계를 넘거나 예산을 소진했을 때 null, 아니면 { e, w } 상한(e 는 기하 오차에 쓰임, 반환 e 는 칸 단위의 느슨한 상한)을 돌려준다.
 export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
   const near = [];
   for (const m of members) {
@@ -427,7 +428,16 @@ export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
 // 틈 칸(A·B 어느 상자에도 들지 않는 칸)은 어느 구성 건물에도 속하지 않는 빈 땅이라, 메우면 테두리가 옮겨지는 것이 아니라
 // 그 땅(과 그 너머로 보이던 벽)이 통째로 지붕이 된다. 그래서 틈 칸은 tol 이 아니라 hideTol 로 잰다: 메워지는 폭
 // w(p) = min(2·e, e + x) (gapCellError) 가 hideTol 이하여야 한다(넘으면 Infinity, 합치지 않는다).
-// 불변식 범위: 새 틈 칸과 A·B 가 가진 틈 칸(앞선 군집 상자 안의 빈 땅, A.gaps / B.gaps)을 합친 상자 기준으로 잰다(F-338: 앞선 상자의 열린 홈이 뒤의 병합 뒤 끼인 틈이 될 수 있음). e 한계가 2·e ≤ hideTol 을 만족하는 가진 칸은 어느 상자에 대해서도 한계를 넘을 수 없어(w ≤ 2·e) 나머지만 다시 잰다. 구성 건물 자신의 상자 안의 빈 땅(L자 건물의 홈)은 hideTol 이 아니라 tol 에서 singleError 로 한계를 잡는다.
+// 불변식 범위: 새 틈 칸과 A·B 가 가진 틈 칸(앞선 군집 상자 안의 빈 땅, A.gaps / B.gaps)을 합친 상자 기준으로 잰다(F-338: 앞선 상자의 열린 홈이 뒤의 병합 뒤 끼인 틈이 될 수 있음). 구성 건물 자신의 상자 안의 빈 땅(L자 건물의 홈)은 hideTol 이 아니라 tol 에서 singleError 로 한계를 잡는다.
+// 이어받은 칸 재측정 범위(F-345):
+//  - e 상한이 2·e ≤ hideTol 인 칸은 어느 상자에 대해서도 w ≤ 2·e ≤ hideTol 이라 목록에 넣지 않는다(목록이 군집 크기에 비례해 쌓이지 않게).
+//  - 목록의 칸은 w ≤ hideTol 을 확인한 기준 상자 ref 를 함께 둔다. 칸의 점 p 에서 2·e(p) > hideTol 이면 w_ref(p) = e + x_ref ≤ hideTol 이라
+//    x_ref(p) < hideTol/2, 즉 x_ref 를 정한 ref 의 변이 p 에서 hideTol/2 안에 있다. 그 변이 새 상자에서 그대로면 x_new(p) ≤ x_ref(p) 이고
+//    구성 건물은 늘기만 해 e_new(p) ≤ e(p) 이므로 w_new(p) ≤ e + x_ref ≤ hideTol. 2·e(p) ≤ hideTol 인 점은 늘 성립한다.
+//    그래서 새 상자에서 바뀐 ref 의 변마다 칸 가운데 그 변에서 hideTol/2 이내인 띠만 다시 잰다. 바뀐 변이 칸에서 hideTol/2 보다 멀면
+//    (또는 하나도 안 바뀌었으면) 그 칸은 재지 않는다. 다 통과하면 칸의 ref 를 새 상자로 바꾼다(띠 안은 쟀고 띠 밖은 위 근거).
+// 예산: 새 틈 칸과 이어받은 칸 재측정이 GAP_MAX_CELLS 를 따로 하나씩 쓴다. 이어받은 홈 칸(깊이가 hideTol 에 가까우면 칸 수천 개)이
+// 새 칸의 예산을 먹어 기하로는 합격인 병합이 거부되던 것을 막는다(F-345).
 // gapsOut (선택): 합친 상자의 틈 칸 목록(이어받은 칸 + 새 칸)을 여기에 채운다(makeCluster 의 gaps).
 function mergeError(A, B, tol, hideTol, gapsOut = null) {
   const step = Math.max(A.maxZ, B.maxZ) - Math.min(A.minTop, B.minTop);
@@ -438,30 +448,45 @@ function mergeError(A, B, tol, hideTol, gapsOut = null) {
   const ys = uniq([A.minY, A.maxY, B.minY, B.maxY]);
   const inBox = (C, x, y) => x > C.minX && x < C.maxX && y > C.minY && y < C.maxY;
   const box = { minX: xs[0], maxX: xs[xs.length - 1], minY: ys[0], maxY: ys[ys.length - 1] };
-  const budget = { cells: GAP_MAX_CELLS };
+  const budget = { cells: GAP_MAX_CELLS }; // 새 틈 칸
+  const reBudget = { cells: GAP_MAX_CELLS }; // 이어받은 칸 재측정(F-345)
   let members = null;
   let gapErr = 0;
   const gaps = [];
-  const measure = (x0, y0, x1, y1) => {
+  const measure = (x0, y0, x1, y1, bud) => {
     if (!members) members = A.members.concat(B.members);
-    const g = gapCellError(x0, y0, x1, y1, members, hideTol, box, budget);
-    if (!g) return false;
-    if (g.e > gapErr) gapErr = g.e;
-    gaps.push({ x0, y0, x1, y1, e: g.e });
-    return true;
+    const g = gapCellError(x0, y0, x1, y1, members, hideTol, box, bud);
+    if (g && g.e > gapErr) gapErr = g.e;
+    return g;
   };
-  // 앞선 군집 상자 안의 틈 칸: 새 상자 기준으로 x 가 커져 w = min(2e, e + x) 가 늘 수 있다(F-338).
-  for (const C of [A, B]) {
-    for (const c of C.gaps) {
-      if (2 * c.e <= hideTol) { gaps.push(c); continue; }
-      if (!measure(c.x0, c.y0, c.x1, c.y1)) return Infinity;
-    }
-  }
+  // 이어받은 칸 c 에서 다시 잴 띠: ref 에서 바뀐 변 중 칸까지 hideTol/2 이내인 변마다, 칸 가운데 그 변에서 hideTol/2 이내인 부분.
+  // 띠 밖의 점 p 는 2·e(p) > hideTol 이면 x_ref(p) 를 정한 변(p 에서 hideTol/2 안)이 그대로라 w_new(p) ≤ hideTol 이다(위 근거).
+  const near = hideTol / 2;
+  const strips = (c) => {
+    const r = c.ref, out = [];
+    if (r.minX !== box.minX && c.x0 - r.minX <= near) out.push([c.x0, c.y0, Math.min(c.x1, r.minX + near), c.y1]);
+    if (r.maxX !== box.maxX && r.maxX - c.x1 <= near) out.push([Math.max(c.x0, r.maxX - near), c.y0, c.x1, c.y1]);
+    if (r.minY !== box.minY && c.y0 - r.minY <= near) out.push([c.x0, c.y0, c.x1, Math.min(c.y1, r.minY + near)]);
+    if (r.maxY !== box.maxY && r.maxY - c.y1 <= near) out.push([c.x0, Math.max(c.y0, r.maxY - near), c.x1, c.y1]);
+    return out;
+  };
   for (let j = 0; j + 1 < ys.length; j++) {
     for (let i = 0; i + 1 < xs.length; i++) {
       const mx = (xs[i] + xs[i + 1]) / 2, my = (ys[j] + ys[j + 1]) / 2;
       if (inBox(A, mx, my) || inBox(B, mx, my)) continue;
-      if (!measure(xs[i], ys[j], xs[i + 1], ys[j + 1])) return Infinity;
+      const g = measure(xs[i], ys[j], xs[i + 1], ys[j + 1], budget);
+      if (!g) return Infinity;
+      if (2 * g.e > hideTol) gaps.push({ x0: xs[i], y0: ys[j], x1: xs[i + 1], y1: ys[j + 1], e: g.e, ref: box });
+    }
+  }
+  // 앞선 군집 상자 안의 틈 칸: 새 상자 기준으로 x 가 커져 w = min(2e, e + x) 가 늘 수 있다(F-338). 새 칸보다 뒤에 잰다:
+  // 거부되는 병합은 대개 새 칸에서 걸리므로 그때 재측정을 아낀다.
+  for (const C of [A, B]) {
+    for (const c of C.gaps) {
+      const ss = strips(c);
+      if (!ss.length) { gaps.push(c); continue; }
+      for (const [x0, y0, x1, y1] of ss) if (!measure(x0, y0, x1, y1, reBudget)) return Infinity;
+      gaps.push({ x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1, e: c.e, ref: box });
     }
   }
   if (gapsOut) gapsOut.push(...gaps);

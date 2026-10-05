@@ -187,7 +187,7 @@ function sweepAssert(t, seeds, cityOf) {
   for (const [name, pv] of perView) {
     const red = 1 - pv.lod / pv.orig;
     const floor = FAR_VIEW_MIN_REDUCTION[name];
-    t.diagnostic(`${name}: 최저 건물 영역 SSIM ${pv.min.toFixed(4)} (시드 ${pv.minSeed}), 시드 합계 감소율 ${(red * 100).toFixed(1)}%${floor === undefined ? ' (진단만)' : ` (하한 ${(floor * 100).toFixed(1)}%)`}`);
+    t.diagnostic(`${name}: 최저 건물 영역 SSIM ${pv.min.toFixed(4)} (시드 ${pv.minSeed}), 시드 합계 감소율 ${(red * 100).toFixed(1)}%${floor === undefined ? ' (하한 없음, > 0 단언)' : ` (하한 ${(floor * 100).toFixed(1)}%)`}`);
     assert.ok(pv.min >= BUILDING_LOD_MIN_SSIM, `${name}: 최저 SSIM ${pv.min} (시드 ${pv.minSeed}) < ${BUILDING_LOD_MIN_SSIM}`);
     if (floor !== undefined) assert.ok(red >= floor, `${name}: 시드 합계 감소율 ${(red * 100).toFixed(2)}% < 하한 ${(floor * 100).toFixed(1)}% (${pv.orig} → ${pv.lod})`);
     // 하한 없는 시점도 시드 합계 감소 > 0 (결정 0044 §7). LOD 를 끄면 합계가 0 이 되어 여기서 실패한다.
@@ -195,7 +195,7 @@ function sweepAssert(t, seeds, cityOf) {
   }
 }
 
-test(`8시점 실제 병합 장면(20 m 필지 밀집, 회전 0~3° 섞음), 시드 ${DENSE_SEEDS.join('·')}: 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}, 면 수 증가 없음, 먼 시점 시드 합계 감소율 ≥ 하한`, (t) => {
+test(`8시점 실제 병합 장면(20 m 필지 밀집, 회전 0~3° 섞음), 시드 ${DENSE_SEEDS.join('·')}: 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}, 면 수 증가 없음, 먼 시점 시드 합계 감소율 ≥ 하한, 중간·근접 시점 감소 > 0`, (t) => {
   sweepAssert(t, DENSE_SEEDS, (seed) => (seed === 307 ? DENSE : denseCity(seed)));
 });
 
@@ -203,7 +203,7 @@ test(`8시점 실제 병합 장면(20 m 필지 밀집, 회전 0~3° 섞음), 시
 // 더 본다(시험 파일 전체 30 s 이하를 지키려고 시드 수를 줄였다). 더 넓게 보려면 LOD_TEST_SEEDS=1-40(또는 3,83,180 처럼 목록)을 준다.
 const SWEEP_DEFAULT = '1-4';
 const SWEEP_SEEDS = [...new Set([...REGRESSION_SEEDS, ...parseSeeds(process.env.LOD_TEST_SEEDS ?? SWEEP_DEFAULT)])];
-test(`시드 일괄 ${SWEEP_SEEDS.join(',')} × 8시점: 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}, 면 수 증가 없음, 먼 시점 시드 합계 감소율 ≥ 하한`, (t) => {
+test(`시드 일괄 ${SWEEP_SEEDS.join(',')} × 8시점: 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM}, 면 수 증가 없음, 먼 시점 시드 합계 감소율 ≥ 하한, 중간·근접 시점 감소 > 0`, (t) => {
   sweepAssert(t, SWEEP_SEEDS, denseCity);
 });
 
@@ -463,6 +463,27 @@ test('회전이 다른 쌍: 차이가 작으면(0.01°~1°) 5 km 에서 합쳐�
     const dirs = [0, 24].map((o) => (Math.atan2(p[o + 4] - p[o + 1], p[o + 3] - p[o]) * 180) / Math.PI).map((d) => ((d % 90) + 90) % 90);
     assert.ok(dirs.some((d) => Math.min(d, 90 - d) < 1e-3) && dirs.some((d) => Math.abs(d - 30) < 1e-3), `방향 ${dirs}`);
   }
+});
+
+// F-346: 구성 건물 θ 가 달라 군집 방향(own)이 묶음 기준 방향(phi)과 다르면 군집을 own 좌표계에서 reframe 으로 다시 잰다.
+// reframe 이 병합마다 틈 칸(gaps)을 이어받아야 나중 병합에서 끼인 틈 폭을 다시 잴 수 있다(F-338). 이어받지 않으면 own 좌표계에서
+// 끼인 틈이 검사되지 않아 own 방향 상자가 채택된다. 기대값은 손으로 정한 리터럴이다.
+// 배치(m, 한 층 = 3 m, 모두 같은 높이): 1 = [0,2]×[0,30] θ 0°, 2 = [3.2,23.2]×[0,30] θ 0.8°, 3 = [0,2.7]×[30,30.5] θ 0.5°
+// (1·3 이 먼저 합쳐지면 [2,2.7]×[0,30] 은 바깥으로 열린 홈, 2 가 붙으면 폭 1.2 m 의 끼인 틈 일부가 된다),
+// 4 = [50,52]×[0,2] θ −5° 는 멀어 합쳐지지 않지만 같은 칸·같은 방향 묶음이라 묶음 기준 방향을 phi = (−5° + 0.8°) / 2 = −2.1° 로 만든다.
+// 1·2·3 군집의 own = (0° + 0.8°) / 2 = 0.4°. own 좌표계에서는 틈이 hideTol 을 넘어 own 상자를 거부하고 phi(−2.1°) 상자를 쓴다.
+test('θ 가 약간 다른 3동 연쇄 병합: own(0.4°) 좌표계 재측정이 끼인 틈을 거부하면 묶음 기준 방향(−2.1°) 상자를 쓴다', () => {
+  const rc = (x0, y0, x1, y1, deg) => ({ ring: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], deg, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 });
+  const specs = [rc(0, 0, 2, 30, 0), rc(3.2, 0, 23.2, 30, 0.8), rc(0, 30, 2.7, 30.5, 0.5), rc(50, 0, 52, 2, -5)];
+  const set = specs.map((q, i) => ({ id: i + 1, mesh: rotatePrism(q.ring, q.deg, 1, q.cx, q.cy) }));
+  const out = buildBuildingLod(set, 5000);
+  assert.deepEqual(out.map((g) => g.ids), [[1, 2, 3, 4]]);
+  assert.equal(triCount(out.map((g) => g.mesh)), 20, '상자 2개(1·2·3 군집, 4)');
+  // 첫 상자(1·2·3 군집)의 u 축 방향(바닥 꼭짓점 0 → 1)을 도 단위로 읽는다.
+  const p = out[0].mesh.positions;
+  const deg = (o) => (Math.atan2(p[o + 4] - p[o + 1], p[o + 3] - p[o]) * 180) / Math.PI;
+  assert.ok(Math.abs(deg(0) - -2.1) < 0.01, `군집 상자 방향 ${deg(0)}° (기대 −2.1°)`);
+  assert.ok(Math.abs(deg(24) - -5) < 0.01, `4 번 상자 방향 ${deg(24)}° (기대 −5°)`);
 });
 
 test('상자 면 감김: 모든 상자 삼각형의 법선이 상자 바깥을 향한다(회전 상자 포함)', () => {
