@@ -53,7 +53,40 @@ import { buildDrapeTile } from '../../../server/terrain/drape/index.mjs';
 import { project as projectContract } from '../../../server/raster_ref/project/index.mjs';
 
 // ---- 미리 정한 수치(측정에 맞춰 바꾸지 않는다) ----
-const SEEDS = [1, 2, 3, 4, 5, 6];
+// DRAPE_SEEDS 환경변수로 시드 범위 지정: '7-12' 또는 '7,8,9' 형식. 없으면 기본 [1..6]
+function parseSeedsEnv() {
+  const env = process.env.DRAPE_SEEDS;
+  if (!env) return [1, 2, 3, 4, 5, 6];
+
+  const seeds = [];
+  const parts = env.split(',');
+
+  for (const part of parts) {
+    if (part.includes('-')) {
+      const [start, end] = part.split('-').map(s => parseInt(s.trim(), 10));
+      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < 1) {
+        throw new Error(`Invalid DRAPE_SEEDS range: "${part}" (must be valid integers >= 1)`);
+      }
+      if (start > end) {
+        throw new Error(`Invalid DRAPE_SEEDS range: "${part}" (start > end)`);
+      }
+      for (let i = start; i <= end; i++) seeds.push(i);
+    } else {
+      const num = parseInt(part.trim(), 10);
+      if (!Number.isInteger(num) || num < 1) {
+        throw new Error(`Invalid DRAPE_SEEDS value: "${part}" (must be integer >= 1)`);
+      }
+      seeds.push(num);
+    }
+  }
+
+  if (seeds.length === 0) {
+    throw new Error('DRAPE_SEEDS parsed to empty list');
+  }
+
+  return seeds;
+}
+const SEEDS = parseSeedsEnv();
 const IMG_PX_M = 0.5; // 영상 화소 크기(m)
 const IMG_MIN = -128, IMG_MAX = 128; // 영상 범위(ENU, 지형 DEM 과 같다)
 const TRI_HALF_M = 16; // 삼각파 반주기(0 → 255 까지 16 m)
@@ -514,10 +547,16 @@ describe(`드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 ${SE
     }
   });
 
-  test(`참고 음성: 영상을 ${SHIFT_IMG_PX} 영상 화소(0.75 m) 어긋나게 만든 타일은 δx ≈ −0.75 m 로 되찾고, 예상 화면 이동 > ${CATCH_EXPECT_MIN_PX} px 인 시점에서는 ${DRAPE_ALIGN_MAX_PX} px 초과다`, () => {
+  test(`참고 음성: 영상을 ${SHIFT_IMG_PX} 영상 화소(0.75 m) 어긋나게 만든 타일은 δx ≈ −0.75 m 로 되찾고, 예상 화면 이동 > ${CATCH_EXPECT_MIN_PX} px 인 시점에서는 ${DRAPE_ALIGN_MAX_PX} px 초과다`, (t) => {
     for (const s of scenes) {
       // 예상 화면 이동(pxPerM × 0.75 m)이 문턱보다 충분히 큰 시점만 초과를 단언한다(이름 목록을 고정하지 않는다).
       const big = s.views.filter((v) => v.m.pxPerM * SHIFT_IMG_PX * IMG_PX_M > CATCH_EXPECT_MIN_PX);
+      const skipped = s.views.length - big.length;
+      if (t.diagnostic) {
+        t.diagnostic(`시드 ${s.seed}: 예상 화면 이동 ≤ ${CATCH_EXPECT_MIN_PX} px 로 단언을 건너뛴 시점 ${skipped}/${s.views.length}`);
+      } else {
+        console.log(`[seed ${s.seed}] skipped assertion count: ${skipped}/${s.views.length}`);
+      }
       // 공허한 통과 방지: 시드마다 적어도 한 시점(낮은 눈 높이 시점은 예상 2.3 px 이상)은 단언 대상이어야 한다.
       assert.ok(big.length >= 1, `시드 ${s.seed}: 예상 화면 이동 > ${CATCH_EXPECT_MIN_PX} px 인 시점이 없다`);
       for (const v of big) {
