@@ -201,3 +201,19 @@ test('index: unproject 왕복 오차 ≤ 1 cm', () => {
   const n = o.unproject(CAM0, SIZE, 640, 360, 10);
   close(n[0], 0, 1e-9); close(n[1], 10, 1e-9); close(n[2], 0, 1e-9);
 });
+
+test('index: F-429 경로 한도 64 — 서로 다른 id 64개 통과, 65번째 RangeError 이고 상태 불변, 기존 id 교체는 통과', () => {
+  const o = createTowerOverlay();
+  const mk = (id, x) => ({ id, points: [[x, 0, 0], [x + 1, 0, 0]] });
+  for (let i = 0; i < 64; i += 1) o.setPath(mk(`p${i}`, i));
+  assert.equal(o.counts().paths, 64);
+  assert.throws(() => o.setPath(mk('p64', 64)), RangeError);
+  assert.equal(o.counts().paths, 64);
+  o.setPath(mk('p10', 500));
+  assert.equal(o.counts().paths, 64);
+  assert.equal(o.removePath('p64'), false);
+  // 한 개 지우면 새 id 를 다시 받는다
+  assert.equal(o.removePath('p0'), true);
+  o.setPath(mk('p64', 64));
+  assert.equal(o.counts().paths, 64);
+});
