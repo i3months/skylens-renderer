@@ -11,60 +11,78 @@ export const FOV = Math.PI / 3;
 /** 광각 경로의 세로 화각(rad). 160×90 에서 가로 화각은 2·atan(16/9·tan(1.1)) ≈ 148° 다. */
 export const FOV_WIDE = 2.2;
 export const DEG = Math.PI / 180;
+const TILE_S = 64; // 타일 한 변(m), contracts/tower_assets TERRAIN_TILE_SIZE_M 과 같다.
 
 export const cam = (pos, yaw, pitch, fov = FOV) => poseToCameraPose({ pos, yaw, pitch }, fov);
 export const keysOf = (tiles) => new Set(tiles.map((t) => tileKey(t.tx, t.ty)));
 
 // ── 합성 경로 ──
 
+/**
+ * 경로 부분(정지 구간을 뺀) 시점 수. 기아 문턱 K(starveBound)가 이 값보다 작아야 '경로 내내 deferred 인 타일'이 K 에 걸린다(F-441 ①).
+ * 기본값 15 사례의 K 최댓값은 광각 비행·무작위 0~5 지연의 ceil(842/16)·(5+3) = 424 이므로 그보다 길게 480 으로 둔다
+ * (옛 120 시점 경로는 지연 2·무작위 10 사례에서 K 128~371 ≥ 120 이라 이 조건을 못 맞췄다). replay.test 가 15 사례 모두 K < 경로 시점 수를 단언한다.
+ * 시점당 움직임(속도·회전 각속도·숙임 변화율)은 옛 120 시점 경로와 같게 두고 길이만 늘린다(되돌아오는 부분은 삼각파로 왕복).
+ */
+export const PATH_STEPS = 480;
+
+/** 0→1→0 삼각파. 주기 2·half 시점(half 시점 동안 0→1). 옛 120 시점 경로의 진행률 u = i/119 를 왕복으로 늘이는 데 쓴다. */
+const tri = (i, half) => {
+  const ph = (i / half) % 2;
+  return ph <= 1 ? ph : 2 - ph;
+};
+
 /** 직선 전진: 북쪽으로 시점당 12 m, 약간 아래를 본다. */
 function pathStraight() {
   const out = [];
-  for (let i = 0; i < 120; i += 1) out.push(cam([20, -300 + 12 * i, 35], 0, -8 * DEG));
+  for (let i = 0; i < PATH_STEPS; i += 1) out.push(cam([20, -300 + 12 * i, 35], 0, -8 * DEG));
   return out;
 }
 
-/** 제자리 회전 360°: 시점당 3°(121 시점, 마지막은 출발 방향으로 돌아온다). */
+/** 제자리 회전: 시점당 3°(PATH_STEPS 시점 = 1197°, 세 바퀴 남짓). */
 function pathSpin() {
   const out = [];
-  for (let i = 0; i <= 120; i += 1) out.push(cam([100, -50, 40], 3 * i * DEG, -12 * DEG));
-  return out;
-}
-
-/** 나선 상승: 원점 둘레 반지름 300 m, 시점당 4°(120 시점 = 1⅓ 바퀴), 높이 10 → 550 m, 진행 방향을 보며 아래로 숙인다. */
-function pathSpiral() {
-  const out = [];
-  const n = 120;
-  for (let i = 0; i < n; i += 1) {
-    const a = 4 * i * DEG;
-    const pos = [300 * Math.cos(a), 300 * Math.sin(a), 10 + (540 * i) / (n - 1)];
-    // 반시계로 돈다 → 진행 방향 = (−sin a, cos a). yaw 는 북에서 시계 방향.
-    const yaw = Math.atan2(-Math.sin(a), Math.cos(a));
-    out.push(cam(pos, yaw, -(10 + (40 * i) / (n - 1)) * DEG));
-  }
-  return out;
-}
-
-/** 급커브: 북쪽 57 시점 → 6 시점 안에 동쪽으로 90° 꺾음 → 동쪽 57 시점. 시점당 15 m. */
-function pathSharpTurn() {
-  const out = [];
-  let x = 0, y = 0, yaw = 0;
-  const push = (pitch) => out.push(cam([x, y, 60], yaw, pitch));
-  for (let i = 0; i < 57; i += 1) { y += 15; push(-10 * DEG); }
-  for (let i = 0; i < 6; i += 1) { yaw += 15 * DEG; x += 15 * Math.sin(yaw); y += 15 * Math.cos(yaw); push(-20 * DEG); }
-  for (let i = 0; i < 57; i += 1) { x += 15; push(-10 * DEG); }
+  for (let i = 0; i < PATH_STEPS; i += 1) out.push(cam([100, -50, 40], 3 * i * DEG, -12 * DEG));
   return out;
 }
 
 /**
- * 광각 비행(F-438 ⑪): fovY 2.2 rad(가로 ≈ 148°). 북동쪽으로 시점당 10 m 나아가며 높이 50 → 170 m, yaw 를 −60° → +60° 로
- * 훑고 pitch 는 −20° 와 −35° 사이를 오간다. 넓은 화각이라 needed 가 다른 경로보다 훨씬 크다(maxInflight 대비 기아 압력이 크다).
+ * 나선: 원점 둘레 반지름 300 m, 시점당 4°(PATH_STEPS 시점 ≈ 4.4 바퀴). 높이는 119 시점마다 10 → 550 m 를 오르내리고(삼각파),
+ * 숙임은 높이와 함께 −10° → −50°. 진행 방향을 본다.
+ */
+function pathSpiral() {
+  const out = [];
+  for (let i = 0; i < PATH_STEPS; i += 1) {
+    const a = 4 * i * DEG;
+    const u = tri(i, 119);
+    const pos = [300 * Math.cos(a), 300 * Math.sin(a), 10 + 540 * u];
+    // 반시계로 돈다 → 진행 방향 = (−sin a, cos a). yaw 는 북에서 시계 방향.
+    const yaw = Math.atan2(-Math.sin(a), Math.cos(a));
+    out.push(cam(pos, yaw, -(10 + 40 * u) * DEG));
+  }
+  return out;
+}
+
+/** 급커브: 북쪽 197 시점 → 6 시점 안에 동쪽으로 90° 꺾음 → 동쪽 197 시점. 시점당 15 m. */
+function pathSharpTurn() {
+  const out = [];
+  const leg = (PATH_STEPS - 6) / 2;
+  let x = 0, y = 0, yaw = 0;
+  const push = (pitch) => out.push(cam([x, y, 60], yaw, pitch));
+  for (let i = 0; i < leg; i += 1) { y += 15; push(-10 * DEG); }
+  for (let i = 0; i < 6; i += 1) { yaw += 15 * DEG; x += 15 * Math.sin(yaw); y += 15 * Math.cos(yaw); push(-20 * DEG); }
+  for (let i = 0; i < leg; i += 1) { x += 15; push(-10 * DEG); }
+  return out;
+}
+
+/**
+ * 광각 비행(F-438 ⑪): fovY 2.2 rad(가로 ≈ 148°). 북동쪽으로 시점당 약 10 m 나아가며, 119 시점마다(삼각파 u) 높이 50 ↔ 170 m,
+ * yaw −60° ↔ +60° 를 오가고 pitch 는 −20° 와 −35° 사이를 오간다. 넓은 화각이라 needed 가 다른 경로보다 훨씬 크다(maxInflight 대비 기아 압력이 크다).
  */
 function pathWide() {
   const out = [];
-  const n = 120;
-  for (let i = 0; i < n; i += 1) {
-    const u = i / (n - 1);
+  for (let i = 0; i < PATH_STEPS; i += 1) {
+    const u = tri(i, 119);
     const pos = [-200 + 7 * i, -400 + 7 * i, 50 + 120 * u];
     out.push(cam(pos, (-60 + 120 * u) * DEG, -(27.5 + 7.5 * Math.sin(4 * Math.PI * u)) * DEG, FOV_WIDE));
   }
@@ -73,8 +91,8 @@ function pathWide() {
 
 export const PATHS = [
   ['직선 전진', pathStraight()],
-  ['제자리 회전 360°', pathSpin()],
-  ['나선 상승', pathSpiral()],
+  ['제자리 회전', pathSpin()],
+  ['나선', pathSpiral()],
   ['급커브', pathSharpTurn()],
   ['광각 비행', pathWide()],
 ];
@@ -113,17 +131,23 @@ export const DELAYS = [
  * 그 다음 update 에서 자리가 빈다). 보이는 타일이 N 개이면 정지한 카메라에서 맨 뒤 타일까지 ceil(N/maxInflight) 묶음,
  * 즉 ceil(N/maxInflight)·(D+1) 시점 안에 요청된다.
  * N 은 구현의 needed 가 아니라 오라클(구현과 독립) 크기의 경로 최댓값 Nmax 를 쓴다(구현이 needed 를 부풀려 K 를 키우지 못하게).
- * 움직이는 카메라에서는 새로 들어온 가까운 타일이 앞을 차지해 뒤 타일이 밀린다. 묶음 하나가 도는 동안 카메라가 움직여 그 타일이
- * 한 시점 더 밀릴 수 있다고 보고 묶음마다 1 시점을 더한다(배수 여유 대신 묶음당 가산):
- *   K = ceil(Nmax / maxInflight) · (D + 2).
- * 위쪽 한계: K 는 그 실행의 전체 시점 수(경로 + 정지 구간)보다 작아야 한다. 그래야 경로 내내 deferred 로 남는 타일이
- * K 에 반드시 걸린다(K 가 실행보다 길면 이 단언은 아무것도 잡지 못한다). 시험이 K < 전체 시점 수를 함께 단언한다.
- * 옛 식 2 · ceil(Nmax/maxInflight) · (D+1) 은 무작위 0~5 지연에서 이 한계를 넘었다(예: 직선 전진 384 > 318).
- * 아래쪽 한계: 여유 없는 ceil(Nmax/maxInflight) · (D+1) 은 광각·즉시 실행에서 정상 구현이 넘는다(오라클 Nmax 837 → 53 < 정상 최대 연속 70).
+ * 움직이는 카메라에서는 새로 들어온 가까운 타일이 앞을 차지해 뒤 타일이 밀린다. 그만큼을 묶음당 가산 여유 2 시점으로 둔다:
+ *   K = ceil(Nmax / maxInflight) · (D + 3).
+ * 이 '+2 시점/묶음' 여유는 측정 없이 유도한 것이 아니라 측정 뒤 정했다(F-441 ③, 연구 experiments/t15-7f.md 에 기록).
+ * 근거가 된 측정: 정상 구현의 최대 연속 deferred 를 묶음 수 ceil(Nmax/16) 로 나누면 광각 비행에서 즉시 1.32·지연 2 4.17·무작위 0~5 4.68
+ * 시점/묶음이고, 지연 2 의 4.17 이 D + 1 = 3 을 1.17 넘는다(옛 '+1 시점/묶음' 식 K = 212 < 정상 221). 경로를 700 시점까지 늘려도
+ * 이 최댓값은 커지지 않았다(경로가 길수록 끝없이 쌓이는 과부하가 아님). 그래서 그보다 큰 정수 가산 2 를 골랐다.
+ * 위쪽 한계: K 는 경로 부분 시점 수(PATH_STEPS, 정지 구간 제외)보다 작아야 한다. 정지 구간에서는 needed 가 줄지 않아 결국 요청되므로
+ * 경로 내내 deferred 로 남는 타일은 연속 시점 수가 경로 길이(이상)가 되고, K < 경로 시점 수일 때만 K 에 걸린다.
+ * 옛 판은 K < 전체 시점 수(경로 + 정지 구간)만 단언해서 120 시점 경로의 지연 2·무작위 10 사례(K 128~371)에서 이 조건이 깨져 있었다
+ * ('경로 내내 deferred 로 남는 타일이 K 에 반드시 걸린다' 는 옛 주석은 그 사례들에서 거짓이었다).
+ * 그래서 경로를 PATH_STEPS = 480 시점으로 늘렸다(K 최댓값 424). replay.test 가 15 사례 모두 K < 경로 시점 수를 단언한다.
+ * 아래쪽 한계: 여유 없는 ceil(Nmax/maxInflight) · (D+1) 은 광각·즉시 실행에서 정상 구현이 넘는다(Nmax 837 → 53 < 정상 최대 연속 70).
  * 자리가 남는데 요청하지 않는 구현(기아)은 K 가 아니라 '빈 자리 낭비 0' 단언(replay 의 wastedSlots)이 매 시점 잡는다.
+ * 자리를 엉뚱한 타일로 채우거나 같은 타일을 취소·재요청해 도착을 미루는 구현은 '진행 하한'(strayInflight·maxInflightStreak)이 잡는다.
  */
 export function starveBound(nMax, maxInflight, maxDelay) {
-  return Math.ceil(nMax / maxInflight) * (maxDelay + 2);
+  return Math.ceil(nMax / maxInflight) * (maxDelay + 3);
 }
 
 /** 정지 구간 길이: 마지막 시점의 needed 전체가 요청·도착하는 데 드는 묶음 수 ceil(N/maxInflight)·(D+1) 에 지연 D 와 여유 1 을 더한다. */
@@ -139,11 +163,23 @@ export function settleSteps(nLast, maxInflight, maxDelay) {
  *                    deferred 는 '요청한 적 있음'이 아니므로 빼지 않는다(F-435). 진단용 수치다.
  *   dropped        : 오라클 − (held ∪ inflight ∪ deferred). 보이는 타일을 계획에서 아예 놓친 경우(경로 중에도 0 이어야 한다).
  *   maxStreak      : 한 타일이 연속 deferred 였던 최대 시점 수(경로 + 정지 구간).
- *   K              : starveBound(오라클 크기의 경로 최댓값, maxInflight, 최대 지연). maxStreak ≤ K < steps 여야 한다.
- *   steps          : 전체 시점 수(경로 + 정지 구간).
+ *   K              : starveBound(오라클 크기의 경로 최댓값, maxInflight, 최대 지연). maxStreak ≤ K < pathSteps 여야 한다.
+ *   pathSteps      : 경로 부분 시점 수(poses.length, 정지 구간 제외). steps : 전체 시점 수(경로 + 정지 구간).
  *   wastedSlots    : 매 update 직후(경로 + 정지 구간, 도착 처리 전) 오라클 − (held ∪ inflight) 가 비지 않은데
  *                    inflight ≠ maxInflight 인 시점 수. 보이는 타일이 아직 요청되지 않았는데 자리가 비어 있으면 낭비다.
  *                    구현의 needed·deferred 를 쓰지 않으므로 구현과 독립이다(움직이는 동안의 기아도 여기서 걸린다).
+ *   strayInflight  : 진행 하한 ①. 매 update 직후 오라클 − (held ∪ inflight) 가 비지 않은 시점(빈 자리 낭비와 같은 시점)에
+ *                    inflight 중 retain 밖 타일 수의 합. retain 은 계약대로 (오라클 ∪ needed) 를 retainMargin(체비쇼프) 만큼 팽창한 것이다.
+ *                    정상 구현은 retain 밖 inflight 를 그 update 에서 취소하므로(계약 cancel) 측정 없이 0 이다. 보이는 타일이 기다리는데
+ *                    자리를 보이지도 않고 붙들 이유도 없는 타일로 채우면 걸린다(inflight 개수만 보는 wastedSlots 는 못 잡는다).
+ *                    오라클을 더하는 것은 허용 쪽만 넓힌다(구현이 needed 를 줄여 허용 범위를 좁혀도 거짓 실패는 오라클 쪽 근거로만 난다).
+ *   maxInflightStreak : 진행 하한 ②. 한 타일이 매 update 직후 inflight 로 연속 보인 최대 시점 수(경로 + 정지 구간).
+ *                    유도(측정 없음): 시점 s 에 요청된 타일은 늦어도 s + D 시점의 update 뒤에 도착 처리되므로 시점 s..s+D, 즉 D+1 시점 동안만
+ *                    update 직후 inflight 다. 같은 update 안에서 취소와 재요청이 함께 일어나면 연속이 이어지지만, 정상 구현은
+ *                    retain 밖만 취소하고 needed(⊆ retain) 안에서만 요청하므로 그런 일이 없다. 그래서 maxInflightStreak ≤ D + 1 이어야 한다.
+ *                    움직이는 동안 날아가는 요청을 취소하고 다시 요청해 도착을 계속 미루는 구현이 걸린다.
+ *   orderViolations : 진행 하한 ③. 같은 시점에 오라클 타일이 deferred 인데 그보다 (타일 중심 거리로) S·√2 넘게 먼 타일을 request 한 수.
+ *                    needed 는 가까운 순이고 request 는 그 순서이므로(계약) 정상 구현은 0 이다. 먼 순으로 요청하거나 오래 보류된 타일을 뒤로 미는 구현이 걸린다.
  *   immediateViolations : 즉시 도착일 때 경로 중 missing ∩ 오라클 − deferred(자리 부족으로 보류된 것만 허용).
  *   settledMissing : 정지 구간 끝에서 missing ∩ 오라클(deferred 를 빼지 않는다). 모든 지연 모델에서 0 이어야 한다.
  *   settledHeldGap : 정지 구간 끝에서 오라클 − held.
@@ -161,8 +197,11 @@ export function replay(name, poses, makeDelay, maxDelay, { opts, deps } = {}) {
   const r = {
     neverRequested: 0, dropped: 0, maxStreak: 0, maxStreakTile: '', immediateViolations: 0,
     settledMissing: -1, settledHeldGap: -1, protocol: 0, neededMax: 0, settle: 0, report: [],
-    wastedSlots: 0, oracleMax: Math.max(...oracle.map((s) => s.size)), K: 0, steps: 0,
+    wastedSlots: 0, oracleMax: Math.max(...oracle.map((s) => s.size)), K: 0, steps: 0, pathSteps: poses.length,
+    strayInflight: 0, maxInflightStreak: 0, inflightBound: maxDelay + 1, orderViolations: 0,
   };
+  const margin = opts?.retainMargin ?? TOWER_STREAMING_LIMITS.retainMargin;
+  const inflightStreak = new Map(); // key → update 직후 연속 inflight 시점 수
   r.K = starveBound(r.oracleMax, maxInflight, maxDelay);
   const note = (s) => { if (r.report.length < 5) r.report.push(s); };
 
@@ -174,7 +213,7 @@ export function replay(name, poses, makeDelay, maxDelay, { opts, deps } = {}) {
     const plan = streaming.update(pose, SIZE);
     r.neededMax = Math.max(r.neededMax, plan.needed.length);
     if (step === total - 1) {
-      r.settle = settleSteps(plan.needed.length, maxInflight, maxDelay);
+      r.settle = settleSteps(want.size, maxInflight, maxDelay); // 오라클(구현과 독립) 마지막 크기(F-442 ⑬)
       settleEnd = total + r.settle;
     }
     // 빈 자리 낭비: update 직후(도착 처리 전) 상태로 잰다.
@@ -184,6 +223,34 @@ export function replay(name, poses, makeDelay, maxDelay, { opts, deps } = {}) {
     if (uncovered.length > 0 && st0.inflight.length !== maxInflight) {
       r.wastedSlots += 1;
       note(`${name} 시점 ${step}: 보이는 ${uncovered[0]} 등 ${uncovered.length} 개가 요청 전인데 inflight ${st0.inflight.length} ≠ ${maxInflight}`);
+    }
+    // 진행 하한 ①: 보이는 타일이 기다리는 시점에 retain 밖 inflight 0.
+    if (uncovered.length > 0) {
+      const base = new Set(want);
+      for (const t of plan.needed) base.add(tileKey(t.tx, t.ty));
+      for (const t of st0.inflight) {
+        let inside = false;
+        for (let dx = -margin; dx <= margin && !inside; dx += 1) {
+          for (let dy = -margin; dy <= margin && !inside; dy += 1) inside = base.has(tileKey(t.tx + dx, t.ty + dy));
+        }
+        if (!inside) {
+          r.strayInflight += 1;
+          note(`${name} 시점 ${step}: 보이는 ${uncovered.length} 개가 기다리는데 inflight ${tileKey(t.tx, t.ty)} 가 retain 밖`);
+        }
+      }
+    }
+    // 진행 하한 ②: 한 타일의 연속 inflight ≤ D + 1.
+    {
+      const next = new Map();
+      for (const t of st0.inflight) {
+        const k = tileKey(t.tx, t.ty);
+        const n = (inflightStreak.get(k) ?? 0) + 1;
+        next.set(k, n);
+        if (n > r.maxInflightStreak) r.maxInflightStreak = n;
+        if (n === r.inflightBound + 1) note(`${name} 시점 ${step}: ${k} 가 ${n} 시점 연속 inflight > D+1 = ${r.inflightBound}`);
+      }
+      inflightStreak.clear();
+      for (const [k, n] of next) inflightStreak.set(k, n);
     }
     for (const t of plan.cancel) pending.delete(tileKey(t.tx, t.ty));
     for (const t of plan.request) {
@@ -198,6 +265,25 @@ export function replay(name, poses, makeDelay, maxDelay, { opts, deps } = {}) {
     }
 
     const deferred = keysOf(plan.deferred);
+    // 진행 하한 ③(우선순위): 같은 시점에 오라클 타일이 deferred 인데 그보다 카메라에서 먼 타일을 request 하면 위반.
+    // 거리는 타일 중심과 카메라 xy 사이(구현 정렬과 독립). 구현이 어떤 타일 안 점으로 재든 중심과의 차는 반대각선 S/√2 이하이므로
+    // 두 타일 몫 S·√2 를 허용 오차로 둔다(측정 없이 유도).
+    {
+      const cx = pose.pos[0], cy = pose.pos[1];
+      const dist = (tx, ty) => Math.hypot((tx + 0.5) * TILE_S - cx, (ty + 0.5) * TILE_S - cy);
+      let minDef = Infinity, minKey = '';
+      for (const t of plan.deferred) {
+        if (!want.has(tileKey(t.tx, t.ty))) continue;
+        const d = dist(t.tx, t.ty);
+        if (d < minDef) { minDef = d; minKey = tileKey(t.tx, t.ty); }
+      }
+      for (const t of plan.request) {
+        if (dist(t.tx, t.ty) > minDef + TILE_S * Math.SQRT2) {
+          r.orderViolations += 1;
+          note(`${name} 시점 ${step}: 오라클 ${minKey}(${minDef.toFixed(0)} m) 를 보류하고 더 먼 ${tileKey(t.tx, t.ty)} 를 요청`);
+        }
+      }
+    }
     const next = new Map();
     for (const k of deferred) {
       const n = (streak.get(k) ?? 0) + 1;
@@ -238,8 +324,9 @@ export function replay(name, poses, makeDelay, maxDelay, { opts, deps } = {}) {
 /**
  * 기본 maxInflight 재생 결과의 완료 기준 위반 목록(빈 배열이면 통과). replay.test.mjs 가 빈 배열을, 변이 시험이 비지 않음을 단언한다.
  *   놓친 타일 0 · 빈 자리 낭비 0(움직이는 동안 포함) · 정지 뒤 오라클 ∩ missing = ∅ · 정지 뒤 오라클 ⊆ held ·
- *   즉시 도착이면 경로 중 missing ∩ 오라클 ⊆ deferred · 최대 연속 deferred ≤ K · 프로토콜 위반 0.
- * K < 전체 시점 수는 시험 틀 자체의 조건이라 여기서 세지 않고 시험이 따로 단언한다.
+ *   즉시 도착이면 경로 중 missing ∩ 오라클 ⊆ deferred · 최대 연속 deferred ≤ K · 프로토콜 위반 0 ·
+ *   진행 하한(보이는 타일이 기다리는 시점의 retain 밖 inflight 0, 한 타일 연속 inflight ≤ D + 1).
+ * K < 경로 시점 수는 시험 틀 자체의 조건이라 여기서 세지 않고 시험이 따로 단언한다.
  */
 export function defaultFailures(r) {
   const out = [];
@@ -247,6 +334,9 @@ export function defaultFailures(r) {
   if (r.dropped !== 0) out.push(`dropped ${r.dropped}`);
   if (r.wastedSlots !== 0) out.push(`wastedSlots ${r.wastedSlots}`);
   if (r.maxStreak > r.K) out.push(`maxStreak ${r.maxStreak} > K ${r.K} (${r.maxStreakTile})`);
+  if (r.orderViolations !== 0) out.push(`orderViolations ${r.orderViolations}`);
+  if (r.strayInflight !== 0) out.push(`strayInflight ${r.strayInflight}`);
+  if (r.maxInflightStreak > r.inflightBound) out.push(`maxInflightStreak ${r.maxInflightStreak} > D+1 ${r.inflightBound}`);
   if (r.immediateViolations !== 0) out.push(`immediateViolations ${r.immediateViolations}`);
   if (r.settledMissing !== 0) out.push(`settledMissing ${r.settledMissing}`);
   if (r.settledHeldGap !== 0) out.push(`settledHeldGap ${r.settledHeldGap}`);
