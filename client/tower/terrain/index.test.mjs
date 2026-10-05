@@ -39,7 +39,7 @@ test('cells:1 타일과 일반 배열 heights 도 던지고 상태를 바꾸지 
   const L = createTerrainLayer();
   L.accept(1, [slope(0, 0, 3)]);
   const before = L.state();
-  assert.throws(() => L.accept(2, [{ tx: 0, ty: 0, cells: 1, heights: new Float32Array(1) }]));
+  assert.throws(() => L.accept(2, [{ tx: 0, ty: 0, cells: 1, heights: new Float32Array(1) }]), RangeError);
   assert.deepEqual(L.state(), before);
   assert.throws(() => L.accept(2, [{ tx: 0, ty: 0, cells: 2, heights: [0, 0, 0, 0] }]), RangeError);
   assert.deepEqual(L.state(), before);
@@ -126,5 +126,19 @@ test('accept 순서를 되돌리면(상태 먼저 커밋) 원자성 시험이 �
   const L = createTerrainLayer();
   L.accept(1, [slope(0, 0, 3)]);
   assert.throws(() => L.accept(2, [nanTile()]));
-  assert.notEqual(L.accept(2, [slope(0, 0, 3)]), 'skip');
+  assert.equal(L.accept(2, [slope(0, 0, 3)]), 'replace');
+  assert.equal(L.state().level, 2);
+  assert.equal(L.state().tileCount, 1);
+});
+
+test('주입 shade 가 lambert 속성 없는 배열을 줘도 기본 shade 와 화소가 같다(시험 경로 = 실경로)', () => {
+  const plain = (...args) => Array.from(shadeLambert(...args)); // lambert 속성을 떼어낸 같은 색
+  const mk = (opts) => {
+    const L = createTerrainLayer(opts);
+    L.accept(0, [bump(0, 0, 5), slope(1, 0, 5)]);
+    return L.render(cam());
+  };
+  const a = mk(undefined), b = mk({ shade: plain });
+  assert.ok(a.index.some((v) => v >= 0));
+  assert.ok(same(a, b));
 });

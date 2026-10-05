@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTerrainState } from './levels.mjs';
 
-const tile = (tx, ty, cells = 4, lod = 0) => ({ tx, ty, lod, cells, heights: new Float32Array((cells + 1) * (cells + 1)) });
+const tile = (tx, ty, cells = 4, lod = 0) => ({ tx, ty, lod, cells, heights: new Float32Array(cells * cells) });
 const coords = (state) => state.tiles().map((t) => `${t.tx},${t.ty}`);
 
 test('초기 상태는 수준 -1 이고 타일이 없다', () => {
@@ -142,4 +142,26 @@ test('묶음은 수준별 화면 전체 완전 묶음이다: 높은 수준이 �
   s.accept(0, [tile(0, 0, 2), tile(1, 0, 2), tile(2, 0, 2)]);
   s.accept(1, [tile(0, 0, 4)]);
   assert.deepEqual(coords(s), ['0,0']);
+});
+
+test('cells·heights 길이·위치 범위 위반은 추월(skip) 수준에서도 같은 RangeError 를 던진다', () => {
+  const bads = {
+    'cells 1': { ...tile(0, 0), cells: 1, heights: new Float32Array(1) },
+    'cells 0': { ...tile(0, 0), cells: 0, heights: new Float32Array(0) },
+    'heights 길이 (cells+1)²': { ...tile(0, 0), heights: new Float32Array(25) },
+    'heights 가 일반 배열': { ...tile(0, 0, 2), heights: [0, 0, 0, 0] },
+    'tx Float32 초과': { ...tile(0, 0), tx: 1e37 },
+  };
+  for (const [name, bad] of Object.entries(bads)) {
+    const fresh = createTerrainState();
+    assert.throws(() => fresh.accept(0, [bad]), (e) => e instanceof RangeError && e.message.startsWith('terrain:'), `새 수준 ${name}`);
+    assert.equal(fresh.level(), -1);
+    const s = createTerrainState();
+    s.accept(3, [tile(5, 6, 8)]);
+    assert.equal(s.peek(1), 'skip');
+    assert.throws(() => s.accept(1, [bad]), (e) => e instanceof RangeError && e.message.startsWith('terrain:'), `추월 수준 ${name}`);
+    assert.throws(() => s.accept(3, [bad]), RangeError, `같은 수준 ${name}`);
+    assert.equal(s.level(), 3);
+    assert.deepEqual(coords(s), ['5,6']);
+  }
 });

@@ -1,13 +1,14 @@
 // 관제탑 지형 수준 상태(T15.1-A4). 도착한 수준의 타일 묶음이 이전 묶음을 통째로 교체한다(누적 아님).
 // 결정은 contracts/levels 의 decideArrival 을 쓴다: first/replace 면 교체, skip 이면 상태를 바꾸지 않는다.
 // 검증은 상태를 바꾸기 전에 끝낸다(원자적). 시계·타이머 없음: 상태는 도착 이벤트로만 바뀐다.
+import { assertTileShape } from './mesh.mjs';
 import { NONE, decideArrival, assertLevel, ACTIONS } from '../../../contracts/levels/index.mjs';
 
 function assertCoord(value, name) {
   if (typeof value !== 'number' || !Number.isInteger(value)) throw new TypeError(`타일 ${name} 는 정수여야 한다: ${String(value)}`);
 }
 
-/** 묶음 검증: 배열, 타일마다 정수 tx,ty, (tx,ty) 유일, cells 동일. 어긋나면 TypeError/RangeError. */
+/** 묶음 검증: 배열, 타일마다 정수 tx,ty·cells≥2·heights 길이 cells²(mesh 와 동일), (tx,ty) 유일, cells 동일. 어긋나면 TypeError/RangeError. */
 function validateTiles(tiles) {
   if (!Array.isArray(tiles)) throw new TypeError('tiles 는 배열이어야 한다');
   const seen = new Set();
@@ -19,7 +20,8 @@ function validateTiles(tiles) {
     const key = `${tile.tx},${tile.ty}`;
     if (seen.has(key)) throw new RangeError(`묶음 안 (tx,ty) 중복: ${key}`);
     seen.add(key);
-    if (!Number.isInteger(tile.cells) || tile.cells <= 0) throw new TypeError(`tiles[${i}].cells 는 양의 정수여야 한다: ${String(tile.cells)}`);
+    // mesh 와 같은 검사(cells ≥ 2, heights 길이 cells², 위치 범위)를 skip 여부와 무관하게 먼저 적용한다.
+    assertTileShape(tile, i);
     if (cells === undefined) cells = tile.cells;
     else if (tile.cells !== cells) throw new RangeError(`묶음 안 cells 불일치: ${cells} 와 ${tile.cells}`);
   });
