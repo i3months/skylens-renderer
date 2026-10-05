@@ -2,7 +2,7 @@
 // 실행: node --test client/tower/terrain/mesh.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildLayerMesh } from './mesh.mjs';
+import { buildLayerMesh, MAX_ABS_POSITION_M } from './mesh.mjs';
 import { createTerrainLayer } from './index.mjs';
 import { buildTerrainTile, terrainTileToMesh } from '../../../server/terrain/mesh_lod/index.mjs';
 
@@ -160,17 +160,33 @@ test('입력 검증 음성 사례는 terrain: 접두의 RangeError', () => {
   }
 });
 
-// Float32 로 유한한 최대 타일 번호: 64·(tx+1) 이 Float32 최댓값 이하인 가장 큰 정수.
-const MAX_F32 = 3.4028234663852886e38;
-const MAX_TX = Math.floor(MAX_F32 / 64) - 1;
+// 경계: 64·(tx+1) ≤ 2^24 인 가장 큰 정수 tx (음수 쪽은 -MAX_TX-1 = -2^18 이 64·tx = -2^24 로 경계).
+const MAX_TX = MAX_ABS_POSITION_M / 64 - 1;
 
-test('위치가 Float32 로 유한한 최대 타일 번호는 통과하고 조금 넘으면 RangeError', () => {
-  assert.ok(Number.isFinite(Math.fround((MAX_TX + 1) * 64)));
+test('1 m 구별 한계(2^24 m) 안쪽 최대 타일은 통과하고 바로 바깥은 RangeError', () => {
+  assert.equal(MAX_TX, 2 ** 18 - 1);
   const heights = new Float32Array(4);
-  const m = buildLayerMesh([{ tx: MAX_TX, ty: 0, cells: 2, heights }, { tx: -MAX_TX - 1, ty: -MAX_TX - 1, cells: 2, heights }]);
+  const m = buildLayerMesh([
+    { tx: MAX_TX, ty: 0, cells: 2, heights },
+    { tx: MAX_TX - 1, ty: 0, cells: 2, heights },
+    { tx: -MAX_TX - 1, ty: -MAX_TX - 1, cells: 2, heights },
+  ]);
   assert.ok(m.positions.every(Number.isFinite));
-  assert.throws(() => buildLayerMesh([{ tx: MAX_TX * 1.01, ty: 0, cells: 2, heights }]), RangeError);
-  assert.throws(() => buildLayerMesh([{ tx: 0, ty: MAX_TX * 1.01, cells: 2, heights }]), RangeError);
+  // 경계 타일 정점 x 가 이웃 타일 정점 x 와 Float32 에서 구별된다.
+  const xs = (n) => [m.positions[n * 12], m.positions[n * 12 + 3]];
+  const [a0, a1] = xs(0);
+  const [b0, b1] = xs(1);
+  assert.notEqual(a0, a1);
+  assert.equal(a1, MAX_ABS_POSITION_M);
+  assert.equal(b1, a0);
+  assert.notEqual(b0, a0);
+  assert.notEqual(Math.fround(a1 - 1), a1);
+  assert.throws(() => buildLayerMesh([{ tx: MAX_TX + 1, ty: 0, cells: 2, heights }]), RangeError);
+  assert.throws(() => buildLayerMesh([{ tx: 0, ty: MAX_TX + 1, cells: 2, heights }]), RangeError);
+  assert.throws(() => buildLayerMesh([{ tx: -MAX_TX - 2, ty: 0, cells: 2, heights }]), RangeError);
+  assert.throws(() => buildLayerMesh([{ tx: 0, ty: -MAX_TX - 2, cells: 2, heights }]), RangeError);
+  assert.throws(() => buildLayerMesh([{ tx: 2 ** 30 * 1e7, ty: 0, cells: 2, heights }]), RangeError);
+  assert.throws(() => buildLayerMesh([{ tx: 2 ** 30, ty: 0, cells: 2, heights }]), RangeError);
 });
 
 test('범위 밖 tx 는 층 accept 가 RangeError 로 거부하고 수준 -1 이 유지되며 render 는 빈 결과다', () => {

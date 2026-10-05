@@ -335,8 +335,7 @@ test('A2_near_plane_clip_interpolation_matches_reference', () => {
     const out = emptyResult(100, 100);
     rasterizeTriangles(cam100(), mesh, () => [1, 1, 1], out);
     const ref = traceMesh(cam100(), mesh, () => [1, 1, 1]);
-    // 덮인 화소 수는 독립 추적기와 불일치 화소 수 이내로 같아야 한다(스냅숏 상수 금지).
-    assert.ok(Math.abs(countFilled(out) - countFilled(ref)) <= maxMismatch, `${name}: 덮인 화소 수 ${countFilled(out)} vs 참조 ${countFilled(ref)}`);
+    // 덮인 화소 수 차이는 불일치 화소 수 이내이므로 아래 mismatch 단언이 이를 포함한다(스냅숏 상수 금지).
     assert.ok(countFilled(ref) > 100, `${name}: 참조가 충분히 그림`);
     let mismatch = 0;
     for (let i = 0; i < out.index.length; i += 1) {
@@ -360,14 +359,56 @@ function renderLambert(lambert, nz) {
 }
 test('A2_direct_lambert_light_is_normalized_and_ambient_checked', () => {
   const base = [100, 100, 100];
-  // 법선 방향과 같은 광원이면 I=1 → 100. 부호가 맞는 쪽을 고른다.
+  // 법선 방향과 같은 광원이면 I=1 → 100. 법선이 [0,0,-1] 이므로 광원도 -z 쪽을 고른다.
   const nz = -1;
   const a = renderLambert({ l: [0, 0, -1], baseRgb: base, ambient: 0.2 }, nz);
   const b = renderLambert({ l: [0, 0, -2], baseRgb: base, ambient: 0.2 }, nz);
   const px = (20 * 100 + 20) * 3;
   assert.equal(a.color[px], 100, '단위 광원 + 평지 = 기저색');
-  assert.deepEqual(Array.from(b.color), Array.from(a.color), 'l=[0,0,2] 는 l=[0,0,1] 과 같은 색');
+  assert.deepEqual(Array.from(b.color), Array.from(a.color), 'l=[0,0,-2] 는 l=[0,0,-1] 과 같은 색');
   assert.throws(() => renderLambert({ l: [0, 0, 0], baseRgb: base, ambient: 0.2 }, nz), RangeError);
   assert.throws(() => renderLambert({ l: [0, 0, -1], baseRgb: base, ambient: 1.5 }, nz), RangeError);
   assert.throws(() => renderLambert({ l: [0, 0, -1], baseRgb: base, ambient: -0.1 }, nz), RangeError);
+});
+
+// F-401 ①: lambert.baseRgb 는 길이 3·유한·0..255 여야 하고, 불량이면 그리기 전에 던진다(out 은 비어 있다).
+test('A2_direct_lambert_base_rgb_is_validated_before_drawing', () => {
+  const bad = [
+    ['NaN', [100, NaN, 100]],
+    ['undefined', undefined],
+    ['길이 2', [100, 100]],
+    ['길이 4', [100, 100, 100, 100]],
+    ['Infinity', [100, Infinity, 100]],
+    ['음수', [-1, 100, 100]],
+    ['255 초과', [100, 100, 256]],
+  ];
+  for (const [name, baseRgb] of bad) {
+    const out = emptyResult(100, 100);
+    assert.throws(() => rasterizeTriangles(cam100(), flatNormalMesh(-1), () => [0, 0, 0], out, { lambert: { l: [0, 0, -1], baseRgb, ambient: 0.2 } }), (e) => e instanceof TypeError || e instanceof RangeError, `baseRgb ${name}`);
+    assert.equal(countFilled(out), 0, `baseRgb ${name}: 던지기 전에 그리지 않음`);
+  }
+});
+
+// F-400 ④: 층은 늘 opts.lambert 를 넘기므로 주입 shade 의 색은 화소 음영 경로에서 무시된다(면 음영일 때만 반영).
+test('A2_injected_shade_color_is_ignored_on_per_pixel_path_but_used_on_face_path', async () => {
+  const { createTerrainLayer } = await import('./index.mjs');
+  const heights = new Float32Array(25);
+  for (let j = 0; j < 5; j += 1) for (let i = 0; i < 5; i += 1) heights[j * 5 + i] = (20 * i) / 4;
+  const camera = { width: 64, height: 64, K: { fx: 60, fy: 60, cx: 32, cy: 32 }, R: [1, 0, 0, 0, -1, 0, 0, 0, -1], t: [-32, 32, 80] };
+  const L = createTerrainLayer({ shade: () => [255, 0, 0] });
+  L.accept(0, [{ tx: 0, ty: 0, lod: 0, cells: 5, heights }]);
+  const red = (o) => {
+    let n = 0;
+    for (let i = 0; i < o.index.length; i += 1) if (o.index[i] >= 0 && o.color[3 * i] === 255 && o.color[3 * i + 1] === 0 && o.color[3 * i + 2] === 0) n += 1;
+    return n;
+  };
+  const out = L.render(camera);
+  assert.ok(countFilled(out) > 1000, '지형이 그려짐');
+  assert.equal(red(out), 0, '화소 음영 경로: 주입 shade 의 빨강은 무시');
+  // 같은 메시를 면 음영(normals:'face')으로 그리면 주입 색이 그대로 반영된다.
+  const mesh = makeMesh([[[-3, -3, 10], [1, -3, 10], [-3, 1, 10]]], [0]);
+  const flat = emptyResult(100, 100);
+  rasterizeTriangles(cam100(), mesh, () => [255, 0, 0], flat);
+  assert.equal(red(flat), countFilled(flat), '면 음영 경로: 주입 색 반영');
+  assert.ok(countFilled(flat) > 0);
 });

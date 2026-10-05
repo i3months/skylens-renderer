@@ -5,7 +5,9 @@
 // 1부: ref_trace 자체 검증(해석값·무차별 대조) — 래스터와 무관하게 통과해야 한다.
 // 2부: createTerrainLayer 대 기준 영상. 합성 DEM 시드 1..12 × 높이 잡음 {0, 0.015} 의 24 장면 × LOD 1..3 × 8시점 최소값으로 판정한다.
 //   0.95 에 못 미치는 조건이 생기면 KNOWN_SHORTFALL 에 수치·하한과 함께 따로 단언한다(기준은 낮추지 않는다). 지금은 비어 있다.
-// 기준 수치는 아래 상수에 미리 박아 두었고 측정값에 맞춰 바꾸지 않는다(KNOWN_SHORTFALL 하한만 측정에서 정한 퇴행 하한이다).
+// 기준 수치(SSIM 0.95·0.99, 해상도 160×90, 시드 범위)는 측정값에 맞춰 바꾸지 않고 미리 정한 값이다.
+// 측정에서 정한 값은 KNOWN_SHORTFALL 퇴행 하한, LOD3_EQ_LOD2_SCENES(현재 측정 14 장면), NEAR_*·FACE_SHADING_NOISY_MAX 의 측정 근거 수치다.
+// MASK_MISMATCH_MAX_RATIO 가 0 인 근거: 층 래스터와 기준 추적이 같은 변 규칙(화소 중심 포함 판정)을 쓰는 결정적 계산이라 빈/채움 판정이 어긋날 이유가 없다.
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { traceMesh, createTracer } from './ref_trace.mjs';
@@ -19,7 +21,10 @@ import { rasterizeTriangles } from './raster.mjs';
 
 // ---- 미리 정한 기준 수치 ----
 const SSIM_LOD0_MIN = 0.99; // LOD 0 을 layer 로 그린 것 대 기준(래스터 정확성)
-const MASK_MISMATCH_MAX_RATIO = 0; // 빈/채움이 다른 화소 비율 상한(측정: LOD 0 24 장면 8시점·부분 메시 8시점 모두 0)
+const MASK_MISMATCH_MAX_RATIO = 0; // 빈/채움이 다른 화소 비율 상한. 근거: 변 규칙 결정성(위 8행 주석). 참고 측정: LOD 0 24 장면 8시점·부분 메시 8시점 모두 0
+// LOD 3 타일 메시가 LOD 2 와 똑같은(정점·삼각형 동일) 장면 수. 근거: 결정 0046 의 LOD 3 오차 상한이 [0,0.5,1,1] 이라 LOD 2 와 LOD 3 이 같은 상한(1 m)이고,
+//   그 상한에서 간격이 같게 정해지는 DEM 은 두 단계가 같은 메시가 된다. 곧 이 장면들의 LOD 3 SSIM 은 LOD 2 와 같아 LOD 3 을 따로 검증하지 못한다. 현재 측정 14 장면.
+const LOD3_EQ_LOD2_SCENES = 14;
 const TRACE_TOTAL_MS_MAX = 20000; // 한 장면 8시점 기준 영상 합계 시간 상한
 const VIEWS = 8;
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
@@ -317,6 +322,12 @@ describe('지형 층 8시점 SSIM(시드 1..12 × 잡음 {0, 0.015})', () => {
     for (let ty = -2; ty < 2; ty++) for (let tx = -2; tx < 2; tx++) tileOrder.push([tx, ty]);
     const lodTiles = [0, 1, 2, 3].map((l) => tileOrder.map(([tx, ty]) => mods.buildTerrainTile(dem, tx, ty, l)));
     const refMesh = concatMeshes(lodTiles[0].map((tl) => mods.terrainTileToMesh(tl)));
+    // LOD 2·LOD 3 이 같은 타일 메시인지(삼각형 수와 정점·색인 값 모두 같은지) 기록한다.
+    const m2 = concatMeshes(lodTiles[2].map((tl) => mods.terrainTileToMesh(tl)));
+    const m3 = concatMeshes(lodTiles[3].map((tl) => mods.terrainTileToMesh(tl)));
+    const tri2 = m2.indices.length / 3, tri3 = m3.indices.length / 3;
+    const lod3EqLod2 = tri2 === tri3 && m2.positions.length === m3.positions.length
+      && m2.positions.every((v, i) => v === m3.positions[i]) && m2.indices.every((v, i) => v === m3.indices[i]);
     const t0 = Date.now();
     const tracer = createTracer(refMesh, VTX);
     const refs = cams.map((c) => tracer(c, shadeFnDefault()));
@@ -339,7 +350,7 @@ describe('지형 층 8시점 SSIM(시드 1..12 × 잡음 {0, 0.015})', () => {
       });
       ss.push(sv); filled.push(fv);
     }
-    return { seed, noise, lodTiles, refs, refMesh, traceMs, ss, filled, mask, triCount: refMesh.indices.length / 3 };
+    return { seed, noise, tri2, tri3, lod3EqLod2, lodTiles, refs, refMesh, traceMs, ss, filled, mask, triCount: refMesh.indices.length / 3 };
   }
 
   before(async () => {
@@ -357,6 +368,8 @@ describe('지형 층 8시점 SSIM(시드 1..12 × 잡음 {0, 0.015})', () => {
     const rows = scenes.map((s) => `  시드 ${String(s.seed).padStart(2)} 잡음 ${s.noise.toFixed(3)}: LOD0..3 최소 ${s.ss.map((v) => Math.min(...v).toFixed(4)).join(' ')}`
       + ` | 채움 창만 ${s.filled.map((v) => Math.min(...v).toFixed(4)).join(' ')}`);
     console.log(`[ssim_views] 24 장면 × 8시점 최소 SSIM (합계 ${Date.now() - t0} ms)\n${rows.join('\n')}`);
+    const eq = scenes.filter((s) => s.lod3EqLod2);
+    console.log(`[ssim_views] LOD3=LOD2 장면 ${eq.length} / ${scenes.length}: ${eq.map((s) => `${s.seed}/${s.noise}`).join(' ')}\n  장면별 삼각형(LOD2→LOD3): ${scenes.map((s) => `${s.seed}/${s.noise}:${s.tri2}→${s.tri3}`).join(' ')}`);
   });
 
   const fmt = (arr) => arr.map((v) => v.toFixed(4)).join(' ');
@@ -395,7 +408,7 @@ describe('지형 층 8시점 SSIM(시드 1..12 × 잡음 {0, 0.015})', () => {
     });
   }
 
-  test('(2b) 알려진 미달(T15.1 미완): 목록이 실제 미달과 정확히 같고, 각 조건은 퇴행 하한 이상이다', () => {
+  test('(2b) 알려진 미달: 목록이 실제 미달과 정확히 같고, 각 조건은 퇴행 하한 이상이다', () => {
     const actual = [];
     for (const s of scenes) {
       for (const l of [1, 2, 3]) if (Math.min(...s.ss[l]) < TERRAIN_SSIM_MIN) actual.push(key(s, l));
@@ -410,6 +423,14 @@ describe('지형 층 8시점 SSIM(시드 1..12 × 잡음 {0, 0.015})', () => {
       assert.ok(m >= floor, `알려진 미달 ${k} 가 하한 아래로 퇴행: ${m.toFixed(4)} < ${floor}`);
     }
     console.log(`[ssim_views] 알려진 미달 ${rep.length}건: ${rep.join(' ')}`);
+  });
+
+  test('(2a) LOD3=LOD2 장면 수: LOD 3 이 LOD 2 와 같은 메시인 장면 수가 측정값과 같다', () => {
+    const eq = scenes.filter((s) => s.lod3EqLod2);
+    // 같은 메시면 삼각형 수도 같고, 다르면 LOD 3 이 더 성기다(삼각형 수가 늘지 않는다).
+    for (const s of scenes) assert.ok(s.tri3 <= s.tri2, `시드 ${s.seed} 잡음 ${s.noise}: LOD3 삼각형 ${s.tri3} > LOD2 ${s.tri2}`);
+    assert.equal(eq.length, LOD3_EQ_LOD2_SCENES, `LOD3=LOD2 장면 ${eq.length} (기대 ${LOD3_EQ_LOD2_SCENES}): ${eq.map((s) => `${s.seed}/${s.noise}`).join(' ')}`);
+    console.log(`[ssim_views] LOD3=LOD2 장면 ${eq.length}`);
   });
 
   test('(2c) 민감도 확인: 면 음영 재현은 (1)·(2) 기준 아래로 떨어지고, 층은 보간 음영을 실제로 쓴다', () => {

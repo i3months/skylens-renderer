@@ -10,13 +10,17 @@
 
 const TILE_SIZE_M = 64;
 
+// 위치 절댓값 상한(m). Float32 가수는 24 비트라서 |x| ≤ 2^24 일 때까지만 1 m 간격 정수를 서로 구별할 수 있다.
+// 이보다 크면 이웃 정점이 같은 Float32 값으로 붕괴해 오류 없이 빈 화면이 되므로 검증에서 거부한다.
+export const MAX_ABS_POSITION_M = 2 ** 24;
+
 function fail(message) {
   return new RangeError(`terrain: ${message}`);
 }
 
 /**
  * 타일 하나의 모양 검증(cells·heights·tx·ty). levels.mjs 도 같은 검사를 쓰려고 내보낸다.
- * tx·ty 는 정수일 뿐 아니라 Float32 위치(64·tx, 64·(tx+1))가 유한해야 한다(아니면 Infinity 가 되어 래스터가 던진다).
+ * tx·ty 는 정수일 뿐 아니라 위치 |64·tx|, |64·(tx+1)| 가 MAX_ABS_POSITION_M 이하여야 한다(넘으면 Float32 정밀도 붕괴).
  */
 export function assertTileShape(t, n) {
   if (!t || typeof t !== 'object') throw fail(`타일 ${n} 이 객체가 아니다`);
@@ -26,8 +30,8 @@ export function assertTileShape(t, n) {
   }
   if (!Number.isInteger(t.tx) || !Number.isInteger(t.ty)) throw fail(`타일 ${n} 의 tx, ty 는 정수여야 한다`);
   for (const [name, v] of [['tx', t.tx], ['ty', t.ty]]) {
-    if (!Number.isFinite(Math.fround(v * TILE_SIZE_M)) || !Number.isFinite(Math.fround((v + 1) * TILE_SIZE_M))) {
-      throw fail(`타일 ${n} 의 ${name} 가 Float32 위치로 표현 가능한 범위를 넘는다`);
+    if (!(Math.abs(v * TILE_SIZE_M) <= MAX_ABS_POSITION_M) || !(Math.abs((v + 1) * TILE_SIZE_M) <= MAX_ABS_POSITION_M)) {
+      throw fail(`타일 ${n} 의 ${name} 가 Float32 로 1 m 를 구별할 수 있는 범위(±${MAX_ABS_POSITION_M} m)를 넘는다`);
     }
   }
   for (let k = 0; k < t.heights.length; k++) {

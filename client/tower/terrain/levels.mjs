@@ -4,6 +4,9 @@
 import { assertTileShape } from './mesh.mjs';
 import { NONE, decideArrival, assertLevel, ACTIONS } from '../../../contracts/levels/index.mjs';
 
+// 예외 종류 규칙: 값의 종류가 틀리면(배열 아님·객체 아님·정수 아님) TypeError, 값의 범위·관계가 틀리면(cells·heights 길이·위치 범위·중복·불일치) RangeError.
+// mesh.mjs 는 모든 위반을 RangeError 하나로 던지지만, 이 상태 객체는 입력 종류 오류를 먼저 가려 TypeError 로 던진다. 이 차이는 의도한 것이다.
+// 검증은 skip 판정보다 먼저이므로 skip 경로와 비skip 경로는 같은 입력에 같은 종류를 던진다(levels.test.mjs 에서 단언).
 function assertCoord(value, name) {
   if (typeof value !== 'number' || !Number.isInteger(value)) throw new TypeError(`타일 ${name} 는 정수여야 한다: ${String(value)}`);
 }
@@ -39,7 +42,9 @@ export function createTerrainState() {
       validateTiles(tiles);
       const action = decideArrival(currentLevel, level);
       if (action === ACTIONS.SKIP) return action;
-      stored = Object.freeze(tiles.map((tile) => Object.freeze({ ...tile })));
+      // heights 는 Float32Array 라 동결할 수 없고 얕은 복사로는 호출자와 공유된다. 보관할 때 새 배열로 복사해 입력의 사후 변경을 끊는다.
+      // (tiles() 가 돌려주는 heights 는 읽기 전용 계약이다: 읽을 때마다 복사하면 타일 수만큼 비용이 들어 보관 시점에서만 복사한다.)
+      stored = Object.freeze(tiles.map((tile) => Object.freeze({ ...tile, heights: new Float32Array(tile.heights) })));
       currentLevel = level;
       return action;
     },
