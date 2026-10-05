@@ -58,3 +58,4 @@ export function isDrapeAligned(measure, tolPx) {
 export * from './terrain.mjs';
 export * from './drape.mjs';
 export * from './buildings.mjs';
+export * from './input.mjs';
