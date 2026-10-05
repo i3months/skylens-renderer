@@ -266,3 +266,19 @@ for (const noise of [1, 2]) {
     assert.deepEqual(bad, []);
   });
 }
+
+test('F-380 불확정 블록은 측정값처럼 읽히지 않는다: 사인 1.5 DN ±1 DN seed 2007922 — dx·dy NaN, blockMaxPx·residualMaxPx ≥ undecidedMaxPx', () => {
+  // 수정 전: x 평평·자기 최소 −1.28 px·예측 −0.125 px 인 블록이 blocks[].dx ≈ −0.125, blockMaxPx 작음 — maxMisalignPx 만 컸다.
+  const [amp, g, e] = POS_CASES[0];
+  const img = lowContrastImage(LOW.sine(amp));
+  const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
+  const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise: 1, seed: 2007922 }));
+  assert.equal(m.status, 'measured');
+  const und = m.blocks.filter((b) => b.undecided);
+  assert.ok(und.length >= 1 && m.undecidedBlocks === und.length, `불확정 블록 ${und.length}`);
+  for (const b of und) assert.ok(Number.isNaN(b.dx) && Number.isNaN(b.dy), `불확정 블록 (${b.i0},${b.j0}) dx ${b.dx} dy ${b.dy}`);
+  for (const b of m.blocks.filter((q) => !q.undecided)) assert.ok(Number.isFinite(b.dx) && Number.isFinite(b.dy));
+  assert.ok(m.undecidedMaxPx > ALIGN_TOLERANCE_PX, `undecidedMaxPx ${m.undecidedMaxPx}`);
+  assert.ok(m.blockMaxPx >= m.undecidedMaxPx, `blockMaxPx ${m.blockMaxPx} < undecidedMaxPx ${m.undecidedMaxPx}`);
+  assert.ok(m.residualMaxPx >= m.undecidedMaxPx, `residualMaxPx ${m.residualMaxPx} < undecidedMaxPx ${m.undecidedMaxPx}`);
+});
