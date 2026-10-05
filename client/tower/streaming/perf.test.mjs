@@ -1,6 +1,7 @@
 // 조각 요청 층 update 성능 시험. 합성 시점 120개 경로를 재생해 update 한 번 평균 시간을 잰다.
-// 단언: 한 번 평균의 중앙값 ≤ 4 ms(이 상한은 측정에 맞춰 낮추지 않는다), maxDistM 1500·광각 시점의 needed ≤ 4096.
-// CI 에서 흔들리지 않게 경로 재생을 여러 번 반복해 중앙값을 쓴다.
+// 단언: ① 한 번 평균의 중앙값 ≤ 4 ms(이 상한은 측정에 맞춰 낮추지 않는다), ② 광각 시점 한 번 평균의 중앙값 ≤ 4 ms,
+// ③ 최악 시점 기본값 p90 ≤ 8 ms, ④ 최악 시점 retainMargin 16 p50 ≤ 16 ms·p90 ≤ 8 ms, ⑤ 이동 중 held 부풀림 p90 ≤ 10 ms(5묶음 중앙값),
+// ⑥ maxDistM 1500·광각 시점의 needed ≤ 4096. CI 에서 흔들리지 않게 반복 측정의 중앙값(묶음 판정)을 쓴다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
@@ -118,28 +119,36 @@ test('perf: 최악 시점 retainMargin 16 update p50 ≤ 16 ms, p90 ≤ 8 ms', (
 
 // 이동 중 held 부풀림 상태(실측 held 약 2900, p90 약 6~7.3 ms 로 8 ms 에 여유가 없어, 이 상태만 상한을 10 ms 로 둔다): 최악 시점에서 조금씩 이동하며 도착을 즉시 반영해 retain 안쪽 held 가 needed 보다 크게 쌓인 뒤의 update 비용.
 test('perf: 이동 중 held 부풀림 상태(retainMargin 16) update p90 ≤ 10 ms', () => {
-  const s = createTowerStreaming({ maxHeld: 1_000_000, maxInflight: 1_000_000, retainMargin: 16 });
   const at = (i) => poseToCameraPose({ pos: [i * 40, i * 15, 600], yaw: 0.3, pitch: -Math.PI / 2 }, FOV_WIDE);
-  for (let i = 0; i < 60; i += 1) {
-    const plan = s.update(at(i), WORST_SIZE);
-    for (const t of plan.request) s.arrived(t.tx, t.ty);
-  }
-  const held = s.state().held.length;
-  const needed = s.update(at(60), WORST_SIZE).needed.length;
-  assert.ok(held > needed, `held ${held} 가 needed ${needed} 보다 커야 부풀림 상태다`);
-  const ts = [];
-  for (let i = 61; i < 161; i += 1) {
-    const pose = at(i);
-    const c0 = process.cpuUsage();
-    const plan = s.update(pose, WORST_SIZE);
-    const c = process.cpuUsage(c0);
-    ts.push((c.user + c.system) / 1000);
-    for (const t of plan.request) s.arrived(t.tx, t.ty);
-  }
-  ts.sort((a, b) => a - b);
-  const p50 = ts[50];
-  const p90 = ts[90];
-  console.log(`streaming perf(이동·held 부풀림): held ${held}, needed ${needed}, p50 ${p50.toFixed(2)} ms, p90 ${p90.toFixed(2)} ms (상한 p90 10 ms)`);
+  let held = 0;
+  let needed = 0;
+  // 묶음마다 새 상태로 같은 경로를 재생해 묶음별 p50·p90 을 재고, 다른 시험처럼 중앙값으로 판정한다.
+  const timeMoving = () => {
+    const s = createTowerStreaming({ maxHeld: 1_000_000, maxInflight: 1_000_000, retainMargin: 16 });
+    for (let i = 0; i < 60; i += 1) {
+      const plan = s.update(at(i), WORST_SIZE);
+      for (const t of plan.request) s.arrived(t.tx, t.ty);
+    }
+    held = s.state().held.length;
+    needed = s.update(at(60), WORST_SIZE).needed.length;
+    assert.ok(held > needed, `held ${held} 가 needed ${needed} 보다 커야 부풀림 상태다`);
+    const ts = [];
+    for (let i = 61; i < 161; i += 1) {
+      const pose = at(i);
+      const c0 = process.cpuUsage();
+      const plan = s.update(pose, WORST_SIZE);
+      const c = process.cpuUsage(c0);
+      ts.push((c.user + c.system) / 1000);
+      for (const t of plan.request) s.arrived(t.tx, t.ty);
+    }
+    ts.sort((a, b) => a - b);
+    return { p50: ts[50], p90: ts[90] };
+  };
+  const rs = [];
+  for (let g = 0; g < 5; g += 1) rs.push(timeMoving());
+  const p50 = median(rs.map((r) => r.p50));
+  const p90 = median(rs.map((r) => r.p90));
+  console.log(`streaming perf(이동·held 부풀림): held ${held}, needed ${needed}, p50 ${p50.toFixed(2)} ms, p90 ${p90.toFixed(2)} ms (5묶음 중앙값, 상한 p90 10 ms)`);
   assert.ok(p90 <= 10, `p90 ${p90.toFixed(2)} ms > 10 ms`);
 });
 

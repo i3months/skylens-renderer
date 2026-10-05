@@ -147,6 +147,10 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 시점에서 보이는 지형 타일을 보수적으로 구해 요청·취소·내보내기 목록을 돌려주는 계산 전용 모듈. 계약 `contracts/controlview/streaming.mjs`, 구현 `client/tower/streaming/`(검사·보이는 타일·요청 계획·조립). 도착하지 않은 타일은 메우지 않으며 64 m 타일이다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/streaming/*.test.mjs"`.
 
+### 관제탑 폴백 (fallback)
+
+서버 렌더 불가 시 받은 드론·경로·탐지 마커만 2D 지도(북쪽 위)에 그리는 그리기 목록 계산 전용 모듈. 배너 '실시간 3D 불가'를 표시한다. 계약 `contracts/controlview/fallback.mjs`, 구현 `client/tower/fallback/`(포장·변환·조립). 받지 않은 위치는 보간·외삽하지 않고 받은 것만 그린다. 사람 확인 전 임시다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/fallback/*.test.mjs"`.
+
 ## English
 
 Server-side renderer for SkyLens. Work in progress.
@@ -293,4 +297,8 @@ A compute-only module that turns the ENU positions of drones, paths and detectio
 ### Control tower piece request (streaming)
 
 A compute-only module that conservatively computes terrain tiles visible from the viewpoint and returns lists of pieces to request, cancel and export. Contract: `contracts/controlview/streaming.mjs`; implementation: `client/tower/streaming/` (validation, visible tiles, request plan, assembly). Unreached tiles are not filled in; they are 64 m tiles. No network or timers. Tests: `node --test "client/tower/streaming/*.test.mjs"`.
+
+### Control tower fallback
+
+A compute-only module that draws only received drones, paths and detection markers on a 2D map (north up) when server rendering is unavailable. Displays a banner "3D real-time unavailable". Contract: `contracts/controlview/fallback.mjs`; implementation: `client/tower/fallback/` (packing, conversion, assembly). Positions not received are never interpolated or extrapolated; only what is received is drawn. Temporary pending human confirmation. No network or timers. Tests: `node --test "client/tower/fallback/*.test.mjs"`.
 
