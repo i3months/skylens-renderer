@@ -67,11 +67,11 @@ test('checkOpts: 정수 옵션 범위와 경계', () => {
     assert.throws(() => checkOpts({ [k]: -1 }), R);
   }
   assert.throws(() => checkOpts({ maxInflight: 0 }), R);
-  assert.throws(() => checkOpts({ maxInflight: 4097 }), R);
+  assert.throws(() => checkOpts({ maxInflight: 1_000_001 }), R);
   assert.throws(() => checkOpts({ retainMargin: 17 }), R);
   assert.throws(() => checkOpts({ maxHeld: 0 }), R);
   assert.equal(checkOpts({ maxInflight: 1 }).maxInflight, 1);
-  assert.equal(checkOpts({ maxInflight: 4096 }).maxInflight, 4096);
+  assert.equal(checkOpts({ maxInflight: 1_000_000 }).maxInflight, 1_000_000);
   assert.equal(checkOpts({ retainMargin: 0 }).retainMargin, 0);
   assert.equal(checkOpts({ retainMargin: 16 }).retainMargin, 16);
 });
