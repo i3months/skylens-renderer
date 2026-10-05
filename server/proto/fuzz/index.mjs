@@ -166,7 +166,8 @@ export function checkOne(codec, input, opts = {}) {
 /**
  * @param {{decode:Function, encode:Function, seedEncode:Function}} codec seedEncode: 시드 프레임 부호화(독립 구현 권장)
  * @param {{iterations:number, seed:number, stopAfter?:number}} opts
- * @returns {{runs:number, random:number, mutated:number, accepted:number, rejected:number, violations:Array}}
+ * @returns {{runs:number, random:number, mutated:number, accepted:number, rejected:number, timeRetries:number, violations:Array}}
+ * timeRetries: time 판정이 한 번 나와 같은 입력을 다시 돌린 횟수(시험이 재실행이 실제로 일어났음을 센다)
  */
 export function runFuzz(codec, { iterations, seed, stopAfter = Infinity }) {
   const savedLimit = Error.stackTraceLimit;
@@ -176,7 +177,7 @@ export function runFuzz(codec, { iterations, seed, stopAfter = Infinity }) {
 
 function fuzzLoop(codec, { iterations, seed, stopAfter }) {
   const rng = makeRng(seed);
-  const res = { runs: 0, random: 0, mutated: 0, accepted: 0, rejected: 0, violations: [] };
+  const res = { runs: 0, random: 0, mutated: 0, accepted: 0, rejected: 0, timeRetries: 0, violations: [] };
   for (let i = 0; i < iterations && res.violations.length < stopAfter; i++) {
     let input;
     if (rng.next() < 0.3) { // (a) 완전 무작위 바이트
@@ -194,7 +195,7 @@ function fuzzLoop(codec, { iterations, seed, stopAfter }) {
     let v = checkOne(codec, input, opts_time);
     // 벽시계 판정은 한 번의 관측이라 GC·스케줄링 정지로 튄다. 같은 입력을 한 번 더 돌려 다시 느릴 때만 time 위반으로 둔다
     // (코덱이 실제로 느리면 입력이 같으므로 매번 느리다). time 이 아닌 종류는 결정적이라 재실행하지 않는다.
-    if (v?.kind === 'time' && checkOne(codec, input, opts_time)?.kind !== 'time') v = null;
+    if (v?.kind === 'time') { res.timeRetries++; if (checkOne(codec, input, opts_time)?.kind !== 'time') v = null; }
     let ok = false;
     if (v) res.violations.push({ index: i, ...v, inputHex: Buffer.from(input.subarray(0, 64)).toString('hex') });
     else { try { codec.decode(input); ok = true; } catch { /* 거부 */ } }

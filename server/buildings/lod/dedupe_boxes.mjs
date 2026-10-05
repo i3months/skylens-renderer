@@ -8,7 +8,8 @@ const EPS = 1e-9;
 
 // 마지막 호출의 입출력 수(시험이 접기가 실제로 쓰였는지 확인한다).
 // covers: covers() 호출 수(작업량 계수; 선형 비교면 입력×대표, 색인이면 입력×(z 허용 안 대표 수)).
-export const foldStats = { calls: 0, input: 0, output: 0, covers: 0 };
+// visited: 대표 구간 트리를 방문한 노드 수(find 호출 수; z 가 벌어져 대표를 하나도 비교하지 않는 입력에서도 색인 조회 비용을 센다).
+export const foldStats = { calls: 0, input: 0, output: 0, covers: 0, visited: 0 };
 
 // 풋프린트가 상자 전체를 채우는 직사각형인가: 넓이 있는 삼각형의 모든 꼭짓점이 상자 모서리에 있다.
 function isRect(m) {
@@ -64,6 +65,7 @@ export function foldContained(singles) {
     return lo;
   };
   const find = (node, lo, hi, lim, minTop, m) => { // 순위 [lo,hi) 중 lim 미만만
+    foldStats.visited++;
     if (lo >= lim || top[node] < minTop) return false;
     if (hi - lo === 1) {
       for (const r of leaves[lo] ?? []) if (covers(r, m)) return true;

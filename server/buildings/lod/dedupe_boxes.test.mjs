@@ -12,7 +12,7 @@ test('같은 자리 동일 상자 2000채는 후보 1개로 접히고 ids 는 �
   const n = 2000;
   const bs = [];
   for (let i = 0; i < n; i++) bs.push({ id: i, mesh: prism(rect(0, 0, 20, 20), 5) });
-  Object.assign(foldStats, { calls: 0, input: 0, output: 0 });
+  Object.assign(foldStats, { calls: 0, input: 0, output: 0, covers: 0, visited: 0 });
   const out = buildBuildingLod(bs, FAR);
   assert.equal(out.length, 1);
   assert.equal(out[0].ids.length, n);
@@ -36,7 +36,7 @@ test('안에 들어가고 낮은 상자는 접히고 높거나 밖으로 나온 
   const taller = prism(rect(5, 5, 10, 10), 12);
   const outside = prism(rect(15, 5, 25, 10), 3);
   const bs = [big, inside, taller, outside].map((mesh, id) => ({ id, mesh }));
-  Object.assign(foldStats, { calls: 0, input: 0, output: 0 });
+  Object.assign(foldStats, { calls: 0, input: 0, output: 0, covers: 0, visited: 0 });
   buildBuildingLod(bs, FAR);
   assert.equal(foldStats.input, 4);
   assert.equal(foldStats.output, 3); // inside 만 접힘
@@ -49,7 +49,7 @@ const lift = (mesh, dz) => {
 };
 const FAR_L = 10000; // 이 거리에서 L 자도 singleError 를 통과해 접기에 들어간다
 const Lring = [[0, 0], [20, 0], [20, 8], [8, 8], [8, 20], [0, 20]];
-const reset = () => Object.assign(foldStats, { calls: 0, input: 0, output: 0 });
+const reset = () => Object.assign(foldStats, { calls: 0, input: 0, output: 0, covers: 0, visited: 0 });
 
 test('foldContained: L 자 풋프린트는 AABB 만 같은 상자를 가린다고 보지 않는다', () => {
   const L = prism(Lring, 6);
@@ -156,31 +156,48 @@ test('foldContained: 무작위 입력 20 시드에서 선형 비교 구현과 �
   }
 });
 
-// F-370: 벽시계 대신 작업량 계수로 판정한다(병렬 부하에 영향받지 않는다). foldStats.covers 는 covers() 호출 수다.
+// F-370: 벽시계 대신 작업량 계수로 판정한다(병렬 부하에 영향받지 않는다). foldStats.covers 는 covers() 호출 수, foldStats.visited 는 구간 트리 방문 노드 수다.
 // 비율 기준 RATIO_MAX: 입력 2 배일 때 선형 작업은 2.0 배, 이차는 4.0 배. 2.2 = 선형 + 10 % 여유로, 측정값에 맞춘 값이 아니라 두 극 사이에서 정했다.
+// 트리 방문은 입력당 O(log n) 이라 n log n 으로 는다: n=2000 → 4000 이면 이론 배수 2·(12/11) ≈ 2.18. 그래서 방문 수 비율은 RATIO_NLOGN = 2.5(이차 4.0 과 갈린다).
+// 입력당 방문 상한: 구간 질의는 층마다 최대 4 노드를 방문한다(표준 구간 트리 질의 한계)이므로 4·(깊이+1). 깊이 = ceil(log2(서로 다른 minZ 수 = n)).
 // 절대 상한: 입력 하나가 비교하는 대표는 minZ 가 ±FOLD_Z_TOL_M 안인 것뿐이라 step 간격에서 (2·TOL/step + 2) 개 이하다
 // (선형 비교였다면 대표 전부: step 0.02 에서 n=2000 은 약 200 만 회, 이 상한은 6000 회).
+// 기대값(구성에서 따라 나옴): step ≤ 0.01 이면 이웃 상자가 z 허용 안이라 covers > 0 이고 상자가 접힌다. step ≥ 0.02 이면 대표 minZ 가 허용을 벗어나
+// (먼저 처리되는 상자가 더 높다) 어떤 입력도 대표를 비교하지 못하므로 covers 는 정확히 0 이다 — 대신 트리 방문 수(visited)로 색인 조회 비용을 센다.
 // 참고(시험이 보지 않는 측정, Node 22 4코어): 색인 이전 선형 접기 단독은 n=2000·step 0.02 에서 약 25 ms, n=4000 에서 약 96 ms 였다.
 // F-367 에 적힌 2.3~2.5 s 는 접기가 아니라 접기가 없던 때의 buildBuildingLod 전체(응집 쌍 n²)였다.
 const RATIO_MAX = 2.2;
+const RATIO_NLOGN = 2.5;
 const stepCase = (n, step) => {
   const items = [];
   for (let i = 0; i < n; i++) items.push(rectItem(0, 0, 20, 20, i * step, 5 + i * step, i));
-  Object.assign(foldStats, { calls: 0, input: 0, output: 0, covers: 0 });
+  Object.assign(foldStats, { calls: 0, input: 0, output: 0, covers: 0, visited: 0 });
   const out = foldContained(items);
-  return { covers: foldStats.covers, output: out.length };
+  return { covers: foldStats.covers, visited: foldStats.visited, output: out.length };
 };
 
 for (const step of [0.001, 0.01, 0.02, 0.1]) {
-  test(`minZ = i·${step} 인 20×20 상자 n=2000·4000: covers 호출 수가 z 허용 안 대표 수 이하이고 n 에 선형`, () => {
+  test(`minZ = i·${step} 인 20×20 상자 n=2000·4000: covers·트리 방문 수가 계수 양성이고 n 에 (준)선형`, () => {
     const a = stepCase(2000, step), b = stepCase(4000, step);
-    if (step === 0.001) assert.ok(a.output <= 250, `후보 ${a.output}`); // 허용 오차 1 cm 칸마다 한 대표
-    if (step >= 0.02) { assert.equal(a.output, 2000); assert.equal(b.output, 4000); } // 1 cm 넘게 벌어지면 하나도 접히지 않는다
+    // 양성 대조: 계수가 0 이면 아래 비율·상한 단언이 비어 버린다(covers++ 나 visited++ 를 지운 변이를 여기서 잡는다).
+    assert.ok(a.visited > 0 && b.visited > 0, `트리 방문 계수가 0 이다(visited++ 누락 또는 색인을 안 탄 구현): ${a.visited}, ${b.visited}`);
+    if (step <= 0.01) {
+      assert.ok(a.covers > 0 && b.covers > 0, `step ${step}: 허용 안 이웃이 있으므로 covers > 0 이어야 한다(covers++ 누락 또는 비교를 안 한 구현): ${a.covers}, ${b.covers}`);
+      if (step === 0.001) assert.ok(a.output <= 250, `후보 ${a.output}`); // 허용 오차 1 cm 칸마다 한 대표
+      assert.ok(b.covers / a.covers <= RATIO_MAX, `covers n=2000 ${a.covers}, n=4000 ${b.covers}`);
+    } else {
+      assert.equal(a.output, 2000); assert.equal(b.output, 4000); // 1 cm 넘게 벌어지면 하나도 접히지 않는다
+      assert.equal(a.covers, 0, '1 cm 넘게 벌어진 상자는 비교할 대표가 없다(covers 0 이 기대값)');
+      assert.equal(b.covers, 0);
+    }
     for (const [n, r] of [[2000, a], [4000, b]]) {
       const bound = (2 * FOLD_Z_TOL_M / step + 2) * n;
       assert.ok(r.covers <= bound, `n=${n}: covers ${r.covers} > ${bound}`);
+      const visitBound = 4 * (Math.ceil(Math.log2(n)) + 1) * n;
+      assert.ok(r.visited <= visitBound, `n=${n}: 트리 방문 ${r.visited} > ${visitBound}`);
+      assert.ok(r.visited >= n, `n=${n}: 입력마다 루트는 방문한다: ${r.visited}`);
     }
-    if (a.covers > 0) assert.ok(b.covers / a.covers <= RATIO_MAX, `covers n=2000 ${a.covers}, n=4000 ${b.covers}`);
+    assert.ok(b.visited / a.visited <= RATIO_NLOGN, `방문 n=2000 ${a.visited}, n=4000 ${b.visited}`);
   });
 }
 
@@ -197,6 +214,7 @@ for (const step of [0.02, 0.05]) {
       return { visited: agglomerateStats.visited, ids: out.flatMap((g) => g.ids).length, tris: out.reduce((t, g) => t + g.mesh.indices.length / 3, 0), n };
     };
     const a = run(4000), b = run(8000);
+    assert.ok(a.visited > 0 && b.visited > 0, `응집 조회 계수가 0 이다(visited++ 누락): ${a.visited}, ${b.visited}`); // 양성 대조(0/0 = NaN 에 기대지 않는다)
     for (const r of [a, b]) {
       assert.equal(r.ids, r.n);
       assert.ok(r.visited <= r.n * r.n / 16, `n=${r.n}: 조회 ${r.visited}`); // 전쌍의 1/8 이하(n²/2 의 1/8)

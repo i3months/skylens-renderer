@@ -110,8 +110,9 @@ function fold90(a) {
 // 상한 바로 아래 150층 한 동은 약 3 ms 라 상한을 낮출 이유가 측정으로는 없었다.
 export const WINDING_WORK_CAP = 400000;
 // 작업량 계수(시험이 벽시계 대신 이것으로 판정한다): calls 호출 수, segs 수평이 아닌 입력 선분, kept 공유 변 상쇄 뒤 선분,
-// active 구간별 활성 선분 수의 합(감김 누적과 정렬이 도는 양), capped 상한에 걸려 null 을 돌려준 호출.
-export const windingStats = { calls: 0, segs: 0, kept: 0, active: 0, capped: 0 };
+// active 구간별 활성 선분 수의 합(감김 누적과 정렬이 도는 양), capped 상한에 걸려 null 을 돌려준 호출,
+// probes 공유 변 상쇄 해시 표 탐사 수(선분당 1 + 충돌로 더 본 칸), moves 구간별 삽입 정렬이 옮긴 칸 수의 합(스윕 이동 횟수).
+export const windingStats = { calls: 0, segs: 0, kept: 0, active: 0, capped: 0, probes: 0, moves: 0 };
 const HK = new Float64Array(4), HU = new Uint32Array(HK.buffer);
 function windingArea(segs) {
   const n = segs.length / 5;
@@ -141,7 +142,8 @@ function windingArea(segs) {
       for (let q = 0; q < 8; q++) h = Math.imul(h ^ HU[q], 0x85ebca6b) ^ (h >>> 13);
       let p = h & (cap - 1);
       let placed = false;
-      for (; tab[p] !== -1; p = (p + 1) & (cap - 1)) {
+      windingStats.probes++;
+      for (; tab[p] !== -1; p = (p + 1) & (cap - 1), windingStats.probes++) {
         const o = tab[p];
         if (o < 0) continue;
         if (sdir[o] === -sdir[s] && sch[o] === sch[s] && sx[o] === sx[s] && sx2[o] === sx2[s] && sy[o] === sy[s] && sy2[o] === sy2[s]) {
@@ -205,6 +207,7 @@ function windingArea(segs) {
       cur[p + 1] = s;
       if (moves > budget) slow = true;
     }
+    windingStats.moves += moves;
     if (slow) cur.subarray(0, cnt).sort((a, b) => yk[a] - yk[b] || a - b);
     let w0 = 0, w1 = 0;
     for (let j = 0; j + 1 < cnt; j++) {
@@ -228,6 +231,8 @@ function resolveRoof(it) {
   if (foot === null || up === null || up < foot - Math.max(1e-3, foot * 1e-4)) it.roofMin = -Infinity;
 }
 
+// 작업량 계수: calls 요약한 건물 수, tris 훑은 삼각형 수, wallLookups 벽 중복 제거 표 조회 수, wallProbes 그 탐사 수(조회마다 1 + 충돌).
+export const summarizeStats = { calls: 0, tris: 0, wallLookups: 0, wallProbes: 0 };
 // 건물 하나의 요약: 월드 AABB, 꼭대기 높이, xy 투영 삼각형(평탄화 배열 [ax,ay,bx,by,cx,cy,...]), 벽 지배 방향.
 function summarize(b, index) {
   if (!b || typeof b !== 'object') fail(`buildings[${index}] 가 객체가 아니다`);
@@ -240,6 +245,8 @@ function summarize(b, index) {
   const idx = mesh.indices;
   if (p.length % 3 !== 0 || idx.length % 3 !== 0) fail(`buildings[${index}].mesh 길이가 3의 배수가 아니다`);
   const nv = p.length / 3;
+  summarizeStats.calls++;
+  summarizeStats.tris += idx.length / 3;
   let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   for (let i = 0; i < idx.length; i++) {
     const v = idx[i];
@@ -287,7 +294,12 @@ function summarize(b, index) {
   //    작업량 상한을 넘어 확인할 수 없는 큰 메시도 원본을 유지한다(F-360). 이 비교는 LOD 가 필요한 거리에서만 한다(resolveRoof).
   //    (일부만 지붕이 있거나 감김이 섞인 메시: 지붕 없는 구역 위에 상자 지붕이 생긴다).
   let roofMin = Infinity, cwAbove = false;
-  const upSegs = [], footSegs = [], wallSeen = new Set();
+  const upSegs = [], footSegs = [];
+  // 벽 중복 제거 표(열린 주소, 좌표 비트 해시): 사각 벽의 두 삼각형이 같은 선분이라 한 번만 넣는다. 문자열 Set 과 같은 결과이고 탐사 수를 센다.
+  let wcap = 16;
+  while (wcap < idx.length / 3 * 2) wcap <<= 1;
+  const wtab = new Int32Array(wcap).fill(-1); // footSegs 안 선분 위치
+  const WK = new Float64Array(4), WU = new Uint32Array(WK.buffer);
   for (let t = 0; t < idx.length / 3; t++) {
     const o = t * 6;
     const ax = tris[o], ay = tris[o + 1], bx = tris[o + 2], by = tris[o + 3], cx = tris[o + 4], cy = tris[o + 5];
@@ -312,9 +324,19 @@ function summarize(b, index) {
       }
       if (best < 1e-6 || Math.hypot(nx, ny) < 1e-12) continue;
       if ((ex - sx) * -ny + (ey - sy) * nx < 0) { [sx, sy, ex, ey] = [ex, ey, sx, sy]; }
-      const key = `${sx},${sy},${ex},${ey}`;
-      if (wallSeen.has(key)) continue;
-      wallSeen.add(key);
+      WK[0] = sx + 0; WK[1] = sy + 0; WK[2] = ex + 0; WK[3] = ey + 0; // +0: -0 을 0 으로
+      let hh = 0x811c9dc5;
+      for (let q = 0; q < 8; q++) hh = Math.imul(hh ^ WU[q], 0x85ebca6b) ^ (hh >>> 13);
+      summarizeStats.wallLookups++;
+      let seen = false, wp = hh & (wcap - 1);
+      for (; ; wp = (wp + 1) & (wcap - 1)) {
+        summarizeStats.wallProbes++;
+        const o = wtab[wp];
+        if (o === -1) break;
+        if (footSegs[o] === WK[0] && footSegs[o + 1] === WK[1] && footSegs[o + 2] === WK[2] && footSegs[o + 3] === WK[3]) { seen = true; break; }
+      }
+      if (seen) continue;
+      wtab[wp] = footSegs.length;
       footSegs.push(sx, sy, ex, ey, 1); // 채널 1: 벽 고리(삼각형 채널 0 과 따로 센다)
     }
   }
@@ -349,8 +371,9 @@ function inTri(px, py, t, o) {
 
 // 건물을 방향 φ 좌표계(u = x cosφ + y sinφ, v = −x sinφ + y cosφ)로 옮긴 요소: 그 좌표계 AABB,
 // 넓이 있는 삼각형(fill, 안 판정용)과 모든 삼각형 변의 중복 없는 선분(segs, 거리용; 퇴화한 벽 삼각형은 선분으로 남는다).
-// 작업량 계수(시험이 벽시계 대신 이것으로 판정한다): segs 점-선분 거리 계산 수, frameSegs toFrame 이 만든 중복 없는 선분 수.
-export const distStats = { segs: 0, frameSegs: 0 };
+// 작업량 계수(시험이 벽시계 대신 이것으로 판정한다): segs 점-선분 거리 계산 수, frameSegs toFrame 이 만든 중복 없는 선분 수,
+// addCalls toFrame 의 선분 추가 시도 수(삼각형 변마다 1), probes 그 해시 표 탐사 수(시도마다 1 + 충돌로 더 본 칸; 선형 탐색이면 시도 수의 제곱으로 는다).
+export const distStats = { segs: 0, frameSegs: 0, addCalls: 0, probes: 0 };
 const SK = new Float64Array(4), SU = new Uint32Array(SK.buffer);
 function toFrame(it, phi) {
   const c = Math.cos(phi), s = Math.sin(phi);
@@ -371,7 +394,9 @@ function toFrame(it, phi) {
     SK[0] = px + 0; SK[1] = py + 0; SK[2] = qx + 0; SK[3] = qy + 0; // +0: -0 을 0 으로(=== 와 같게)
     let h = 0x811c9dc5;
     for (let q = 0; q < 8; q++) h = Math.imul(h ^ SU[q], 0x85ebca6b) ^ (h >>> 13);
+    distStats.addCalls++;
     for (let i = h & (cap - 1); ; i = (i + 1) & (cap - 1)) {
+      distStats.probes++;
       const o = tab[i];
       if (o === -1) { tab[i] = segs.length / 4; segs.push(px, py, qx, qy); return; }
       const b = o * 4;

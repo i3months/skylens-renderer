@@ -116,6 +116,8 @@ test('time 주입 1: 첫 계측 decode 에서 250 ms 1회 정지는 재현되지
   // 정지가 시간 판정에 반영됐다는 증거: 정지 직후 첫 계측 decode 가 같은 입력의 재실행이다(250 ms 가 한도를 넘어 time 으로 읽혀 한 번 더 돌았다).
   // 정지가 판정에 안 잡혔다면 다음 계측 호출은 다음 입력이다.
   assert.equal(reran, true, '정지된 입력이 곧바로 다시 복호되어야 한다(time 재실행)');
+  // 재실행 계수: 주입한 정지 한 번에 재실행도 정확히 한 번(정지가 판정에 반영되고, 재현되지 않아 한 번으로 끝났다).
+  assert.equal(r.timeRetries, 1, `time 재실행 횟수: ${r.timeRetries}`);
   assert.equal(r.violations.length, 0, JSON.stringify(r.violations.slice(0, 2)));
 });
 
@@ -123,6 +125,7 @@ test('time 주입 2: 매번 250 ms 느린 복호는 재현되어 time 위반 검
   const ok = makeDecoder('c2s');
   const slow = (b) => { spin(250); return ok(b); };
   const r = runFuzz({ ...refCodec('c2s'), decode: slow }, { iterations: 3, seed: SEED });
+  assert.equal(r.timeRetries, 3, '입력마다 한 번씩 재실행');
   assert.equal(r.violations.length, 3, JSON.stringify(r.violations.slice(0, 2)));
   assert.ok(r.violations.every((v) => v.kind === 'time'), JSON.stringify(r.violations.slice(0, 2)));
 });

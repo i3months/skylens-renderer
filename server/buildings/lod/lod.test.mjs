@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BUILDING_LOD_MIN_SSIM, TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 import {
-  buildBuildingLod, BUILDING_LOD_FAR_DIST_M, BUILDING_LOD_MAX_ANGLE_RAD,
+  buildBuildingLod, distStats, agglomerateStats, BUILDING_LOD_FAR_DIST_M, BUILDING_LOD_MAX_ANGLE_RAD,
   BUILDING_LOD_REF_PIXEL_RAD, BUILDING_LOD_MAX_GAP_PX, BUILDING_LOD_CELL_M,
 } from './index.mjs';
 import { parseSeeds } from '../../../tools/lod_seed_sweep.mjs';
@@ -552,21 +552,28 @@ function denseCell(k, seed) {
   return out;
 }
 
-test('밀집 칸 성능: 한 칸 k = 200 동 병합이 1 s 안(목표 100 ms), 결과 결정적', (t) => {
+// F-370 검토 #3: 벽시계(`ms < 1000`)는 병렬 부하에서 실패해서 계수로 바꿨다(결정적).
+// 예산 근거(정직하게): 응집 조회 수는 전쌍 비교(k²/2)보다 작아야 하고 — 이분이 구조적 기준이다: 색인이 후보를 가려 적어도 절반은 건너뛴다(k²/4 이하).
+// 거리 계산 수(distStats.segs)는 이론 상한이 아니라 회귀 예산으로, 작성 때 이 입력(k=200, 세 거리)의 최댓값을 한 번 재서(약 1.6 M, 20000 m; 응집 조회는 최대 약 9000 으로 k²/4 = 10000 아래) 그 약 3 배 올림(5 M)으로 정했다.
+// 계수는 결정적이라 병렬 부하와 무관하다. 양성 대조로 두 계수가 0 보다 큼을 먼저 단언한다.
+const DENSE_SEG_BUDGET = 5_000_000;
+test('밀집 칸 성능: 한 칸 k = 200 동 병합의 응집 조회 수·거리 계산 수가 예산 안, 결과 결정적', () => {
   for (const [dist, seed] of [[1000, 1], [5000, 2], [20000, 3]]) {
     const cell = denseCell(200, seed);
-    buildBuildingLod(cell, dist); // 준비 실행(JIT)
-    const t0 = performance.now();
+    buildBuildingLod(cell, dist); // 준비 실행(첫 호출 부수효과를 계수에서 빼기 위해)
+    Object.assign(distStats, { segs: 0, frameSegs: 0, addCalls: 0, probes: 0 });
+    Object.assign(agglomerateStats, { calls: 0, clusters: 0, visited: 0 });
     const a = buildBuildingLod(cell, dist);
-    const ms = performance.now() - t0;
+    const visited = agglomerateStats.visited, segs = distStats.segs;
     const b = buildBuildingLod(denseCell(200, seed), dist);
     assert.equal(a.length, 1, '한 칸이면 상자 후보 전체가 한 그룹');
     assert.equal(a[0].ids.length, 200);
     assert.deepEqual(Buffer.from(a[0].mesh.positions.buffer), Buffer.from(b[0].mesh.positions.buffer));
     assert.deepEqual(Buffer.from(a[0].mesh.indices.buffer), Buffer.from(b[0].mesh.indices.buffer));
     const boxes = a[0].mesh.indices.length / 30;
-    t.diagnostic(`k=200, ${dist} m: ${ms.toFixed(1)} ms, 상자 ${boxes}개`);
-    assert.ok(ms < 1000, `${dist} m: ${ms} ms`);
+    assert.ok(visited > 0 && segs > 0, `${dist} m: 계수가 돌아야 한다(양성 대조): 조회 ${visited}, 거리 ${segs}`);
+    assert.ok(visited <= 200 * 200 / 4, `${dist} m: 응집 조회 ${visited} > k²/4`);
+    assert.ok(segs <= DENSE_SEG_BUDGET, `${dist} m: 거리 계산 ${segs} > ${DENSE_SEG_BUDGET}`);
     assert.ok(boxes < 200, `${dist} m: 합쳐지지 않음`);
   }
 });
