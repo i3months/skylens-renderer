@@ -744,50 +744,83 @@ const f359Warp = (noise) => {
   return out;
 };
 const F359_WARP1 = f359Warp(1), F359_WARP2 = f359Warp(2);
-/** 입력마다 check(m, blk, g, e) 가 돌려준 실패 문구를 모은다. */
+/** 입력마다 measure 결과와 블록 (64,32) 로 check(m, blk, g, e, img) 가 돌려준 실패 문구를 모은다. */
 function f359Failures(inputs, check) {
   const bad = [];
   for (const [at, amp, g, e, make] of inputs) {
     const img = lowContrastImage(LOW.sine(amp));
     const m = measureDrapeAlignment(img, make(img));
     const blk = m.blocks.find((b) => b.i0 === 64 && b.j0 === 32);
-    const why = m.status !== 'measured' ? `${m.status} ${m.reason}` : check(m, blk, g, e);
-    if (why) bad.push(`${at}: ${why} (보고 ${m.maxMisalignPx}, 블록 ${blk && [blk.dx, blk.dy, blk.local]}, 실제 ${g + e})`);
+    const why = m.status !== 'measured' ? `${m.status} ${m.reason}` : check(m, blk, g, e, img);
+    if (why) bad.push(`${at}: ${why} (보고 ${m.maxMisalignPx}, 블록 ${blk && [blk.dx, blk.dy, blk.local, blk.pairedT]}, 실제 ${g + e})`);
   }
   return bad;
 }
 const TRUTH_TOL = 0.15; // F-357 시험과 같은 값(미리 정한 값). 완화하지 않는다.
+// 측정 부족 입력의 하한 여유: 재적합 이상치는 예측 ±OUTLIER_PX(0.5) 창에서 다시 찾으므로, local 로 자기 최소를 되살리지 못한
+// 회귀는 보고가 실제보다 0.5 px 넘게 작아진다(검토 #2 확인 기준 '보고 ≥ 실제 − 0.5' 와 같은 값, 측정값에서 정하지 않음).
+const WINDOW_TOL = 0.5;
 
-test('F-359 재적합 이상치의 실제 1.1~1.5 px 국소 어긋남(저대비 사인, 잡음 없음·±1 DN): 블록 local, 보고 ≥ 1 px', () => {
-  // 수정 전(잔차 경로 유의성 = localSignificant, 문턱 max(own, 1/12)·√(2/(3n))): 검토 #2 입력 9경우 모두 블록 local 아님,
-  // 보고 0.125~0.384 px. 잔차 경로를 같은 표본 픽셀 짝 검정(k = 4)으로 바꾼 뒤 local.
-  const bad = f359Failures([...F359_OLD, ...F359_SHIFT, ...F359_WARP1], (m, blk) => {
+// 입력 분류(F-359 검토 #3).
+// 정보 한계: 잡음 없는 1·2 DN 사인 shiftedTile. 계단(반올림) 사인이라 블록의 1.125~1.5 px 이동 타일이 정수 1 px 이동 타일과
+// 픽셀마다 같다(아래 시험이 직접 확인) → 비용 0 인 이동량이 [1, |g+e|] 전체라 보고는 그 식별 가능 집합 안이어야 한다.
+const F359_INFO = [...F359_SHIFT, F359_OLD[3]];
+// 측정 부족: 2.5·1.5 DN shiftedTile 과 warpedTile(±1·±2 DN). 박스 평균 MSE 의 최소 자체가 실제 이동에서 벗어나 있다
+// (잡음 없는 2.5 DN g−0.25 e−1.25 블록 비용: −1.5 px 0.0260, −1.1875 px 0.0167 최소; 1.5 DN: −1.5 px 0.0156, −1.3125 px 0.0139 최소 —
+// uint8 반올림된 저진폭 사인에서 MSE 추정이 0 쪽으로 치우침). 탐색·판정이 아니라 비용 함수의 한계라 정답 ±0.15 는 todo.
+const F359_DEFICIT = [...F359_OLD.slice(0, 3), ...F359_WARP1, ...F359_WARP2];
+
+test('F-359 정보 한계 입력(잡음 없는 1·2 DN 사인): 블록 local, 보고는 식별 가능 집합 [1, |g+e|] 안', () => {
+  // 사인 1 DN 입력의 짝 검정 t 는 4.04(측정)로 이전 k = 4 바로 위였다(여유 0.04 — 1 DN 은 블록 비용 차 자체가 작다).
+  // PAIRED_K 2.75 기준 여유는 1.29 지만, 문턱을 다시 올리면 이 입력이 먼저 떨어진다.
+  // 수정 전(잔차 경로 유의성 = localSignificant): 모두 local 아님, 보고 0.125~0.384 px.
+  const bad = f359Failures(F359_INFO, (m, blk, g, e, img) => {
+    const s = Math.sign(g + e);
+    // 식별 가능 집합 근거: 블록을 정수 1 px(같은 방향) 옮긴 타일과 픽셀마다 같다.
+    const t = shiftedTile(img, g, s - g), u = shiftedTile(img, g, e);
+    for (let j = 32; j < 48; j++) {
+      for (let i = 64; i < 80; i++) {
+        for (let k = 0; k < 3; k++) if (t.rgb[(j * 128 + i) * 3 + k] !== u.rgb[(j * 128 + i) * 3 + k]) return `정수 1 px 타일과 (${i},${j}) 다름 — 정보 한계 아님`;
+      }
+    }
     if (!blk?.local) return '블록 local 아님';
-    if (!(m.maxMisalignPx >= 1 - 1e-6)) return '보고 < 1 px';
+    if (!(Math.sign(blk.dx) === s && Math.abs(blk.dx) >= 1 - 1e-9 && Math.abs(blk.dx) <= Math.abs(g + e) + 1e-9)) return '블록 dx 가 [1, |g+e|] 밖';
+    if (!(Math.abs(blk.dy) <= TRUTH_TOL)) return '블록 dy';
+    if (!(m.maxMisalignPx >= 1 - 1e-9)) return '보고 < 1 px';
     return null;
   });
-  for (const [at, amp, g, e, make] of F359_OLD) {
+  assert.deepEqual(bad, []);
+});
+
+test('F-359·F-366 측정 부족 입력(2.5·1.5 DN shiftedTile, warpedTile ±1·±2 DN): 블록 local, 보고 > 1 px·≥ |g+e| − 0.5', () => {
+  // 수정 전: shiftedTile 은 local 아님·보고 0.125~0.5 px, warpedTile ±2 DN 은 짝 검정 t 2.92~3.49 < k = 4 라 local 아님·dx 가
+  // 예측 ± 0.5 경계값(−0.75·−0.625)·보고 0.125~0.25 px 로 정합 통과(F-359 검토 #3). PAIRED_K 를 귀무 측정으로 2.75 로 정한 뒤
+  // local — 이 네 입력의 t(2.92~3.49)와 PAIRED_K 의 여유는 0.17 로 얇고, 같은 조건 시드 30개씩에서는 t ≤ 2.75 인 경우가
+  // 사인 1.5 DN 9/30·2.5 DN 16/30(+짝 검정 경로에 오지 않은 1회)이라 여전히 정합 통과로 보고된다(index.mjs PAIRED_K 주석의 대가).
+  const bad = f359Failures(F359_DEFICIT, (m, blk, g, e) => {
+    if (!blk?.local) return '블록 local 아님';
+    if (!(m.maxMisalignPx > ALIGN_TOLERANCE_PX)) return '보고 ≤ 1 px';
+    if (!(m.maxMisalignPx >= Math.abs(g + e) - WINDOW_TOL)) return '보고 < 실제 − 0.5';
+    if (!(Math.sign(blk.dx) === Math.sign(g + e) && Math.abs(blk.dx) <= Math.abs(g + e) + TRUTH_TOL)) return '블록 dx 가 실제보다 큼·반대 방향';
+    // dy(실제 0)도 dx 하한과 같은 창 여유 0.5: ±2 DN 잡음 입력은 0.19~0.22 로 0.15 를 넘는다(정답 ±0.15 는 아래 todo 시험).
+    if (!(Math.abs(blk.dy) <= WINDOW_TOL)) return '블록 dy';
+    return null;
+  });
+  for (const [at, amp, , , make] of F359_OLD.slice(0, 3)) {
     const img = lowContrastImage(LOW.sine(amp));
     assertLocalBlock(measureDrapeAlignment(img, make(img)), at);
   }
   assert.deepEqual(bad, []);
 });
 
-test('F-359·F-366 정답 비교: 보고 ≥ |g+e| − 0.15, |블록 dx − (g+e)| ≤ 0.15', {
-  todo: '무노이즈 1 DN 계단 사인은 1.5 px 와 1 px 비용이 같음(박스 평균 반올림으로 1.5 px 이동 타일이 1 px 이동과 픽셀마다 같아 비용 0 이 1 px 에 있음); ±1 DN 잡음 입력도 비용 최소가 1.1~1.3 px',
+test('F-359·F-366 정답 비교(측정 부족 입력): 보고 ≥ |g+e| − 0.15, |블록 dx − (g+e)| ≤ 0.15', {
+  todo: '측정 부족(정보 한계·k 보수성 아님): 2.5·1.5 DN shiftedTile 보고 1.188·1.344 는 박스 평균 MSE 최소 자체가 실제 1.5 px 에서 0 쪽으로 0.16~0.31 px 치우친 곳(반올림된 저진폭 사인; 같은 warp 의 잡음 없는 warpedTile 도 1.188·1.344), warpedTile ±1·±2 DN 은 그 위에 잡음이 더해 1.13~1.42(±2 DN 은 dy 도 0.19~0.22) — 비용 함수를 바꾸기 전에는 못 맞춘다',
 }, () => {
-  const bad = f359Failures([...F359_OLD, ...F359_SHIFT, ...F359_WARP1, ...F359_WARP2], (m, blk, g, e) => {
+  const bad = f359Failures(F359_DEFICIT, (m, blk, g, e) => {
     if (!(m.maxMisalignPx >= Math.abs(g + e) - TRUTH_TOL)) return '보고 < 실제 − 0.15';
     if (!(Math.abs(blk.dx - (g + e)) <= TRUTH_TOL && Math.abs(blk.dy) <= TRUTH_TOL)) return '블록 이동량이 실제와 0.15 px 넘게 다름';
     return null;
   });
-  assert.deepEqual(bad, []);
-});
-
-test('F-359 ±2 DN 잡음 입력: 블록 local, 보고 > 1 px', {
-  todo: '±2 DN 잡음에서 짝 검정 통계량 t≈2.9~3.5 < k=4(증거 부족, k 는 시험에 맞추지 않음)',
-}, () => {
-  const bad = f359Failures(F359_WARP2, (m, blk) => (!blk?.local ? '블록 local 아님' : !(m.maxMisalignPx > ALIGN_TOLERANCE_PX) ? '보고 ≤ 1 px' : null));
   assert.deepEqual(bad, []);
 });
 

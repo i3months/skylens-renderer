@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ALIGN_TOLERANCE_PX, TERRAIN_TILE_SIZE_M, tileBounds } from '../../../contracts/tower_assets/index.mjs';
-import { buildDrapeTile, measureDrapeAlignment, drapeTileSize } from './index.mjs';
+import { buildDrapeTile, measureDrapeAlignment, drapeTileSize, DRAPE_PAIRED_K } from './index.mjs';
 
 /** 합성 영상: 각 픽셀 중심 ENU 로 색을 정한다. 행 0 = 북. */
 function makeImage(bounds, width, height, colorAt) {
@@ -163,4 +163,33 @@ test('F-359 검토 #2 음성 대조(짝 검정): 감독 F-363 입력과 사인 2
     if (m.status !== 'measured' || local.length || !(m.maxMisalignPx < ALIGN_TOLERANCE_PX)) bad.push([at, m.status, m.maxMisalignPx, local]);
   }
   assert.deepEqual(bad, []);
+});
+
+// F-359 검토 #3 귀무(이동 0) 측정에서 짝 검정 t 가 가장 컸던 입력: [사인 진폭, 잡음, 시드, 측정 t].
+// 귀무 측정 전체(36설정 3510회, 짝 검정 호출 293회)는 index.mjs 의 PAIRED_K 주석. 여기에는 t ≥ 1.8 인 8회를 그대로 둔다
+// (측정에서 고른 음성 입력 — 문턱을 맞추려는 것이 아니라 문턱 근처의 귀무 꼬리를 지키려는 것; t 는 기록용, 단언하지 않음).
+const NULL_TAIL = [
+  [2, 2, 443464, 2.238], [2.5, 2, 443464, 2.045], [2.5, 3, 443464, 1.897], [1, 4, 15485863, 2.331], [1, 3, 15485863, 1.951],
+  [1, 4, 1904761149, 1.803], [2, 3, 449090027, 1.861], [2, 4, 449090027, 1.832],
+];
+
+test('F-359 검토 #3 귀무 꼬리: 짝 검정 t 가 큰 이동 0 입력 8회 — local 0·maxMisalignPx < 1, t < PAIRED_K, 꼬리 t > 2', () => {
+  // PAIRED_K 를 2 로 내리면 t 2.05~2.33 인 세 입력이 거짓 local 이 된다. 귀무 최대 t(2.331)와 PAIRED_K 의 여유를 여기서 고정한다.
+  const id = (p) => p;
+  const bad = [];
+  let maxT = -Infinity;
+  for (const [amp, noise, seed] of NULL_TAIL) {
+    const img = lowContrastImage(LOW.sine(amp));
+    const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, id, { noise, seed }));
+    const at = `사인 ${amp} DN ±${noise} seed ${seed}`;
+    const tested = m.blocks.filter((b) => Number.isFinite(b.pairedT));
+    // 이 입력들은 짝 검정 경로를 실제로 지나야 한다(경로가 바뀌어 검정을 안 하면 이 시험은 아무것도 지키지 않는다).
+    if (!tested.length) bad.push([at, '짝 검정 없음']);
+    for (const b of tested) maxT = Math.max(maxT, b.pairedT);
+    const local = m.blocks.filter((b) => b.local).map(({ i0, j0, dx, dy }) => [i0, j0, dx, dy]);
+    if (m.status !== 'measured' || local.length || !(m.maxMisalignPx < ALIGN_TOLERANCE_PX)) bad.push([at, m.status, m.maxMisalignPx, local]);
+  }
+  assert.deepEqual(bad, []);
+  assert.ok(maxT < DRAPE_PAIRED_K, `귀무 최대 t ${maxT} ≥ PAIRED_K ${DRAPE_PAIRED_K}`);
+  assert.ok(maxT > 2, `귀무 꼬리 t ${maxT} — 입력이 더는 문턱 근처를 시험하지 않는다`);
 });

@@ -315,7 +315,7 @@ function strideFor(w, h, budget) {
  *    자체 최소보다 1.5배 넘게, 그리고 표본 수·잡음 기준으로 유의하게(차 > 4·max(자기 최소, 1/12)·√(2/(3n))) 나쁜 블록은 아핀으로
  *    설명되지 않는 국소 어긋남(local)으로 실측 이동량을 유지한다. 다시 맞춘 모형의 이상치는 예측 ±0.5 px 안에서만 다시 찾고,
  *    그 값으로도 잔차가 0.5 px 이상이고(탐색 경계에 닿음 포함) 예측 위치가 자기 최소보다 같은 표본 픽셀 짝 검정으로 유의하게 나쁘면
- *    local 이다.
+ *    (t > DRAPE_PAIRED_K, 귀무 분포 측정으로 정함) local 이다.
  *    local 블록의 이동량은 자기 최소에서 1/32 px 까지 다듬는다.
  *    전역 가설이 여럿이면 아핀 변위장 아래 타일 전체 평균 제곱 차가 가장 작은 가설을 고른다.
  * 4) edgeMaxPx = 피복 범위(타일 ∩ coverage.mask 완전 피복(255) 픽셀을 감싸는 사각형 ∩ coverage.bounds, 둘 다 없으면 타일 전체) 네 모서리의 모형 변위
@@ -335,7 +335,8 @@ function strideFor(w, h, budget) {
  *   localMaxPx:number, scaleX:number, scaleY:number, rotationRad:number,
  *   affine:{ax:number,kxx:number,kxy:number,ay:number,kyx:number,kyy:number}|null,
  *   blockPx:{width:number,height:number}, flatBlocks:number, flatAreaFraction:number, axisFlatBlocks:number,
- *   blocks:Array<{i0:number,j0:number,dx:number,dy:number,n:number,local:boolean,axes:'xy'|'x'|'y'}>}}
+ *   blocks:Array<{i0:number,j0:number,dx:number,dy:number,n:number,local:boolean,axes:'xy'|'x'|'y',pairedT:number}>}}
+ *   pairedT = 재적합 이상치 잔차 경로 짝 검정의 t(그 검정을 하지 않았거나 예측 위치를 못 잰 블록은 NaN).
  *   flatBlocks = 두 축 모두 평평해 뺀 블록 수, flatAreaFraction = 그 면적 / 피복 블록 면적, axisFlatBlocks = 한 축만 잰 블록 수,
  *   axes = 그 블록에서 잰 축.
  *   dxPx·dyPx·rms·samples 는 타일 전체 단일 이동량(1 의 첫 가설) 기준(타일 픽셀 단위), dx 는 동쪽, dy 는 남쪽(행 증가) 방향.
@@ -364,11 +365,10 @@ export function measureDrapeAlignment(image, tile) {
   const cw = new Float64Array(TW);
 
   // 표본 픽셀(xs × ys)의 평균 제곱 차. 박스 [u0,u1]×[v0,v1] 의 합 = I(u1,v1) − I(u0,v1) − I(u1,v0) + I(u0,v0),
-  // I 는 누적 합 표의 쌍선형 보간. sq 가 있으면 표본 (p, q) 채널 k 의 제곱 차를 sq[(p·xs.length + q)·3 + k] 에 쓰고,
-  // 재지 못한 표본은 NaN 으로 둔다(짝 검정용).
-  const cost = (xs, ys, dx, dy, sq) => {
+  // I 는 누적 합 표의 쌍선형 보간. 탐색에서 가장 많이 도는 경로라 안쪽 루프에 분기를 두지 않는다
+  // (표본별 제곱 차가 필요한 짝 검정은 따로 costSq 로 잰다 — 이전의 `if (sq)` 분기는 이동 0 입력을 6~14 % 느리게 했다).
+  const cost = (xs, ys, dx, dy) => {
     const nc = xs.length;
-    if (sq) sq.fill(NaN);
     for (let q = 0; q < nc; q++) {
       const u0 = (tb.minX + (xs[q] + dx) * pw - ib.minX) / sx;
       const u1 = u0 + uw;
@@ -409,7 +409,6 @@ export function measureDrapeAlignment(image, tile) {
           const i00 = h0 * (e0 * S[ra0 + xa0 + k] + f0 * S[ra0 + xb0 + k]) + g0 * (e0 * S[rb0 + xa0 + k] + f0 * S[rb0 + xb0 + k]);
           const d = trgb[o * 3 + k] - (i11 - i01 - i10 + i00) * inv;
           sum += d * d;
-          if (sq) sq[(p * nc + q) * 3 + k] = d * d;
         }
         n++;
       }
@@ -442,6 +441,35 @@ export function measureDrapeAlignment(image, tile) {
     }
     costPixels += n;
     return n > 0 ? sum / (n * 3) : Infinity;
+  };
+  // 짝 검정용: 이동량 (dx, dy) 에서 표본 (p, q) 채널 k 의 제곱 차를 sq[(p·xs.length + q)·3 + k] 에 쓴다. 재지 못한 표본
+  // (영상 밖·완전 피복 아님)은 NaN. 표본 선택·박스 계산은 cost 와 같고, 잰 표본 수를 돌려준다. 블록당 많아야 몇 번 불리므로
+  // cost 의 열 표 최적화 없이 integral 로 직접 잰다.
+  const costSq = (xs, ys, dx, dy, sq) => {
+    sq.fill(NaN);
+    const nc = xs.length;
+    let n = 0;
+    for (let p = 0; p < ys.length; p++) {
+      const j = ys[p];
+      const v0 = (ib.maxY - (tb.maxY - (j + dy) * ph)) / sy, v1 = v0 + vh;
+      if (v0 < -eps || v1 > H + eps) continue;
+      const va = Math.max(0, v0), vb = Math.min(H, v1);
+      for (let q = 0; q < nc; q++) {
+        const u0 = (tb.minX + (xs[q] + dx) * pw - ib.minX) / sx, u1 = u0 + uw;
+        if (u0 < -eps || u1 > W + eps) continue;
+        const o = j * TW + xs[q];
+        if (mask && mask[o] !== 255) continue;
+        const ua = Math.max(0, u0), ub = Math.min(W, u1);
+        const inv = 1 / ((ub - ua) * (vb - va));
+        for (let k = 0; k < 3; k++) {
+          const d = trgb[o * 3 + k] - (integral(ub, vb, k) - integral(ua, vb, k) - integral(ub, va, k) + integral(ua, va, k)) * inv;
+          sq[(p * nc + q) * 3 + k] = d * d;
+        }
+        n++;
+      }
+    }
+    costPixels += n;
+    return n;
   };
   // 누적 합 표의 연속 값(채널 k) — 쌍선형 보간.
   const integral = (u, v, k) => {
@@ -476,16 +504,17 @@ export function measureDrapeAlignment(image, tile) {
   };
 
   // 같은 표본 픽셀 짝 검정: 블록 b 의 표본에서 이동량 (px, py) 의 제곱 차가 자기 최소(b.own)의 제곱 차보다 유의하게 큰가.
-  // 픽셀·채널마다 d = e(px,py)² − e(own)² (두 이동량 모두 잰 표본만), 평균 d̄ 가 LOCAL_SIGNIFICANCE_K·sd(d)/√m 을 넘으면 true
-  // (m = d 개수). 예측 위치를 minN 개 미만으로 재면 null(잴 수 없음 — 호출 쪽이 local 로 본다).
+  // 픽셀·채널마다 d = e(px,py)² − e(own)² (두 이동량 모두 잰 표본만), 통계량 t = d̄ / (sd(d)/√m)(m = d 개수)를 돌려준다
+  // (호출 쪽이 PAIRED_K 와 비교). 예측 위치를 minN 개 미만으로 재면 null(잴 수 없음 — 호출 쪽이 local 로 본다).
+  // d 가 모두 같으면(sd 0) 차가 양이면 +Infinity, 아니면 0.
   // 두 이동량의 비용은 같은 픽셀·같은 잡음에서 나와 강하게 상관된다: 블록 평균 비용 차를 각각 독립인 것처럼 본
   // localSignificant 문턱 max(own, 1/12)·√(2/(3n)) 은 차의 실제 표준오차보다 몇 배 커서, 저대비 블록의 실제 1.4~1.5 px
   // 어긋남(비용 차 0.012~0.06)을 잡음으로 덮었다(F-359). 짝 차 d 의 표본 표준편차는 잡음·대비·두 위치의 거리를 그대로 담는다.
-  const pairedWorse = (b, px, py, own) => {
+  const pairedT = (b, px, py, own) => {
     const len = b.xs.length * b.ys.length * 3;
     const ep = new Float64Array(len), eo = new Float64Array(len);
-    if (cost(b.xs, b.ys, px, py, ep).n < b.minN) return null;
-    cost(b.xs, b.ys, own.dx, own.dy, eo);
+    if (costSq(b.xs, b.ys, px, py, ep) < b.minN) return null;
+    costSq(b.xs, b.ys, own.dx, own.dy, eo);
     let m = 0, s = 0, s2 = 0;
     for (let i = 0; i < len; i++) {
       const d = ep[i] - eo[i];
@@ -494,7 +523,8 @@ export function measureDrapeAlignment(image, tile) {
     }
     if (m < 2) return null;
     const mean = s / m, v = Math.max(0, (s2 - m * mean * mean) / (m - 1));
-    return mean > LOCAL_SIGNIFICANCE_K * Math.sqrt(v / m);
+    const se = Math.sqrt(v / m);
+    return se > 0 ? mean / se : mean > 0 ? Infinity : 0;
   };
 
   // 1) 전역 이동량. 정수 탐색 격자의 국소 최소 중 평균 제곱 차가 최소의 ALT_GLOBAL_RATIO 배 이내인 것(최대 ALT_GLOBAL_MAX 개)을
@@ -614,7 +644,9 @@ export function measureDrapeAlignment(image, tile) {
       blockPx,
       flatBlocks, flatAreaFraction: coveredArea > 0 ? flatArea / coveredArea : 0,
       axisFlatBlocks: blocks.filter((b) => !(b.ix && b.iy)).length,
-      blocks: blocks.map(({ i0, j0, dx, dy, n, local, ix, iy }) => ({ i0, j0, dx, dy, n, local, axes: (ix ? 'x' : '') + (iy ? 'y' : '') })),
+      blocks: blocks.map(({ i0, j0, dx, dy, n, local, ix, iy, pairedT = NaN }) => ({
+        i0, j0, dx, dy, n, local, axes: (ix ? 'x' : '') + (iy ? 'y' : ''), pairedT,
+      })),
     });
     const unmeasurable = (reason) => finish('unmeasurable', {
       reason, maxMisalignPx: NaN, residualMaxPx: NaN, edgeMaxPx: NaN, localMaxPx: NaN,
@@ -676,13 +708,15 @@ export function measureDrapeAlignment(image, tile) {
       if (fit.inlier.has(b)) continue;
       // 예측 ±OUTLIER_PX 탐색의 최소가 경계에 닿으면 잔차가 정확히 OUTLIER_PX 다 — 실제 이동은 그 밖일 수 있다(F-359).
       // 다만 잔차만으로는 local 이 아니다: 저대비 블록에 잡음이 있으면 잡음 최소가 예측에서 0.5 px 넘게 떨어지기도 한다(F-363,
-      // ±3 DN 잡음·이동 0 에서 거짓 local 1.41 px). 예측 위치가 블록의 다듬은 자기 최소보다 같은 표본 픽셀 짝 검정(pairedWorse)으로
-      // 유의하게 나쁠 때만 local. 이전의 localSignificant(두 평균을 독립으로 본 문턱, 하한 1/12)는 저대비 블록의 실제 1.4~1.5 px
-      // 어긋남도 덮었다(F-359 검토 #2: 보고 0.13~0.38 px).
+      // ±3 DN 잡음·이동 0 에서 거짓 local 1.41 px). 예측 위치가 블록의 다듬은 자기 최소보다 같은 표본 픽셀 짝 검정(pairedT)으로
+      // 유의하게 나쁠 때(t > PAIRED_K)만 local. 이전의 localSignificant(두 평균을 독립으로 본 문턱, 하한 1/12)는 저대비 블록의
+      // 실제 1.4~1.5 px 어긋남도 덮었다(F-359 검토 #2: 보고 0.13~0.38 px).
       const out = settle(b, fit.at, false, OUTLIER_PX);
       if (out === false && residual(b, fit.at) >= OUTLIER_PX - 1e-9) {
         const [px, py] = fit.at(b.di, b.dj);
-        if (pairedWorse(b, px, py, ownFine(b)) !== false) markLocal(b);
+        const t = pairedT(b, px, py, ownFine(b));
+        b.pairedT = t ?? NaN;
+        if (t === null || t > PAIRED_K) markLocal(b);
       } else if (out !== false) markLocal(b);
     }
     // 평평한 축의 값은 모형 예측으로 둔다(그 축은 잴 수 없었다).
@@ -725,11 +759,25 @@ const ALIAS_MSE_RATIO = 1.5;
 // local(국소 어긋남) 판정의 유의성 계수 k. 블록 평균 제곱 차는 3n 개 제곱 차의 평균이라 잡음 분산 σ² 에서 표준편차가
 // 약 σ²·√(2/(3n))(χ²₁ 분산 2). σ² 는 블록 자기 최소의 평균 제곱 차로 어림하되 uint8 반올림 잡음 분산 1/12 를 하한으로 둔다
 // (잡음 없는 영상에서도 0 으로 나누지 않음). 차가 k 표준편차를 넘을 때만 local: k = 4 는 정규 근사 한쪽 p ≈ 3e-5 로
-// 블록 64개 타일에서 잡음만으로 거짓 local 이 날 확률 ≈ 0.2 %. 이전의 절대 문턱(1 채널값²)은 블록 대비·표본 수와 무관해
+// 블록 64개 타일에서 잡음만으로 거짓 local 이 날 확률 ≈ 0.2 %(정규 근사 어림이며 이 문턱은 settle·flatAxes 용; 재적합 이상치
+// 잔차 경로의 짝 검정은 선택 편향 때문에 이 근거가 맞지 않아 PAIRED_K 를 귀무 측정으로 따로 정한다). 이전의 절대 문턱(1 채널값²)은 블록 대비·표본 수와 무관해
 // 잡음 없는 저대비 블록의 실제 2~4 px 어긋남을 0 px 로 덮었다(F-352).
-// 같은 k 를 재적합 이상치 잔차 경로의 짝 검정(pairedWorse: 짝 차 평균 > k·sd/√m)에도 쓴다 — 블록마다 한 번의 한쪽 검정이라
-// 같은 거짓 local 확률 근거가 그대로 적용된다(검정 통계량만 짝 차로 바꿈, 값은 시험 입력에 맞추지 않음).
 const LOCAL_SIGNIFICANCE_K = 4;
+/**
+ * 재적합 이상치 잔차 경로의 짝 검정 문턱(pairedT > 이 값이면 local). 정규 근사 p 값으로 정하지 않는다: 이 경로는 예측 ±0.5 px
+ * 창의 최소가 경계에 닿은 블록만 오고(선택 편향), 자기 최소는 비용이 가장 작은 곳을 고른 값이라 이동이 없어도 t 가 양으로
+ * 치우친다(귀무 t 평균 1.15). 그래서 귀무(이동 0) 분포를 직접 재서 정했다(F-359 검토 #3):
+ *   저대비 사인 블록 영상 + 타일 잡음, 이동 0 — 사인 1·1.5·2·2.5·3 DN × 잡음 ±1·±2·±3·±4 DN 중 36설정(시드 60·150개씩)
+ *   3510회, 이 경로 호출 293회 + F-363 음성 103회(호출 14회): t 최대 2.331(사인 1 DN ±4 DN), 평균 1.147, 표준편차 0.321,
+ *   평균 + 4 표준편차 2.43. 규칙(시드 150개 큰 표본을 재기 전에 정함): max(귀무 최대를 0.25 단위로 올림 + 0.25, 평균 + 4 표준편차)
+ *   = 2.75. 규칙을 정할 때 시험의 ±2 DN 양성 4경우 t(2.92~3.49)는 이미 알려져 있었다 — 그 값에 맞춰 고른 것은 아니지만 여유가
+ *   0.17 로 얇다.
+ * 대가: 같은 블록·잡음 ±2 DN 의 실제 1.5 px 국소 어긋남(시드 30개씩) t 는 사인 1.5 DN 중앙 3.18·사인 2.5 DN 중앙 2.69 로
+ * 귀무 꼬리(최소 1.77)와 겹쳐, 2.75 이하인 절반가량은 여전히 local 아님(예측 ±0.5 경계값으로 보고)이다 — 블록 하나의 짝 차
+ * 통계로는 이 둘을 가를 정보가 없다. 다시 볼 조건: 귀무 표본에서 2.75 를 넘는 t 가 나오거나, 블록 통계를 바꿀 때.
+ */
+const PAIRED_K = 2.75;
+export const DRAPE_PAIRED_K = PAIRED_K;
 function localSignificant(nearMse, ownMse, n) {
   return nearMse - ownMse > LOCAL_SIGNIFICANCE_K * Math.max(ownMse, FLAT_MSE) * Math.sqrt(2 / (3 * n));
 }
