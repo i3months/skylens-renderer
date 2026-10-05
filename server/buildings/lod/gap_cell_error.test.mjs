@@ -147,6 +147,7 @@ test('F-377: 칸당 본 건물 수는 near 수와 무관하다', () => {
     assert.ok(g, '틈 0.1 m 는 받아들여져야 한다');
     assert.equal(distStats.gapNear, k * k);
     assert.ok(distStats.gapCells > 1000, `칸 ${distStats.gapCells}`);
+    assert.ok(distStats.gapVisits > 0, `색인 조회가 건물을 하나도 넘기지 않았다(방문 ${distStats.gapVisits})`); // 색인이 null 이면 0 이라 비율이 공허하게 통과한다
     per.push(distStats.gapVisits / distStats.gapCells);
   }
   assert.ok(per[1] <= 12, `칸당 건물 ${per.map((p) => p.toFixed(1)).join(', ')}`);
@@ -154,12 +155,12 @@ test('F-377: 칸당 본 건물 수는 near 수와 무관하다', () => {
 });
 
 // F-382: 색인의 big 목록(GAP_IDX_REG = 64 칸보다 많이 걸치는 건물)과 변 한계 조회 반지름(eC + half)이 결과를 바꾸지 않음을 지킨다.
-// 큰 건물이 가장 가까운 건물이 되도록 틈 직사각형을 그 곁에 두고, 칸이 큰 큰-틈(조회 반지름의 half 가 큰 경우)을 넣는다.
-// big 목록을 빼면(for (const k of big) 삭제) 큰 건물이 e 를 정하는 칸에서, 조회 반지름을 eC 로 줄이면 eC 와 eC + half 사이의
-// 건물이 변 한계를 낮추지 못해 e·w 상한(또는 분기 수 = 남은 예산)이 기준과 달라진다.
+// 큰 건물이 가장 가까운 건물이 되도록 틈 직사각형을 그 곁에 두고, 칸이 큰 큰-틈을 넣는다.
+// big 목록을 빼면(for (const k of big) 삭제) 큰 건물이 e 를 정하는 칸에서 e·w 상한(또는 분기 수 = 남은 예산)이 기준과 달라진다.
+// 조회 반지름 eC + half 를 따로 지키는 것은 아래 결정적 시험(F-384)이다(여기 무작위 배치는 거의 정사각 칸이라 그 변이를 보장하지 않는다).
 test('F-382: big 건물(64 칸 초과)을 섞어도 기준 구현과 결과·남은 예산이 같다', () => {
   const r = rng(382);
-  let hits = 0, nulls = 0, bigTrials = 0, bigVisits = 0, bigTotal = 0, cellsTotal = 0;
+  let hits = 0, nulls = 0, bigTrials = 0, bigTotal = 0;
   for (let t = 0; t < 700; t++) {
     const k = 30 + Math.floor(r() * 10), sp = 0.5 + r() * 1.5, sz = sp * (0.6 + r() * 0.39);
     const ms = [];
@@ -191,19 +192,18 @@ test('F-382: big 건물(64 칸 초과)을 섞어도 기준 구현과 결과·남
     assert.equal(b1.cells, b2.cells, `시행 ${t} 남은 예산`);
     if (got) hits++; else nulls++;
     if (st.gapBig > 0) {
-      bigTrials++; bigTotal += st.gapBig; cellsTotal += st.gapCells;
-      // 모든 조회가 big 을 한 번씩 훑는다: 칸마다 조회 2 회(중심 거리, 변 한계) 이상.
-      bigVisits += st.gapVisits;
+      bigTrials++; bigTotal += st.gapBig;
+      // 모든 조회가 big 을 한 번씩 훑는다: 칸마다 big 전부를 적어도 한 번(조회는 칸마다 중심 거리·변 한계 두 번 이상이라 실제는 더 크다).
       assert.ok(st.gapVisits >= st.gapCells * st.gapBig, `시행 ${t} big 방문 ${st.gapVisits} < 칸 ${st.gapCells} × big ${st.gapBig}`);
     }
   }
   // 양성 대조: big 경로, 받아들임, 거부가 모두 충분히 나와야 한다.
   assert.ok(bigTrials > 100 && bigTotal > 150, `big 시행 ${bigTrials} big 합 ${bigTotal}`);
   assert.ok(hits > 30 && nulls > 30, `hits ${hits} nulls ${nulls}`);
-  assert.ok(bigVisits >= cellsTotal, `big 방문 ${bigVisits} 칸 ${cellsTotal}`);
 });
 
-// 큰 limit(칸이 큰 틈)에서 변 한계 조회 반지름 eC + half 를 따로 지킨다: 촘촘한 건물 + 넓은 틈 + limit 이 틈 폭의 몇 배.
+// 큰 limit(칸이 큰 틈)의 무작위 배치: 촘촘한 건물 + 넓은 틈 + limit 이 틈 폭의 몇 배. 기준과의 일치만 지킨다
+// (조회 반지름이 eC 로 줄어도 걸리는지는 보장하지 않는다. 그것은 바로 아래 결정적 시험이 지킨다).
 test('F-382: 큰 limit 의 넓은 틈에서 변 한계 조회가 기준 구현과 같다', () => {
   const r = rng(3820);
   let hits = 0, nulls = 0;
@@ -224,6 +224,27 @@ test('F-382: 큰 limit 의 넓은 틈에서 변 한계 조회가 기준 구현�
     if (got) hits++; else nulls++;
   }
   assert.ok(hits > 30 && nulls > 30, `hits ${hits} nulls ${nulls}`);
+});
+
+// F-384: 변 한계 조회 반지름 eC + half 를 결정적으로 지킨다. 칸이 가늘고 길면(0.5 × 20 인 틈) 칸 밖 거리 d 의 변이라도
+// 가장 먼 꼭짓점 거리 sqrt(d² + 10²) 가 eC + half 보다 작아 eUb 를 낮출 수 있다. 칸 중심에서 eC ≈ 4 인 건물 A(이것만이면
+// eUb ≈ 13.96)와, 칸에서 d = 7 떨어져 eC + half(≈ 14) 안에 들지만 eC 밖인 건물 B(eUb ≈ 12.73)를 둔다.
+// 먼 곳에 건물 1000 채를 깔아 격자 칸 크기(≈ 2)를 B 와 반지름 eC 의 도달 거리(5) 사이 간격(3)보다 작게 한다.
+// 조회 반지름을 eC 로 줄이면 B 를 못 봐 e 가 13.96 으로 커지고 기준과 달라진다.
+test('F-384: eC 밖 eC + half 안의 건물만 변 한계를 낮추는 배치(결정적)', () => {
+  const ms = [member(0.45, 13.95, 0.55, 14.05), member(8, 9.9, 8.1, 10.1)]; // A: 중심에서 4, B: 칸에서 7
+  for (let i = 0; i < 1000; i++) { // 칸에서 15 이상 떨어져 조회에 들지 않지만 limit 안이라 near 에 든다
+    const x = 16.5 + (i % 30) * 0.11, y = 8 + Math.floor(i / 30) * 0.11;
+    ms.push(member(x, y, x + 0.1, y + 0.1));
+  }
+  const limit = 30, box = { minX: -100, minY: -100, maxX: 100, maxY: 100 };
+  const b1 = { cells: 100 }, b2 = { cells: 100 };
+  const got = gapCellError(0, 0, 1, 20, ms, limit, box, b1);
+  const want = ref(0, 0, 1, 20, ms, limit, box, b2);
+  assert.ok(got && got.e < 13, `B 가 e 를 낮춰야 한다: ${JSON.stringify(got)}`);
+  assert.deepEqual(got, want);
+  assert.equal(b1.cells, b2.cells, '남은 예산');
+  assert.equal(b1.cells, 99, '칸 하나로 받아들여져야 한다');
 });
 
 // F-383: limit 이 무한이거나 폭이 넘치면(정의역 폭이 유한하지 않거나 칸 크기가 유한하지 않음) nx·ny 가 NaN 이라 RangeError 가 났다.
@@ -252,9 +273,10 @@ test('F-383: near 가 작으면 색인 없이 기준과 같은 값(big 목록도
     const box = { minX: -1, minY: -1, maxX: 8, maxY: 8 };
     const limit = 0.5 + r() * 3;
     const b1 = { cells: 1 << 14 }, b2 = { cells: 1 << 14 };
-    Object.assign(distStats, { gapBig: 0 });
+    Object.assign(distStats, { gapBig: 0, gapVisits: 0 });
     const got = gapCellError(1, 1, 5, 5, ms, limit, box, b1);
     assert.equal(distStats.gapBig, 0);
+    assert.equal(distStats.gapVisits, 0, `시행 ${t} 색인 없이 전수 경로여야 한다`); // 색인을 만들었다면 조회가 방문을 센다
     const want = ref(1, 1, 5, 5, ms, limit, box, b2);
     assert.deepEqual(got, want, `시행 ${t}`);
     assert.equal(b1.cells, b2.cells, `시행 ${t} 남은 예산`);
