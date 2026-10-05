@@ -26,9 +26,13 @@ function sameFill(a, b) {
 // a 가 b 를 가린다: b 의 상자가 a 안, 높이(윗면·바닥)도 안이고, a 가 직사각형이거나 b 와 풋프린트가 같다.
 // b 의 지붕 최저(roofMin)·오차는 보지 않는다: b 는 a 의 상자 안에서 a 의 지붕 아래에 있어 합친 상자로 가려지고, 둘 다 singleError 를 통과했다.
 // a 의 원본이 상자보다 작아 원본 유지될 수 있으면(삼각형 10개 미만) 대표가 될 수 없다.
+// z 비교 허용 오차(m). 바닥이 이만큼 나온 건 지워지는 세부 크기(hideTol, 500 m 이상에서 0.12 m 이상)보다 훨씬 작다.
+// minZ 가 mm 만 달라도 대표가 되면 같은 자리 N 채가 응집에서 N^2 쌍을 만든다.
+export const FOLD_Z_TOL_M = 0.01;
+
 function covers(a, b) {
   if (b.minX < a.minX - EPS || b.maxX > a.maxX + EPS || b.minY < a.minY - EPS || b.maxY > a.maxY + EPS) return false;
-  if (b.maxZ > a.maxZ || b.minZ < a.minZ) return false;
+  if (b.maxZ > a.maxZ + FOLD_Z_TOL_M || b.minZ < a.minZ - FOLD_Z_TOL_M) return false;
   return a.rect || sameFill(a, b);
 }
 
