@@ -10,5 +10,7 @@ import { syncCamera } from '../../status/camera/index.mjs';
  * @returns {{R:number[], t:number[], K:{fx:number, fy:number, cx:number, cy:number}, width:number, height:number, devicePixelRatio:number}}
  */
 export function poseToView(pose, size) {
-  return syncCamera(pose, size, 0).view; // viewSeq 는 view 에 쓰이지 않는다
+  // 오버레이 크기는 CSS 픽셀 {width, height} 뿐이다(계약 Size). syncCamera 는 devicePixelRatio 를 요구하므로 없으면 1 로 채운다(view 계산에는 쓰이지 않는다).
+  const sz = size !== null && typeof size === 'object' && size.devicePixelRatio === undefined ? { ...size, devicePixelRatio: 1 } : size;
+  return syncCamera(pose, sz, 0).view; // viewSeq 는 view 에 쓰이지 않는다
 }
