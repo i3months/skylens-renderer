@@ -5,7 +5,7 @@ import { poseToView } from '../overlay/view.mjs';
 
 const OPT_KEYS = ['maxDistM', 'zRangeM', 'maxInflight', 'retainMargin', 'maxHeld', 'nearM'];
 export const TILE_INDEX_MAX = 1_000_000; // 타일 번호 절댓값 상한(64 m 타일 기준 64000 km)
-const INT_RANGES = { maxInflight: [1, 4096], retainMargin: [0, 16], maxHeld: [1, 1_000_000] };
+const INT_RANGES = { maxInflight: [1, 1_000_000], retainMargin: [0, 16], maxHeld: [1, 1_000_000] };
 
 const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 const num = (v, name) => {
