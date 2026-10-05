@@ -325,6 +325,8 @@ function strideFor(w, h, budget) {
  *    localMaxPx = local 블록 실측 이동량 크기 최댓값, undecidedMaxPx = 불확정 블록이 배제하지 못한 이동량 크기 최댓값,
  *    unexcludedMaxPx = 짝 검정 경로 local 블록이 배제하지 못한 이동량 크기 최댓값(둘 다 자기 최소에서 예측 반대쪽으로 1 px 까지
  *    0.25 px 씩 나가며 짝 검정 t ≤ DRAPE_PAIRED_K 인 점까지; 없으면 0),
+ *    unmeasuredLocalBlocks = 짝 검정 경로 local 블록 중 예측 위치를 잴 수 없어(pairedT NaN) 배제 못 한 이동량을 모르는 블록 수
+ *    (그 블록은 unexcludedMaxPx·maxMisalignPx 의 상한에 들어가지 않는다 — 0 으로 세지 않고 이 수로 드러낸다; unmeasurable 이면 NaN),
  *    maxMisalignPx = max(edgeMaxPx, localMaxPx, undecidedMaxPx, unexcludedMaxPx).
  *    다음이면 status = 'unmeasurable' 이고 maxMisalignPx·edgeMaxPx·축척 등은 NaN 이다(0 으로 보고하지 않는다; NaN 은 어떤
  *    `<= 허용` 판정도 통과하지 못한다): 전역 비용면이 ±1 px 이동에 평평함(균일한 색 등), 아핀에 여분이 없음(블록 6개 미만이면서
@@ -337,7 +339,7 @@ function strideFor(w, h, budget) {
  *    완전 피복(mask 255) 픽셀이 없는 타일도 unmeasurable 이 아니라 TowerAssetError(bounds 유무와 무관하게 같은 메시지).
  * @returns {{status:'measured'|'unmeasurable', reason?:string, maxMisalignPx:number, dxPx:number, dyPx:number, rms:number,
  *   samples:number, globalDxPx:number, globalDyPx:number, blockMaxPx:number, residualMaxPx:number, edgeMaxPx:number,
- *   localMaxPx:number, undecidedBlocks:number, undecidedMaxPx:number, unexcludedMaxPx:number, scaleX:number, scaleY:number, rotationRad:number,
+ *   localMaxPx:number, undecidedBlocks:number, undecidedMaxPx:number, unexcludedMaxPx:number, unmeasuredLocalBlocks:number, scaleX:number, scaleY:number, rotationRad:number,
  *   affine:{ax:number,kxx:number,kxy:number,ay:number,kyx:number,kyy:number}|null,
  *   blockPx:{width:number,height:number}, flatBlocks:number, flatAreaFraction:number, axisFlatBlocks:number,
  *   blocks:Array<{i0:number,j0:number,dx:number,dy:number,n:number,local:boolean,undecided:boolean,axes:'xy'|'x'|'y',pairedT:number}>}}
@@ -354,7 +356,7 @@ function strideFor(w, h, budget) {
  *   −f/(1+f)). rotationRad = (kxy − kyx)/2(내용이 ENU 반시계로 θ 돌아간 타일이면 sin θ). blockMaxPx = 블록 이동량 크기 최댓값,
  *   residualMaxPx = 블록 실측과 아핀 모형의 차 최댓값. 단 기준이 섞여 있다: 불확정 블록은 residualMaxPx 에 자기 잔차를 세지 않고
  *   undecidedMaxPx(= 배제하지 못한 이동량의 원점 기준 절대 크기, 모형 예측에서 잰 값이 아님)를 max 로 합친다. 그래서 타일 전체가
- *   3 px 이동하고 예측 근처에 불확정 블록이 하나 있으면 모형 잔차는 ~0 이어도 residualMaxPx ≈ 3 이 된다. 모형 잔차만의 상한이 필요하면
+ *   g = 3 px 이동하고 불확정 블록이 하나 있으면(불확정은 예측에서 ≥ 0.5 px 떨어진 블록만 된다) 나머지 블록의 모형 잔차는 ~0 이어도 residualMaxPx ≈ 3(원점 기준 배제 못 한 이동량)이 된다. 모형 잔차만의 상한이 필요하면
  *   residualMaxPx 가 아니라 blocks 의 non-undecided 블록으로 다시 구해야 한다(별도 필드는 두지 않았다).
  */
 export function measureDrapeAlignment(image, tile) {
@@ -663,7 +665,7 @@ export function measureDrapeAlignment(image, tile) {
       })),
     });
     const unmeasurable = (reason) => finish('unmeasurable', {
-      reason, maxMisalignPx: NaN, residualMaxPx: NaN, edgeMaxPx: NaN, localMaxPx: NaN, undecidedBlocks: NaN, undecidedMaxPx: NaN, unexcludedMaxPx: NaN,
+      reason, maxMisalignPx: NaN, residualMaxPx: NaN, edgeMaxPx: NaN, localMaxPx: NaN, undecidedBlocks: NaN, undecidedMaxPx: NaN, unexcludedMaxPx: NaN, unmeasuredLocalBlocks: NaN,
       scaleX: NaN, scaleY: NaN, rotationRad: NaN, affine: null, tileMse: Infinity,
     });
 
@@ -714,8 +716,9 @@ export function measureDrapeAlignment(image, tile) {
     // 짝 검정으로 o 보다 유의하게 나쁘지 않은(t ≤ PAIRED_K, 잴 수 없으면 멈춤) 점의 크기 최댓값(o 자신 포함). 자기 최소만 쓰면
     // 저대비 블록의 박스 평균 MSE 최소가 0 쪽으로 치우쳐(실제 1.5 px 에서 자기 최소 0.78~1.0 px) 실제 어긋남을 1 px 이하로
     // 보고했다(F-359 검토 #4 측정: 사인 2 DN ±1·±2 DN 시드 30개 중 불확정 15·15회, local 2회).
-    // 알려진 비대칭(F-385 ⑨, 열림: 검토 사항): 걷기는 예측에서 멀어지는 쪽(o 방향)으로만 간다. 그런데 farOwn(아래 재적합 이상치
-    // 경로)은 자기 최소가 예측 반대쪽이어도 켜지므로, 실제 이동이 예측을 넘어 반대쪽에 있으면 걷기가 거기까지 닿지 않는다.
+    // 알려진 비대칭(F-385 ⑨, 열림: 검토 사항): 걷기는 예측에서 멀어지는 쪽(o 방향)으로만 간다. 그런데 재적합 이상치 경로(아래)는
+    // farOwn 뿐 아니라 잔차 경로(residual ≥ OUTLIER_PX)도 자기 최소가 예측 반대쪽이어도 켜지므로, 실제 이동이 예측을 넘어 반대쪽에
+    // 있으면 걷기가 거기까지 닿지 않는다. 잔차 경로 사례: g −0.125 에서 잔차 0.534 로 진입, 보고 1.675.
     // 사례: ±3 DN 사인 2 seed 2007922, o=+0.906, 실제 −1.5, 보고 1.675(거짓 통과는 아님). 양방향 걷기를 임시로 시험하니 기존 시험
     // 수치(50·45·0·5)는 그대로였으나 farOwn 경로를 지키는 시험이 없어(F-386) 출력 변화를 못 잡으므로 적용하지 않았다.
     const unexcludedPx = (b, [px, py]) => {
@@ -768,7 +771,9 @@ export function measureDrapeAlignment(image, tile) {
         // 같은 조건 실제 1.5 px 어긋남의 t 분포가 귀무와 겹친다(F-359 검토 #4). 불확정 블록도 배제하지 못한 이동량을
         // maxMisalignPx 에 넣으므로, local/불확정 갈림은 local 표시만 바꾸고 정합 통과 여부는 PAIRED_K 하나에 기대지 않는다.
         // local 블록도 보고는 자기 최소지만, 배제하지 못한 이동량은 unexcludedMaxPx 로 maxMisalignPx 에 넣는다(같은 치우침).
-        if (t === null || t > PAIRED_K) { markLocal(b); b.unexcludedPx = t === null ? 0 /* 0 은 '이동 없음' 이 아니라 측정 불가: 예측 위치를 잴 수 없어 배제 못 한 이동량을 모른다. 별도 계수는 두지 않았다(F-389 ⑥, 필드 추가는 출력 형식 변경) */ : unexcludedPx(b, [px, py]); }
+        if (t === null || t > PAIRED_K) { markLocal(b); // t === null(예측 위치를 잴 수 없음)이면 배제 못 한 이동량을 모른다: 0('이동 없음')이 아니라 NaN 으로 두고
+        // 아래 집계에서 unmeasuredLocalBlocks 로 센다(불확정 dx·dy 를 NaN 으로 드러내는 것과 같은 규칙, F-390 ⑥).
+        b.unexcludedPx = t === null ? NaN : unexcludedPx(b, [px, py]); }
         else markUndecided(b, [px, py]);
       } else if (out !== false) markLocal(b);
     }
@@ -797,20 +802,20 @@ export function measureDrapeAlignment(image, tile) {
     //    블록(local)의 실측 이동량 크기. 영상 자료가 없는 곳까지 외삽하지 않는다(완전 피복 타일이면 타일 네 모서리).
     let edgeMaxPx = 0;
     for (const ci of [ei0, ei1]) for (const cj of [ej0, ej1]) edgeMaxPx = Math.max(edgeMaxPx, Math.hypot(...fit.at(ci, cj)));
-    let residualMaxPx = 0, localMaxPx = 0, undecidedMaxPx = 0, undecidedBlocks = 0, unexcludedMaxPx = 0;
+    let residualMaxPx = 0, localMaxPx = 0, undecidedMaxPx = 0, undecidedBlocks = 0;
     for (const b of blocks) {
       if (!b.undecided) residualMaxPx = Math.max(residualMaxPx, residual(b, fit.at));
       if (b.local) localMaxPx = Math.max(localMaxPx, Math.hypot(b.dx, b.dy));
       if (b.undecided) { undecidedBlocks++; undecidedMaxPx = Math.max(undecidedMaxPx, b.undecidedPx); }
-      if (b.local && b.unexcludedPx) unexcludedMaxPx = Math.max(unexcludedMaxPx, b.unexcludedPx);
     }
     residualMaxPx = Math.max(residualMaxPx, undecidedMaxPx);
+    const { unexcludedMaxPx, unmeasuredLocalBlocks } = unexcludedSummary(blocks);
     const { fx, fy } = fit;
     return finish('measured', {
       // 불확정 블록과 짝 검정 경로 local 블록이 배제하지 못한 이동량도 넣는다(보수적): 판정 못 한 블록을 정합 증거로 세거나
       // 치우친 자기 최소만 보고하면 실제 1.5 px 를 ≤ 1 px 로 보고한다.
       maxMisalignPx: Math.max(edgeMaxPx, localMaxPx, undecidedMaxPx, unexcludedMaxPx),
-      residualMaxPx, edgeMaxPx, localMaxPx, undecidedBlocks, undecidedMaxPx, unexcludedMaxPx,
+      residualMaxPx, edgeMaxPx, localMaxPx, undecidedBlocks, undecidedMaxPx, unexcludedMaxPx, unmeasuredLocalBlocks,
       scaleX: fx.ki, scaleY: fy.kj, rotationRad: (fx.kj - fy.ki) / 2,
       affine: { ax: fx.a, kxx: fx.ki, kxy: fx.kj, ay: fy.a, kyx: fy.ki, kyy: fy.kj },
       tileMse: costAffine(gxs, gys, fit.at),
@@ -818,6 +823,20 @@ export function measureDrapeAlignment(image, tile) {
   }
 }
 
+/**
+ * 짝 검정 경로 local 블록의 배제 못 한 이동량 집계. unexcludedPx 가 NaN 인 local 블록(예측 위치를 못 잼)은 상한 계산에 넣지 않고
+ * (Math.max 가 NaN 으로 오염되지 않게) 수만 센다. 0 은 잰 결과(이동 없음)라 상한에 영향이 없다. t === null 블록은 실제 입력으로
+ * 만들기 어려워(예측 위치가 영상 밖으로 나가 표본이 절반 미만이 되어야 함) 시험이 이 함수를 직접 부른다.
+ */
+export function unexcludedSummary(blocks) {
+  let unexcludedMaxPx = 0, unmeasuredLocalBlocks = 0;
+  for (const b of blocks) {
+    if (!b.local) continue;
+    if (Number.isNaN(b.unexcludedPx)) unmeasuredLocalBlocks++;
+    else if (b.unexcludedPx > 0) unexcludedMaxPx = Math.max(unexcludedMaxPx, b.unexcludedPx);
+  }
+  return { unexcludedMaxPx, unmeasuredLocalBlocks };
+}
 // 다른 전역 가설: 정수 격자 국소 최소 중 평균 제곱 차가 최소의 이 배 이내, 최대 개수.
 const ALT_GLOBAL_RATIO = 2;
 const ALT_GLOBAL_MAX = 2;
