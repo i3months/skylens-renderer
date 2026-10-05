@@ -152,3 +152,21 @@ test('F-345: inherited-cell re-measure has its own cell budget (open 1.2 m notch
   assert.deepEqual(out.map((g) => g.ids), [[1, 2, 3]]);
   assert.equal(boxCount(out), 1);
 });
+
+test('F-347: 끼인 틈 폭 = 한도: 수용 (등호 수용은 축 정렬에서만)', () => {
+  // hideTol 1.212 m 와 정확히 같은 폭의 축 정렬 틈은 합쳐진다.
+  const out = buildBuildingLod([rect(1, 8, 0, 10, 2), rect(2, 10 + 1.2120, 0, 12 + 1.2120, 2)], 5000);
+  assert.equal(boxCount(out), 1, 'axis-aligned gap width = hideTol merges');
+});
+
+test('F-347: 45° 대각 틈 폭 = 한도 (현재 반올림으로 거부됨, 기록)', () => {
+  // 45° 대각선 방향으로 1.414 m(= sqrt(2) * 1.0) 떨어진 두 2×2 m 건물. 틈의 대각 폭이
+  // 축 정렬일 때와 같지만, 반올림으로 거부된다. 이 동작을 변경하지 않고 기록한다.
+  const offset = 1.0;
+  const out = buildBuildingLod(
+    [rect(1, 0, 0, 2, 2), rect(2, 2 + offset * Math.sqrt(2), 2 + offset * Math.sqrt(2), 4 + offset * Math.sqrt(2), 4 + offset * Math.sqrt(2))],
+    5000
+  );
+  // Current behavior: 45-degree diagonal gap is rejected (2 boxes)
+  assert.equal(boxCount(out), 2, '45-degree diagonal gap width = limit currently rejected by rounding');
+});

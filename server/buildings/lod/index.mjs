@@ -368,7 +368,7 @@ const GAP_MAX_CELLS = 1 << 14;
 // 변 한계는 벽을 따라 칸 길이가 늘어나도 커지지 않아서, 길쭉한 틈은 길이를 따라 몇 칸만 필요;
 // 정밀도는 틈을 가로지르는 칸 폭이 정하고(F-335: 예전 균등 격자는 축당 MAX_GRID 표본으로 한계를 두어 16·hideTol 보다 긴 틈 칸의 정밀도를 잃고 작은 실제 틈을 거부했음),
 // 고정 표본 상한이 아니다.
-// 한계를 넘거나 예산을 소진했을 때 null, 아니면 { e, w } 상한(e 는 기하 오차에 쓰임)을 돌려준다.
+// 한계를 넘거나 예산을 소진했을 때 null, 아니면 { e, w } 상한(e 는 기하 오차에 쓰임, 반환 e 는 칸 단위의 느슨한 상한)을 돌려준다.
 export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
   const near = [];
   for (const m of members) {
