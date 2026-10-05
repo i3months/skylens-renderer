@@ -1,4 +1,6 @@
 // F-363 음성 대조: 저대비 블록 + ±2·±3 DN 잡음 + 이동 0 타일에서 잡음 최소를 국소 어긋남(local)으로 보고하지 않는다.
+// F-359 검토 #4 이후 계약: 이동 0 에서 거짓 local 은 0. 불확정(undecided) 블록은 허용하되(정합 증거가 없다는 보수적 표시) 그 수를
+// 기록값 이하로 고정하고, 불확정이 없는 타일은 maxMisalignPx < 1 이어야 한다.
 // 도우미(makeImage·boxMean·warpedTile·HASH·TEX_A·LOW·lowContrastImage)는 drape.test.mjs 에서 그대로 복사했다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -44,9 +46,10 @@ function boxMean(img, x0, x1, y0, y1, out) {
 /**
  * warp 로 내용이 틀어진 드레이프 타일(밉 크기·박스 필터는 buildDrapeTile 과 같음, 픽셀당 4×4 부분 박스로 근사).
  * keep(i, j) 가 false 인 픽셀은 영상 밖처럼 비운다(mask 0). noise > 0 이면 채널마다 결정적 ±noise 균등 잡음(seed 로 정함)을 더한다.
+ * sameNoise 면 픽셀마다 잡음 하나를 세 채널에 똑같이 더한다(채널 상관 잡음, F-376).
  * coverage.bounds 는 넣지 않는다(피복 범위는 mask 로만 알 수 있다).
  */
-function warpedTile(img, tx, ty, mip, warp, { keep = () => true, noise = 0, seed = 12345 } = {}) {
+function warpedTile(img, tx, ty, mip, warp, { keep = () => true, noise = 0, seed = 12345, sameNoise = false } = {}) {
   const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 2 ** 32; };
   const { width, height } = drapeTileSize(img, mip);
   const tb = tileBounds(tx, ty), pw = TERRAIN_TILE_SIZE_M / width, ph = TERRAIN_TILE_SIZE_M / height, n = 4;
@@ -66,8 +69,9 @@ function warpedTile(img, tx, ty, mip, warp, { keep = () => true, noise = 0, seed
       if (!ok) continue;
       const o = j * width + i;
       mask[o] = 255;
+      const e0 = sameNoise && noise ? Math.round((rnd() * 2 - 1) * noise) : 0;
       for (let k = 0; k < 3; k++) {
-        const e = noise ? Math.round((rnd() * 2 - 1) * noise) : 0;
+        const e = sameNoise ? e0 : noise ? Math.round((rnd() * 2 - 1) * noise) : 0;
         rgb[o * 3 + k] = Math.max(0, Math.min(255, Math.round(sum[k] / (n * n)) + e));
       }
     }
@@ -102,28 +106,44 @@ function lowContrastImage(low) {
   return makeImage({ minX: -64, minY: -64, maxX: 128, maxY: 128 }, 384, 384, (x, y, c, r) => (
     x >= 26 && x < 46 && y >= 36 && y < 52 ? low(x, y, c, r) : TEX_A(x, y, c, r)));
 }
-/** 밉 0 타일 (0,0) 에서 블록 (i0 64, j0 32)(x 32..40, y 40..48 m) 내용만 동쪽으로 s px(정수) 옮긴 값으로 바꾼다. */
 
+/**
+ * 이동 0 음성 결과 m 의 위반을 돌려준다(없으면 null): 거짓 local, 측정 불가, 불확정이 없는데 maxMisalignPx ≥ 1.
+ * 불확정 타일은 maxMisalignPx ≥ 1 이어도 위반이 아니다(정합 통과를 내지 않는 보수적 실패) — 그 수는 호출 쪽이 센다.
+ */
+function nullViolation(m) {
+  if (m.status !== 'measured') return `${m.status} ${m.reason}`;
+  const local = m.blocks.filter((b) => b.local).map(({ i0, j0, dx, dy }) => [i0, j0, dx, dy]);
+  if (local.length) return `거짓 local ${JSON.stringify(local)}`;
+  if (m.undecidedBlocks !== m.blocks.filter((b) => b.undecided).length) return '불확정 수 불일치';
+  if (!m.undecidedBlocks && !(m.maxMisalignPx < ALIGN_TOLERANCE_PX)) return `불확정 없이 보고 ${m.maxMisalignPx}`;
+  return null;
+}
+// 이동 0 음성 입력의 불확정 타일 수 기록(측정값, 줄면 좋고 늘면 실패).
+const F363_UNDECIDED = 11, REVIEW2_UNDECIDED = 8, TAIL_UNDECIDED = 8;
 // 시드 k·7919, k = 1..20(drape.test.mjs 의 SEEDS 와 같은 생성식).
 const NOISE_SEEDS = Array.from({ length: 20 }, (_, i) => (i + 1) * 7919);
 
-test('F-363 저대비 사인 블록 + ±2·±3 DN 잡음, 이동 0: 시드 20개 모두 local 0·maxMisalignPx < 1', () => {
+test('F-363 저대비 사인 블록 + ±2·±3 DN 잡음, 이동 0: 시드 20개 — 거짓 local 0, 불확정 타일 기록값 이하', () => {
   // 수정 전(재적합 이상치의 잔차 ≥ 0.5 만으로 local): 사인 2 DN ±3 DN 에서 시드 55433·87109·118785·142542 의 블록 (64,32) 가
   // 거짓 local(142542 는 maxMisalignPx 1.412 — 어긋남이 없는데 정합 ≤ 1 px 실패), 사인 1 DN ±3 DN 에서도 2개.
+  // 불확정 타일(측정, F-359 검토 #4): 80회 중 F363_UNDECIDED 회 — 거짓 불확정 비율로 기록한다(0 이 아니다).
   const id = (p) => p;
   const bad = [];
+  let undecided = 0;
   for (const [amp, noises] of [[2, [2, 3]], [1, [2, 3]]]) {
     const img = lowContrastImage(LOW.sine(amp));
     for (const noise of noises) {
       for (const seed of NOISE_SEEDS) {
         const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, id, { noise, seed }));
-        assert.equal(m.status, 'measured', `사인 ${amp} DN ±${noise} seed ${seed}: ${m.reason}`);
-        const local = m.blocks.filter((b) => b.local).map(({ i0, j0, dx, dy }) => [i0, j0, dx, dy]);
-        if (local.length || !(m.maxMisalignPx < ALIGN_TOLERANCE_PX)) bad.push([amp, noise, seed, m.maxMisalignPx, local]);
+        const why = nullViolation(m);
+        if (why) bad.push([amp, noise, seed, why]);
+        if (m.undecidedBlocks) undecided++;
       }
     }
   }
   assert.deepEqual(bad, []);
+  assert.ok(undecided <= F363_UNDECIDED, `불확정 타일 ${undecided} > 기록 ${F363_UNDECIDED}`);
 });
 
 /** ±amp DN 균등 잡음(128 중심)만 있는 0.5 m/px 영상, 타일 (0,0) 과 맞물림(drape.test.mjs 에서 복사). */
@@ -133,20 +153,21 @@ function noiseImage(n, amp, seed) {
   return makeImage({ minX: 0, minY: 0, maxX: 64, maxY: 64 }, n, n, () => [0, 1, 2].map(() => 128 + Math.round((rnd() * 2 - 1) * amp)));
 }
 
-test('F-363 ±1 DN 잡음만 있는 128² 영상, 이동 0, 밉 0~2: local 0, 측정되면 maxMisalignPx < 1(측정 불가는 허용)', () => {
-  // 감독 재현 입력(seed 7919 밉 2: 보고된 거짓 실패 3.644 px)과 같은 생성식. 무늬가 없어 높은 밉은 비용면이 평평해 측정 불가일 수 있다.
+test('±1 DN 잡음만 있는 128² 영상(F-363 감독 입력 아님), 이동 0, 밉 0~2: local 0, 측정되면 maxMisalignPx < 1(측정 불가는 허용)', () => {
+  // 감독 F-363 입력(noiseImage(128,±3,104729)+타일 잡음)은 아래 검토 #2 시험. 무늬가 없어 높은 밉은 비용면이 평평해 측정 불가일 수 있다.
   const img = noiseImage(128, 1, 7919);
   for (let mip = 0; mip <= 2; mip++) {
     for (const tile of [buildDrapeTile(img, 0, 0, mip), warpedTile(img, 0, 0, mip, (p) => p)]) {
       const m = measureDrapeAlignment(img, tile);
       assert.deepEqual(m.blocks.filter((b) => b.local).map(({ i0, j0 }) => [i0, j0]), [], `밉 ${mip}`);
-      if (m.status === 'measured') assert.ok(m.maxMisalignPx < ALIGN_TOLERANCE_PX, `밉 ${mip}: ${m.maxMisalignPx}`);
+      if (m.status === 'measured') assert.equal(nullViolation(m), null, `밉 ${mip}`);
+      if (m.status === 'measured') assert.equal(m.undecidedBlocks, 0, `밉 ${mip}`);
       else assert.ok(Number.isNaN(m.maxMisalignPx), `밉 ${mip}`);
     }
   }
 });
 
-test('F-359 검토 #2 음성 대조(짝 검정): 감독 F-363 입력과 사인 2 DN ±3 DN 시드 21~40, 이동 0 — local 0·maxMisalignPx < 1', () => {
+test('F-359 검토 #2 음성 대조(짝 검정): 감독 F-363 입력과 사인 2 DN ±3 DN 시드 21~40, 이동 0 — 거짓 local 0, 불확정 기록값 이하', () => {
   // 잔차 경로의 유의성을 같은 표본 픽셀 짝 검정으로 바꾼 뒤에도 잡음 최소를 국소 어긋남으로 보고하지 않는다.
   const id = (p) => p;
   const runs = [];
@@ -157,39 +178,91 @@ test('F-359 검토 #2 음성 대조(짝 검정): 감독 F-363 입력과 사인 2
   const s2 = lowContrastImage(LOW.sine(2));
   for (let k = 21; k <= 40; k++) runs.push([`사인 2 DN ±3 seed ${k * 7919}`, s2, warpedTile(s2, 0, 0, 0, id, { noise: 3, seed: k * 7919 })]);
   const bad = [];
+  let undecided = 0;
   for (const [at, img, tile] of runs) {
     const m = measureDrapeAlignment(img, tile);
-    const local = m.blocks.filter((b) => b.local).map(({ i0, j0, dx, dy }) => [i0, j0, dx, dy]);
-    if (m.status !== 'measured' || local.length || !(m.maxMisalignPx < ALIGN_TOLERANCE_PX)) bad.push([at, m.status, m.maxMisalignPx, local]);
+    const why = nullViolation(m);
+    if (why) bad.push([at, why]);
+    if (m.undecidedBlocks) undecided++;
   }
   assert.deepEqual(bad, []);
+  assert.ok(undecided <= REVIEW2_UNDECIDED, `불확정 타일 ${undecided} > 기록 ${REVIEW2_UNDECIDED}`);
 });
 
 // F-359 검토 #3 귀무(이동 0) 측정에서 짝 검정 t 가 가장 컸던 입력: [사인 진폭, 잡음, 시드, 측정 t].
 // 귀무 측정 전체(36설정 3510회, 짝 검정 호출 293회)는 index.mjs 의 PAIRED_K 주석. 여기에는 t ≥ 1.8 인 8회를 그대로 둔다
-// (측정에서 고른 음성 입력 — 문턱을 맞추려는 것이 아니라 문턱 근처의 귀무 꼬리를 지키려는 것; t 는 기록용, 단언하지 않음).
+// (측정에서 고른 음성 입력 — 문턱을 맞추려는 것이 아니라 문턱 근처의 귀무 꼬리를 지키려는 것). 입력별 t 는 결정적이라 ±0.01 로
+// 단언한다(F-378 ③: 짝 검정 통계를 바꾸는 회귀 — t 를 0.3 옮기는 변이 — 를 잡는다).
 const NULL_TAIL = [
   [2, 2, 443464, 2.238], [2.5, 2, 443464, 2.045], [2.5, 3, 443464, 1.897], [1, 4, 15485863, 2.331], [1, 3, 15485863, 1.951],
   [1, 4, 1904761149, 1.803], [2, 3, 449090027, 1.861], [2, 4, 449090027, 1.832],
 ];
 
-test('F-359 검토 #3 귀무 꼬리: 짝 검정 t 가 큰 이동 0 입력 8회 — local 0·maxMisalignPx < 1, t < PAIRED_K, 꼬리 t > 2', () => {
-  // PAIRED_K 를 2 로 내리면 t 2.05~2.33 인 세 입력이 거짓 local 이 된다. 귀무 최대 t(2.331)와 PAIRED_K 의 여유를 여기서 고정한다.
+test('F-359 검토 #3 귀무 꼬리: 짝 검정 t 가 큰 이동 0 입력 8회 — 거짓 local 0, 입력별 t = 기록 ±0.01, PAIRED_K 리터럴·여유', () => {
   const id = (p) => p;
   const bad = [];
-  let maxT = -Infinity;
-  for (const [amp, noise, seed] of NULL_TAIL) {
+  let undecided = 0;
+  for (const [amp, noise, seed, tRec] of NULL_TAIL) {
     const img = lowContrastImage(LOW.sine(amp));
     const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, id, { noise, seed }));
     const at = `사인 ${amp} DN ±${noise} seed ${seed}`;
     const tested = m.blocks.filter((b) => Number.isFinite(b.pairedT));
     // 이 입력들은 짝 검정 경로를 실제로 지나야 한다(경로가 바뀌어 검정을 안 하면 이 시험은 아무것도 지키지 않는다).
-    if (!tested.length) bad.push([at, '짝 검정 없음']);
-    for (const b of tested) maxT = Math.max(maxT, b.pairedT);
-    const local = m.blocks.filter((b) => b.local).map(({ i0, j0, dx, dy }) => [i0, j0, dx, dy]);
-    if (m.status !== 'measured' || local.length || !(m.maxMisalignPx < ALIGN_TOLERANCE_PX)) bad.push([at, m.status, m.maxMisalignPx, local]);
+    if (!tested.length) { bad.push([at, '짝 검정 없음']); continue; }
+    const t = Math.max(...tested.map((b) => b.pairedT));
+    if (!(Math.abs(t - tRec) <= 0.01)) bad.push([at, `t ${t} ≠ 기록 ${tRec}`]);
+    const why = nullViolation(m);
+    if (why) bad.push([at, why]);
+    if (m.undecidedBlocks) undecided++;
   }
   assert.deepEqual(bad, []);
-  assert.ok(maxT < DRAPE_PAIRED_K, `귀무 최대 t ${maxT} ≥ PAIRED_K ${DRAPE_PAIRED_K}`);
-  assert.ok(maxT > 2, `귀무 꼬리 t ${maxT} — 입력이 더는 문턱 근처를 시험하지 않는다`);
+  assert.ok(undecided <= TAIL_UNDECIDED, `불확정 타일 ${undecided} > 기록 ${TAIL_UNDECIDED}`);
+  // PAIRED_K 는 local 표시와 불확정 범위 끝을 가르는 진단값이다. 리터럴과, 귀무 측정 최대 t(2.331, index.mjs 주석)에 대한 여유를
+  // 고정한다(F-374: 제품 상수와 비교하는 순환 단언은 PAIRED_K 를 2.4·2.9 로 바꿔도 통과했다).
+  assert.equal(DRAPE_PAIRED_K, 2.75);
+  assert.ok(DRAPE_PAIRED_K - 2.331 >= 0.4, `PAIRED_K 여유 ${DRAPE_PAIRED_K - 2.331}`);
 });
+
+test('F-376 채널 상관 잡음(세 채널에 같은 ±3 DN) 귀무: 사인 2 DN 시드 60개 — 거짓 local 0, 짝 검정 t 최대 기록값 이하', () => {
+  // pairedT 는 표본을 픽셀 × 3채널로 센다(m = 3n, 채널 잡음 독립 가정). 채널 잡음이 같으면 유효 표본이 n 이라 t 가 부풀 수 있다.
+  // 측정(사인 1.5·2·2.5 DN × 같은 ±3 DN × 시드 60, 180회): 거짓 local 0, t 최대 1.427 — 귀무 최대 2.331·PAIRED_K 2.75 아래라
+  // 픽셀 단위 d 로 바꾸지 않았다. 다시 볼 조건: 이 시험의 t 최대가 PAIRED_K 에 다가갈 때.
+  const id = (p) => p;
+  const img = lowContrastImage(LOW.sine(2));
+  const bad = [];
+  let maxT = -Infinity;
+  for (let k = 1; k <= 60; k++) {
+    const seed = k * 7919 + 13;
+    const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, id, { noise: 3, seed, sameNoise: true }));
+    const why = nullViolation(m);
+    if (why) bad.push([seed, why]);
+    for (const b of m.blocks) if (Number.isFinite(b.pairedT)) maxT = Math.max(maxT, b.pairedT);
+  }
+  assert.deepEqual(bad, []);
+  assert.ok(maxT <= 1.427 + 0.01, `채널 상관 귀무 t 최대 ${maxT}`);
+});
+
+// F-359 검토 #4 양성: 블록 x 32..40·y 40..48 m 만 g+e, 나머지 g 만큼 동쪽(실제 블록 이동 |g+e| = 1.5 px).
+const POS_CASES = [[1.5, -0.125, -1.375], [2, -0.25, -1.25], [2.5, -0.25, -1.25]];
+const POS_SEEDS = Array.from({ length: 30 }, (_, i) => 2000003 + i * 7919);
+
+// ±2 DN 은 미해결(todo): 블록 (64,32) 의 자기 최소가 예측에서 0.5 px 안(−0.7 px 근처)이라 재적합 이상치도 불확정도 아닌 정합 블록으로
+// 남는 경우가 180회 중 6회(사인 2 DN 4회 — 시드 2079193·2142545·2174221 등, 사인 2.5 DN 2126707·2134626; 보고 0.27 px).
+// 모든 블록에 '배제 못 한 이동량 > 1 px 이면 불확정' 을 적용하면 이 6회는 잡히지만 이동 0 귀무에서 거짓 불확정이 사인 1.5 DN ±2·±3
+// 40/60·49/60, 같은 채널 잡음 54/60·60/60 으로 정합 판정 자체가 무의미해져 채택하지 않았다. 허용을 넓히지 않고 todo 로 남긴다.
+const POS_TODO = { 2: '±2 DN 에서 정합 블록으로 남는 실제 1.5 px 블록 6/180 (자기 최소가 예측 ±0.5 px 안) — 미해결, 위 주석' };
+for (const noise of [1, 2]) {
+  test(`F-359 검토 #4 양성: warpedTile 사인 1.5·2·2.5 DN ±${noise} DN, 시드 30개, 실제 1.5 px — 'measured 이면서 maxMisalignPx ≤ 1' 0건`, { todo: POS_TODO[noise] }, () => {
+    // 수정 전(PAIRED_K 2.75 로만 가름): 시드 10개에서 ±2 DN 5~7/10, ±1 DN 사인 2 DN 7/10 이 정합 통과(거짓 통과).
+    const bad = [];
+    for (const [amp, g, e] of POS_CASES) {
+      const img = lowContrastImage(LOW.sine(amp));
+      const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
+      for (const seed of POS_SEEDS) {
+        const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise, seed }));
+        if (m.status === 'measured' && m.maxMisalignPx <= ALIGN_TOLERANCE_PX) bad.push([amp, seed, m.maxMisalignPx, m.undecidedBlocks]);
+      }
+    }
+    assert.deepEqual(bad, []);
+  });
+}
