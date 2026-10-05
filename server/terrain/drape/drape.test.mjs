@@ -779,6 +779,10 @@ const F359_DEFICIT = [...F359_OLD.slice(0, 3), ...F359_WARP1, ...F359_WARP2];
 // 보고가 이 값 − 1/32(다듬기 한 걸음) 아래면 측정한 최소보다 작게 보고하는 회귀다(F-374: 짝 검정 경로에서 |dx| 를 1.0001 로
 // 자르는 변이가 '보고 > 1' 단언을 통과했다).
 const F359_DEFICIT_COSTMIN = [1.1875, 1.1875, 1.34375];
+// warpedTile ±1·±2 DN 고정 시드 입력(F359_WARP1·F359_WARP2 순서)의 블록 다듬은 자기 최소 |dx|(T14.R10 측정). 짝 검정 경로 local
+// 블록의 보고가 이 값 − 1/32 아래면 자기 최소보다 작게 보고하는 회귀다 — |dx| 를 1.0001 로 자르는 변이가 위 shiftedTile 단언만
+// 아니라 잡음 입력에서도 직접 실패하게 한다(F-374 잔여).
+const F359_WARP_COSTMIN = [1.125, 1.125, 1.3125, 1.21875, 1.15625, 1.1875, 1.40625, 1.3125];
 
 test('F-359 정보 한계 입력(잡음 없는 1·2 DN 사인): 블록 local, 보고는 식별 가능 집합 [1, |g+e|] 안', () => {
   // 사인 1 DN 입력의 짝 검정 t 는 4.04(측정)로 이전 k = 4 바로 위였다(여유 0.04 — 1 DN 은 블록 비용 차 자체가 작다).
@@ -826,6 +830,12 @@ test('F-359·F-366·F-374 측정 부족 입력(2.5·1.5 DN shiftedTile, warpedTi
     const blk = assertLocalBlock(m, at);
     if (!(m.maxMisalignPx >= F359_DEFICIT_COSTMIN[q] - 1 / 32 - 1e-9)) bad.push(`${at}: 보고 ${m.maxMisalignPx} < 비용 최소 ${F359_DEFICIT_COSTMIN[q]} − 1/32`);
     if (!(Math.abs(blk.dx) >= F359_DEFICIT_COSTMIN[q] - 1 / 32 - 1e-9)) bad.push(`${at}: 블록 dx ${blk.dx}`);
+  });
+  [...F359_WARP1, ...F359_WARP2].forEach(([at, amp, , , make], q) => {
+    const img = lowContrastImage(LOW.sine(amp));
+    const m = measureDrapeAlignment(img, make(img));
+    const blk = assertLocalBlock(m, at);
+    if (!(Math.abs(blk.dx) >= F359_WARP_COSTMIN[q] - 1 / 32 - 1e-9)) bad.push(`${at}: 블록 dx ${blk.dx} < 자기 최소 ${F359_WARP_COSTMIN[q]} − 1/32`);
   });
   assert.deepEqual(bad, []);
 });

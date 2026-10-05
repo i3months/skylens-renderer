@@ -342,8 +342,9 @@ function strideFor(w, h, budget) {
  *   blockPx:{width:number,height:number}, flatBlocks:number, flatAreaFraction:number, axisFlatBlocks:number,
  *   blocks:Array<{i0:number,j0:number,dx:number,dy:number,n:number,local:boolean,undecided:boolean,axes:'xy'|'x'|'y',pairedT:number}>}}
  *   pairedT = 재적합 이상치 잔차 경로 짝 검정의 t(그 검정을 하지 않았거나 예측 위치를 못 잰 블록은 NaN).
- *   undecided = 불확정 블록(위 3), undecidedBlocks = 그 수(측정 불가면 NaN). 불확정 블록의 dx·dy 는 local 이 아닌 블록과 같은
- *   예측 근처 값이고, 크기 보고는 undecidedMaxPx 로 한다.
+ *   undecided = 불확정 블록(위 3), undecidedBlocks = 그 수(측정 불가면 NaN). 불확정 블록은 이동량을 재지 못했으므로 dx·dy 가
+ *   NaN 이고(예측 근처 값을 측정값처럼 내지 않는다), 크기는 undecidedMaxPx 로 보고하며 blockMaxPx·residualMaxPx 에도
+ *   undecidedMaxPx 를 합친다(둘 다 ≥ undecidedMaxPx; 불확정 블록 자신의 hypot·잔차는 세지 않는다).
  *   flatBlocks = 두 축 모두 평평해 뺀 블록 수, flatAreaFraction = 그 면적 / 피복 블록 면적, axisFlatBlocks = 한 축만 잰 블록 수,
  *   axes = 그 블록에서 잰 축.
  *   dxPx·dyPx·rms·samples 는 타일 전체 단일 이동량(1 의 첫 가설) 기준(타일 픽셀 단위), dx 는 동쪽, dy 는 남쪽(행 증가) 방향.
@@ -647,7 +648,8 @@ export function measureDrapeAlignment(image, tile) {
       status, ...extra,
       dxPx: primary.dx, dyPx: primary.dy, rms: Math.sqrt(primary.mse), samples: primary.n,
       globalDxPx: g.dx, globalDyPx: g.dy,
-      blockMaxPx: blocks.reduce((m, b) => Math.max(m, Math.hypot(b.dx, b.dy)), 0),
+      // 불확정 블록(dx·dy NaN)은 빼고 그 배제 못 한 이동량 최댓값(undecidedMaxPx)을 합친다(F-380).
+      blockMaxPx: blocks.reduce((m, b) => (b.undecided ? m : Math.max(m, Math.hypot(b.dx, b.dy))), extra.undecidedMaxPx || 0),
       blockPx,
       flatBlocks, flatAreaFraction: coveredArea > 0 ? flatArea / coveredArea : 0,
       axisFlatBlocks: blocks.filter((b) => !(b.ix && b.iy)).length,
@@ -743,8 +745,14 @@ export function measureDrapeAlignment(image, tile) {
       // 유의하게 나쁠 때(t > PAIRED_K)만 local. 이전의 localSignificant(두 평균을 독립으로 본 문턱, 하한 1/12)는 저대비 블록의
       // 실제 1.4~1.5 px 어긋남도 덮었다(F-359 검토 #2: 보고 0.13~0.38 px).
       const out = settle(b, fit.at, false, OUTLIER_PX);
-      if (out === false && residual(b, fit.at) >= OUTLIER_PX - 1e-9) {
-        const [px, py] = fit.at(b.di, b.dj);
+      const [px0, py0] = fit.at(b.di, b.dj);
+      const of0 = ownFine(b);
+      // ±OUTLIER_PX 창 안 최소가 경계에 못 닿고 멈춰도(창 안 잔차 < OUTLIER_PX) 다듬은 자기 최소가 예측에서 OUTLIER_PX 이상
+      // 떨어져 있으면 같은 짝 검정 경로로 보낸다 — 창 안 값만 보면 local 도 불확정도 아닌 채 정합으로 셌다(F-359 (A),
+      // 자기 최소 −1.22~−1.59 px 인데 창 최소가 −0.81~−0.84 px 에 멈춰 잔차 0.44~0.47).
+      const farOwn = Math.hypot(of0.dx - px0, of0.dy - py0) >= OUTLIER_PX - 1e-9;
+      if (out === false && (residual(b, fit.at) >= OUTLIER_PX - 1e-9 || farOwn)) {
+        const [px, py] = [px0, py0];
         const t = pairedT(b, px, py, ownFine(b));
         b.pairedT = t ?? NaN;
         // t ≤ PAIRED_K 는 '정합' 이 아니라 '판정 못 함'(불확정)이다: 탐색 창 경계에 닿은 블록의 실제 이동은 창 밖일 수 있고,
@@ -770,6 +778,9 @@ export function measureDrapeAlignment(image, tile) {
       if (!b.ix) b.dx = px;
       if (!b.iy) b.dy = py;
     }
+    // 불확정 블록은 이동량을 재지 못했다 — 예측 근처 값을 측정값처럼 내지 않고 dx·dy 를 NaN 으로 둔다(F-380).
+    // 크기는 undecidedMaxPx(배제 못 한 이동량)로 보고하고 blockMaxPx·residualMaxPx 에도 합친다.
+    for (const b of blocks) if (b.undecided) { b.dx = NaN; b.dy = NaN; }
 
     // 4) 피복 사각형(위 ei0..ej1: 타일 ∩ mask 완전 피복 ∩ coverage.bounds) 네 모서리의 모형 변위 최댓값, 그리고 모형으로 설명되지 않는
     //    블록(local)의 실측 이동량 크기. 영상 자료가 없는 곳까지 외삽하지 않는다(완전 피복 타일이면 타일 네 모서리).
@@ -777,11 +788,12 @@ export function measureDrapeAlignment(image, tile) {
     for (const ci of [ei0, ei1]) for (const cj of [ej0, ej1]) edgeMaxPx = Math.max(edgeMaxPx, Math.hypot(...fit.at(ci, cj)));
     let residualMaxPx = 0, localMaxPx = 0, undecidedMaxPx = 0, undecidedBlocks = 0, unexcludedMaxPx = 0;
     for (const b of blocks) {
-      residualMaxPx = Math.max(residualMaxPx, residual(b, fit.at));
+      if (!b.undecided) residualMaxPx = Math.max(residualMaxPx, residual(b, fit.at));
       if (b.local) localMaxPx = Math.max(localMaxPx, Math.hypot(b.dx, b.dy));
       if (b.undecided) { undecidedBlocks++; undecidedMaxPx = Math.max(undecidedMaxPx, b.undecidedPx); }
       if (b.local && b.unexcludedPx) unexcludedMaxPx = Math.max(unexcludedMaxPx, b.unexcludedPx);
     }
+    residualMaxPx = Math.max(residualMaxPx, undecidedMaxPx);
     const { fx, fy } = fit;
     return finish('measured', {
       // 불확정 블록과 짝 검정 경로 local 블록이 배제하지 못한 이동량도 넣는다(보수적): 판정 못 한 블록을 정합 증거로 세거나
