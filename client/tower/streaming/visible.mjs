@@ -12,6 +12,9 @@
 //      그 범위와 겹치는 tx 를 후보로 삼는다(볼록이므로 정확).
 //   4) 후보 중 직육면체와 카메라 사이 최소 거리가 maxDistM 을 넘는 것(구와 만나지 않는 것)을 버린다.
 //      P 와 만나고 구와도 만나는 타일이 P ∩ 구와 만난다는 보장은 없으므로 여기서 과포함이 남을 수 있다(허용).
+//   최적화: z 범위가 구 밖이면(dz > maxDistM) 빈 결과 반환 → 수백만 행 순회 회피.
+//           구가 닿는 y 범위(camY ± √(D²−dz²)) 로 행(ty) 범위를 먼저 좁힌다 → 불필요한 행 중단.
+//           각 행에서 구가 닿는 x 범위(camX ± √(D²−dy²−dz²)) 로 열(tx) 범위를 좁혀 띠 범위와 교집합만 훑는다 → 행별 효율화.
 //   후보는 정사각 |dx|,|dy| ≤ maxDistM 안에서만 나오므로 계산량은 반경 정사각 격자 이하다.
 //   4096 한도는 4) 를 거친 결과 수에 적용한다.
 //   경계는 닫힌 집합으로 본다(맞닿기만 해도 포함). 부동소수 오차로 맞닿은 타일을 놓치지 않도록
@@ -40,6 +43,16 @@ function checkArgs(view, opts) {
   if (!Array.isArray(view.t) || view.t.length !== 3) throw new TypeError('view.t 는 길이 3 배열이어야 한다');
   view.R.forEach((v, i) => finite(v, `view.R[${i}]`));
   view.t.forEach((v, i) => finite(v, `view.t[${i}]`));
+  // R 직교성: R·Rᵀ ≈ I (허용오차 1e-9·(1+|행렬값|) 기준 참고)
+  const tol = 1e-9;
+  for (let i = 0; i < 3; i += 1) {
+    for (let j = 0; j < 3; j += 1) {
+      let sum = 0;
+      for (let k = 0; k < 3; k += 1) sum += view.R[3 * i + k] * view.R[3 * j + k];
+      const expected = i === j ? 1 : 0;
+      if (Math.abs(sum - expected) > tol) throw new RangeError(`view.R 가 직교하지 않다`);
+    }
+  }
   if (view.K === null || typeof view.K !== 'object') throw new TypeError('view.K 는 객체여야 한다');
   for (const k of ['fx', 'fy', 'cx', 'cy']) finite(view.K[k], `view.K.${k}`);
   if (!(view.K.fx > 0) || !(view.K.fy > 0)) throw new RangeError('view.K.fx·fy 는 양수여야 한다');

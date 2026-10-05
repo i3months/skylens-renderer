@@ -158,3 +158,16 @@ test('무작위 불변식 500회', () => {
     assert.ok(r.held.size <= Math.max(opts.maxHeld, keepNeededHeld), 'maxHeld');
   }
 });
+
+test('needed 타일 tx·ty 안전 정수 검사: 2^53 초과는 TypeError', () => {
+  const MAX_SAFE = Number.MAX_SAFE_INTEGER;
+  const tooBig = MAX_SAFE + 1;
+  // 안전하지 않은 정수는 거절
+  assert.throws(() => run({ needed: [{ tx: tooBig, ty: 0 }] }), TypeError);
+  assert.throws(() => run({ needed: [{ tx: 0, ty: tooBig }] }), TypeError);
+  // 경계값 ±MAX_SAFE_INTEGER 는 안전하므로 통과
+  const r1 = run({ needed: [{ tx: MAX_SAFE, ty: MAX_SAFE }] });
+  assert.ok(Array.isArray(r1.plan.needed));
+  const r2 = run({ needed: [{ tx: -MAX_SAFE, ty: -MAX_SAFE }] });
+  assert.ok(Array.isArray(r2.plan.needed));
+});
