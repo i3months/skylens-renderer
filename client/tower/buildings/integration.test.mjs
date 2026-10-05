@@ -3,6 +3,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { BUILDINGS_DEFAULTS } from '../../../contracts/controlview/buildings.mjs';
+import { emptyResult } from '../../../contracts/raster/index.mjs';
+import { rasterizeFlat } from './raster_flat.mjs';
 import { DISPLAY_MODES, buildingHeightM } from '../../../contracts/tower_assets/index.mjs';
 import { buildRealBundle, makeFootprints, BUILDING_COUNT, IMAGE_BOUNDS } from './test_support/integration_bundle.mjs';
 import { installNetworkSpies } from './network_spies.mjs';
@@ -159,7 +162,7 @@ test('(c) 세 옵션 모두 건물 화소 > 0, 옵션 사이 화소 모양이 �
     assert.ok(countBuilding(res[m]) > 0, `${m} 화소 0`);
     for (let p = 0; p < res[m].index.length; p++) {
       const g = res[m].index[p];
-      assert.ok(g === -1 ? res[m].depth[p] === 0 : g < bundle.groups.length && res[m].depth[p] > 0);
+      assert.ok(g === -1 ? res[m].depth[p] === 0 : g >= 0 && g < bundle.groups.length && res[m].depth[p] > 0, `${m}: 화소 ${p} 의 묶음 번호 ${g} 가 0 이상 ${bundle.groups.length} 미만이 아님`);
     }
     assert.equal(layer.state().buildingCount, 40);
   }
@@ -170,6 +173,29 @@ test('(c) 세 옵션 모두 건물 화소 > 0, 옵션 사이 화소 모양이 �
   assert.notEqual(hash(res.black.color), hash(res.aerial.color));
   assert.notEqual(hash(res.points.color), hash(res.black.color));
   assert.notEqual(hash(res.points.color), hash(res.aerial.color));
+});
+
+test('(c2) 영상 없는 묶음도 aerial 로 그려진다: 건물 화소 > 0, 색 = faceRgb, mask·depth 는 black 과 같다', async () => {
+  const layer = await loadLayer('aerial');
+  const bundle = buildRealBundle(SEED, { withImage: false });
+  assert.equal(bundle.image, null);
+  assert.equal(layer.accept(3, bundle), 'first');
+  const a = layer.render(CAM);
+  // black 의 면: 모서리 선을 덧그리기 전의 면 래스터(선은 면 밖 화소도 칠하므로 면끼리 비교한다).
+  const k = emptyResult(CAM.width, CAM.height);
+  rasterizeFlat(CAM, bundle.groups, () => BUILDINGS_DEFAULTS.faceRgb, k);
+  const n = countBuilding(a);
+  assert.ok(n > 0, 'aerial(영상 없음) 건물 화소 0');
+  assert.equal(n, countBuilding(k));
+  const face = BUILDINGS_DEFAULTS.faceRgb;
+  for (let p = 0; p < a.index.length; p++) {
+    assert.equal(a.index[p] >= 0, k.index[p] >= 0, `화소 ${p}: mask`);
+    if (a.index[p] < 0) continue;
+    assert.ok(a.index[p] < bundle.groups.length, `화소 ${p}: 묶음 번호`);
+    assert.equal(a.index[p], k.index[p], `화소 ${p}: index`);
+    assert.equal(a.depth[p], k.depth[p], `화소 ${p}: depth`);
+    for (let c = 0; c < 3; c++) assert.equal(a.color[3 * p + c], face[c], `화소 ${p}: 색 채널 ${c}`);
+  }
 });
 
 test('(d) 높이 규칙이 지붕 깊이에 반영된다(floors 3 → 카메라 높이 − 9, 없음 → − 6)', async () => {

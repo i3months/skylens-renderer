@@ -80,7 +80,7 @@ test('상자 하나: top 지붕 중심 화소 깊이 = 120 − 12 = 108 (1e-4), 
   for (const mode of ['black', 'aerial']) {
     const r = refRenderBuildings(cam, boxBundle(), mode, { lines: false });
     assertRenderResult(r);
-    const o = 21 * 80 + 40; // 화소 중심 (40.5, 22.5): 주점에서 반 화소 → 지붕 중심 근처(약 0.78 m)
+    const o = 21 * 80 + 40; // 화소 중심 (40.5, 21.5): 주점에서 약 1.1 화소 → 지붕 중심 근처(약 1.7 m)
     assert.ok(Math.abs(r.depth[o] - 108) <= 1e-4, `${mode} 깊이 ${r.depth[o]}`);
     assert.equal(r.index[o], 0);
     for (const q of [0, 79, 44 * 80, 44 * 80 + 79]) { assert.equal(r.depth[q], 0); assert.equal(r.index[q], -1); }
@@ -339,7 +339,7 @@ test('변이 — 대각선: 올바른 뒤집기는 결과 불변, 한쪽만 뒤�
   }
 });
 
-test('변이 — uv 뒤집기: 서버 관례 uv(v = 0 이 북)를 그대로 넣으면 물리 정합 검사기가 잡는다', () => {
+test('변이 — uv 뒤집기: 서버 관례 uv를 뒤집으면 물리 정합 검사기가 잡는다', () => {
   const seed = 4;
   const fps = makeFootprints(seed, 6);
   const flippedBundle = makeBundle(seed, { uv: 'flipped' });

@@ -33,6 +33,8 @@ export function assertRgb(rgb, who) {
   }
 }
 
+let markBuf = new Uint8Array(0); // 선 화소 표시 버퍼, 호출 사이 재사용
+
 /**
  * edgeLines 를 그린다.
  * @param {import('../../../contracts/raster/index.mjs').Camera} camera
@@ -57,7 +59,8 @@ export function rasterizeLines(camera, groups, rgb, out, opts = {}) {
 
   // 화소 하나를 깊이 시험 후 쓴다.
   // 이 호출에서 선이 쓴 화소 표시: 선끼리는 편향 없이 비교하고 면(선이 쓰지 않은 화소)과만 편향을 둔다.
-  const lineMark = new Uint8Array(W * H);
+  if (markBuf.length !== W * H) markBuf = new Uint8Array(W * H); else markBuf.fill(0); // 호출 사이 재사용
+  const lineMark = markBuf;
   const plot = (i, j, dRaw, g) => {
     if (i < 0 || j < 0 || i >= W || j >= H) return;
     const d = Math.fround(dRaw);

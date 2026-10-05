@@ -9,33 +9,52 @@ import { BUILDINGS_DEFAULTS } from '../../../contracts/controlview/buildings.mjs
 import { DISPLAY_MODES } from '../../../contracts/tower_assets/index.mjs';
 
 const SEEDS = [1, 2, 3, 4, 5, 6];
-// 덮인 화소 일치율 하한. aerial·points 는 선이 없어 경계 화소 몇 개뿐이어야 한다(0.99). black 은 선 폭 규칙이 층(주축 한 화소)과
-// 참조(중심에서 0.5 px)에서 달라 선 가장자리 화소가 갈린다(선 길이에 비례하는 몫이라 0.95, 선 겹침은 따로 단언).
-const MIN_COVERED_AGREE = { aerial: 0.99, points: 0.99, black: 0.95 };
+// 덮인 화소 일치율 하한 0.99(측정값에 맞춰 조정하지 않은 고정값). aerial·points 는 선이 없어 경계 화소 몇 개뿐이어야 한다.
+// black 은 선 폭 규칙이 층(주축 한 화소)과 참조(중심에서 0.5 px)에서 달라 선 가장자리 화소가 갈린다. 그래서 선 화소는 대칭 허용을 둔다:
+// 층만 선이면 참조 선이, 참조만 선이면 층 선이 1 px 안에 있을 때 일치로 센다. 둘 다 선이면 index 같고 깊이 차가 상대 1 % 안이어야 한다.
+// 이 허용 아래 측정 최저 일치율은 0.9973(시드 1~6 × 카메라 3). 허용 없이 쓰던 0.95 는 유도 근거가 없었다.
+const MIN_COVERED_AGREE = { aerial: 0.99, points: 0.99, black: 0.99 };
 const MIN_LINE_OVERLAP = 0.9; // 층 선 화소 중 참조 선(1 px 안)과 겹치는 비율 하한
+const MAX_LINE_DEPTH_REL = 0.01; // 둘 다 선인 화소의 깊이 차 상대 허용(선 표본 위치가 화소 안에서 달라 생기는 차)
 const MAX_DEPTH_ERR = 1e-3; // 같은 화소를 둘 다 덮을 때 깊이 오차(m)
 const LINE = BUILDINGS_DEFAULTS.lineRgb;
 const isLine = (r, p) => r.color[3 * p] === LINE[0] && r.color[3 * p + 1] === LINE[1] && r.color[3 * p + 2] === LINE[2];
 const near = (a, b, tol) => Math.abs(a - b) <= tol;
 
+function lineNear(cam, r, p) {
+  const W = cam.width; const H = cam.height;
+  const x = p % W; const y = (p - x) / W;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const xx = x + dx; const yy = y + dy;
+    if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+    if (isLine(r, yy * W + xx)) return true;
+  }
+  return false;
+}
+
 function compare(cam, got, ref, mode) {
   const n = cam.width * cam.height;
-  let covered = 0; let agree = 0; let worst = 0; let lineGot = 0; let lineOverlap = 0;
+  let covered = 0; let agree = 0; let worst = 0; let lineGot = 0; let lineOverlap = 0; let worstLine = 0;
   for (let p = 0; p < n; p++) {
     const g = got.depth[p] > 0; const r = ref.depth[p] > 0;
     if (!g && !r) continue;
+    if (mode === 'black' && g && r && isLine(got, p) && isLine(ref, p)) {
+      // 둘 다 선인 화소: 묶음 번호가 같고 깊이 차가 허용 안이어야 일치.
+      lineGot++; lineOverlap++; covered++;
+      const dd = Math.abs(got.depth[p] - ref.depth[p]);
+      if (got.index[p] === ref.index[p] && dd <= MAX_LINE_DEPTH_REL * ref.depth[p]) { agree++; worstLine = Math.max(worstLine, dd); }
+      continue;
+    }
     if (mode === 'black' && g && isLine(got, p)) {
-      // 선 화소: 참조(lines:true) 선 화소가 1 px 안에 있으면 겹침. 겹치면 일치로 센다.
-      lineGot++;
-      const x = p % cam.width; const y = (p - x) / cam.width;
-      let hit = false;
-      for (let dy = -1; dy <= 1 && !hit; dy++) for (let dx = -1; dx <= 1 && !hit; dx++) {
-        const xx = x + dx; const yy = y + dy;
-        if (xx < 0 || yy < 0 || xx >= cam.width || yy >= cam.height) continue;
-        if (isLine(ref, yy * cam.width + xx)) hit = true;
-      }
-      if (hit) lineOverlap++;
-      covered++; if (hit) agree++;
+      // 층만 선인 화소: 참조 선이 1 px 안에 있으면 겹침(선 폭 규칙 차이 허용)이라 일치로 센다.
+      lineGot++; covered++;
+      if (lineNear(cam, ref, p)) { lineOverlap++; agree++; }
+      continue;
+    }
+    if (mode === 'black' && r && isLine(ref, p)) {
+      // 참조만 선인 화소(참조 0.5 px 선 폭): 대칭으로 층 선이 1 px 안에 있으면 일치로 센다.
+      covered++;
+      if (lineNear(cam, got, p)) agree++;
       continue;
     }
     covered++;
@@ -45,7 +64,7 @@ function compare(cam, got, ref, mode) {
       worst = Math.max(worst, Math.abs(got.depth[p] - ref.depth[p]));
     }
   }
-  return { covered, agree, worst, lineGot, lineOverlap };
+  return { covered, agree, worst, lineGot, lineOverlap, worstLine };
 }
 
 test('층 render 는 광선 추적 참조와 일치한다(덮인 화소 기준, 시드 6 × 카메라 3 × 옵션 3)', () => {

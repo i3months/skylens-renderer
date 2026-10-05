@@ -1,14 +1,17 @@
 // 네트워크 감시자: 전역·node 모듈의 네트워크 진입점을 가로채 호출을 센다(no_network·integration 시험 공용).
 // - 이름으로 가져온 ESM 바인딩(import { lookup } from 'node:dns')은 syncBuiltinESMExports 로 맞춰야 가로채진다.
-// - restore() 는 비동기: 동기 루프 직후 setTimeout/setImmediate 로 미뤄진 호출까지 잡도록 짧게 기다린 뒤 원복한다.
+// - 감시 구간에는 mock.timers 로 setTimeout 을 가짜로 바꿔 둔다. restore() 는 원복 전에 runAll 로 미뤄진 타이머(지연 길이 무관)를
+//   모두 즉시 실행해 그 안의 호출을 기록하고, 그 뒤 setImmediate 로 한 번 비운다. 지연 변이가 감시자 밖으로 새지 않는다.
 import http from 'node:http';
 import https from 'node:https';
 import http2 from 'node:http2';
 import net from 'node:net';
 import dns from 'node:dns';
 import { syncBuiltinESMExports } from 'node:module';
+import { mock } from 'node:test';
 
-export const SETTLE_MS = 30;
+export const SETTLE_MS = 30; // 호환용으로 남김(restore 인자). 실제로는 mock 타이머 runAll 로 대신한다.
+const realSetImmediate = setImmediate; // mock 대상은 setTimeout 뿐이라 setImmediate 는 진짜다
 
 /** 호출 횟수를 세는 감시자를 전역·node 모듈에 건다. await restore() 로 모두 원복하고, calls 로 기록을 읽는다. */
 export function installNetworkSpies() {
@@ -33,15 +36,23 @@ export function installNetworkSpies() {
   for (const fn of ['lookup', 'resolve']) patch(dns, fn, () => thrower(`dns.${fn}`));
   for (const fn of ['lookup', 'resolve']) patch(dns.promises, fn, () => () => { calls.push(`dns.promises.${fn}`); return Promise.reject(new Error(`감시자: dns.promises.${fn}`)); });
   syncBuiltinESMExports();
+  mock.timers.enable({ apis: ['setTimeout'] });
   let restored = false;
-  const restore = async (settleMs = SETTLE_MS) => {
+  const restore = async () => {
     if (restored) return;
     restored = true;
-    await new Promise((r) => setTimeout(r, settleMs)); // 미뤄진 호출이 원복된 진짜 함수로 나가지 않게 기다린다
-    await new Promise((r) => setImmediate(r));
-    
-    for (const r of restores.reverse()) r();
-    syncBuiltinESMExports();
+    try {
+      // 미뤄진 타이머를 길이와 상관없이 실행해 호출을 기록한다. 실행 중 새로 걸린 타이머까지 비운다.
+      for (let i = 0; i < 5; i += 1) {
+        mock.timers.runAll();
+        await new Promise((r) => realSetImmediate(r)); // 타이머가 이어붙인 setImmediate·마이크로태스크까지 비운다
+        mock.timers.runAll();
+      }
+    } finally {
+      mock.timers.reset();
+      for (const r of restores.reverse()) r();
+      syncBuiltinESMExports();
+    }
   };
   return { calls, restore };
 }
