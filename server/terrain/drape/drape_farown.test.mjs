@@ -1,19 +1,17 @@
-// F-359 (B) 측정: 저대비 사인 블록 실제 1.5 px 국소 어긋남(양성 540회)의 거짓 정합 통과와, 이동 0(귀무 360회)의 거짓 local·거짓 불확정.
-// 양성: g/e (−0.125,−1.375)·(−0.25,−1.25)·(−0.375,−1.125) × 사인 1.5·2·2.5 DN × 타일 잡음 ±1·±2 DN × 시드 30(2000003 + k·7919).
-//   거짓 통과 = 'measured 이면서 maxMisalignPx ≤ ALIGN_TOLERANCE_PX'.
-// 귀무: 사인 1.5·2·2.5 DN × ±2·±3 DN × 시드 60(같은 생성식), 이동 0. 거짓 local = local 블록이 있는 타일, 거짓 불확정 = 불확정 블록이 있는 타일.
-// 사용: node server/terrain/drape/f359_measure.mjs [--repo <제품 저장소 루트>] [--list]
-//   --repo 가 없으면 SKYLENS_RENDERER_DIR, 그것도 없으면 이 파일 기준 저장소 루트. --list 는 거짓 통과 [잡음, 진폭, g, seed] 를 출력.
-// 도우미(makeImage·boxMean·warpedTile·HASH·TEX_A·sine·lowContrastImage)는 drape_noise.test.mjs 에서 그대로 복사했다.
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-
-const argv = process.argv.slice(2);
-const ai = argv.indexOf('--repo');
-const repo = path.resolve(ai >= 0 ? argv[ai + 1] : process.env.SKYLENS_RENDERER_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), '../../..'));
-const listFails = argv.includes('--list');
-const { ALIGN_TOLERANCE_PX, TERRAIN_TILE_SIZE_M, tileBounds } = await import(pathToFileURL(path.join(repo, 'contracts/tower_assets/index.mjs')).href);
-const { measureDrapeAlignment, drapeTileSize } = await import(pathToFileURL(path.join(repo, 'server/terrain/drape/index.mjs')).href);
+// F-386: 재적합 이상치의 farOwn 판정(index.mjs, F-359 (A))을 지키는 시험.
+// farOwn: ±OUTLIER_PX 창 안 최소가 경계에 못 닿아(창 안 잔차 < 0.5) settle 이 false 여도, 다듬은 자기 최소가 예측에서 OUTLIER_PX 이상
+// 떨어져 있으면 짝 검정 경로로 보낸다. 이 판정이 없으면 아래 입력은 local 도 불확정도 아닌 정합 블록으로 남아 maxMisalignPx 0.375 px
+// (실제 블록 이동 1.5 px)로 정합 통과를 낸다.
+// 입력은 연구 저장소 experiments/t14-r11/farown_scan.mjs(F-359 양성 집합 g/e 세 조합 × 사인 1.5·2·2.5 DN × ±1·±2·±3 DN × 시드 30)에서
+// 'farOwn 만으로 짝 검정 경로에 든' 블록 중 주석의 범위(창 안 잔차 0.44~0.47, 자기 최소 −1.22~−1.59 px, 창 최소 −0.81~−0.84 px)에
+// 드는 고정 시드다(블록 (64,32), 예측 −0.375 px):
+//   seed 2142545: 창 안 잔차 0.447, 자기 최소 (−1.281, −0.094), 창 최소 (−0.8125, −0.094)
+//   seed 2150464: 창 안 잔차 0.470, 자기 최소 (−1.375, 0.031), 창 최소 (−0.84375, 0.031)
+// 도우미(makeImage·boxMean·warpedTile·HASH·TEX_A·LOW·lowContrastImage)는 drape_noise.test.mjs 에서 그대로 복사했다.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { ALIGN_TOLERANCE_PX, TERRAIN_TILE_SIZE_M, tileBounds } from '../../../contracts/tower_assets/index.mjs';
+import { measureDrapeAlignment, drapeTileSize } from './index.mjs';
 
 /** 합성 영상: 각 픽셀 중심 ENU 로 색을 정한다. 행 0 = 북. */
 function makeImage(bounds, width, height, colorAt) {
@@ -115,43 +113,22 @@ function lowContrastImage(low) {
     x >= 26 && x < 46 && y >= 36 && y < 52 ? low(x, y, c, r) : TEX_A(x, y, c, r)));
 }
 
-const G_E = [[-0.125, -1.375], [-0.25, -1.25], [-0.375, -1.125]];
-const AMPS = [1.5, 2, 2.5];
-const seeds = (n) => Array.from({ length: n }, (_, i) => 2000003 + i * 7919);
-const images = new Map(AMPS.map((a) => [a, lowContrastImage(LOW.sine(a))]));
-
-const rows = [];
-const fails = [];
-for (const [g, e] of G_E) {
-  let pass = 0;
-  const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
-  for (const amp of AMPS) {
-    for (const noise of [1, 2]) {
-      for (const seed of seeds(30)) {
-        const m = measureDrapeAlignment(images.get(amp), warpedTile(images.get(amp), 0, 0, 0, warp, { noise, seed }));
-        if (m.status === 'measured' && m.maxMisalignPx <= ALIGN_TOLERANCE_PX) { pass++; fails.push([noise, amp, g, seed]); }
-      }
-    }
-  }
-  rows.push([g, e, pass]);
+// F-359 검토 #4 양성과 같은 식: 블록 x 32..40·y 40..48 m 만 g+e, 나머지 g 만큼 동쪽(실제 블록 이동 |g+e| = 1.5 px).
+const FAROWN_CASES = [
+  // [사인 진폭 DN, g, e, 잡음 ±DN, seed]
+  [2.5, -0.375, -1.125, 2, 2142545],
+  [2.5, -0.375, -1.125, 2, 2150464],
+];
+for (const [amp, g, e, noise, seed] of FAROWN_CASES) {
+  test(`F-386 farOwn: 사인 ${amp} DN g ${g} ±${noise} DN seed ${seed} — 창 안 잔차 < 0.5 인 재적합 이상치 블록 (64,32) 이 local 또는 불확정, maxMisalignPx > 1`, () => {
+    // farOwn 을 끈 변이(const farOwn = false)에서는 블록 (64,32) 가 정합 블록으로 남고 maxMisalignPx 0.375 px 로 정합 통과한다.
+    const img = lowContrastImage(LOW.sine(amp));
+    const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
+    const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise, seed }));
+    assert.equal(m.status, 'measured');
+    const b = m.blocks.find((q) => q.i0 === 64 && q.j0 === 32);
+    assert.ok(b, '블록 (64,32) 없음');
+    assert.ok(b.local || b.undecided, `블록 (64,32) local ${b.local} undecided ${b.undecided} dx ${b.dx}`);
+    assert.ok(m.maxMisalignPx > ALIGN_TOLERANCE_PX, `maxMisalignPx ${m.maxMisalignPx}`);
+  });
 }
-let nullLocal = 0, nullUnd = 0, nullRuns = 0;
-const id = (p) => p;
-for (const amp of AMPS) {
-  for (const noise of [2, 3]) {
-    for (const seed of seeds(60)) {
-      const m = measureDrapeAlignment(images.get(amp), warpedTile(images.get(amp), 0, 0, 0, id, { noise, seed }));
-      nullRuns++;
-      if (m.status !== 'measured') continue;
-      if (m.blocks.some((b) => b.local)) nullLocal++;
-      if (m.undecidedBlocks) nullUnd++;
-    }
-  }
-}
-console.log(`repo ${repo}`);
-console.log('| g / e | 거짓 정합 통과(/180) |');
-console.log('|---|---|');
-for (const [g, e, p] of rows) console.log(`| ${g} / ${e} | ${p} |`);
-console.log(`양성 합 ${rows.reduce((s, r) => s + r[2], 0)}/540`);
-console.log(`귀무 ${nullRuns}회: 거짓 local ${nullLocal}, 거짓 불확정 ${nullUnd} (${((100 * nullUnd) / nullRuns).toFixed(1)} %)`);
-if (listFails) for (const f of fails) console.log(JSON.stringify(f));
