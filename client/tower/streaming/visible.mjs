@@ -1,16 +1,21 @@
 // 관제탑 조각 요청(T15.7.1): 시점에서 보이는 지형 타일 번호. 계약: contracts/controlview/streaming.mjs TOWER_STREAMING_MODULES.visible.
 // 정의: 타일 (tx,ty) 의 ENU 직육면체 [tx·64,(tx+1)·64]×[ty·64,(ty+1)·64]×zRangeM 이
-//   시야 사각뿔(화면 사각형 좌우상하 4면) ∩ 근평면(깊이 ≥ nearM) ∩ 원평면(깊이 ≤ maxDistM) 과 만나면 결과에 넣는다.
+//   시야 사각뿔(화면 사각형 좌우상하 4면) ∩ 근평면(깊이 ≥ nearM) ∩ 구(카메라로부터 거리 ‖X − pos‖ ≤ maxDistM) 와
+//   만나면 결과에 넣는다. 판정은 보수적이다(과포함 허용, 누락 불허).
 // 방법:
-//   1) 사각뿔 6면 + z 두 면(z ≥ zMin, z ≤ zMax) = 반공간 8개의 교집합 P(유계 볼록 다면체)의 꼭짓점을
-//      면 세 개씩 연립해 모두 구한다(최대 56 조합, 시점마다 한 번).
-//   2) P 는 z 판 안에 있으므로 "타일 직육면체 ∩ P ≠ ∅" ⇔ "타일 사각형 ∩ (P 의 xy 투영) ≠ ∅" 이다.
-//      투영은 꼭짓점 투영들의 볼록 껍질이다.
-//   3) 타일 행(ty)마다 띠 y∈[ty·64, (ty+1)·64] 와 껍질의 교집합의 x 범위를 구한다(볼록이므로 정확).
-//      그 x 범위와 겹치는 tx 가 그 행의 답이다. 계산량은 행 수 + 출력 수에 비례하며
-//      maxDistM 반경 사각형 전체 격자 스캔을 하지 않는다.
+//   1) 구를 감싸는 볼록 다면체로 바꿔 둔다: 원평면(깊이 ≤ maxDistM)과 카메라 중심 xy 정사각 |dx|,|dy| ≤ maxDistM.
+//      구는 둘 다의 안에 있으므로 이 바꿈은 영역을 넓히기만 한다(누락 없음).
+//   2) 사각뿔 4면 + 근평면 + 원평면 + 정사각 4면 + z 두 면 = 반공간 12개의 교집합 P(유계 볼록 다면체)의 꼭짓점을
+//      면 세 개씩 연립해 모두 구한다(최대 220 조합, 시점마다 한 번).
+//   3) P 는 z 판 안에 있으므로 "타일 직육면체 ∩ P ≠ ∅" ⇔ "타일 사각형 ∩ (P 의 xy 투영) ≠ ∅" 이다.
+//      투영은 꼭짓점 투영들의 볼록 껍질이다. 타일 행(ty)마다 띠 y∈[ty·64, (ty+1)·64] 와 껍질의 교집합의 x 범위를 구해
+//      그 범위와 겹치는 tx 를 후보로 삼는다(볼록이므로 정확).
+//   4) 후보 중 직육면체와 카메라 사이 최소 거리가 maxDistM 을 넘는 것(구와 만나지 않는 것)을 버린다.
+//      P 와 만나고 구와도 만나는 타일이 P ∩ 구와 만난다는 보장은 없으므로 여기서 과포함이 남을 수 있다(허용).
+//   후보는 정사각 |dx|,|dy| ≤ maxDistM 안에서만 나오므로 계산량은 반경 정사각 격자 이하다.
+//   4096 한도는 4) 를 거친 결과 수에 적용한다.
 //   경계는 닫힌 집합으로 본다(맞닿기만 해도 포함). 부동소수 오차로 맞닿은 타일을 놓치지 않도록
-//   x·y 범위를 EDGE_EPS_M 만큼 넓힌다(보수적: 과포함 허용, 누락 불허).
+//   x·y 범위와 거리 비교를 EDGE_EPS_M 만큼 넓힌다.
 // 입력 view·opts 는 고치지 않는다. 네트워크·타이머를 쓰지 않는다.
 import { TERRAIN_TILE_SIZE_M } from '../../../contracts/tower_assets/index.mjs';
 import { TOWER_STREAMING_LIMITS } from '../../../contracts/controlview/streaming.mjs';
@@ -56,7 +61,7 @@ function checkArgs(view, opts) {
  * 세계 좌표 반공간 목록 {a:[3], b} (a·X ≥ b, |a| = 1).
  * 카메라 좌표 반공간 n·X_c ≥ c 는 X_c = R·X + t 를 넣으면 (Rᵀn)·X ≥ c − n·t 이다.
  */
-function halfSpaces(view, opts) {
+function halfSpaces(view, opts, cam0) {
   const { R, t, K, width, height } = view;
   const cam = [
     [[K.fx, 0, K.cx], 0], // 왼쪽: u ≥ 0
@@ -64,7 +69,7 @@ function halfSpaces(view, opts) {
     [[0, K.fy, K.cy], 0], // 위: v ≥ 0
     [[0, -K.fy, height - K.cy], 0], // 아래: v ≤ height
     [[0, 0, 1], opts.nearM], // 근평면: 깊이 ≥ nearM
-    [[0, 0, -1], -opts.maxDistM], // 원평면: 깊이 ≤ maxDistM
+    [[0, 0, -1], -opts.maxDistM], // 원평면: 깊이 ≤ maxDistM (구를 감싼다)
   ];
   const out = [];
   for (const [n, c] of cam) {
@@ -75,6 +80,12 @@ function halfSpaces(view, opts) {
   }
   out.push({ a: [0, 0, 1], b: opts.zRangeM[0] });
   out.push({ a: [0, 0, -1], b: -opts.zRangeM[1] });
+  // 카메라 중심 xy 정사각 |dx|,|dy| ≤ maxDistM (구를 감싼다)
+  const D = opts.maxDistM;
+  out.push({ a: [1, 0, 0], b: cam0[0] - D });
+  out.push({ a: [-1, 0, 0], b: -(cam0[0] + D) });
+  out.push({ a: [0, 1, 0], b: cam0[1] - D });
+  out.push({ a: [0, -1, 0], b: -(cam0[1] + D) });
   return out;
 }
 
@@ -160,7 +171,13 @@ function stripRange(poly, y0, y1) {
 export function tilesInView(view, opts) {
   checkArgs(view, opts);
   const limit = TOWER_STREAMING_LIMITS.maxTilesPerUpdate;
-  const poly = hull(vertices(halfSpaces(view, opts)));
+
+  // 카메라 위치(세계) = −Rᵀ·t
+  const { R, t } = view;
+  const cam0 = [0, 1, 2].map((j) => -(R[j] * t[0] + R[3 + j] * t[1] + R[6 + j] * t[2]));
+  const [camX, camY, camZ] = cam0;
+
+  const poly = hull(vertices(halfSpaces(view, opts, cam0)));
   if (poly.length === 0) return [];
 
   let ymin = Infinity;
@@ -169,10 +186,12 @@ export function tilesInView(view, opts) {
   const ty0 = Math.floor((ymin - rangeEps(ymin)) / S);
   const ty1 = Math.floor((ymax + rangeEps(ymax)) / S);
 
-  // 카메라 위치(세계) = −Rᵀ·t
-  const { R, t } = view;
-  const camX = -(R[0] * t[0] + R[3] * t[1] + R[6] * t[2]);
-  const camY = -(R[1] * t[0] + R[4] * t[1] + R[7] * t[2]);
+  // 직육면체-구 판정: 최소 거리² ≤ (maxDistM + 여유)²
+  const D = opts.maxDistM + rangeEps(opts.maxDistM) + rangeEps(Math.hypot(camX, camY, camZ));
+  const D2 = D * D;
+  const [zMin, zMax] = opts.zRangeM;
+  const gap = (c, lo, hi) => (c < lo ? lo - c : c > hi ? c - hi : 0);
+  const dz = gap(camZ, zMin, zMax);
 
   const out = [];
   for (let ty = ty0; ty <= ty1; ty += 1) {
@@ -180,13 +199,16 @@ export function tilesInView(view, opts) {
     const y1 = (ty + 1) * S;
     const r = stripRange(poly, y0 - rangeEps(y0), y1 + rangeEps(y1));
     if (r === null) continue;
+    const dy = gap(camY, y0, y1);
     const tx0 = Math.floor((r[0] - rangeEps(r[0])) / S);
     const tx1 = Math.floor((r[1] + rangeEps(r[1])) / S);
-    if (out.length + (tx1 - tx0 + 1) > limit) throw new RangeError('maxTilesPerUpdate');
     for (let tx = tx0; tx <= tx1; tx += 1) {
-      const dx = (tx + 0.5) * S - camX;
-      const dy = (ty + 0.5) * S - camY;
-      out.push({ tx, ty, d: dx * dx + dy * dy });
+      const dx = gap(camX, tx * S, (tx + 1) * S);
+      if (dx * dx + dy * dy + dz * dz > D2) continue; // 구와 만나지 않는다
+      if (out.length >= limit) throw new RangeError('maxTilesPerUpdate');
+      const cx = (tx + 0.5) * S - camX;
+      const cy = (ty + 0.5) * S - camY;
+      out.push({ tx, ty, d: cx * cx + cy * cy });
     }
   }
   out.sort((a, b) => (a.d - b.d) || (a.tx - b.tx) || (a.ty - b.ty));
