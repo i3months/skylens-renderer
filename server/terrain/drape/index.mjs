@@ -745,8 +745,14 @@ export function measureDrapeAlignment(image, tile) {
       // 유의하게 나쁠 때(t > PAIRED_K)만 local. 이전의 localSignificant(두 평균을 독립으로 본 문턱, 하한 1/12)는 저대비 블록의
       // 실제 1.4~1.5 px 어긋남도 덮었다(F-359 검토 #2: 보고 0.13~0.38 px).
       const out = settle(b, fit.at, false, OUTLIER_PX);
-      if (out === false && residual(b, fit.at) >= OUTLIER_PX - 1e-9) {
-        const [px, py] = fit.at(b.di, b.dj);
+      const [px0, py0] = fit.at(b.di, b.dj);
+      const of0 = ownFine(b);
+      // ±OUTLIER_PX 창 안 최소가 경계에 못 닿고 멈춰도(창 안 잔차 < OUTLIER_PX) 다듬은 자기 최소가 예측에서 OUTLIER_PX 이상
+      // 떨어져 있으면 같은 짝 검정 경로로 보낸다 — 창 안 값만 보면 local 도 불확정도 아닌 채 정합으로 셌다(F-359 (A),
+      // 자기 최소 −1.22~−1.59 px 인데 창 최소가 −0.81~−0.84 px 에 멈춰 잔차 0.44~0.47).
+      const farOwn = Math.hypot(of0.dx - px0, of0.dy - py0) >= OUTLIER_PX - 1e-9;
+      if (out === false && (residual(b, fit.at) >= OUTLIER_PX - 1e-9 || farOwn)) {
+        const [px, py] = [px0, py0];
         const t = pairedT(b, px, py, ownFine(b));
         b.pairedT = t ?? NaN;
         // t ≤ PAIRED_K 는 '정합' 이 아니라 '판정 못 함'(불확정)이다: 탐색 창 경계에 닿은 블록의 실제 이동은 창 밖일 수 있고,
