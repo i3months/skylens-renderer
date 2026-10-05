@@ -117,8 +117,10 @@ function nullViolation(m) {
   if (local.length) return `거짓 local ${JSON.stringify(local)}`;
   if (m.undecidedBlocks !== m.blocks.filter((b) => b.undecided).length) return '불확정 수 불일치';
   // 실제 이동 0 이므로 불확정 블록의 배제 못 한 이동량 = 자기 최소 크기 |o| + 걸어 나간 거리다. 코드가 블록 탐색을 전역 가설 g 둘레
-  // BLOCK_SEARCH_PX(4 px, 정사각 창이라 모서리 4√2)로, 걸음을 UNDECIDED_REACH_PX(1 px)로 묶으므로 상한은 |g| + 4√2 + 1 이다
-  // (상한은 코드 상수에서 정했고 측정값에 맞춰 조정하지 않는다. 처음 쓴 0.5 + 1 과 g 없는 4 + 1 은 |o| 가정이 틀려 원본이 실패했다).
+  // BLOCK_SEARCH_PX(4 px, 정사각 창이라 모서리 4√2)로, 걸음을 UNDECIDED_REACH_PX(1 px)로 묶는다고 보고 |g| + 4√2 + 1 을 상한으로 둔다.
+  // 이것은 코드 상수에서 곧바로 나온 값이 아니라 경험 상한이다: 탐색 단계 합은 축마다 최대 약 5.94 px(search 의 lim 4 + REFINE_STAGES
+  // 누적 반경 1.9375, index.mjs:497-512·BLOCK_COARSE_STAGES :222·ownFine :702)라 이론 최댓값은 이 식보다 크다. 측정값에 맞춰 조정하지
+  // 않았고(처음 쓴 0.5 + 1 과 g 없는 4 + 1 은 |o| 가정이 틀려 원본이 실패했다), 이 식을 넘는 회차가 나오면 단계 합 쪽으로 다시 따진다.
   if (m.undecidedBlocks && !(m.undecidedMaxPx <= Math.hypot(m.globalDxPx, m.globalDyPx) + 4 * Math.SQRT2 + 1 + 1e-9)) return `불확정 상한 초과 ${m.undecidedMaxPx}`;
   if (!m.undecidedBlocks && !(m.maxMisalignPx < ALIGN_TOLERANCE_PX)) return `불확정 없이 보고 ${m.maxMisalignPx}`;
   return null;
@@ -300,6 +302,29 @@ for (const noise of [1, 2]) {
     assert.deepEqual(posFailures(noise, (known) => !known), []);
   });
 }
+// 알려진 실패 목록의 사전 기록 실패 수: 잡음 DN → [진폭, g, 실패 수]. 다음 회차부터 늘면 실패한다(F-387).
+// 측정(시드 30개씩): ±1 DN 은 사인 2 DN g −0.375 만 3, ±2 DN 은 사인 2 DN g −0.25 가 4, 사인 2.5 DN g −0.25 가 2,
+// 사인 2 DN g −0.375 가 12(처음 측정 뒤 목록에 들어간 15건 = ±1 DN 3 + ±2 DN 12). 목록에 없는 조합은 0.
+const POS_KNOWN_COUNTS = {
+  1: [[1.5, -0.125, 0], [2, -0.25, 0], [2.5, -0.25, 0], [2, -0.375, 3]],
+  2: [[1.5, -0.125, 0], [2, -0.25, 4], [2.5, -0.25, 2], [2, -0.375, 12]],
+};
+for (const noise of [1, 2]) {
+  test(`F-387 알려진 실패 목록 ±${noise} DN 은 낡지 않았다: 실제 정합 통과 키 집합 = 목록, 조합별 실패 수 = 기록값`, () => {
+    // todo 시험은 통과·실패가 결과에 영향이 없어, 목록 시드가 고쳐져도 알 수 없다. 여기서 목록과 실제 실패 집합이 같음을 단언한다:
+    // 시드가 통과로 바뀌면(목록이 낡으면) 이 시험이 실패하므로 목록에서 빼야 하고, 목록 밖 실패는 위 일반 시험이 잡는다.
+    const fails = posFailures(noise, (known) => known);
+    const actual = fails.map(([amp, g, seed]) => posKey(noise, amp, g, seed)).sort();
+    const listed = POS_KNOWN_FAIL.filter((k) => k[0] === noise).map((k) => posKey(...k)).sort();
+    assert.deepEqual(actual, listed);
+    // 조합별 실제 실패 수 = 기록값(합계도 같아야 한다 — 기록에 없는 조합이 목록에 들어오면 실패).
+    for (const [amp, g, count] of POS_KNOWN_COUNTS[noise]) {
+      const n = fails.filter((f) => f[0] === amp && f[1] === g).length;
+      assert.equal(n, count, `±${noise} DN 사인 ${amp} DN g ${g} 실패 ${n}건 ≠ 기록 ${count}건`);
+    }
+    assert.equal(fails.length, POS_KNOWN_COUNTS[noise].reduce((t, c) => t + c[2], 0));
+  });
+}
 const posKnownFor = (noise) => POS_KNOWN_FAIL.filter((k) => k[0] === noise);
 for (const noise of [1, 2]) {
   if (posKnownFor(noise).length === 0) continue;
@@ -310,18 +335,45 @@ for (const noise of [1, 2]) {
   });
 }
 
-test('F-380 불확정 블록은 측정값처럼 읽히지 않는다: 사인 1.5 DN ±1 DN seed 2007922 — dx·dy NaN, blockMaxPx·residualMaxPx ≥ undecidedMaxPx', () => {
+test('F-380 불확정 블록은 측정값처럼 읽히지 않는다: 사인 1.5 DN ±1 DN 시드 30개(2007922 포함) — dx·dy NaN, blockMaxPx·residualMaxPx ≥ undecidedMaxPx', () => {
   // 수정 전: x 평평·자기 최소 −1.28 px·예측 −0.125 px 인 블록이 blocks[].dx ≈ −0.125, blockMaxPx 작음 — maxMisalignPx 만 컸다.
+  // 시드 하나뿐이면 그 시드가 고쳐질 때 시험이 아무것도 지키지 않으므로(F-385 ⑩) 시드 30개 전부에서 구조 단언을 하고,
+  // 2007922 는 불확정 블록이 실제로 있어야 한다(이 시드 입력이 불확정 경로를 지나는지 고정).
   const [amp, g, e] = POS_CASES[0];
   const img = lowContrastImage(LOW.sine(amp));
   const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
-  const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise: 1, seed: 2007922 }));
-  assert.equal(m.status, 'measured');
-  const und = m.blocks.filter((b) => b.undecided);
-  assert.ok(und.length >= 1 && m.undecidedBlocks === und.length, `불확정 블록 ${und.length}`);
-  for (const b of und) assert.ok(Number.isNaN(b.dx) && Number.isNaN(b.dy), `불확정 블록 (${b.i0},${b.j0}) dx ${b.dx} dy ${b.dy}`);
-  for (const b of m.blocks.filter((q) => !q.undecided)) assert.ok(Number.isFinite(b.dx) && Number.isFinite(b.dy));
-  assert.ok(m.undecidedMaxPx > ALIGN_TOLERANCE_PX, `undecidedMaxPx ${m.undecidedMaxPx}`);
-  assert.ok(m.blockMaxPx >= m.undecidedMaxPx, `blockMaxPx ${m.blockMaxPx} < undecidedMaxPx ${m.undecidedMaxPx}`);
-  assert.ok(m.residualMaxPx >= m.undecidedMaxPx, `residualMaxPx ${m.residualMaxPx} < undecidedMaxPx ${m.undecidedMaxPx}`);
+  let withUndecided = 0;
+  for (const seed of POS_SEEDS) {
+    const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise: 1, seed }));
+    assert.equal(m.status, 'measured', `seed ${seed}`);
+    const und = m.blocks.filter((b) => b.undecided);
+    assert.equal(m.undecidedBlocks, und.length, `seed ${seed} 불확정 수`);
+    if (seed === 2007922) assert.ok(und.length >= 1, `seed 2007922 불확정 블록 ${und.length}`);
+    for (const b of und) assert.ok(Number.isNaN(b.dx) && Number.isNaN(b.dy), `seed ${seed} 불확정 블록 (${b.i0},${b.j0}) dx ${b.dx} dy ${b.dy}`);
+    for (const b of m.blocks.filter((q) => !q.undecided)) assert.ok(Number.isFinite(b.dx) && Number.isFinite(b.dy), `seed ${seed}`);
+    if (!und.length) continue;
+    withUndecided++;
+    assert.ok(m.undecidedMaxPx > ALIGN_TOLERANCE_PX, `seed ${seed} undecidedMaxPx ${m.undecidedMaxPx}`);
+    assert.ok(m.blockMaxPx >= m.undecidedMaxPx, `seed ${seed} blockMaxPx ${m.blockMaxPx} < undecidedMaxPx ${m.undecidedMaxPx}`);
+    assert.ok(m.residualMaxPx >= m.undecidedMaxPx, `seed ${seed} residualMaxPx ${m.residualMaxPx} < undecidedMaxPx ${m.undecidedMaxPx}`);
+  }
+  assert.ok(withUndecided >= 1, '불확정 블록이 있는 시드가 하나도 없다');
+});
+
+test('F-385 ⑩ 귀무(불확정 0)에서 blockMaxPx = 블록 hypot(dx, dy) 최댓값: 사인 2 DN ±2·±3 DN 이동 0 시드 20개', () => {
+  // 불확정 블록이 없으면 blockMaxPx 에 합칠 undecidedMaxPx 가 없으므로(0) 측정 블록의 hypot 최댓값과 같아야 한다.
+  // 불확정 블록이 있는 회차는 위 F-380 시험이 지키므로 여기서 세지 않는다.
+  const id = (p) => p;
+  const img = lowContrastImage(LOW.sine(2));
+  let checked = 0;
+  for (const noise of [2, 3]) {
+    for (const seed of NOISE_SEEDS) {
+      const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, id, { noise, seed }));
+      if (m.status !== 'measured' || m.undecidedBlocks) continue;
+      checked++;
+      const want = m.blocks.reduce((mx, b) => Math.max(mx, Math.hypot(b.dx, b.dy)), 0);
+      assert.equal(m.blockMaxPx, want, `±${noise} DN seed ${seed}`);
+    }
+  }
+  assert.ok(checked >= 20, `불확정 0 회차 ${checked}`);
 });
