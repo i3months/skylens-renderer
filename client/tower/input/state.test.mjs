@@ -92,7 +92,7 @@ test('pose() 는 복사본', () => {
 });
 
 test('state: step 은 갱신된 pose 를 돌려준다(계약 TOWER_INPUT_API.step)', () => {
-  const s = createPoseState({ pos: [0, 0, 10], yaw: 0, speedMps: 10 });
+  const s = createPoseState({ pos: [0, 0, 10], yaw: 0, speedMps: 10, maxDtSec: 1 });
   const p = s.step(1, { forward: true });
   assert.deepEqual(p.pos, [0, 10, 10]);
   assert.deepEqual(p, s.pose());
