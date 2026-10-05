@@ -118,8 +118,9 @@ test('(a) 실제 번들이 계약 검증을 통과하고 accept 가 받는다', 
   const bundle = buildRealBundle(SEED);
   await checkContract(bundle);
   const layer = await loadLayer();
-  assert.equal(layer.accept(3, bundle), 'first');
+  assert.equal(layer.accept(1, bundle), 'first');
   assert.equal(layer.accept(3, bundle), 'replace');
+  assert.equal(layer.accept(3, bundle), 'skip'); // 같은 수준은 추월당한 것이다(decideArrival)
   assert.equal(layer.accept(0, bundle), 'skip');
 });
 

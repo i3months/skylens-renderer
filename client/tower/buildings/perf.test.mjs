@@ -159,39 +159,27 @@ function createSyntheticBundle() {
   return { groups, image: null };
 }
 
-/** 세 카메라 각도 생성 */
+/** 시점(eye)에서 목표(target)를 보는 카메라. OpenCV 축(x 오른쪽, y 아래, z 앞), X_c = R·X_w + t. */
+function lookAt(eye, target) {
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const norm = (a) => { const n = Math.hypot(a[0], a[1], a[2]); return [a[0] / n, a[1] / n, a[2] / n]; };
+  const fwd = norm(sub(target, eye));
+  const up = Math.abs(fwd[2]) > 0.999 ? [0, 1, 0] : [0, 0, 1];
+  const right = norm(cross(fwd, up));
+  const down = cross(fwd, right);
+  const R = [...right, ...down, ...fwd];
+  const t = [0, 1, 2].map((i) => -(R[3 * i] * eye[0] + R[3 * i + 1] * eye[1] + R[3 * i + 2] * eye[2]));
+  return { width: W, height: H, K: { fx: 1000, fy: 1000, cx: W / 2, cy: H / 2 }, R, t };
+}
+
+/** 세 카메라 각도 생성: 위에서 내려다봄, 남동 비스듬(약 40도), 북서 비스듬(약 35도) */
 function makeCameras() {
-  const cameras = [];
-
-  // 1. 위에서 내려다봄 (정사영에 가까움)
-  cameras.push({
-    width: W, height: H,
-    K: { fx: 1000, fy: 1000, cx: W / 2, cy: H / 2 },
-    R: [1, 0, 0, 0, -1, 0, 0, 0, -1],
-    t: [0, 0, 500],
-  });
-
-  // 2. 남동쪽에서 비스듬 (40도)
-  const angle1 = (40 * Math.PI) / 180;
-  const c1 = Math.cos(angle1), s1 = Math.sin(angle1);
-  cameras.push({
-    width: W, height: H,
-    K: { fx: 1000, fy: 1000, cx: W / 2, cy: H / 2 },
-    R: [-c1, s1 * c1, s1, 0, -1, 0, -s1, -c1 * c1, c1],
-    t: [300, -300, 600],
-  });
-
-  // 3. 북서쪽에서 비스듬 (35도)
-  const angle2 = (35 * Math.PI) / 180;
-  const c2 = Math.cos(angle2), s2 = Math.sin(angle2);
-  cameras.push({
-    width: W, height: H,
-    K: { fx: 1000, fy: 1000, cx: W / 2, cy: H / 2 },
-    R: [c2, s2 * c2, -s2, 0, -1, 0, s2, -c2 * c2, -c2],
-    t: [-300, 300, 550],
-  });
-
-  return cameras;
+  return [
+    lookAt([0, 0, 500], [0, 0, 0]),
+    lookAt([300, -300, 600], [0, 0, 0]),
+    lookAt([-300, 300, 550], [0, 0, 0]),
+  ];
 }
 
 /** RUNS회 호출해서 중앙값 얻기 */
