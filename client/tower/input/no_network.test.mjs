@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import timersCjs from 'node:timers';
+import timersPromises from 'node:timers/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { installNetworkSpies } from '../buildings/network_spies.mjs';
 
@@ -26,10 +27,29 @@ test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocke
       return modOrig[name].apply(this, args);
     };
   }
+  // node:timers/promises(setTimeout·setImmediate·setInterval·scheduler.wait·scheduler.yield)도 센다.
+  const promOrig = {};
+  for (const name of ['setTimeout', 'setInterval', 'setImmediate']) {
+    promOrig[name] = timersPromises[name];
+    timersPromises[name] = function countedPromTimer(...args) {
+      timerCreated.push(`node:timers/promises.${name}`);
+      return promOrig[name].apply(this, args);
+    };
+  }
+  const schedOrig = {};
+  for (const name of ['wait', 'yield']) {
+    schedOrig[name] = timersPromises.scheduler[name];
+    timersPromises.scheduler[name] = function countedSched(...args) {
+      timerCreated.push(`node:timers/promises.scheduler.${name}`);
+      return schedOrig[name].apply(this, args);
+    };
+  }
   syncBuiltinESMExports();
   const unwrapTimers = () => {
     for (const name of Object.keys(timerOrig)) globalThis[name] = timerOrig[name];
     for (const name of Object.keys(modOrig)) timersCjs[name] = modOrig[name];
+    for (const name of Object.keys(promOrig)) timersPromises[name] = promOrig[name];
+    for (const name of Object.keys(schedOrig)) timersPromises.scheduler[name] = schedOrig[name];
     syncBuiltinESMExports();
   };
   try {
@@ -102,3 +122,27 @@ test('no_network: 감시자가 실제로 호출을 센다(양성 대조)', async
   globalThis.fetch('http://127.0.0.1:1/test');
   assert.ok(spies.calls.includes('fetch'), '감시자가 fetch 호출을 기록해야 함');
 });
+
+// 양성 대조: node:timers/promises 경유 타이머 생성이 감시자에 잡히는지(래퍼 계수 방식 그대로)를 직접 확인한다.
+for (const [label, call] of [
+  ['setTimeout', (T) => T.setTimeout(0)],
+  ['setImmediate', (T) => T.setImmediate()],
+  ['setInterval', (T) => T.setInterval(1000)[Symbol.asyncIterator]().return()],
+  ['scheduler.wait', (T) => T.scheduler.wait(0)],
+  ['scheduler.yield', (T) => T.scheduler.yield()],
+]) {
+  test(`no_network: node:timers/promises ${label} 호출을 계수 래퍼가 센다(양성 대조)`, async () => {
+    const orig = {};
+    const created = [];
+    const target = label.startsWith('scheduler.') ? timersPromises.scheduler : timersPromises;
+    const key = label.replace('scheduler.', '');
+    orig[key] = target[key];
+    target[key] = function counted(...args) { created.push(key); return orig[key].apply(this, args); };
+    try {
+      await call(timersPromises);
+    } finally {
+      target[key] = orig[key];
+    }
+    assert.deepEqual(created, [key]);
+  });
+}
