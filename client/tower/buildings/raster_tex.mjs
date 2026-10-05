@@ -1,7 +1,7 @@
 // T15.3 건물 면 z-버퍼 래스터(항공영상 지붕). 계약: contracts/controlview/buildings.mjs BUILDINGS_MODULES.raster_tex.
 // 삼각형·깊이 규약은 raster_flat.mjs 의 공용 핵심(rasterizeGroupsCore)과 같다.
-// uv 규약: (0,0) = 영상 왼쪽 아래(남서), (1,1) = 오른쪽 위(북동), v 는 북쪽으로 증가. 영상 행 0 = 북.
-//   그래서 화소 중심 기준 표본 좌표는 col = u·width − 0.5, row = (1 − v)·height − 0.5 이다.
+// uv 규약: (0,0) = 영상 왼쪽 위(북서), (1,1) = 오른쪽 아래(남동), v 는 남쪽으로 증가. 영상 행 0 = 북.
+//   그래서 화소 중심 기준 표본 좌표는 col = u·width − 0.5, row = v·height − 0.5 이다.
 // 이중선형 표본: 네 이웃 화소를 가장자리에서 끝 화소로 클램프하고 무게 평균한 뒤 반올림(Math.round)한다.
 // wallMask=1 정점이 하나라도 있는 삼각형, 또는 image 가 null 이면 BUILDINGS_DEFAULTS.faceRgb(검정 면 색)로 그린다
 //   (영상 색을 섞지 않고, 영상이 없는 것을 메우지 않는다).
