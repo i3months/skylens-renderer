@@ -74,3 +74,13 @@ test('isDrapeAligned: 경계 0 — maxMisalignPx 0·tolPx 0 은 유효 입력이
   assert.equal(isDrapeAligned({ maxMisalignPx: 0, unmeasuredLocalBlocks: 0 }, -0.001), false);
   assert.equal(isDrapeAligned({ maxMisalignPx: -0.001, unmeasuredLocalBlocks: 0 }, 1), false);
 });
+
+test('건물 층 계약: 모듈 파일 이름이 겹치지 않고 기본값은 동결', async () => {
+  const m = await import('./index.mjs');
+  const files = Object.values(m.BUILDINGS_MODULES).map((r) => r.file);
+  assert.equal(new Set(files).size, files.length);
+  assert.equal(files.length, 9);
+  assert.equal(Object.isFrozen(m.BUILDINGS_DEFAULTS), true);
+  assert.deepEqual(Object.keys(m.BUILDINGS_LAYER_API), ['create', 'accept', 'setMode', 'mode', 'render', 'state']);
+  assert.deepEqual([...m.BUILDINGS_DEFAULTS.faceRgb], [0, 0, 0]);
+});
