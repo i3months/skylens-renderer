@@ -1,25 +1,21 @@
-// F-386: 재적합 이상치의 farOwn 판정(index.mjs, F-359 (A))을 지키는 시험.
-// farOwn: ±OUTLIER_PX 창 안 최소가 경계에 못 닿아(창 안 잔차 < 0.5) settle 이 false 여도, 다듬은 자기 최소가 예측에서 OUTLIER_PX 이상
-// 떨어져 있으면 짝 검정 경로로 보낸다. 이 판정이 없으면 아래 입력은 local 도 불확정도 아닌 정합 블록으로 남아 정합 통과를 낸다
-// (실제 블록 이동 1.5 px).
-// 입력은 farOwn 판정 직후에 블록 진단(settle 결과 out, 창 안 잔차, 다듬은 자기 최소, 예측)을 남기게 한 index.mjs 사본으로 찾았다.
-// 스캔 조건 요약(연구 저장소 experiments/t14-r11/farown_scan.mjs 와 F-390 일회성 스캔, 제품 저장소에는 없음):
-//   영상 lowContrastImage(LOW.sine(amp)), 밉 0, 아래 warp 식(블록 x 32..40·y 40..48 m 만 g+e, 나머지 g; |g+e| = 1.5 px),
-//   시드 = 기점 + k·7919. 조건 'out === false, 창 안 잔차 < 0.5, farOwn 참(자기 최소–예측 ≥ 0.5)' 인 블록(모두 (64,32))을 모았다.
-//   - F-386: g/e (−0.125,−1.375)·(−0.25,−1.25)·(−0.375,−1.125) × 사인 1.5·2·2.5 DN × ±1·±2·±3 DN × 시드 30(기점 2000003),
-//     원 주석 범위(창 안 잔차 0.44~0.47, 자기 최소 −1.22~−1.59 px, 창 최소 −0.81~−0.84 px)에 드는 고정 시드(블록 (64,32), 예측 −0.375 px):
-//       seed 2142545: 창 안 잔차 0.447, 자기 최소 (−1.281, −0.094), 창 최소 (−0.8125, −0.094), 예측 (−0.375, 0)
-//       seed 2150464: 창 안 잔차 0.470, 자기 최소 (−1.375, 0.031), 창 최소 (−0.84375, 0.031), 예측 (−0.375, 0)
-//   - F-390 ②: 위 셋에 (−0.5,−1)·(0,−1.5)·(0.125,−1.625) 를 더한 6조합 × 같은 사인·잡음 × 시드 40(기점 3000017) 2160회.
-//     조건 블록 102건(모두 (64,32)) 중 자기 최소–예측 거리 < 0.7 px 는 7건(최소 0.656), 모두 g −0.5 e −1 이었다. 그중 사인 진폭이
-//     다른 둘을 골랐다(farOwn 문턱을 0.75 로 올린 변이를 잡는 사례):
-//       사인 2 DN ±1 DN seed 3134640: 창 안 잔차 0.4375, 자기 최소 (−1.156, 0), 예측 (−0.5, 0), 거리 0.656
-//       사인 1.5 DN ±3 DN seed 3150478: 창 안 잔차 0.469, 자기 최소 (−1.156, 0), 예측 (−0.5, 0), 거리 0.656
-// 시험은 제목의 전제(창 안 잔차 < 0.5 이고 자기 최소–예측 ≥ 0.5, 즉 잔차가 아니라 farOwn 으로 진입)를 probeBlock 으로 다시 재서 단언한다.
-// 블록 출력에 진단 필드가 없어 index.mjs 는 고치지 않고 시험 안에서 같은 탐색을 다시 한다.
-// 잔차 문턱을 낮춘 변이(예: 0.45)는 이 양성 시험으로는 잡을 수 없다(짝 검정 경로로 드는 블록이 늘기만 해 local·불확정 단언이 약해지지
-// 않는다) — 그 변이는 음성 시험 drape_farown_neg.test.mjs(창 안 잔차 0.45~0.5·farOwn 거짓 블록)가 잡는다.
-// 도우미(makeImage·boxMean·warpedTile·HASH·TEX_A·LOW·lowContrastImage)는 drape_noise.test.mjs 에서 그대로 복사했다.
+// F-390 ①: farOwn(index.mjs 재적합 이상치 경로, F-359 (A)) 과발화 음성 시험.
+// farOwn 은 '다듬은 자기 최소가 모형 예측에서 OUTLIER_PX 이상 떨어진' 재적합 이상치만 짝 검정 경로로 보내야 한다. 이 시험이 없으면
+// farOwn 을 늘 참으로 둔 변이(const farOwn = true)에서도 drape 시험 55개가 모두 통과했다(F-390). 아래 입력은 이동 0(귀무)이고, 블록은
+// 재적합 이상치이지만 ±OUTLIER_PX 창 안 잔차 < 0.5(경계에 닿지 않음)이고 자기 최소가 예측 0.5 px 안이다 — 짝 검정 경로로 갈 이유가
+// 없으므로 local 도 불확정도 아닌 정합 블록이어야 한다. farOwn 이 과발화하면 이 블록은 짝 검정 경로로 들어가 반드시 local 또는
+// 불확정이 된다(그 경로에는 두 결과밖에 없다).
+// 두 블록 모두 창 안 잔차가 0.45 이상이라, 잔차 문턱(index.mjs `residual(b, fit.at) >= OUTLIER_PX`)을 0.45 로 낮춘 변이도 잡는다.
+//
+// 입력을 찾은 스캔(연구 저장소 밖 일회성 스캔, 요약): index.mjs 사본의 farOwn 판정 직후에 블록 진단(settle 결과 out, 창 안 잔차,
+// 다듬은 자기 최소, 예측)을 남기게 해 이동 0 타일을 돌렸다. 영상은 0.5 m/px, 바탕은 영상 A 무늬(TEX_A), 저대비 영역
+// A(x 8..56, y 16..48 m)·B(x 0..64, y 24..40 m)·C(x 16..48, y 8..56 m) × 무늬(사인 1.5·2·3 DN, hash1, edgeGrad) × 밉 0·1 ×
+// 잡음 ±2·±3·±4 DN × 시드 20(5000011 + k·7919) = 1800회. 조건 'out === false, 창 안 잔차 < 0.5, 자기 최소–예측 < 0.5, 원본에서
+// local·불확정 아님' 인 블록 179개 중 밉 0, 창 안 잔차 ≥ 0.45, 타일 maxMisalignPx ≤ 1 인 둘을 골랐다(같은 조건 밉 0 후보는 이 둘뿐).
+// 같은 스캔의 원래 저대비 영역(lowContrastImage, x 26..46·y 36..52 m)·사인 1..3 DN·이동 0 은 800회에서 이 조건 블록이 0개였다.
+//   s3B ±4 DN seed 5087120 블록 (64,48): 창 안 잔차 0.485, 자기 최소 (−0.469, 0.125), 예측 (0.005, −0.001), maxMisalignPx 0.033
+//   edgeGradC ±3 DN seed 5071282 블록 (80,16): 창 안 잔차 0.469, 자기 최소 (0, 0.5), 예측 (−0.004, 0.022), maxMisalignPx 0.047
+// 창 안 잔차·자기 최소는 출력 진단 필드가 없어 아래 probeBlock 이 시험 안에서 같은 탐색으로 다시 잰다(index.mjs 는 고치지 않음).
+// 도우미(makeImage·boxMean·warpedTile·HASH·TEX_A·LOW)는 drape_farown.test.mjs 에서 그대로 복사했다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ALIGN_TOLERANCE_PX, TERRAIN_TILE_SIZE_M, tileBounds } from '../../../contracts/tower_assets/index.mjs';
@@ -106,23 +102,16 @@ const TEX_A = (x, y, c, r) => [
 const LOW = {
   // 사인 진폭 amp DN, R 은 x 주기 48 px, G 는 y 주기 32 px.
   sine: (amp) => (x, y, c, r) => [Math.round(128 + amp * Math.sin((2 * Math.PI * c) / 48)), Math.round(60 + amp * Math.sin((2 * Math.PI * r) / 32)), 60],
-  // R·G 채널 ±1 DN 해시 무늬.
-  hash1: (x, y, c, r) => [128 + (HASH(c, r) % 3) - 1, 60 + (HASH(r, c) % 3) - 1, 60],
-  // 균일 바탕에 R +6 DN 점(밀도 1/32, 위치는 해시 상위 비트 — 하위 비트는 주기 8 무늬).
-  dots6: (x, y, c, r) => [(HASH(c, r) >>> 16) % 32 === 0 ? 134 : 128, 60, 60],
   // F-353: R = x 경사 0.15 DN/px + x 36·44 m 의 4.7 DN 세로 경계 둘(블록 안 4.7→9.4 DN), G = y 경사 0.12→0.24 DN/px.
-  // y 로 1 px 옮긴 비용 상승은 1/12 이하(수정 전: 블록 제외), 4 px 에서는 뚜렷하다.
   edgeGrad: (x, y, c, r) => [
     Math.round(100 + 0.15 * (c - 180) + (x >= 36 ? 4.7 : 0) + (x >= 44 ? 4.7 : 0)),
     Math.round(60 + 0.12 * (r - 152) + (0.12 * (r - 152) ** 2) / 64), 60,
   ],
-  // F-353: 위의 R 만, G 는 균일 → y 축은 어느 거리에서도 평평(한 축만 평평한 블록).
-  edgeOnly: (x, y, c, r) => [Math.round(100 + 0.15 * (c - 180) + (x >= 36 ? 4.7 : 0) + (x >= 44 ? 4.7 : 0)), 60, 60],
 };
-/** 타일 격자와 맞물린 0.5 m/px 영상: x 26..46, y 36..52 m 는 저대비 무늬 low, 그 밖은 영상 A 무늬(잡음 0). */
-function lowContrastImage(low) {
+/** 0.5 m/px 영상: 저대비 영역 [x0,x1)×[y0,y1)(m) 은 low, 그 밖은 영상 A 무늬(잡음 0). lowContrastImage 와 영역만 다르다. */
+function regionImage(low, [x0, x1, y0, y1]) {
   return makeImage({ minX: -64, minY: -64, maxX: 128, maxY: 128 }, 384, 384, (x, y, c, r) => (
-    x >= 26 && x < 46 && y >= 36 && y < 52 ? low(x, y, c, r) : TEX_A(x, y, c, r)));
+    x >= x0 && x < x1 && y >= y0 && y < y1 ? low(x, y, c, r) : TEX_A(x, y, c, r)));
 }
 
 // index.mjs 의 탐색을 시험 안에서 다시 한다(블록 표본·후보 순서·엄격 개선 규칙·lim 이 같다). 비용은 index.mjs 의 누적 합 표 대신
@@ -176,33 +165,29 @@ function probeBlock(img, tile, m, i0, j0) {
   };
 }
 
-// F-359 검토 #4 양성과 같은 식: 블록 x 32..40·y 40..48 m 만 g+e, 나머지 g 만큼 동쪽(실제 블록 이동 |g+e| = 1.5 px).
-const FAROWN_CASES = [
-  // [사인 진폭 DN, g, e, 잡음 ±DN, seed, 자기 최소–예측 거리 상한(이 사례가 지키는 farOwn 문턱 변이의 근거)]
-  [2.5, -0.375, -1.125, 2, 2142545, Infinity],
-  [2.5, -0.375, -1.125, 2, 2150464, Infinity],
-  // 거리 0.5~0.7 px: farOwn 문턱을 0.75 로 올리면 진입하지 못해 정합 블록으로 남는다.
-  [2, -0.5, -1, 1, 3134640, 0.7],
-  [1.5, -0.5, -1, 3, 3150478, 0.7],
+const REGION = { B: [0, 64, 24, 40], C: [16, 48, 8, 56] };
+const NEG_CASES = [
+  // [이름, 저대비 무늬, 영역, 잡음 ±DN, seed, 블록 i0, j0]
+  ['s3B', LOW.sine(3), REGION.B, 4, 5087120, 64, 48],
+  ['edgeGradC', LOW.edgeGrad, REGION.C, 3, 5071282, 80, 16],
 ];
-for (const [amp, g, e, noise, seed, distMax] of FAROWN_CASES) {
-  test(`F-386 farOwn: 사인 ${amp} DN g ${g} ±${noise} DN seed ${seed} — 창 안 잔차 < 0.5 인 재적합 이상치 블록 (64,32) 이 local 또는 불확정, maxMisalignPx > 1`, () => {
-    // farOwn 을 끈 변이(const farOwn = false)에서는 블록 (64,32) 가 정합 블록으로 남고 maxMisalignPx ≤ 1 로 정합 통과한다.
-    const img = lowContrastImage(LOW.sine(amp));
-    const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
-    const tile = warpedTile(img, 0, 0, 0, warp, { noise, seed });
+for (const [name, low, region, noise, seed, i0, j0] of NEG_CASES) {
+  test(`F-390 farOwn 음성: ${name} ±${noise} DN seed ${seed} 이동 0 — 창 안 잔차 < 0.5·자기 최소가 예측 0.5 px 안인 재적합 이상치 블록 (${i0},${j0}) 은 local 도 불확정도 아님`, () => {
+    // const farOwn = true 변이에서는 이 블록이 짝 검정 경로로 들어가 불확정(또는 local)이 된다.
+    const img = regionImage(low, region);
+    const tile = warpedTile(img, 0, 0, 0, (p) => p, { noise, seed });
     const m = measureDrapeAlignment(img, tile);
     assert.equal(m.status, 'measured');
-    const b = m.blocks.find((q) => q.i0 === 64 && q.j0 === 32);
-    assert.ok(b, '블록 (64,32) 없음');
+    const b = m.blocks.find((q) => q.i0 === i0 && q.j0 === j0);
+    assert.ok(b, `블록 (${i0},${j0}) 없음`);
     assert.equal(b.axes, 'xy');
-    // 진입 이유(시험 안에서 다시 잼): 창 최소가 경계에 못 닿아 잔차로는 들어가지 못하고, 자기 최소가 예측에서 0.5 px 이상 떨어져 farOwn 으로 든다.
-    const p = probeBlock(img, tile, m, 64, 32);
-    assert.ok(p.wr < 0.5, `창 안 잔차 ${p.wr}`);
-    assert.ok(p.dist >= 0.5 && p.dist < distMax, `자기 최소 (${p.own.dx}, ${p.own.dy}) 예측 (${p.pred}) 거리 ${p.dist}`);
-    assert.ok(b.local || b.undecided, `블록 (64,32) local ${b.local} undecided ${b.undecided} dx ${b.dx}`);
-    // local 블록의 보고값은 다듬은 자기 최소다(재계산이 제품 탐색과 같은 값을 냄을 함께 확인).
-    if (b.local) assert.ok(Math.abs(b.dx - p.own.dx) < 1e-9 && Math.abs(b.dy - p.own.dy) < 1e-9, `보고 (${b.dx}, ${b.dy}) 재계산 자기 최소 (${p.own.dx}, ${p.own.dy})`);
-    assert.ok(m.maxMisalignPx > ALIGN_TOLERANCE_PX, `maxMisalignPx ${m.maxMisalignPx}`);
+    // 전제(시험 안에서 다시 잼): 창 안 잔차는 0.45 이상 0.5 미만(경계에 닿지 않음), 다듬은 자기 최소는 예측 0.5 px 안 → farOwn 은 거짓.
+    const p = probeBlock(img, tile, m, i0, j0);
+    assert.ok(p.wr >= 0.45 && p.wr < 0.5, `창 안 잔차 ${p.wr}`);
+    assert.ok(p.dist < 0.5, `자기 최소 (${p.own.dx}, ${p.own.dy}) 예측 (${p.pred}) 거리 ${p.dist}`);
+    assert.ok(!b.local && !b.undecided, `블록 (${i0},${j0}) local ${b.local} undecided ${b.undecided}`);
+    // 정합 블록의 보고값은 창 최소다(재계산이 제품 탐색과 같은 값을 냄을 함께 확인).
+    assert.ok(Math.abs(b.dx - p.win.dx) < 1e-9 && Math.abs(b.dy - p.win.dy) < 1e-9, `보고 (${b.dx}, ${b.dy}) 재계산 창 최소 (${p.win.dx}, ${p.win.dy})`);
+    assert.ok(m.maxMisalignPx <= ALIGN_TOLERANCE_PX, `maxMisalignPx ${m.maxMisalignPx}`);
   });
 }

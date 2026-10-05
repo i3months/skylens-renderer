@@ -29,6 +29,14 @@ test('near 빈 호출: 계수 증가 0', () => {
   assert.equal(d, 0);
 });
 
+test('양수 예산 near 빈 호출: 칸을 쓰지 않는다', () => {
+  const b = { cells: 5 };
+  const { res, d } = delta(b, [member(100, 100, 101, 101)]);
+  assert.equal(res, null);
+  assert.equal(d, 0);
+  assert.equal(b.cells, 5);
+});
+
 test('Infinity 예산: 계수가 유한 양수이고 예산은 Infinity 로 남는다', () => {
   const b = { cells: Infinity };
   const { res, d } = delta(b);
@@ -37,7 +45,28 @@ test('Infinity 예산: 계수가 유한 양수이고 예산은 Infinity 로 남�
   assert.equal(b.cells, Infinity);
 });
 
-test('NaN 예산: 계수 NaN 아님', () => {
-  const { d } = delta({ cells: NaN });
-  assert.ok(Number.isFinite(d) && d >= 0);
+test('NaN 예산: 거부(null)하고 칸을 쓰지 않으며 계수는 NaN 아님', () => {
+  const b = { cells: NaN };
+  const { res, d } = delta(b);
+  assert.equal(res, null);
+  assert.equal(d, 0);
+  assert.ok(b.cells <= 0); // 무제한으로 돌지 않음(0 으로 바뀐 뒤 거부 칸 하나 감소)
+});
+
+test('예산 없음(undefined): 무제한이 아니라 거부', () => {
+  const b = {};
+  const { res, d } = delta(b);
+  assert.equal(res, null);
+  assert.equal(d, 0);
+  assert.ok(b.cells <= 0);
+});
+
+test('Infinity 예산 + 예외: finally 가 예산을 Infinity 로 되돌리고 소비한 만큼 센다', () => {
+  const bad = member(0, 0, 1, 2);
+  Object.defineProperty(bad, 'segs', { get() { throw new Error('boom'); } });
+  const b = { cells: Infinity };
+  distStats.gapCells = 0;
+  assert.throws(() => gapCellError(1, 0, 2, 2, [A, bad], 1, box, b), /boom/);
+  assert.equal(b.cells, Infinity);
+  assert.ok(Number.isFinite(distStats.gapCells) && distStats.gapCells >= 0);
 });
