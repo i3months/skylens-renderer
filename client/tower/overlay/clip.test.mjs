@@ -238,3 +238,21 @@ test('clip: 퍼즈 — 임의 회전 카메라에서 깊이 ≥ nearM, 앞쪽 �
     fuzz(view, 1000 + i);
   }
 });
+
+test('clip: 카메라 공간 값이 비유한(넘침)이 되는 점에서 polyline 을 끊는다', () => {
+  // R 의 세 번째 행 = [s, s, 0] 이라 X_c.z = s·(x + y). [1.5e308, 1.5e308, 0] 에서 z 가 Infinity 로 넘친다(x_c = 0, y_c = 0 은 유한).
+  const s = Math.SQRT1_2;
+  const view = { width: 100, height: 80, K: { fx: 100, fy: 100, cx: 50, cy: 40 }, R: [s, -s, 0, 0, 0, 1, s, s, 0], t: [0, 0, 0] };
+  const r = clipPolyline(view, [[1, 1, 0], [2, 2, 0], [1.5e308, 1.5e308, 0], [3, 3, 0], [4, 4, 0]], 0.1);
+  assert.equal(r.length, 2);
+  assert.equal(r[0].length, 2);
+  assert.equal(r[1].length, 2);
+  for (const line of r) for (const p of line) {
+    assert.ok(Number.isFinite(p.u) && Number.isFinite(p.v) && Number.isFinite(p.depth));
+  }
+  // 깊이 = s·(x + y) = √2·x.
+  near(r[0][0].depth, Math.SQRT2, 1e-12, '0 depth');
+  near(r[0][1].depth, 2 * Math.SQRT2, 1e-12, '1 depth');
+  near(r[1][0].depth, 3 * Math.SQRT2, 1e-12, '3 depth');
+  near(r[1][1].depth, 4 * Math.SQRT2, 1e-12, '4 depth');
+});
