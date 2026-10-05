@@ -678,6 +678,57 @@ test('F-352 local 유의성은 표본 수·잡음 기준: ±1·±2 DN 해시 블
   }
 });
 
+test('F-358 잡음 없는 1·1.5 DN 사인 블록의 2~4 px 국소 이동: 평평 판정에 유의성 → 보고 ≥ S − 0.3, 블록 local(또는 측정 불가)', () => {
+  // 수정 전(블록 축 평평 = 상승 ≤ 1/12 만): 6경우 모두 measured 0 px, 블록 (64,32) 는 axes 'y'·local 아님.
+  // 축 상승 0.04~0.08 은 1/12 이하지만 자기 최소 0·n 256 의 유의성 문턱(약 0.017)보다 크다.
+  for (const amp of [1, 1.5]) {
+    const img = lowContrastImage(LOW.sine(amp));
+    for (const S of [2, 3, 4]) {
+      const at = `사인 ${amp} DN S=${S}`;
+      const m = measureDrapeAlignment(img, shiftBlock(img, S));
+      if (m.status === 'unmeasurable') {
+        assert.ok(Number.isNaN(m.maxMisalignPx), at);
+        continue;
+      }
+      assertLocalBlock(m, at);
+      assert.ok(m.maxMisalignPx >= S - 0.3, `${at}: 보고 ${m.maxMisalignPx}`);
+      assert.ok(m.maxMisalignPx > ALIGN_TOLERANCE_PX, at);
+    }
+  }
+});
+
+/**
+ * 영상 img 의 밉 0 타일 (0,0)(0.5 m/px, 맞물림) 전체 내용을 동쪽으로 g px, 블록 (64,32)(x 32..40, y 40..48 m) 만 g + e px
+ * 옮긴다(박스 평균 보간, 반올림). 블록의 실제 이동량 = g + e.
+ */
+function shiftedTile(img, g, e) {
+  const t = buildDrapeTile(img, 0, 0, 0);
+  const acc = new Float64Array(3);
+  for (let j = 0; j < 128; j++) {
+    for (let i = 0; i < 128; i++) {
+      const S = i >= 64 && i < 80 && j >= 32 && j < 48 ? g + e : g;
+      const x0 = (i + S) * 0.5, y1 = 64 - j * 0.5;
+      assert.ok(boxMean(img, x0, x0 + 0.5, y1 - 0.5, y1, acc));
+      for (let k = 0; k < 3; k++) t.rgb[(j * 128 + i) * 3 + k] = Math.round(acc[k]);
+    }
+  }
+  return t;
+}
+
+test('F-359 재적합 이상치의 예측 ±0.5 px 최소가 탐색 경계에 닿으면 local: 저대비 사인 + 전역 g + 블록 e, 보고 > 1 px', () => {
+  // 수정 전(잔차 > 0.5 만 local): 경계에 닿은 잔차가 정확히 0.5 라 local 도 적합도 아닌 채 예측 + 0.5 로 남아
+  // 보고 0.25·0.5·0.125·0.125 px(실제 1.5·1.5·1.5·1.125 px).
+  const cases = [[2.5, -0.25, -1.25, 1], [2.5, -0.5, -1, 1], [1.5, -0.125, -1.375, 1], [2, 0.125, 1, 0.95]];
+  for (const [amp, g, e, min] of cases) {
+    const at = `사인 ${amp} DN g=${g} e=${e}`;
+    const img = lowContrastImage(LOW.sine(amp));
+    const m = measureDrapeAlignment(img, shiftedTile(img, g, e));
+    const blk = assertLocalBlock(m, at);
+    assert.ok(m.maxMisalignPx > min, `${at}: 보고 ${m.maxMisalignPx}`);
+    assert.ok(Math.hypot(blk.dx, blk.dy) > min, `${at}: 블록 ${blk.dx}, ${blk.dy}`);
+  }
+});
+
 test('F-353 평평 블록 과반: 피복 블록의 절반 넘게 두 축 모두 평평하면 측정 불가, 제외 블록 수·면적 비를 보고', () => {
   // 0.5 m/px 맞물린 영상, x < 40 m 균일. 밉 1 타일 (0,0) 은 8 px 블록 8×8 중 서쪽 5열(40/64) 이 평평.
   const img = makeImage({ minX: -64, minY: -64, maxX: 128, maxY: 128 }, 384, 384, (x, y, c, r) => (x < 40 ? [90, 120, 30] : TEX_A(x, y, c, r)));
@@ -779,6 +830,20 @@ test('F-356 ③ coverage 검사: mask 형식·bounds 형식·타일과 안 겹�
   };
   for (const [name, coverage] of Object.entries(bad)) {
     assert.throws(() => measureDrapeAlignment(imgB, { ...t, coverage }), TowerAssetError, name);
+  }
+});
+
+test('F-362 ② 완전 피복 픽셀이 없는 타일(mask 전부 0·부분 피복만): bounds 유무와 무관하게 같은 TowerAssetError', () => {
+  const t = buildDrapeTile(imgB, 0, 0, 0);
+  const { bounds } = t.coverage;
+  const zero = new Uint8Array(t.width * t.height);
+  const part = t.coverage.mask.map((v) => (v ? 128 : 0));
+  const want = { name: 'TowerAssetError', message: 'drape: 정합을 잴 완전 피복 픽셀이 없다' };
+  for (const [name, coverage] of Object.entries({
+    'mask 0, bounds 없음': { mask: zero }, 'mask 0, bounds 있음': { mask: zero, bounds },
+    '부분 피복만, bounds 없음': { mask: part }, '부분 피복만, bounds 있음': { mask: part, bounds },
+  })) {
+    assert.throws(() => measureDrapeAlignment(imgB, { ...t, coverage }), want, name);
   }
 });
 

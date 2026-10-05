@@ -7,6 +7,8 @@ import {
   TERRAIN_TILE_SIZE_M, DRAPE_MIP_COUNT, TowerAssetError, tileBounds,
 } from '../../../contracts/tower_assets/index.mjs';
 
+// 정합 측정에 쓸 완전 피복 픽셀이 없을 때의 오류 메시지(mask 전부 0·bounds 유무·영상 밖 표본 모두 같은 메시지).
+const NO_FULL_PIXELS = 'drape: 정합을 잴 완전 피복 픽셀이 없다';
 // 완전 피복 판정 허용(면적 비).
 const FULL_EPS = 1e-9;
 /** 타일 한 변 픽셀 상한(밉 0). 0.015625 m/px 보다 촘촘한 영상은 타일 하나가 4096² 를 넘으므로 거부한다(메모리 폭주 방지). */
@@ -219,8 +221,8 @@ const REFINE_STAGES = [[1, 0.5], [0.5, 0.25], [0.25, 0.125], [0.125, 1 / 16], [1
 // 블록 첫 탐색은 1/4 px 까지만(아핀 예측 근처에서 REFINE_STAGES 로 다시 찾는다).
 const BLOCK_COARSE_STAGES = REFINE_STAGES.slice(0, 2);
 
-/** 측정용 타일 검사: 크기·rgb 길이·tx/ty 정수. */
-function checkTile(tile) {
+/** 타일 검사: 크기·rgb 길이·tx/ty 정수·coverage 형식. measure 면 정합 측정용 검사를 더한다. */
+function checkTile(tile, measure = false) {
   if (!tile || !(tile.rgb instanceof Uint8Array) || !Number.isInteger(tile.width) || !Number.isInteger(tile.height)
     || tile.width <= 0 || tile.height <= 0 || tile.rgb.length !== tile.width * tile.height * 3) {
     throw new TowerAssetError('drape: tile 이 올바르지 않다');
@@ -234,6 +236,8 @@ function checkTile(tile) {
   if (mask !== undefined && (!(mask instanceof Uint8Array) || mask.length !== TW * TH)) {
     throw new TowerAssetError('drape: tile.coverage.mask 는 width·height 길이의 Uint8Array');
   }
+  // 계약: 완전 피복(mask 255) 픽셀이 하나도 없는 타일(mask 전부 0 포함)은 unmeasurable 이 아니라 TowerAssetError(잴 자료가 없는 입력), bounds 유무와 무관하게 같은 메시지.
+  if (measure && mask && !maskRect(mask, TW, TH, 255)) throw new TowerAssetError(NO_FULL_PIXELS);
   if (bounds === undefined) return;
   if (!bounds || ![bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].every(Number.isFinite)) {
     throw new TowerAssetError('drape: tile.coverage.bounds 가 올바르지 않다');
@@ -310,7 +314,7 @@ function strideFor(w, h, budget) {
  *    모든 블록을 모형 예측 축마다 ±1 px 에서 1/32 px 까지 다시 찾아 무늬 주기 일치(가짜 최소)를 바로잡는다. 예측 근처 최소가 블록
  *    자체 최소보다 1.5배 넘게, 그리고 표본 수·잡음 기준으로 유의하게(차 > 4·max(자기 최소, 1/12)·√(2/(3n))) 나쁜 블록은 아핀으로
  *    설명되지 않는 국소 어긋남(local)으로 실측 이동량을 유지한다. 다시 맞춘 모형의 이상치는 예측 ±0.5 px 안에서만 다시 찾고,
- *    그 값으로도 잔차가 0.5 px 를 넘으면 local 이다 → 잔차 > 0.5 px 인 블록은 모두 local 이거나 적합 안에 있다.
+ *    그 값으로도 잔차가 0.5 px 이상이면(탐색 경계에 닿음 포함) local 이다 → 잔차 > 0.5 px 인 블록은 모두 local 이거나 적합 안에 있다.
  *    local 블록의 이동량은 자기 최소에서 1/32 px 까지 다듬는다.
  *    전역 가설이 여럿이면 아핀 변위장 아래 타일 전체 평균 제곱 차가 가장 작은 가설을 고른다.
  * 4) edgeMaxPx = 피복 범위(타일 ∩ coverage.mask 완전 피복(255) 픽셀을 감싸는 사각형 ∩ coverage.bounds, 둘 다 없으면 타일 전체) 네 모서리의 모형 변위
@@ -320,9 +324,11 @@ function strideFor(w, h, budget) {
  *    `<= 허용` 판정도 통과하지 못한다): 전역 비용면이 ±1 px 이동에 평평함(균일한 색 등), 아핀에 여분이 없음(블록 6개 미만이면서
  *    2×2 이상 블록 격자 전체 피복도 아님 — 3~5블록 정확 적합은 잡음을 모서리 외삽으로 부풀림), 블록 중심이 한 직선 위,
  *    이상치 제거 뒤 남은 블록이 그 하한 미만, 두 축 모두 평평해 뺀 블록이 피복 블록의 절반 초과.
- *    블록 평평 판정은 축마다 탐색 반경 전체(1..4 px)의 상승 최댓값 ≤ 1/12 채널값²(uint8 반올림 잡음 분산). 두 축 모두 평평한
+ *    블록 평평 판정은 축마다 탐색 반경 전체(1..4 px)의 상승 최댓값 ≤ 1/12 채널값²(uint8 반올림 잡음 분산)이고 그 상승이
+ *    유의하지 않음(localSignificant 와 같은 기준). 두 축 모두 평평한
  *    블록은 빼고(flatBlocks·flatAreaFraction 에 센다), 한 축만 평평한 블록은 다른 축만 모형 적합·잔차에 쓴다(평평한 축 값은 모형 예측).
  *    coverage.mask 형식·길이, coverage.bounds 형식·타일과의 겹침, mask 와 bounds 의 어긋남은 TowerAssetError.
+ *    완전 피복(mask 255) 픽셀이 없는 타일도 unmeasurable 이 아니라 TowerAssetError(bounds 유무와 무관하게 같은 메시지).
  * @returns {{status:'measured'|'unmeasurable', reason?:string, maxMisalignPx:number, dxPx:number, dyPx:number, rms:number,
  *   samples:number, globalDxPx:number, globalDyPx:number, blockMaxPx:number, residualMaxPx:number, edgeMaxPx:number,
  *   localMaxPx:number, scaleX:number, scaleY:number, rotationRad:number,
@@ -338,7 +344,7 @@ function strideFor(w, h, budget) {
  */
 export function measureDrapeAlignment(image, tile) {
   const { sx, sy } = checkImage(image);
-  checkTile(tile);
+  checkTile(tile, true);
   const S = summedArea(image);
   const W = image.width, H = image.height, W1 = W + 1;
   const ib = image.bounds;
@@ -476,7 +482,7 @@ export function measureDrapeAlignment(image, tile) {
   // 솎은 표본이 완전 피복 픽셀을 하나도 못 잡으면(대부분 가려진 타일) 정밀 표본으로 정수 탐색을 다시 한다.
   if (coarse.n === 0) { grid.clear(); coarse = search(gxs, gys, 0, 0, [[radius, 1]], 1, record); }
   const primary = search(gxs, gys, coarse.dx, coarse.dy, REFINE_STAGES, 1);
-  if (primary.n === 0) throw new TowerAssetError('drape: 정합을 잴 완전 피복 픽셀이 없다');
+  if (primary.n === 0) throw new TowerAssetError(NO_FULL_PIXELS);
   const minGrid = Math.min(...grid.values());
   const alts = [];
   for (const [key, mse] of grid) {
@@ -501,8 +507,10 @@ export function measureDrapeAlignment(image, tile) {
   // 이동량 (dx, dy) 에서 x·y 축 각각 평평한지([x 평평, y 평평]). 축마다 거리 s = 1..reach px 의 상승
   // min(비용(+s) − 최소, 비용(−s) − 최소) 중 최댓값이 FLAT_MSE 이하면 그 축 이동량을 구별 못한다.
   // reach = 1 은 ±1 px 만 본다(전역). 블록은 탐색 반경 전체를 본다: 완만한 무늬는 1 px 상승이 1/12 이하여도
-  // 3~4 px 에서는 뚜렷하다(F-353).
-  function flatAxes(xs, ys, dx, dy, minN, mse, reach) {
+  // 3~4 px 에서는 뚜렷하다(F-353). n > 0 이면(블록) 상승이 표본 수·잡음 기준으로 유의하면(localSignificant) 1/12 이하여도
+  // 평평하지 않다: 잡음 없는 1~1.5 DN 무늬 블록은 상승 0.04~0.08 이 유의성 문턱(n 256 에서 약 0.017)의 몇 배라 잴 수 있다(F-358).
+  // 전역(n = 0)은 절대 문턱만 본다(타일 전체 표본은 유의성 문턱이 너무 낮아 희소 1 DN 무늬도 잴 수 있다고 보게 된다).
+  function flatAxes(xs, ys, dx, dy, minN, mse, reach, n = 0) {
     return [[1, 0], [0, 1]].map(([a, b]) => {
       let rise = -Infinity;
       for (let d = 1; d <= reach; d++) {
@@ -513,7 +521,7 @@ export function measureDrapeAlignment(image, tile) {
         }
         if (r !== Infinity) rise = Math.max(rise, r);
       }
-      return rise !== -Infinity && rise <= FLAT_MSE;
+      return rise !== -Infinity && rise <= FLAT_MSE && !(n > 0 && localSignificant(mse + rise, mse, n));
     });
   }
 
@@ -564,7 +572,7 @@ export function measureDrapeAlignment(image, tile) {
         if (r.n === 0) continue;
         // 축마다 평평 판정(탐색 반경 전체 상승). 두 축 모두 평평하면(균일한 색) 블록을 빼고 개수·면적에 센다.
         // 한 축만 평평하면(한 방향 줄무늬·완만한 경사) 블록을 살리고 평평하지 않은 축만 모형 적합·잔차에 쓴다.
-        const [flatX, flatY] = flatAxes(xs, ys, r.dx, r.dy, minN, r.mse, reach);
+        const [flatX, flatY] = flatAxes(xs, ys, r.dx, r.dy, minN, r.mse, reach, r.n);
         if (flatX && flatY) { flatBlocks++; flatArea += area; continue; }
         blocks.push({
           i0, j0, di: (i0 + i1) / 2 - TW / 2, dj: (j0 + j1) / 2 - TH / 2, xs, ys, minN, ix: !flatX, iy: !flatY,
@@ -633,7 +641,8 @@ export function measureDrapeAlignment(image, tile) {
     // local 도 적합도 아닌 채 버렸다(F-357). 잡음 블록은 예측 ±0.5 px 의 최소가 자기 최소와 유의하게 다르지 않아 local 이 아니다.
     for (const b of affineBlocks) {
       if (fit.inlier.has(b)) continue;
-      if (settle(b, fit.at, false, OUTLIER_PX) !== false || residual(b, fit.at) > OUTLIER_PX) markLocal(b);
+      // 예측 ±OUTLIER_PX 탐색의 최소가 경계에 닿으면 잔차가 정확히 OUTLIER_PX 다 — 실제 이동은 그 밖일 수 있으므로 local(F-359).
+      if (settle(b, fit.at, false, OUTLIER_PX) !== false || residual(b, fit.at) >= OUTLIER_PX - 1e-9) markLocal(b);
     }
     // 평평한 축의 값은 모형 예측으로 둔다(그 축은 잴 수 없었다).
     for (const b of blocks) {
