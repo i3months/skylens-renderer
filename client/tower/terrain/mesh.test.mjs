@@ -2,7 +2,7 @@
 // 실행: node --test client/tower/terrain/mesh.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildLayerMesh, MAX_ABS_POSITION_M } from './mesh.mjs';
+import { buildLayerMesh, MAX_ABS_POSITION_M, MAX_CELLS } from './mesh.mjs';
 import { createTerrainLayer } from './index.mjs';
 import { buildTerrainTile, terrainTileToMesh } from '../../../server/terrain/mesh_lod/index.mjs';
 
@@ -187,6 +187,38 @@ test('1 m 구별 한계(2^24 m) 안쪽 최대 타일은 통과하고 바로 바�
   assert.throws(() => buildLayerMesh([{ tx: 0, ty: -MAX_TX - 2, cells: 2, heights }]), RangeError);
   assert.throws(() => buildLayerMesh([{ tx: 2 ** 30 * 1e7, ty: 0, cells: 2, heights }]), RangeError);
   assert.throws(() => buildLayerMesh([{ tx: 2 ** 30, ty: 0, cells: 2, heights }]), RangeError);
+});
+
+// 퇴화(넓이 0) 삼각형 수. 2D 투영 넓이로 센다.
+function degenerateCount(m) {
+  const P = m.positions, I = m.indices;
+  let d = 0;
+  for (let o = 0; o < I.length; o += 3) {
+    const a = 3 * I[o], b = 3 * I[o + 1], c = 3 * I[o + 2];
+    const area = (P[b] - P[a]) * (P[c + 1] - P[a + 1]) - (P[c] - P[a]) * (P[b + 1] - P[a + 1]);
+    if (area === 0) d++;
+  }
+  return d;
+}
+const cellsTile = (c, tx = 0) => ({ tx, ty: 0, cells: c, heights: new Float32Array(c * c) });
+
+test('cells 상한: cells 66 은 최대 tx 에서 RangeError(퇴화 삼각형 130 개 방지)', () => {
+  assert.equal(MAX_CELLS, 65);
+  assert.throws(() => buildLayerMesh([cellsTile(66, MAX_TX)]), (e) => e instanceof RangeError && e.message.startsWith('terrain:'));
+  assert.throws(() => buildLayerMesh([cellsTile(66, 0)]), RangeError);
+});
+
+test('cells 상한: cells 129 는 최대 tx 에서 RangeError(퇴화 삼각형 16384 개 방지)', () => {
+  assert.throws(() => buildLayerMesh([cellsTile(129, MAX_TX)]), (e) => e instanceof RangeError && e.message.startsWith('terrain:'));
+  assert.throws(() => buildLayerMesh([cellsTile(129, 0)]), RangeError);
+});
+
+test('cells 65 와 서버 정점 수 {65,33,17,9} 는 최대 tx 에서 수락되고 퇴화 삼각형이 없다', () => {
+  for (const c of [65, 33, 17, 9]) {
+    const m = buildLayerMesh([cellsTile(c, MAX_TX)]);
+    assert.equal(m.indices.length, (c - 1) ** 2 * 6, `cells ${c}`);
+    assert.equal(degenerateCount(m), 0, `cells ${c} 퇴화`);
+  }
 });
 
 test('범위 밖 tx 는 층 accept 가 RangeError 로 거부하고 수준 -1 이 유지되며 render 는 빈 결과다', () => {
