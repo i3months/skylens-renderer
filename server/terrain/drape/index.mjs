@@ -161,6 +161,13 @@ export function drapeTableBuildCount() {
   return tableBuilds;
 }
 
+// 정합 측정이 비교한 표본 픽셀 누계(작업량). 벽시계 대신 이것으로 '타일 크기와 거의 무관한 시간'을 시험한다.
+let costPixels = 0;
+/** 정합 측정 비용 함수가 지금까지 비교한 표본 픽셀 수 누계(시험용). */
+export function drapeCostPixelCount() {
+  return costPixels;
+}
+
 /** rgb 내용 지문(FNV-1a 32비트). 표 생성보다 훨씬 싸다. */
 function rgbSignature(rgb) {
   let h = 0x811c9dc5;
@@ -219,6 +226,54 @@ function checkTile(tile) {
     throw new TowerAssetError('drape: tile 이 올바르지 않다');
   }
   if (!Number.isInteger(tile.tx) || !Number.isInteger(tile.ty)) throw new TowerAssetError('drape: tile.tx, tile.ty 는 정수');
+  const cov = tile.coverage;
+  if (cov === undefined) return;
+  if (!cov || typeof cov !== 'object') throw new TowerAssetError('drape: tile.coverage 가 올바르지 않다');
+  const { mask, bounds } = cov;
+  const TW = tile.width, TH = tile.height;
+  if (mask !== undefined && (!(mask instanceof Uint8Array) || mask.length !== TW * TH)) {
+    throw new TowerAssetError('drape: tile.coverage.mask 는 width·height 길이의 Uint8Array');
+  }
+  if (bounds === undefined) return;
+  if (!bounds || ![bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].every(Number.isFinite)) {
+    throw new TowerAssetError('drape: tile.coverage.bounds 가 올바르지 않다');
+  }
+  const [i0, i1, j0, j1] = boundsRect(tile, bounds);
+  if (!(i1 > i0) || !(j1 > j0)) throw new TowerAssetError('drape: tile.coverage.bounds 가 타일과 겹치지 않는다');
+  if (!mask) return;
+  // mask 와 bounds 는 같은 피복을 말해야 한다: 완전 피복(255) 픽셀은 bounds 안, bounds 는 부분 이상 피복(> 0) 픽셀 사각형 안.
+  // 어긋나면(예: bounds 가 mask 보다 작음) 외삽 범위가 측정 블록과 달라지므로 조용히 고르지 않고 거부한다.
+  const tol = 1e-6;
+  const full = maskRect(mask, TW, TH, 255), any = maskRect(mask, TW, TH, 1);
+  if ((full && (full[0] < i0 - tol || full[1] > i1 + tol || full[2] < j0 - tol || full[3] > j1 + tol))
+    || !any || i0 < any[0] - tol || i1 > any[1] + tol || j0 < any[2] - tol || j1 > any[3] + tol) {
+    throw new TowerAssetError('drape: tile.coverage.bounds 와 mask 가 서로 다른 피복을 말한다');
+  }
+}
+
+/** mask 값이 min 이상인 픽셀을 감싸는 사각형 [i0, i1, j0, j1](픽셀 모서리 좌표), 없으면 null. */
+function maskRect(mask, TW, TH, min) {
+  let mi0 = TW, mi1 = 0, mj0 = TH, mj1 = 0;
+  for (let j = 0; j < TH; j++) {
+    for (let i = 0; i < TW; i++) {
+      if (mask[j * TW + i] < min) continue;
+      if (i < mi0) mi0 = i;
+      if (i + 1 > mi1) mi1 = i + 1;
+      if (j < mj0) mj0 = j;
+      mj1 = j + 1;
+    }
+  }
+  return mi1 > mi0 && mj1 > mj0 ? [mi0, mi1, mj0, mj1] : null;
+}
+
+/** coverage.bounds(ENU) ∩ 타일 → 픽셀 모서리 좌표 [i0, i1, j0, j1](겹치지 않으면 i1 ≤ i0 또는 j1 ≤ j0). */
+function boundsRect(tile, b) {
+  const tb = tileBounds(tile.tx, tile.ty);
+  const pw = TERRAIN_TILE_SIZE_M / tile.width, ph = TERRAIN_TILE_SIZE_M / tile.height;
+  return [
+    Math.max(0, (b.minX - tb.minX) / pw), Math.min(tile.width, (b.maxX - tb.minX) / pw),
+    Math.max(0, (tb.maxY - b.maxY) / ph), Math.min(tile.height, (tb.maxY - b.minY) / ph),
+  ];
 }
 
 /** 한 축 n 픽셀을 블록 경계로 나눈다: 블록 수 = clamp(floor(n / 최소 블록), 1, 8), 경계 = round(k·n / 블록 수). */
@@ -252,21 +307,30 @@ function strideFor(w, h, budget) {
  * 3) 블록 이동량에 완전 아핀 모형을 최소제곱으로 맞춘다(di = 블록 중심 i − W/2, dj = 블록 중심 j − H/2):
  *      dx = ax + kxx·di + kxy·dj,  dy = ay + kyx·di + kyy·dj
  *    축척(kxx, kyy)과 회전·전단(kxy, kyx)을 모두 담는다. 잔차 > 0.5 px 블록은 하나씩 빼며 다시 맞추고(절반 넘게 빠지면 측정 불가),
- *    모든 블록을 모형 예측 ±1 px 에서 1/32 px 까지 다시 찾아 무늬 주기 일치(가짜 최소)를 바로잡는다. 예측 근처 최소가 블록 자체
- *    최소보다 1.5배 넘게 나쁜 블록은 아핀으로 설명되지 않는 진짜 국소 어긋남(local)으로 남긴다.
+ *    모든 블록을 모형 예측 축마다 ±1 px 에서 1/32 px 까지 다시 찾아 무늬 주기 일치(가짜 최소)를 바로잡는다. 예측 근처 최소가 블록
+ *    자체 최소보다 1.5배 넘게, 그리고 표본 수·잡음 기준으로 유의하게(차 > 4·max(자기 최소, 1/12)·√(2/(3n))) 나쁜 블록은 아핀으로
+ *    설명되지 않는 국소 어긋남(local)으로 실측 이동량을 유지한다. 다시 맞춘 모형의 이상치는 예측 ±0.5 px 안에서만 다시 찾고,
+ *    그 값으로도 잔차가 0.5 px 를 넘으면 local 이다 → 잔차 > 0.5 px 인 블록은 모두 local 이거나 적합 안에 있다.
+ *    local 블록의 이동량은 자기 최소에서 1/32 px 까지 다듬는다.
  *    전역 가설이 여럿이면 아핀 변위장 아래 타일 전체 평균 제곱 차가 가장 작은 가설을 고른다.
- * 4) edgeMaxPx = 피복 범위(tile.coverage.bounds 를 타일로 자른 사각형, 없으면 타일 전체 ±W/2, ±H/2) 네 모서리의 모형 변위
+ * 4) edgeMaxPx = 피복 범위(타일 ∩ coverage.mask 완전 피복(255) 픽셀을 감싸는 사각형 ∩ coverage.bounds, 둘 다 없으면 타일 전체) 네 모서리의 모형 변위
  *    최댓값(아핀 변위장의 크기는 볼록이라 사각형 안 최댓값은 모서리; 영상 자료가 없는 곳까지 외삽하지 않음),
  *    localMaxPx = local 블록 실측 이동량 크기 최댓값, maxMisalignPx = max(edgeMaxPx, localMaxPx).
  *    다음이면 status = 'unmeasurable' 이고 maxMisalignPx·edgeMaxPx·축척 등은 NaN 이다(0 으로 보고하지 않는다; NaN 은 어떤
  *    `<= 허용` 판정도 통과하지 못한다): 전역 비용면이 ±1 px 이동에 평평함(균일한 색 등), 아핀에 여분이 없음(블록 6개 미만이면서
  *    2×2 이상 블록 격자 전체 피복도 아님 — 3~5블록 정확 적합은 잡음을 모서리 외삽으로 부풀림), 블록 중심이 한 직선 위,
- *    이상치 제거 뒤 남은 블록이 그 하한 미만. 비용면이 한 축이라도 평평한 블록은 블록 측정에서 뺀다.
+ *    이상치 제거 뒤 남은 블록이 그 하한 미만, 두 축 모두 평평해 뺀 블록이 피복 블록의 절반 초과.
+ *    블록 평평 판정은 축마다 탐색 반경 전체(1..4 px)의 상승 최댓값 ≤ 1/12 채널값²(uint8 반올림 잡음 분산). 두 축 모두 평평한
+ *    블록은 빼고(flatBlocks·flatAreaFraction 에 센다), 한 축만 평평한 블록은 다른 축만 모형 적합·잔차에 쓴다(평평한 축 값은 모형 예측).
+ *    coverage.mask 형식·길이, coverage.bounds 형식·타일과의 겹침, mask 와 bounds 의 어긋남은 TowerAssetError.
  * @returns {{status:'measured'|'unmeasurable', reason?:string, maxMisalignPx:number, dxPx:number, dyPx:number, rms:number,
  *   samples:number, globalDxPx:number, globalDyPx:number, blockMaxPx:number, residualMaxPx:number, edgeMaxPx:number,
  *   localMaxPx:number, scaleX:number, scaleY:number, rotationRad:number,
  *   affine:{ax:number,kxx:number,kxy:number,ay:number,kyx:number,kyy:number}|null,
- *   blockPx:{width:number,height:number}, blocks:Array<{i0:number,j0:number,dx:number,dy:number,n:number,local:boolean}>}}
+ *   blockPx:{width:number,height:number}, flatBlocks:number, flatAreaFraction:number, axisFlatBlocks:number,
+ *   blocks:Array<{i0:number,j0:number,dx:number,dy:number,n:number,local:boolean,axes:'xy'|'x'|'y'}>}}
+ *   flatBlocks = 두 축 모두 평평해 뺀 블록 수, flatAreaFraction = 그 면적 / 피복 블록 면적, axisFlatBlocks = 한 축만 잰 블록 수,
+ *   axes = 그 블록에서 잰 축.
  *   dxPx·dyPx·rms·samples 는 타일 전체 단일 이동량(1 의 첫 가설) 기준(타일 픽셀 단위), dx 는 동쪽, dy 는 남쪽(행 증가) 방향.
  *   globalDxPx·globalDyPx = 고른 가설의 전역 이동량. scaleX = kxx, scaleY = kyy(0 = 축척 오류 없음; 축척 1+f 로 만든 타일은
  *   −f/(1+f)). rotationRad = (kxy − kyx)/2(내용이 ENU 반시계로 θ 돌아간 타일이면 sin θ). blockMaxPx = 블록 이동량 크기 최댓값,
@@ -340,6 +404,7 @@ export function measureDrapeAlignment(image, tile) {
         n++;
       }
     }
+    costPixels += n;
     return n > 0 ? { mse: sum / (n * 3), n } : { mse: Infinity, n: 0 };
   };
 
@@ -365,6 +430,7 @@ export function measureDrapeAlignment(image, tile) {
         n++;
       }
     }
+    costPixels += n;
     return n > 0 ? sum / (n * 3) : Infinity;
   };
   // 누적 합 표의 연속 값(채널 k) — 쌍선형 보간.
@@ -379,7 +445,8 @@ export function measureDrapeAlignment(image, tile) {
   // 탐색: 시작점에 가까운 이동량부터 보고, 엄격히 더 작을 때만 바꾼다(동률이면 가까운 쪽 → 결정적).
   // minN 보다 적은 픽셀로 잰 후보는 버린다(영상 밖으로 밀려 표본이 줄어든 후보가 우연히 이기는 것을 막음).
   // record 가 있으면 첫 단계의 후보별 결과를 넘긴다(전역 가설 고르기용).
-  const search = (xs, ys, cx, cy, stages, minN, record) => {
+  // lim 이 있으면 시작점에서 축마다 lim px 넘는 후보는 보지 않는다(REFINE_STAGES 누적 반경 1.9375 px 를 실제 ±lim 으로 자름).
+  const search = (xs, ys, cx, cy, stages, minN, record, lim = Infinity) => {
     let best = { dx: cx, dy: cy, ...cost(xs, ys, cx, cy) };
     if (best.n < minN) best = { dx: cx, dy: cy, mse: Infinity, n: 0 };
     stages.forEach(([radius, step], s) => {
@@ -389,6 +456,7 @@ export function measureDrapeAlignment(image, tile) {
       for (let a = -m; a <= m; a++) for (let b = -m; b <= m; b++) cand.push([ox + a * step, oy + b * step]);
       cand.sort((p, q) => (Math.hypot(p[0] - cx, p[1] - cy) - Math.hypot(q[0] - cx, q[1] - cy)) || (p[1] - q[1]) || (p[0] - q[0]));
       for (const [dx, dy] of cand) {
+        if (Math.abs(dx - cx) > lim + 1e-9 || Math.abs(dy - cy) > lim + 1e-9) continue;
         const c = cost(xs, ys, dx, dy);
         if (s === 0 && record) record(dx, dy, c.n >= minN ? c.mse : Infinity);
         if (c.n >= minN && c.mse < best.mse - 1e-9 * (1 + best.mse)) best = { dx, dy, ...c };
@@ -430,27 +498,40 @@ export function measureDrapeAlignment(image, tile) {
     if (g.n > 0) globals.push(g);
   }
 
-  // 이동량 (dx, dy) 에서 x·y 축 각각 ±1 px 옮긴 비용이 FLAT_MSE 이하로만 오르면 평평(그 축 이동량을 구별 못함).
-  function flatAt(xs, ys, dx, dy, minN, mse) {
-    for (const [a, b] of [[1, 0], [0, 1]]) {
-      let rise = Infinity;
-      for (const s of [-1, 1]) {
-        const c = cost(xs, ys, dx + s * a, dy + s * b);
-        if (c.n >= minN) rise = Math.min(rise, c.mse - mse);
+  // 이동량 (dx, dy) 에서 x·y 축 각각 평평한지([x 평평, y 평평]). 축마다 거리 s = 1..reach px 의 상승
+  // min(비용(+s) − 최소, 비용(−s) − 최소) 중 최댓값이 FLAT_MSE 이하면 그 축 이동량을 구별 못한다.
+  // reach = 1 은 ±1 px 만 본다(전역). 블록은 탐색 반경 전체를 본다: 완만한 무늬는 1 px 상승이 1/12 이하여도
+  // 3~4 px 에서는 뚜렷하다(F-353).
+  function flatAxes(xs, ys, dx, dy, minN, mse, reach) {
+    return [[1, 0], [0, 1]].map(([a, b]) => {
+      let rise = -Infinity;
+      for (let d = 1; d <= reach; d++) {
+        let r = Infinity;
+        for (const s of [-d, d]) {
+          const c = cost(xs, ys, dx + s * a, dy + s * b);
+          if (c.n >= minN) r = Math.min(r, c.mse - mse);
+        }
+        if (r !== Infinity) rise = Math.max(rise, r);
       }
-      if (rise !== Infinity && rise <= FLAT_MSE) return true;
-    }
-    return false;
+      return rise !== -Infinity && rise <= FLAT_MSE;
+    });
   }
 
-  // 모서리 외삽 범위(블록 좌표 di, dj = 픽셀 − 타일 중심): coverage.bounds 를 타일 안으로 자른 사각형, 없거나 잘못되면 타일 전체.
-  let ei0 = -TW / 2, ei1 = TW / 2, ej0 = -TH / 2, ej1 = TH / 2;
-  const cbx = tile.coverage?.bounds;
-  if (cbx && [cbx.minX, cbx.minY, cbx.maxX, cbx.maxY].every(Number.isFinite)) {
-    const i0 = Math.max(0, (cbx.minX - tb.minX) / pw), i1 = Math.min(TW, (cbx.maxX - tb.minX) / pw);
-    const j0 = Math.max(0, (tb.maxY - cbx.maxY) / ph), j1 = Math.min(TH, (tb.maxY - cbx.minY) / ph);
-    if (i1 > i0 && j1 > j0) { ei0 = i0 - TW / 2; ei1 = i1 - TW / 2; ej0 = j0 - TH / 2; ej1 = j1 - TH / 2; }
+  // 모서리 외삽 범위(픽셀 좌표): 타일 ∩ 완전 피복(mask === 255, 측정에 쓰는 픽셀과 같은 기준) 픽셀을 감싸는 사각형 ∩ coverage.bounds.
+  // 영상 자료가 실제로 있는 곳까지만 외삽한다 — bounds 가 없는 타일도 mask 로 피복 범위를 안다(블록이 한 구석에만 있을 때
+  // 타일 반대편 모서리까지 외삽하면 블록 잡음이 부푼다). mask·bounds 의 형식·서로 어긋남은 checkTile 이 이미 거부했다.
+  let ri0 = 0, ri1 = TW, rj0 = 0, rj1 = TH;
+  if (mask) {
+    const r = maskRect(mask, TW, TH, 255);
+    if (r) [ri0, ri1, rj0, rj1] = r;
   }
+  const cbx = tile.coverage?.bounds;
+  if (cbx) {
+    const [i0, i1, j0, j1] = boundsRect(tile, cbx);
+    ri0 = Math.max(ri0, i0); ri1 = Math.min(ri1, i1); rj0 = Math.max(rj0, j0); rj1 = Math.min(rj1, j1);
+  }
+  // 블록 좌표(di, dj = 픽셀 − 타일 중심).
+  const ei0 = ri0 - TW / 2, ei1 = ri1 - TW / 2, ej0 = rj0 - TH / 2, ej1 = rj1 - TH / 2;
 
   const ex = blockEdges(TW), ey = blockEdges(TH);
   const blockPx = { width: ex[1] - ex[0], height: ey[1] - ey[0] };
@@ -466,6 +547,8 @@ export function measureDrapeAlignment(image, tile) {
   function alignFromGlobal(g) {
     // 블록별 이동량. 전역 이동량에서 완전 피복 표본이 블록 표본의 절반 미만인 블록은 건너뛴다.
     const blocks = [];
+    let covered = 0, flatBlocks = 0, flatArea = 0, coveredArea = 0;
+    const reach = Math.min(BLOCK_SEARCH_PX, radius);
     for (let b = 0; b + 1 < ey.length; b++) {
       const j0 = ey[b], j1 = ey[b + 1];
       for (let a = 0; a + 1 < ex.length; a++) {
@@ -474,14 +557,18 @@ export function measureDrapeAlignment(image, tile) {
         const xs = sampleIdx(i0, i1, st), ys = sampleIdx(j0, j1, st);
         const base = cost(xs, ys, g.dx, g.dy).n;
         if (base * 2 < xs.length * ys.length) continue;
+        const area = (i1 - i0) * (j1 - j0);
+        covered++; coveredArea += area;
         const minN = Math.ceil(base / 2);
-        const r = search(xs, ys, g.dx, g.dy, [[Math.min(BLOCK_SEARCH_PX, radius), 1], ...BLOCK_COARSE_STAGES], minN);
+        const r = search(xs, ys, g.dx, g.dy, [[reach, 1], ...BLOCK_COARSE_STAGES], minN);
         if (r.n === 0) continue;
-        // 이동량 한 축이라도 비용면이 평평하면(균일한 색·한 방향 줄무늬) 그 블록 이동량은 정해지지 않으므로 버린다.
-        if (flatAt(xs, ys, r.dx, r.dy, minN, r.mse)) continue;
+        // 축마다 평평 판정(탐색 반경 전체 상승). 두 축 모두 평평하면(균일한 색) 블록을 빼고 개수·면적에 센다.
+        // 한 축만 평평하면(한 방향 줄무늬·완만한 경사) 블록을 살리고 평평하지 않은 축만 모형 적합·잔차에 쓴다.
+        const [flatX, flatY] = flatAxes(xs, ys, r.dx, r.dy, minN, r.mse, reach);
+        if (flatX && flatY) { flatBlocks++; flatArea += area; continue; }
         blocks.push({
-          i0, j0, di: (i0 + i1) / 2 - TW / 2, dj: (j0 + j1) / 2 - TH / 2, xs, ys, minN,
-          dx: r.dx, dy: r.dy, mse: r.mse, n: r.n, local: false,
+          i0, j0, di: (i0 + i1) / 2 - TW / 2, dj: (j0 + j1) / 2 - TH / 2, xs, ys, minN, ix: !flatX, iy: !flatY,
+          dx: r.dx, dy: r.dy, mse: r.mse, n: r.n, own: r, local: false,
         });
       }
     }
@@ -491,7 +578,9 @@ export function measureDrapeAlignment(image, tile) {
       globalDxPx: g.dx, globalDyPx: g.dy,
       blockMaxPx: blocks.reduce((m, b) => Math.max(m, Math.hypot(b.dx, b.dy)), 0),
       blockPx,
-      blocks: blocks.map(({ i0, j0, dx, dy, n, local }) => ({ i0, j0, dx, dy, n, local })),
+      flatBlocks, flatAreaFraction: coveredArea > 0 ? flatArea / coveredArea : 0,
+      axisFlatBlocks: blocks.filter((b) => !(b.ix && b.iy)).length,
+      blocks: blocks.map(({ i0, j0, dx, dy, n, local, ix, iy }) => ({ i0, j0, dx, dy, n, local, axes: (ix ? 'x' : '') + (iy ? 'y' : '') })),
     });
     const unmeasurable = (reason) => finish('unmeasurable', {
       reason, maxMisalignPx: NaN, residualMaxPx: NaN, edgeMaxPx: NaN, localMaxPx: NaN,
@@ -499,9 +588,12 @@ export function measureDrapeAlignment(image, tile) {
     });
 
     // 3) 아핀 적합(이상치 제거) → 모형 예측 근처(±1 px)에서 블록을 다시 찾아 무늬 주기 일치(가짜 최소)를 바로잡는다.
-    //    이상치 블록의 예측 근처 최소가 자기 최소보다 뚜렷이 나쁘면(평균 제곱 차 비 > ALIAS_MSE_RATIO) 진짜 국소 어긋남(local)으로 남긴다.
+    //    이상치 블록의 예측 근처 최소가 자기 최소보다 뚜렷이 나쁘면 진짜 국소 어긋남(local)으로 남긴다.
     // 전역 비용면이 평평하면(균일한 색 등) 어떤 이동량도 구별되지 않는다 → 0 px 가 아니라 측정 불가.
-    if (flatAt(gxs, gys, g.dx, g.dy, 1, g.mse)) return unmeasurable('비용면이 평평함(영상 무늬가 없어 이동량을 구별할 수 없음)');
+    if (flatAxes(gxs, gys, g.dx, g.dy, 1, g.mse, 1).some(Boolean)) return unmeasurable('비용면이 평평함(영상 무늬가 없어 이동량을 구별할 수 없음)');
+    // 피복 블록의 절반 넘게 평평하면(이동량을 볼 수 없는 면적이 과반) 남은 블록의 모형을 그 면적까지 외삽하지 않는다
+    // (이상치 제거의 '절반 넘게 빠지면 측정 불가'와 같은 기준).
+    if (flatBlocks * 2 > covered) return unmeasurable(`평평 블록 ${flatBlocks}/${covered}개(이동량을 볼 수 없는 면적이 절반 초과)`);
     // 아핀(6 매개변수)은 여분이 있어야 잡음이 모서리 외삽으로 부풀지 않는다: 블록 MIN_AFFINE_BLOCKS 개 이상,
     // 또는 블록 격자 전체(2×2 이상)가 피복된 타일. 블록 3~5개 정확 적합은 측정 불가.
     const gridBlocks = (ex.length - 1) * (ey.length - 1);
@@ -511,29 +603,52 @@ export function measureDrapeAlignment(image, tile) {
     }
     let fit = robustAffine(blocks, minBlocks);
     if (!fit) return unmeasurable('블록 이동량이 한 아핀 모형으로 모이지 않거나 블록 중심이 한 직선 위');
-    for (const b of blocks) {
-      const [px, py] = fit.at(b.di, b.dj);
-      const near = search(b.xs, b.ys, px, py, REFINE_STAGES, b.minN);
-      if (near.n === 0) continue;
-      if (fit.inlier.has(b) || near.mse <= b.mse * ALIAS_MSE_RATIO + 1e-9) {
+    // 블록 b 를 모형 예측 ±NEAR_PX(축마다)에서 다시 찾는다. 예측 근처 최소가 자기 최소보다 상대(ALIAS_MSE_RATIO 배 초과)와
+    // 유의성(localSignificant) 모두 뚜렷이 나쁠 때만 local(true 반환, 실측 dx·dy 유지), 아니면 예측 근처 값을 쓴다.
+    // 예측 근처를 못 재면 null.
+    const settle = (b, at, keep, lim = NEAR_PX) => {
+      const [px, py] = at(b.di, b.dj);
+      const near = search(b.xs, b.ys, px, py, REFINE_STAGES, b.minN, null, lim);
+      if (near.n === 0) return null;
+      if (keep || near.mse <= b.own.mse * ALIAS_MSE_RATIO + 1e-9 || !localSignificant(near.mse, b.own.mse, b.own.n)) {
         b.dx = near.dx; b.dy = near.dy; b.mse = near.mse; b.n = near.n;
-      } else {
-        b.local = true;
+        return false;
       }
-    }
+      return true;
+    };
+    // local 블록은 자기 실측 최소(첫 탐색은 1/4 px 까지)를 그 자리에서 1/32 px 까지 다듬어 보고한다.
+    const markLocal = (b) => {
+      const r = search(b.xs, b.ys, b.own.dx, b.own.dy, REFINE_STAGES.slice(BLOCK_COARSE_STAGES.length), b.minN);
+      const o = r.n > 0 ? r : b.own;
+      b.dx = o.dx; b.dy = o.dy; b.mse = o.mse; b.n = o.n;
+      b.local = true;
+    };
+    for (const b of blocks) if (settle(b, fit.at, fit.inlier.has(b))) markLocal(b);
     const affineBlocks = blocks.filter((b) => !b.local);
     fit = robustAffine(affineBlocks, minBlocks);
     if (!fit) return unmeasurable('블록 이동량이 한 아핀 모형으로 모이지 않거나 블록 중심이 한 직선 위');
-    for (const b of affineBlocks) if (!fit.inlier.has(b)) b.local = true;
+    // 다시 맞춘 모형의 이상치: 예측 ±OUTLIER_PX(축마다) 안에서만 다시 찾는다. 그 안의 최소가 자기 최소보다 뚜렷이 나쁘거나,
+    // 그 값으로도 잔차가 OUTLIER_PX 를 넘거나, 예측 근처를 못 재면 모형으로 설명되지 않는 국소 어긋남이다 → 블록 자기 실측
+    // 최소(own)를 되살려 local. 이전에는 ±1.94 px 탐색 범위 안에 실제 1~1.6 px 이동이 들어가 비용이 같으면(near == own)
+    // local 도 적합도 아닌 채 버렸다(F-357). 잡음 블록은 예측 ±0.5 px 의 최소가 자기 최소와 유의하게 다르지 않아 local 이 아니다.
+    for (const b of affineBlocks) {
+      if (fit.inlier.has(b)) continue;
+      if (settle(b, fit.at, false, OUTLIER_PX) !== false || residual(b, fit.at) > OUTLIER_PX) markLocal(b);
+    }
+    // 평평한 축의 값은 모형 예측으로 둔다(그 축은 잴 수 없었다).
+    for (const b of blocks) {
+      const [px, py] = fit.at(b.di, b.dj);
+      if (!b.ix) b.dx = px;
+      if (!b.iy) b.dy = py;
+    }
 
-    // 4) 피복 범위(coverage.bounds = 타일 ∩ 영상, 없으면 타일) 네 모서리의 모형 변위 최댓값, 그리고 모형으로 설명되지 않는
+    // 4) 피복 사각형(위 ei0..ej1: 타일 ∩ mask 완전 피복 ∩ coverage.bounds) 네 모서리의 모형 변위 최댓값, 그리고 모형으로 설명되지 않는
     //    블록(local)의 실측 이동량 크기. 영상 자료가 없는 곳까지 외삽하지 않는다(완전 피복 타일이면 타일 네 모서리).
     let edgeMaxPx = 0;
     for (const ci of [ei0, ei1]) for (const cj of [ej0, ej1]) edgeMaxPx = Math.max(edgeMaxPx, Math.hypot(...fit.at(ci, cj)));
     let residualMaxPx = 0, localMaxPx = 0;
     for (const b of blocks) {
-      const [px, py] = fit.at(b.di, b.dj);
-      residualMaxPx = Math.max(residualMaxPx, Math.hypot(b.dx - px, b.dy - py));
+      residualMaxPx = Math.max(residualMaxPx, residual(b, fit.at));
       if (b.local) localMaxPx = Math.max(localMaxPx, Math.hypot(b.dx, b.dy));
     }
     const { fx, fy } = fit;
@@ -552,36 +667,60 @@ const ALT_GLOBAL_RATIO = 2;
 const ALT_GLOBAL_MAX = 2;
 // 아핀 잔차가 이보다 큰 블록은 이상치(타일 픽셀).
 const OUTLIER_PX = 0.5;
+// 이상치 블록을 모형 예측 근처에서 다시 찾는 반경(축마다, 타일 픽셀). 무늬 주기 일치는 정수 px 이상 떨어지므로 ±1 px 이면 충분하고,
+// 그보다 넓으면 실제 국소 이동을 '예측 근처'로 삼켜 버린다.
+const NEAR_PX = 1;
 // 이상치 블록의 예측 근처 최소의 평균 제곱 차가 자기 최소의 이 배 이내면 '무늬 주기 일치'로 보고 예측 근처 값을 쓴다.
 const ALIAS_MSE_RATIO = 1.5;
+// local(국소 어긋남) 판정의 유의성 계수 k. 블록 평균 제곱 차는 3n 개 제곱 차의 평균이라 잡음 분산 σ² 에서 표준편차가
+// 약 σ²·√(2/(3n))(χ²₁ 분산 2). σ² 는 블록 자기 최소의 평균 제곱 차로 어림하되 uint8 반올림 잡음 분산 1/12 를 하한으로 둔다
+// (잡음 없는 영상에서도 0 으로 나누지 않음). 차가 k 표준편차를 넘을 때만 local: k = 4 는 정규 근사 한쪽 p ≈ 3e-5 로
+// 블록 64개 타일에서 잡음만으로 거짓 local 이 날 확률 ≈ 0.2 %. 이전의 절대 문턱(1 채널값²)은 블록 대비·표본 수와 무관해
+// 잡음 없는 저대비 블록의 실제 2~4 px 어긋남을 0 px 로 덮었다(F-352).
+const LOCAL_SIGNIFICANCE_K = 4;
+function localSignificant(nearMse, ownMse, n) {
+  return nearMse - ownMse > LOCAL_SIGNIFICANCE_K * Math.max(ownMse, FLAT_MSE) * Math.sqrt(2 / (3 * n));
+}
 // 아핀 적합에 필요한 블록 수(블록 격자 전체가 피복되지 않은 타일). 6 매개변수 정확 적합(3블록)은 잡음을 모서리로 부풀린다.
 const MIN_AFFINE_BLOCKS = 6;
-// 비용면 평평 판정: ±1 px 이동의 평균 제곱 차 상승(채널값²)이 이 이하면 그 축 이동량을 구별할 수 없다(uint8 반올림 잡음 1/12 보다 작음).
-const FLAT_MSE = 0.01;
+// 비용면 평평 판정: 이동의 평균 제곱 차 상승(채널값²)이 이 이하면 그 축 이동량을 구별할 수 없다.
+// 경계 = uint8 반올림 잡음 분산 1/12: 높은 밉에서 박스 평균으로 잡음이 반올림 수준까지 줄어든 블록(무늬 없는 영상)은
+// 상승이 이보다 작아 잡음 최소를 이동량으로 잘못 보고했다(0.01 이던 때 ±3 DN 잡음 영상에서 1 px 넘는 거짓 실패).
+const FLAT_MSE = 1 / 12;
 
-/**
- * 블록 이동량 (di, dj) → (dx, dy) 에 아핀 최소제곱. 블록 3개 미만이거나 중심이 한 직선 위면 null.
- * @returns {{fx:{a:number,ki:number,kj:number}, fy:{a:number,ki:number,kj:number}, at:(i:number,j:number)=>[number,number]}|null}
- */
-function fitAffine(list) {
+/** 블록 실측과 모형 예측의 차(잴 수 있는 축만). */
+function residual(b, at) {
+  const [px, py] = at(b.di, b.dj);
+  return Math.hypot(b.ix ? b.dx - px : 0, b.iy ? b.dy - py : 0);
+}
+
+/** 한 축 성분 v(b) 에 c = a + ki·di + kj·dj 최소제곱. 블록 3개 미만이거나 중심이 한 직선 위면 null. */
+function fitAxis(list, v) {
   const nb = list.length;
   if (nb < 3) return null;
-  let mi = 0, mj = 0, mx = 0, my = 0;
-  for (const b of list) { mi += b.di; mj += b.dj; mx += b.dx; my += b.dy; }
-  mi /= nb; mj /= nb; mx /= nb; my /= nb;
-  let sii = 0, sjj = 0, sij = 0, six = 0, sjx = 0, siy = 0, sjy = 0;
+  let mi = 0, mj = 0, mv = 0;
+  for (const b of list) { mi += b.di; mj += b.dj; mv += v(b); }
+  mi /= nb; mj /= nb; mv /= nb;
+  let sii = 0, sjj = 0, sij = 0, siv = 0, sjv = 0;
   for (const b of list) {
-    const ui = b.di - mi, uj = b.dj - mj, vx = b.dx - mx, vy = b.dy - my;
-    sii += ui * ui; sjj += uj * uj; sij += ui * uj;
-    six += ui * vx; sjx += uj * vx; siy += ui * vy; sjy += uj * vy;
+    const ui = b.di - mi, uj = b.dj - mj, w = v(b) - mv;
+    sii += ui * ui; sjj += uj * uj; sij += ui * uj; siv += ui * w; sjv += uj * w;
   }
   const det = sii * sjj - sij * sij;
   if (!(det > 1e-9 * (sii + sjj) ** 2)) return null;
-  const solve = (m, si, sj) => {
-    const ki = (sjj * si - sij * sj) / det, kj = (sii * sj - sij * si) / det;
-    return { a: m - ki * mi - kj * mj, ki, kj };
-  };
-  const fx = solve(mx, six, sjx), fy = solve(my, siy, sjy);
+  const ki = (sjj * siv - sij * sjv) / det, kj = (sii * sjv - sij * siv) / det;
+  return { a: mv - ki * mi - kj * mj, ki, kj };
+}
+
+/**
+ * 블록 이동량 (di, dj) → (dx, dy) 에 아핀 최소제곱. x 성분은 x 축이 평평하지 않은 블록으로, y 성분은 y 축이 평평하지 않은
+ * 블록으로 맞춘다. 어느 성분이든 블록 3개 미만이거나 중심이 한 직선 위면 null.
+ * @returns {{fx:{a:number,ki:number,kj:number}, fy:{a:number,ki:number,kj:number}, at:(i:number,j:number)=>[number,number]}|null}
+ */
+function fitAffine(list) {
+  const fx = fitAxis(list.filter((b) => b.ix), (b) => b.dx);
+  const fy = fitAxis(list.filter((b) => b.iy), (b) => b.dy);
+  if (!fx || !fy) return null;
   return { fx, fy, at: (i, j) => [fx.a + fx.ki * i + fx.kj * j, fy.a + fy.ki * i + fy.kj * j] };
 }
 
@@ -598,8 +737,7 @@ function robustAffine(list, minBlocks) {
     if (!fit) return null;
     let worst = -1, wr = 0;
     for (let q = 0; q < active.length; q++) {
-      const [px, py] = fit.at(active[q].di, active[q].dj);
-      const r = Math.hypot(active[q].dx - px, active[q].dy - py);
+      const r = residual(active[q], fit.at);
       if (r > wr) { wr = r; worst = q; }
     }
     if (wr <= OUTLIER_PX) return { ...fit, inlier: new Set(active) };

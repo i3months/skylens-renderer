@@ -2,6 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert';
 import { runOffline } from './index.mjs';
 import http from 'node:http';
+import { get as namedGet } from 'node:http';
+import { get as namedHttpsGet, request as namedHttpsRequest } from 'node:https';
+import { request as namedRequest } from 'node:http';
+import { lookup as namedLookup } from 'node:dns';
+import { lookup as namedPromisesLookup } from 'node:dns/promises';
 
 // 네트워크를 사용하지 않는 함수
 test('no network calls', async () => {
@@ -375,4 +380,58 @@ test('차단 req 스텁은 flushHeaders/getHeader/setNoDelay 를 가진다', asy
     req.on('error', () => {});
     assert.doesNotThrow(() => { req.flushHeaders(); req.getHeader('x'); req.setNoDelay(true); });
   });
+});
+
+// F-329 ②: 듣는 쪽 없는 net.Socket connect 는 runOffline 을 reject 하고 스텁을 복원한다.
+test('리스너 없는 net.Socket connect 는 runOffline 을 reject 하고 복원한다', async () => {
+  const before = snapshot();
+  await assert.rejects(
+    () => runOffline(() => new Promise(() => { new net.Socket().connect(80, 'example.com'); })),
+    (e) => e.message === 'Network access blocked',
+  );
+  assertRestored(before);
+});
+
+// F-329 ⑥: 이름 가져오기(import { get })도 스텁을 본다.
+test('import { get } 이름 가져오기도 차단·계수된다', async () => {
+  const before = snapshot();
+  assert.strictEqual(namedGet, before.httpGet);
+  const { networkCalls } = await runOffline(() => {
+    // 원본이 소켓 단계에서 우연히 세어지는 것과 구별하려고 스텁 동일성을 직접 본다.
+    assert.strictEqual(namedGet, http.get);
+    assert.strictEqual(namedHttpsGet, https.get);
+    namedGet('http://example.com').on('error', () => {});
+    namedHttpsGet('https://example.com').on('error', () => {});
+  });
+  assert.strictEqual(networkCalls, 2);
+  assert.strictEqual(namedGet, before.httpGet);
+  assert.strictEqual(namedHttpsGet, before.httpsGet);
+});
+
+// F-356 ②: get 뿐 아니라 request, node:dns lookup, node:dns/promises lookup 이름 가져오기도 스텁을 보고 계수된다.
+test('import { request, lookup } 이름 가져오기도 차단·계수된다', async () => {
+  const before = snapshot();
+  assert.strictEqual(namedRequest, before.httpRequest);
+  assert.strictEqual(namedHttpsRequest, before.httpsRequest);
+  assert.strictEqual(namedLookup, dns.lookup);
+  assert.strictEqual(namedPromisesLookup, dns.promises.lookup);
+  const originalLookup = namedLookup;
+  const originalPromisesLookup = namedPromisesLookup;
+  const { networkCalls } = await runOffline(async () => {
+    assert.strictEqual(namedRequest, http.request);
+    assert.strictEqual(namedHttpsRequest, https.request);
+    assert.strictEqual(namedLookup, dns.lookup);
+    assert.strictEqual(namedPromisesLookup, dns.promises.lookup);
+    assert.notStrictEqual(namedLookup, originalLookup);
+    assert.notStrictEqual(namedPromisesLookup, originalPromisesLookup);
+    namedRequest('http://example.com').on('error', () => {});
+    namedHttpsRequest('https://example.com').on('error', () => {});
+    await new Promise((resolve) => namedLookup('example.com', () => resolve()));
+    await assert.rejects(() => namedPromisesLookup('example.com'), /DNS lookup blocked/);
+  });
+  assert.strictEqual(networkCalls, 4);
+  assert.strictEqual(namedRequest, before.httpRequest);
+  assert.strictEqual(namedHttpsRequest, before.httpsRequest);
+  assert.strictEqual(namedLookup, originalLookup);
+  assert.strictEqual(namedPromisesLookup, originalPromisesLookup);
 });

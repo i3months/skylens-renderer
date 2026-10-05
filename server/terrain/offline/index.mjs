@@ -5,6 +5,7 @@ import net from 'node:net';
 import dns from 'node:dns';
 import { EventEmitter } from 'node:events';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { syncBuiltinESMExports } from 'node:module';
 
 // 동시·중첩 호출 대비: 활성 호출 목록과 최초 원본 한 벌을 모듈에서 공유한다.
 // 첫 호출이 들어올 때만 원본을 저장·스텁을 설치하고, 마지막 호출이 끝날 때만 원본을 복원한다(깊이 계수).
@@ -79,6 +80,12 @@ function install() {
     count();
     return Promise.reject(new Error('DNS lookup blocked'));
   };
+  // `import { get } from 'node:http'` 처럼 이름으로 가져온 바인딩은 CJS 객체 교체만으로는 안 바뀐다.
+  // 내장 ESM 내보내기를 다시 맞춰 이름 가져오기도 스텁을 보게 한다(F-329 ⑥). 한계: 모듈 로드 시점에
+  // `const { get } = http` 로 구조 분해해 붙들어 둔 참조는 여전히 우회한다. 또 syncBuiltinESMExports 는 특정 이름이 아니라
+  // 모든 내장 모듈의 ESM 내보내기를 CJS 객체 현재 값에 다시 맞추므로, 다른 코드가 CJS 객체만 바꿔 둔 상태(예: 다른 곳의
+  // 패치)도 이름 바인딩에 굳혀 버린다. install·restore 시점에 한 번씩 부를 뿐 그 사이의 변경은 추적하지 않는다.
+  syncBuiltinESMExports();
 }
 
 function restore() {
@@ -91,6 +98,7 @@ function restore() {
   dns.lookup = originals.dnsLookup;
   dns.promises.lookup = originals.dnsPromisesLookup;
   originals = null;
+  syncBuiltinESMExports();
 }
 
 /**

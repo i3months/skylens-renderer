@@ -97,14 +97,16 @@ const EXPECTED = {
   // (이전 0.03726768493652344, 0.14631986618041992, 0.5442428588867188). 간격·해시는 그대로.
   hill: { cells: [65, 33, 17, 9], max: [0, 0.03736114501953125, 0.14777565002441406, 0.5656108856201172] }, // 실측 고정(회귀용)
   // 1.5 m 계단(16 m 마다): 간격 2 → 0.75(>0.5) 라 LOD1 은 원본, LOD2 는 간격 2(0.75 ≤ 1), LOD3 은 간격 8(1.3125 ≤ 2).
-  steps: { cells: [65, 65, 33, 9], max: [0, 0, 0.75, 1.3125] }, // 실측 고정(회귀용)
+  // max 는 해석 근거로 식을 쓴다(실측 고정 아님): 간격 2 는 계단 턱 한 칸이 절반 어긋나 1.5/2,
+  // 간격 8 은 턱 직전 표본에서 1.5·7/8 (아래 '알려진 정답' 시험과 같은 값).
+  steps: { cells: [65, 65, 33, 9], max: [0, 0, 1.5 / 2, 1.5 * 7 / 8] },
   // 0.4 m 폭 잡음 + 경사: 모든 LOD 가 명목 간격으로 상한 안.
   // F-305 메시 표면 기준으로 LOD2 max 가 0.3806000351905823 → 0.3891999423503876 로 바뀌었다. 간격·해시는 그대로.
   noise: { cells: [65, 33, 17, 9], max: [0, 0.3926001787185669, 0.3891999423503876, 0.3904501795768738] }, // 실측 고정(회귀용)
   // 2 m 폭 잡음: LOD1·2 는 상한을 못 맞춰 원본으로 물러나고, LOD3 만 간격 8 로 2 m 안.
   noiseBig: { cells: [65, 65, 65, 9], max: [0, 0, 0, 1.9522499740123749] }, // 실측 고정(회귀용)
 };
-// LOD 별 16장 heights 바이트(타일 순서 ty, tx) 의 sha256. 초월함수 없는 DEM 만 고정한다.
+// LOD 별 16장 heights 바이트(타일 순서 ty, tx) 의 sha256. 초월함수 없는 DEM 만 고정한다. 실측 고정(회귀용).
 const EXPECTED_HASH = {
   steps: ['63a8f38a8cada2250a3defca87686e308a78c03d905d1c9c0bc8a7beb3f62a85',
     '63a8f38a8cada2250a3defca87686e308a78c03d905d1c9c0bc8a7beb3f62a85',
@@ -322,10 +324,13 @@ test('① 간격 판정은 첫 타일에서 멈추지 않는다: (0,0) 만 평�
   const dem = makeDem((x, y, i, j) => (i <= 64 && j <= 64 ? 3 : 2 * hashNoise(i, j)));
   // 타일 (0,0) 은 간격 2 에서 오차 0 이지만 다른 타일은 0.5 m 를 넘는다 → 전역 간격은 1.
   assert.equal(terrainLodStride(dem, 1), 1);
-  for (const [tx, ty] of TILES) {
-    const t = buildTerrainTile(dem, tx, ty, 1);
-    assert.equal(t.cells, 65, `(${tx},${ty}) cells`);
-    assert.ok(measureTerrainError(dem, t).maxErrorM <= TERRAIN_LOD_MAX_ERROR_M[1]);
+  assert.equal(terrainLodStride(dem, 2), 1); // 잡음 폭 2 m 라 LOD2 상한 1 m 도 간격 2 로는 못 맞춘다
+  for (const lod of [1, 2]) {
+    for (const [tx, ty] of TILES) {
+      const t = buildTerrainTile(dem, tx, ty, lod);
+      assert.equal(t.cells, 65, `LOD${lod} (${tx},${ty}) cells`);
+      assert.ok(measureTerrainError(dem, t).maxErrorM <= TERRAIN_LOD_MAX_ERROR_M[lod], `LOD${lod} (${tx},${ty}) 오차 상한`);
+    }
   }
   // 대조: 평평한 타일만 따로 보면 간격 2 로도 오차 0.
   const flatOnly = singleTileDem(() => 3);
@@ -339,6 +344,15 @@ test('② 마지막 행·열만 솟은 DEM: 가장자리 칸 보간이 범위를
     const cells = 33, heights = new Float32Array(cells * cells);
     for (let j = 0; j < cells; j++) for (let i = 0; i < cells; i++) heights[j * cells + i] = dem.heights[(j * 2) * 65 + i * 2];
     const m = measureTerrainError(dem, { tx: 0, ty: 0, lod: 1, cells, heights }).maxErrorM;
+    assert.equal(m, 1, `마지막 ${name}`);
+  }
+  // 마지막 행·열의 마지막 홀수 표본 하나만 솟은 경우: 열 쪽 Math.min 이 빠지면 범위 밖 읽기로 NaN 이 나와
+  // 그 점의 오차가 조용히 버려진다(여럿이 솟으면 다른 점이 가려 준다). 점 하나라야 드러난다.
+  for (const [name, f] of [['행 한 점', (i, j) => (j === 64 && i === 63 ? 1 : 0)], ['열 한 점', (i, j) => (i === 64 && j === 63 ? 1 : 0)]]) {
+    const dem = singleTileDem(f);
+    const hp = new Float32Array(33 * 33);
+    for (let j = 0; j < 33; j++) for (let i = 0; i < 33; i++) hp[j * 33 + i] = dem.heights[(j * 2) * 65 + i * 2];
+    const m = measureTerrainError(dem, { tx: 0, ty: 0, lod: 1, cells: 33, heights: hp }).maxErrorM;
     assert.equal(m, 1, `마지막 ${name}`);
   }
   // 마지막 행 전체가 솟은 경우: 정점이 모두 솟고 바로 아래 홀수 행만 0.5 어긋난다.

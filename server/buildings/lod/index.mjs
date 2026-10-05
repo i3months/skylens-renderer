@@ -40,6 +40,7 @@
 //   빈 땅이 메워져, 줄 사이 틈의 벽 띠가 지붕으로 덮였다(이전 시드 180 top-high 건물 영역 SSIM 0.9496, F-326·F-331).
 // 계산량: 한 칸 k 동에 대해 쌍 선검사 O(k²)(값싼 상자 비교), 오차 평가는 꺼낸 쌍만, 틈 칸만 표본한다.
 import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
+import { foldContained } from './dedupe_boxes.mjs';
 
 /** 기준 화면의 한 픽셀 각(rad): 세로 시야 60°, 세로 1080 px 화면. 관제탑 표준 화면을 가정한 값. */
 export const BUILDING_LOD_REF_PIXEL_RAD = (Math.PI / 3) / 1080;
@@ -94,6 +95,38 @@ function fold90(a) {
   return r - Math.PI / 4;
 }
 
+// 방향 있는 선분 [x1,y1,x2,y2,_] 묶음(평탄화, 5개씩)이 이루는 고리들의 감김수가 0 이 아닌 영역의 넓이.
+// x 좌표 구간마다 걸치는 선분을 가운데 x 에서 y 로 정렬해 아래에서부터 감김수를 누적하고, 0 이 아닌 사이 간격의 사다리꼴 넓이를 더한다.
+function windingArea(segs) {
+  const n = segs.length / 5;
+  const xsSet = new Set();
+  const ss = [];
+  for (let i = 0; i < n; i++) {
+    let x1 = segs[i * 5], y1 = segs[i * 5 + 1], x2 = segs[i * 5 + 2], y2 = segs[i * 5 + 3];
+    if (x1 === x2) continue;
+    const dir = x2 > x1 ? 1 : -1;
+    if (dir < 0) { [x1, y1, x2, y2] = [x2, y2, x1, y1]; }
+    ss.push({ x1, y1, x2, y2, dir, m: (y2 - y1) / (x2 - x1) });
+    xsSet.add(x1); xsSet.add(x2);
+  }
+  const xs = [...xsSet].sort((a, b) => a - b);
+  let area = 0;
+  for (let i = 0; i + 1 < xs.length; i++) {
+    const l = xs[i], r = xs[i + 1], mid = (l + r) / 2;
+    const cut = [];
+    for (const s of ss) if (s.x1 <= l && s.x2 >= r) cut.push({ s, y: s.y1 + s.m * (mid - s.x1) });
+    cut.sort((a, b) => a.y - b.y);
+    let w = 0;
+    for (let k = 0; k + 1 < cut.length; k++) {
+      w += cut[k].s.dir;
+      if (w === 0) continue;
+      const a = cut[k].s, b = cut[k + 1].s;
+      area += (r - l) * ((b.y1 + b.m * (l - b.x1) - a.y1 - a.m * (l - a.x1)) + (b.y1 + b.m * (r - b.x1) - a.y1 - a.m * (r - a.x1))) / 2;
+    }
+  }
+  return area;
+}
+
 // 건물 하나의 요약: 월드 AABB, 꼭대기 높이, xy 투영 삼각형(평탄화 배열 [ax,ay,bx,by,cx,cy,...]), 벽 지배 방향.
 function summarize(b, index) {
   if (!b || typeof b !== 'object') fail(`buildings[${index}] 가 객체가 아니다`);
@@ -145,16 +178,49 @@ function summarize(b, index) {
   const theta = wallAngles.length ? fold90(Math.atan2(ss, sc) / 4) : 0;
   // 윗면 최저 높이: 위를 향한(xy 투영이 반시계, 넓이 있는) 삼각형 꼭짓점 z 의 최솟값. 상자 지붕은 maxZ 이므로
   // 한 메시 안의 높이 차(낮은 기단 위 탑, 경사 지붕)도 수직 오차 maxZ − roofMin 으로 잡힌다.
-  // 위를 향한 삼각형이 없으면(벽만 있는 퇴화 입력) 지붕이 낮아지는 곳이 없으므로 maxZ 로 둔다.
-  // 감김이 계약과 반대면 바닥이 위를 향한 것으로 보여 오차가 커지고 원본이 유지된다(보수적).
-  let roofMin = Infinity;
+  // 지붕 높이를 알 수 없거나 믿을 수 없으면 roofMin 을 -Infinity 로 두어 수직 오차를 무한대로 만들고 그 건물은 원본을 유지한다
+  // (계약의 오류 관례: 해석할 수 없는 입력은 바꾸지 않고 그대로 돌려준다). 상자는 지붕을 maxZ 에 새로 만들기 때문에(F-327, F-355):
+  //  - 위를 향한 삼각형이 하나도 없다(벽만 있는 퇴화 입력, 또는 계약과 반대인 시계 방향 감김).
+  //  - 바닥면(minZ)이 아닌 높이에 넓이 있는 시계 방향 삼각형이 있다(뒤집힌 윗면).
+  //  - 위를 향한 삼각형의 xy 합집합 넓이가 외곽 투영(벽 고리와 모든 넓이 있는 삼각형의 합집합) 넓이에 못 미친다
+  //    (일부만 지붕이 있거나 감김이 섞인 메시: 지붕 없는 구역 위에 상자 지붕이 생긴다).
+  let roofMin = Infinity, cwAbove = false;
+  const upSegs = [], footSegs = [], wallSeen = new Set();
   for (let t = 0; t < idx.length / 3; t++) {
     const o = t * 6;
-    const area = (tris[o + 2] - tris[o]) * (tris[o + 5] - tris[o + 1]) - (tris[o + 4] - tris[o]) * (tris[o + 3] - tris[o + 1]);
-    if (area <= 1e-6) continue;
-    for (let k = 0; k < 3; k++) roofMin = Math.min(roofMin, p[idx[t * 3 + k] * 3 + 2]);
+    const ax = tris[o], ay = tris[o + 1], bx = tris[o + 2], by = tris[o + 3], cx = tris[o + 4], cy = tris[o + 5];
+    const area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+    const v0 = idx[t * 3], v1 = idx[t * 3 + 1], v2 = idx[t * 3 + 2];
+    if (area > 1e-6) {
+      for (let k = 0; k < 3; k++) roofMin = Math.min(roofMin, p[idx[t * 3 + k] * 3 + 2]);
+      upSegs.push(ax, ay, bx, by, 1, bx, by, cx, cy, 1, cx, cy, ax, ay, 1);
+      footSegs.push(ax, ay, bx, by, 1, bx, by, cx, cy, 1, cx, cy, ax, ay, 1);
+    } else if (area < -1e-6) {
+      if (Math.min(p[v0 * 3 + 2], p[v1 * 3 + 2], p[v2 * 3 + 2]) > minZ + 1e-6) cwAbove = true;
+      footSegs.push(ax, ay, cx, cy, 1, cx, cy, bx, by, 1, bx, by, ax, ay, 1);
+    } else {
+      // 벽 삼각형: 가장 먼 두 점이 이루는 선분을 바깥 법선이 오른쪽에 오는 방향(반시계 고리)으로 넣는다. 사각 벽의 두 삼각형은 같은 선분이라 한 번만.
+      const e1x = p[v1 * 3] - p[v0 * 3], e1y = p[v1 * 3 + 1] - p[v0 * 3 + 1], e1z = p[v1 * 3 + 2] - p[v0 * 3 + 2];
+      const e2x = p[v2 * 3] - p[v0 * 3], e2y = p[v2 * 3 + 1] - p[v0 * 3 + 1], e2z = p[v2 * 3 + 2] - p[v0 * 3 + 2];
+      const nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z;
+      let sx = ax, sy = ay, ex = bx, ey = by, best = Math.hypot(bx - ax, by - ay);
+      for (const [px, py, qx, qy] of [[bx, by, cx, cy], [cx, cy, ax, ay]]) {
+        const l = Math.hypot(qx - px, qy - py);
+        if (l > best) { best = l; sx = px; sy = py; ex = qx; ey = qy; }
+      }
+      if (best < 1e-6 || Math.hypot(nx, ny) < 1e-12) continue;
+      if ((ex - sx) * -ny + (ey - sy) * nx < 0) { [sx, sy, ex, ey] = [ex, ey, sx, sy]; }
+      const key = `${sx},${sy},${ex},${ey}`;
+      if (wallSeen.has(key)) continue;
+      wallSeen.add(key);
+      footSegs.push(sx, sy, ex, ey, 1);
+    }
   }
-  if (roofMin === Infinity) roofMin = maxZ;
+  if (roofMin === Infinity || cwAbove) roofMin = -Infinity;
+  else {
+    const foot = windingArea(footSegs), up = windingArea(upSegs);
+    if (up < foot - Math.max(1e-3, foot * 1e-4)) roofMin = -Infinity;
+  }
   let wallDev = 0;
   for (const a of wallAngles) wallDev = Math.max(wallDev, Math.abs(fold90(a - theta)));
   return {
@@ -579,25 +645,27 @@ function directionBins(list) {
   return bins.map((b) => ({ phi: (b.t0 + b.t1) / 2, items: b.items.sort((p, q) => p.order - q.order) }));
 }
 
-// 방향 상자 여러 개를 메시 하나로. 상자마다 정점 8개, 벽 8 + 지붕 2 = 삼각형 10개(바닥은 지면에 붙어 보이지 않으므로 생략).
+// 방향 상자 여러 개를 메시 하나로. 상자마다 정점 12개(벽 8 + 지붕 전용 4), 벽 8 + 지붕 2 = 삼각형 10개(바닥은 지면에 붙어 보이지 않으므로 생략).
+// 지붕 꼭짓점은 벽 꼭대기와 위치가 같아도 정점을 따로 둔다(F-312): 공유하면 buildAerialUv 가 벽 꼭대기를 지붕으로 쳐
+// 벽에 영상 UV 가 남아 지붕 외곽 픽셀이 벽으로 늘어난다.
 // 상자는 φ 좌표계 AABB(minX..maxY 는 u·v 범위)이고 꼭짓점을 월드로 되돌린다(회전이라 감김 방향은 그대로).
 // 감김은 바깥에서 볼 때 반시계(지붕은 위에서 볼 때 반시계, 계약과 같음).
 function boxesToMesh(boxes) {
-  const positions = new Float32Array(boxes.length * 8 * 3);
+  const positions = new Float32Array(boxes.length * 12 * 3);
   const indices = new Uint32Array(boxes.length * 10 * 3);
   const QUADS = [
     [0, 1, 5, 4], // 남(-v)
     [1, 2, 6, 5], // 동(+u)
     [2, 3, 7, 6], // 북(+v)
     [3, 0, 4, 7], // 서(-u)
-    [4, 5, 6, 7], // 지붕(+Z)
+    [8, 9, 10, 11], // 지붕(+Z), 벽과 정점을 공유하지 않는다
   ];
   let pi = 0, ii = 0;
   boxes.forEach((b, k) => {
-    const base = k * 8;
+    const base = k * 12;
     const c = Math.cos(b.phi), s = Math.sin(b.phi);
     const corners = [[b.minX, b.minY], [b.maxX, b.minY], [b.maxX, b.maxY], [b.minX, b.maxY]];
-    for (const z of [b.minZ, b.maxZ]) {
+    for (const z of [b.minZ, b.maxZ, b.maxZ]) {
       for (const [u, v] of corners) { positions[pi++] = u * c - v * s; positions[pi++] = u * s + v * c; positions[pi++] = z; }
     }
     for (const [a, q, d, e] of QUADS) {
@@ -653,7 +721,7 @@ export function buildBuildingLod(buildings, cameraDistM) {
         m.err = singleError(m, tol, hideTol);
         if (m.err > tol) keepOriginal(it); else singles.push(m);
       }
-      for (const c of agglomerate(singles, tol, hideTol)) {
+      for (const c of agglomerate(foldContained(singles), tol, hideTol)) {
         // 혼자 남은 건물의 원본이 상자(삼각형 10개)보다 작으면(벽만 있는 퇴화 입력 등) 바꿔도 줄지 않으므로 원본 유지.
         if (c.members.length === 1 && c.members[0].it.mesh.indices.length / 3 < 10) {
           keepOriginal(c.members[0].it);

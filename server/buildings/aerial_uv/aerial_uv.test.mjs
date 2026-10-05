@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildAerialUv, aerialUvOf } from './index.mjs';
+import { buildBuildingLod } from '../lod/index.mjs';
+import { prism as sharedPrism } from '../lod/scene.mjs';
 import { TowerAssetError, ALIGN_TOLERANCE_PX, buildingHeightM } from '../../../contracts/tower_assets/index.mjs';
 
 // 시험 전용 프리즘 생성기(다른 하위 작업 코드를 쓰지 않는다).
@@ -113,11 +115,36 @@ test('벽·바닥 정점은 영상 UV 를 쓰지 않는다: wallMask 1, 지붕 �
 
 test('지붕과 벽이 정점을 공유하면 지붕으로 친다(mask 0), 아래 향 면만 쓰는 정점은 mask 1', () => {
   const img = codedImage(4, 4, { minX: 0, minY: 0, maxX: 10, maxY: 10 });
-  // 정점 0..2 = 지붕(z=5, 위 향), 정점 3..5 = 바닥(z=0). 바닥 삼각형 (3,5,4) 는 아래 향이라 mask 에 기여하지 않는다.
-  const positions = new Float32Array([1, 1, 5, 6, 1, 5, 1, 6, 5, 1, 1, 0, 6, 1, 0, 1, 6, 0]);
-  const indices = new Uint32Array([0, 1, 2, 3, 5, 4]); // 지붕(위), 바닥(아래)
+  // 정점 0..2 = 지붕(z=5, 위 향), 정점 3..5 = 바닥(z=0), 정점 6 = 어느 삼각형에도 안 쓰이는 정점.
+  // 바닥 삼각형 (3,5,4) 는 아래 향이라 mask 에 기여하지 않는다.
+  // 벽 삼각형 (0,3,4) 는 수직 면이고 정점 0 을 지붕과 공유한다 → 0 은 지붕으로 쳐서 mask 0, 3·4 는 바닥·벽만 써서 mask 1.
+  const positions = new Float32Array([1, 1, 5, 6, 1, 5, 1, 6, 5, 1, 1, 0, 6, 1, 0, 1, 6, 0, 9, 9, 0]);
+  const indices = new Uint32Array([0, 1, 2, 3, 5, 4, 0, 3, 4]); // 지붕(위), 바닥(아래), 벽(수직)
   const { wallMask } = buildAerialUv({ positions, indices }, img);
-  assert.deepEqual([...wallMask], [0, 0, 0, 1, 1, 1]);
+  assert.deepEqual([...wallMask], [0, 0, 0, 1, 1, 1, 1]);
+});
+
+test('수직(벽) 면 정점에는 영상 UV 를 주지 않는다: 벽만 있는 메시는 전 정점 wallMask 1 (RULES 1.2)', () => {
+  const img = codedImage(4, 4, { minX: 0, minY: 0, maxX: 10, maxY: 10 });
+  // x=2 평면의 수직 사각형(법선 ±x): 어느 방향 순서든 영상 UV 를 받아선 안 된다.
+  const positions = new Float32Array([2, 1, 0, 2, 5, 0, 2, 5, 6, 2, 1, 6]);
+  for (const indices of [[0, 1, 2, 0, 2, 3], [0, 2, 1, 0, 3, 2]]) {
+    const { wallMask } = buildAerialUv({ positions, indices: new Uint32Array(indices) }, img);
+    assert.deepEqual([...wallMask], [1, 1, 1, 1]);
+  }
+  // 프리즘의 벽 정점은 모두 mask 1(지붕 정점만 0).
+  const { mesh, kind } = prism([[2, 2], [8, 2], [8, 8], [2, 8]], 7);
+  const { wallMask } = buildAerialUv(mesh, img);
+  kind.forEach((k, i) => { if (k === 'wall') assert.equal(wallMask[i], 1, `벽 정점 ${i}`); });
+});
+
+test('비스듬한 면: 아래 향이면 |nz| 비율이 커도 지붕이 아니다(법선 z 의 부호를 본다)', () => {
+  const img = codedImage(4, 4, { minX: 0, minY: 0, maxX: 10, maxY: 10 });
+  // 정점 (1,1,0) (1,5,0) (5,1,2): u=(0,4,0), v=(4,0,2) → u×v = (8, 0, -16): nz < 0 (아래 향), |nz|/len = 16/√320 ≈ 0.894 (> 0.5).
+  const positions = new Float32Array([1, 1, 0, 1, 5, 0, 5, 1, 2]);
+  assert.deepEqual([...buildAerialUv({ positions, indices: new Uint32Array([0, 1, 2]) }, img).wallMask], [1, 1, 1]);
+  // 순서를 뒤집으면 법선 (-8, 0, 16): 위 향, 같은 비율 → 지붕.
+  assert.deepEqual([...buildAerialUv({ positions, indices: new Uint32Array([0, 2, 1]) }, img).wallMask], [0, 0, 0]);
 });
 
 test('알려진 색 블록: 지붕·벽 정점이 자기 블록 색을 샘플', () => {
@@ -247,6 +274,10 @@ test('가파른 경사면(법선 z 비율 < 0.5, 위 향)은 지붕이 아니다
   assert.ok(nz !== 0);
   const { wallMask } = buildAerialUv({ positions: steep, indices: new Uint32Array(idx) }, img);
   assert.deepEqual([...wallMask], [1, 1, 1]);
+  // y 방향 경사도 같다: (1,1,0) (5,1,0) (1,5,8) 순서 (0,1,2) → 법선 (0, -32, 16): 위 향, z 비율 0.447 (< 0.5)
+  const steepY = new Float32Array([1, 1, 0, 5, 1, 0, 1, 5, 8]);
+  const { wallMask: my } = buildAerialUv({ positions: steepY, indices: new Uint32Array([0, 1, 2]) }, img);
+  assert.deepEqual([...my], [1, 1, 1]);
   // 완만한 경사(z 비율 > 0.5)는 지붕
   const gentle = new Float32Array([1, 1, 0, 1, 5, 0, 5, 1, 2]);
   const { wallMask: m2 } = buildAerialUv({ positions: gentle, indices: new Uint32Array(idx) }, img);
@@ -285,4 +316,37 @@ test('음수·비정수 인덱스는 TowerAssetError', () => {
     assert.throws(() => buildAerialUv({ positions, indices: [0, 1, bad] }, img), TowerAssetError, String(bad));
   }
   assert.throws(() => buildAerialUv({ positions, indices: [0, 1, 3] }, img), TowerAssetError);
+  // 첫째·둘째 자리, 다른 배열 형태, 무한대도 같다
+  assert.throws(() => buildAerialUv({ positions, indices: [-1, 1, 2] }, img), TowerAssetError);
+  assert.throws(() => buildAerialUv({ positions, indices: [0, 1.5, 2] }, img), TowerAssetError);
+  assert.throws(() => buildAerialUv({ positions, indices: new Float32Array([0, 1, -2]) }, img), TowerAssetError);
+  assert.throws(() => buildAerialUv({ positions, indices: [0, 1, Infinity] }, img), TowerAssetError);
+  assert.doesNotThrow(() => buildAerialUv({ positions, indices: [0, 1, 2] }, img));
+});
+
+// F-312: LOD 상자 메시는 벽 정점과 지붕 정점을 나누므로 벽 삼각형이 mask 0(영상 UV 사용) 정점을 갖지 않는다.
+test('LOD 상자 메시(6×6 프리즘 36동, 20 km): mask 0 정점을 가진 벽 삼각형 0개, 지붕 삼각형은 모두 mask 0', () => {
+  const city = [];
+  for (let i = 0; i < 36; i++) {
+    const x0 = (i % 6) * 12, y0 = Math.floor(i / 6) * 12;
+    city.push({ id: i + 1, mesh: sharedPrism([[x0, y0], [x0 + 10, y0], [x0 + 10, y0 + 10], [x0, y0 + 10]], 3) });
+  }
+  const groups = buildBuildingLod(city, 20000);
+  let walls = 0, roofs = 0, boxes = 0;
+  for (const g of groups) {
+    const m = g.mesh;
+    if (m.indices.length === 10 * 3 * (m.positions.length / 3 / 12) && m.positions.length / 3 % 12 === 0) boxes += m.positions.length / 36;
+    const { wallMask } = buildAerialUv(m, { width: 2, height: 2, rgb: new Uint8Array(12), bounds: { minX: -10, minY: -10, maxX: 100, maxY: 100 } });
+    const p = m.positions;
+    for (let t = 0; t < m.indices.length; t += 3) {
+      const [a, b, c] = [m.indices[t], m.indices[t + 1], m.indices[t + 2]];
+      const up = (p[b * 3] - p[a * 3]) * (p[c * 3 + 1] - p[a * 3 + 1]) - (p[c * 3] - p[a * 3]) * (p[b * 3 + 1] - p[a * 3 + 1]) > 1e-6;
+      const masked = [a, b, c].filter((i) => wallMask[i] === 0).length;
+      if (up) { roofs++; assert.equal(masked, 3, '지붕 삼각형 정점은 모두 mask 0'); }
+      else if (masked > 0) walls++;
+    }
+  }
+  assert.ok(boxes >= 1, '상자 메시가 만들어져야 한다');
+  assert.ok(roofs >= 2);
+  assert.equal(walls, 0, 'mask 0 정점을 가진 벽 삼각형');
 });
