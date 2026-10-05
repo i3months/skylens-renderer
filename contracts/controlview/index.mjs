@@ -51,3 +51,5 @@ export function isDrapeAligned(measure, tolPx) {
   if (typeof tolPx !== 'number' || !(tolPx >= 0)) return false;
   return measure.unmeasuredLocalBlocks === 0 && measure.maxMisalignPx <= tolPx;
 }
+
+export * from './terrain.mjs';
