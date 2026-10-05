@@ -12,6 +12,36 @@ const size = { width: 800, height: 600 };
 const emptyState = { held: [], inflight: [] };
 const poseToViewOf = (pose) => poseToView(pose, { width: 800, height: 600 });
 
+// 작업량 계수기(F-441 ④·⑤·⑥): 벽시계 대신 tilesInView 의 stats(행·칸 방문 수)로 잰다. 부하와 무관하게 결정적이다.
+// 상한 근거(측정 없음): visible.mjs 의 후보는 카메라 중심 xy 정사각 |dx|,|dy| ≤ maxDistM(+ε) 안에서만 나오므로
+// 행 수 ≤ ceil(2·maxDistM/S) + 2, 칸 수 ≤ (ceil(2·maxDistM/S) + 2)² 이다. 넘는 순간 setter 가 던져 동기 루프를 즉시 끊는다
+// (입구 검사가 빠진 구현이 수십 초 도는 대신 바로 실패한다).
+class WorkLimit extends Error {}
+const TILE_S = 64;
+function workGuard(maxDistM = L.maxDistM) {
+  const side = Math.ceil((2 * maxDistM) / TILE_S) + 2;
+  const lim = { rows: side, cells: side * side };
+  const w = { rows: 0, cells: 0, maxRows: 0, maxCells: 0 };
+  const stats = {};
+  for (const k of ['rows', 'cells']) {
+    Object.defineProperty(stats, k, {
+      get: () => w[k],
+      set: (v) => {
+        if (v > lim[k]) throw new WorkLimit(`${k} ${v} > 상한 ${lim[k]}`);
+        w[k] = v;
+      },
+    });
+  }
+  return {
+    w,
+    lim,
+    stats,
+    /** 호출 하나 전에 부른다(호출당 계수). */
+    reset() { w.maxRows = Math.max(w.maxRows, w.rows); w.maxCells = Math.max(w.maxCells, w.cells); w.rows = 0; w.cells = 0; },
+    deps: { tilesInView: (view, opts) => tilesInView(view, opts, stats) },
+  };
+}
+
 function timed(fn) {
   const t0 = performance.now();
   let err = null;
@@ -25,13 +55,15 @@ test('계약 상한이 validate 의 TILE_INDEX_MAX 와 같다', () => {
 });
 
 for (const x of [6.5e7, 1e8, 6e17, 1e18, 1e20]) {
-  test(`x=${x} 는 100 ms 안에 RangeError, 상태 불변`, () => {
-    const s = createTowerStreaming();
+  test(`x=${x} 는 행 순회 없이 RangeError, 상태 불변`, () => {
+    const g = workGuard();
+    const s = createTowerStreaming(undefined, g.deps);
     const before = s.state();
     for (const call of ['update', 'missing']) {
+      g.reset();
       const r = timed(() => s[call]({ pos: [x, 0, 100], quat: [0, 0, 0, 1], fovY: 1 }, size));
       assert.ok(r.err instanceof R, `${call}: ${r.err}`);
-      assert.ok(r.ms < 100, `${call} ${r.ms} ms`);
+      assert.equal(g.w.rows + g.w.cells, 0, `${call}: 행 ${g.w.rows}·칸 ${g.w.cells}`);
     }
     assert.deepEqual(s.state(), before);
     assert.deepEqual(s.state(), emptyState);
@@ -39,11 +71,13 @@ for (const x of [6.5e7, 1e8, 6e17, 1e18, 1e20]) {
 }
 
 test('y=1e19 와 음수 좌표도 RangeError', () => {
-  const s = createTowerStreaming();
+  const g = workGuard();
+  const s = createTowerStreaming(undefined, g.deps);
   for (const pos of [[0, 1e19, 100], [0, -1e19, 100], [-1e20, 0, 100]]) {
+    g.reset();
     const r = timed(() => s.update({ pos, quat: [0, 0, 0, 1], fovY: 1 }, size));
     assert.ok(r.err instanceof R);
-    assert.ok(r.ms < 100);
+    assert.equal(g.w.rows + g.w.cells, 0);
   }
   assert.deepEqual(s.state(), emptyState);
 });
@@ -60,23 +94,26 @@ test('경계: |pos|+maxDistM = maxCoordM 는 허용, 조금 넘으면 RangeError
 });
 
 test('옆을 보는 시점 pos [1e8,0,10] 은 타일 번호 밖 요청을 만들지 않는다', () => {
-  const s = createTowerStreaming();
+  const g = workGuard();
+  const s = createTowerStreaming(undefined, g.deps);
   const r = timed(() => s.update({ pos: [1e8, 0, 10], quat: [0.7071068, 0, 0, 0.7071068], fovY: 1 }, { width: 100, height: 80 }));
   assert.ok(r.err instanceof R);
-  assert.ok(r.ms < 100);
+  assert.equal(g.w.rows + g.w.cells, 0);
 });
 
 test('tilesInView 방어: 번호가 상한 밖이 될 좌표는 루프 전에 RangeError', () => {
   const view = (x) => ({ R: [1, 0, 0, 0, -1, 0, 0, 0, -1], t: [-x, 0, 100], K: { fx: 500, fy: 500, cx: 400, cy: 300 }, width: 800, height: 600 });
   const o = checkOpts({});
   for (const x of [1e9, 1e17, 1e30]) {
-    const r = timed(() => tilesInView(view(x), o));
+    const g = workGuard();
+    const r = timed(() => tilesInView(view(x), o, g.stats));
     assert.ok(r.err instanceof R, `x=${x} ${r.err}`);
-    assert.ok(r.ms < 100);
+    // y 범위는 정상이라 행 루프에 들어가고, x 쪽 번호 검사(clampIdx)가 첫 행에서 칸을 돌기 전에 던진다.
+    assert.ok(g.w.rows <= 1 && g.w.cells === 0, `x=${x}: 행 ${g.w.rows}·칸 ${g.w.cells}`);
   }
 });
 
-test('퍼즈: pos 크기 1e0~1e38 로그 균등 2만 건, 시간 초과 0, request 타일은 arrived 가 던지지 않는다', () => {
+test('퍼즈: pos 크기 1e0~1e38 로그 균등 2만 건, 작업량 상한 초과 0, request 타일은 arrived 가 던지지 않는다', () => {
   let seed = 0x5eed1234;
   const rnd = () => { // mulberry32
     seed = (seed + 0x6d2b79f5) | 0;
@@ -85,8 +122,12 @@ test('퍼즈: pos 크기 1e0~1e38 로그 균등 2만 건, 시간 초과 0, reque
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
   const mag = () => 10 ** (rnd() * 38) * (rnd() < 0.5 ? -1 : 1);
-  const s = createTowerStreaming();
-  let slow = 0, thrown = 0, okCount = 0, maxMs = 0, tiles = 0;
+  // 호출당 작업량(행·칸)이 workGuard 상한을 넘으면 그 자리에서 WorkLimit 가 던져진다(벽시계 단언 대신, F-441 ④·⑤).
+  // 반환 수 상한: 결과 타일은 모두 xy 로 반경 D 원판과 만나므로 needed ≤ π(D + √2·S)²/S² (visible.test 와 같은 근거).
+  const g = workGuard();
+  const neededMax = Math.ceil((Math.PI * (L.maxDistM + Math.SQRT2 * TILE_S) ** 2) / (TILE_S * TILE_S));
+  const s = createTowerStreaming(undefined, g.deps);
+  let thrown = 0, okCount = 0, tiles = 0, maxNeeded = 0;
   for (let i = 0; i < 20000; i += 1) {
     const pos = [mag(), mag(), rnd() < 0.5 ? 100 : mag()];
     if (rnd() < 0.3) pos[rnd() < 0.5 ? 0 : 1] = 0;
@@ -95,15 +136,18 @@ test('퍼즈: pos 크기 1e0~1e38 로그 균등 2만 건, 시간 초과 0, reque
     q = q.map((v) => v / n);
     const pose = { pos, quat: q, fovY: 0.1 + rnd() * 2.5 };
     const sz = { width: 1 + Math.floor(rnd() * 1000), height: 1 + Math.floor(rnd() * 1000) };
+    g.reset();
     const r = timed(() => s.update(pose, sz));
-    maxMs = Math.max(maxMs, r.ms);
-    if (r.ms >= 100) slow += 1;
+    assert.ok(!(r.err instanceof WorkLimit), `i=${i}: ${r.err?.message}`);
     if (r.err) {
       assert.ok(r.err instanceof R, `i=${i}: ${r.err}`);
       thrown += 1;
       continue;
     }
     okCount += 1;
+    maxNeeded = Math.max(maxNeeded, r.val.needed.length);
+    assert.ok(r.val.needed.length <= neededMax, `i=${i}: needed ${r.val.needed.length} > ${neededMax}`);
+    assert.ok(r.val.request.length <= L.maxInflight, `i=${i}: request ${r.val.request.length}`);
     for (const t of r.val.request) {
       tiles += 1;
       assert.ok(Math.abs(t.tx) <= TILE_INDEX_MAX && Math.abs(t.ty) <= TILE_INDEX_MAX);
@@ -111,25 +155,25 @@ test('퍼즈: pos 크기 1e0~1e38 로그 균등 2만 건, 시간 초과 0, reque
     }
     if (i % 500 === 0) s.reset();
   }
-  console.log(`fuzz: ok=${okCount} rangeError=${thrown} tiles=${tiles} maxMs=${maxMs.toFixed(1)}`);
-  assert.equal(slow, 0);
+  g.reset();
+  console.log(`fuzz: ok=${okCount} rangeError=${thrown} tiles=${tiles} maxNeeded=${maxNeeded} maxRows=${g.w.maxRows}/${g.lim.rows} maxCells=${g.w.maxCells}/${g.lim.cells}`);
 });
 
-test('퍼즈 2: 범위 안 pos(1e0~6e7), 큰 maxDistM 도 시간 초과 0·arrived 안전', () => {
+test('퍼즈 2: 범위 안 pos(1e0~6e7), 큰 maxDistM 도 작업량 상한 초과 0·arrived 안전', () => {
   let seed = 7;
   const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
-  let slow = 0;
   for (let i = 0; i < 2000; i += 1) {
-    const s = createTowerStreaming({ maxDistM: [1500, 1e4, 1e6, 6e7][i % 4] });
+    const maxDistM = [1500, 1e4, 1e6, 6e7][i % 4];
+    const g = workGuard(maxDistM);
+    const s = createTowerStreaming({ maxDistM }, g.deps);
     const sg = () => (rnd() < 0.5 ? -1 : 1);
     const pos = [sg() * 10 ** (rnd() * 7.7), sg() * 10 ** (rnd() * 7.7), 100];
     const a = rnd() * 6.28;
     const r = timed(() => s.update({ pos, quat: [0, 0, Math.sin(a / 2), Math.cos(a / 2)], fovY: 1 }, size));
-    if (r.ms >= 100) slow += 1;
+    assert.ok(!(r.err instanceof WorkLimit), `i=${i}: ${r.err?.message}`);
     if (r.err) { assert.ok(r.err instanceof R, String(r.err)); continue; }
     for (const t of r.val.request) assert.doesNotThrow(() => s.arrived(t.tx, t.ty));
   }
-  assert.equal(slow, 0);
 });
 
 test('F-438 ① 상속 속성은 읽지 않는다', () => {

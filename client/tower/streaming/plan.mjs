@@ -53,6 +53,8 @@ export function planRequests({ needed, held, inflight, opts, center }) {
   for (const t of needed) {
     checkInt(t?.tx, 'tx');
     checkInt(t?.ty, 'ty');
+    if (!Number.isSafeInteger(t.tx)) throw new TypeError(`tx 는 안전한 정수여야 한다: ${t.tx}`);
+    if (!Number.isSafeInteger(t.ty)) throw new TypeError(`ty 는 안전한 정수여야 한다: ${t.ty}`);
     const k = tileKey(t.tx, t.ty);
     if (neededKeys.has(k)) continue;
     neededKeys.add(k);

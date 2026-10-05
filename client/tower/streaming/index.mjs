@@ -33,11 +33,14 @@ export function createTowerStreaming(opts, deps = DEFAULT_DEPS) {
     const rawPos = isObj ? pose.pos : undefined; // 접근자는 한 번만 읽는다
     const rawQuat = isObj ? pose.quat : undefined;
     let snap = pose;
-    if (isObj && (Array.isArray(rawPos) || Array.isArray(rawQuat))) {
+    if (isObj) {
+      // 늘 스냅샷한다: 비배열 pos·quat 는 접근자를 다시 읽지 못하게 TypeError 로 막는다
+      if (!Array.isArray(rawPos)) throw new TypeError('pose.pos 는 배열이어야 한다');
+      if (!Array.isArray(rawQuat)) throw new TypeError('pose.quat 는 배열이어야 한다');
       snap = {};
       for (const k of Object.keys(pose)) if (k !== 'pos' && k !== 'quat') snap[k] = pose[k];
-      if ('pos' in pose) snap.pos = Array.isArray(rawPos) ? rawPos.slice() : rawPos;
-      if ('quat' in pose) snap.quat = Array.isArray(rawQuat) ? rawQuat.slice() : rawQuat;
+      snap.pos = rawPos.slice();
+      snap.quat = rawQuat.slice();
     }
     const view = checkView(snap, size);
     checkCoordRange(snap.pos, o.maxDistM);

@@ -12,6 +12,9 @@
 //      그 범위와 겹치는 tx 를 후보로 삼는다(볼록이므로 정확).
 //   4) 후보 중 직육면체와 카메라 사이 최소 거리가 maxDistM 을 넘는 것(구와 만나지 않는 것)을 버린다.
 //      P 와 만나고 구와도 만나는 타일이 P ∩ 구와 만난다는 보장은 없으므로 여기서 과포함이 남을 수 있다(허용).
+//   최적화: z 범위가 구 밖이면(dz > maxDistM) 빈 결과 반환 → 수백만 행 순회 회피.
+//           구가 닿는 y 범위(camY ± √(D²−dz²)) 로 행(ty) 범위를 먼저 좁힌다 → 불필요한 행 중단.
+//           각 행에서 구가 닿는 x 범위(camX ± √(D²−dy²−dz²)) 로 열(tx) 범위를 좁혀 띠 범위와 교집합만 훑는다 → 행별 효율화.
 //   후보는 정사각 |dx|,|dy| ≤ maxDistM 안에서만 나오므로 계산량은 반경 정사각 격자 이하다.
 //   4096 한도는 4) 를 거친 결과 수에 적용한다.
 //   경계는 닫힌 집합으로 본다(맞닿기만 해도 포함). 부동소수 오차로 맞닿은 타일을 놓치지 않도록
@@ -40,6 +43,16 @@ function checkArgs(view, opts) {
   if (!Array.isArray(view.t) || view.t.length !== 3) throw new TypeError('view.t 는 길이 3 배열이어야 한다');
   view.R.forEach((v, i) => finite(v, `view.R[${i}]`));
   view.t.forEach((v, i) => finite(v, `view.t[${i}]`));
+  // R 직교성: R·Rᵀ ≈ I (허용오차 1e-9·(1+|행렬값|) 기준 참고)
+  const tol = 1e-9;
+  for (let i = 0; i < 3; i += 1) {
+    for (let j = 0; j < 3; j += 1) {
+      let sum = 0;
+      for (let k = 0; k < 3; k += 1) sum += view.R[3 * i + k] * view.R[3 * j + k];
+      const expected = i === j ? 1 : 0;
+      if (Math.abs(sum - expected) > tol) throw new RangeError(`view.R 가 직교하지 않다`);
+    }
+  }
   if (view.K === null || typeof view.K !== 'object') throw new TypeError('view.K 는 객체여야 한다');
   for (const k of ['fx', 'fy', 'cx', 'cy']) finite(view.K[k], `view.K.${k}`);
   if (!(view.K.fx > 0) || !(view.K.fy > 0)) throw new RangeError('view.K.fx·fy 는 양수여야 한다');
@@ -61,7 +74,7 @@ function checkArgs(view, opts) {
  * 세계 좌표 반공간 목록 {a:[3], b} (a·X ≥ b, |a| = 1).
  * 카메라 좌표 반공간 n·X_c ≥ c 는 X_c = R·X + t 를 넣으면 (Rᵀn)·X ≥ c − n·t 이다.
  */
-function halfSpaces(view, opts, cam0) {
+function halfSpaces(view, opts, cam0, ringM = 0) {
   const { R, t, K, width, height } = view;
   const cam = [
     [[K.fx, 0, K.cx], 0], // 왼쪽: u ≥ 0
@@ -86,6 +99,15 @@ function halfSpaces(view, opts, cam0) {
   out.push({ a: [-1, 0, 0], b: -(cam0[0] + D) });
   out.push({ a: [0, 1, 0], b: cam0[1] - D });
   out.push({ a: [0, -1, 0], b: -(cam0[1] + D) });
+  // ringM > 0 이면 카메라 중심 xy 원판(반경 ringM)의 외접 16각형 16면을 더한다(행 범위 좁히기 전용)
+  if (ringM > 0) {
+    for (let i = 0; i < 16; i += 1) {
+      const ang = (2 * Math.PI * i) / 16;
+      const ax = Math.cos(ang);
+      const ay = Math.sin(ang);
+      out.push({ a: [ax, ay, 0], b: ax * cam0[0] + ay * cam0[1] - ringM });
+    }
+  }
   return out;
 }
 
@@ -166,7 +188,7 @@ function stripRange(poly, y0, y1) {
  * 시점에서 보이는 타일 번호.
  * @param {{R:number[], t:number[], K:{fx:number, fy:number, cx:number, cy:number}, width:number, height:number}} view  poseToView 결과
  * @param {{maxDistM:number, zRangeM:number[], nearM:number}} opts
- * @param {{rows:number, cells:number}} [stats] 시험용 작업량 계수기(행·칸 방문 수를 더해 준다). 결과에는 영향이 없다.
+ * @param {{rows:number, cells:number}} [stats] 시험용 작업량 계수기(행·칸 방문 수를 더해 준다). 결과에는 영향이 없다. stats.noRowNarrow 가 참이면 행 범위 좁히기를 끈다(옛 동작, 결과 동일 비교용).
  * @returns {{tx:number, ty:number}[]} 카메라 (x,y) 에서 타일 중심까지 거리 오름차순, 같으면 (tx,ty) 사전순
  */
 export function tilesInView(view, opts, stats) {
@@ -178,8 +200,28 @@ export function tilesInView(view, opts, stats) {
   const cam0 = [0, 1, 2].map((j) => -(R[j] * t[0] + R[3 + j] * t[1] + R[6 + j] * t[2]));
   const [camX, camY, camZ] = cam0;
 
+  // 직육면체-구 판정: 최소 거리² ≤ (maxDistM + 여유)²
+  const D = opts.maxDistM + rangeEps(opts.maxDistM) + rangeEps(Math.hypot(camX, camY, camZ));
+  const D2 = D * D;
+  const [zMin, zMax] = opts.zRangeM;
+  const gap = (c, lo, hi) => (c < lo ? lo - c : c > hi ? c - hi : 0);
+  const dz = gap(camZ, zMin, zMax);
+  // z 판이 구 밖이면 어떤 타일도 구와 만나지 않는다(빈 행을 수백만 번 도는 일을 막는다)
+  if (dz > D) return [];
   const poly = hull(vertices(halfSpaces(view, opts, cam0)));
   if (poly.length === 0) return [];
+
+  // 행 범위 좁히기(결과 불변): 어떤 행이 타일을 내려면 그 행 띠 안의 P 의 점이 구의 xy 원판(반경 hy) 근처에 있어야 한다.
+  // 행마다 구 x 범위는 띠에서 가장 가까운 y 로 잡으므로 원판보다 최대 한 행(S)·대각 여유만큼 넓다 → 반경 hy+2S 외접 16각형과 P 의 교집합의 y 범위 밖 행은 늘 빈 행이다.
+  const hy = Math.sqrt(Math.max(0, D2 - dz * dz));
+  let narrow = null;
+  if (!(stats && stats.noRowNarrow)) {
+    const ring = hy + 2 * S + rangeEps(hy);
+    const pts = vertices(halfSpaces(view, opts, cam0, ring));
+    // 교집합이 비면(원판 근처에 P 가 없음) 어떤 행도 타일을 내지 못한다. 위 poly 가 비었을 때와 같은 가정이다
+    if (pts.length === 0) return [];
+    narrow = [Math.min(...pts.map((q) => q[1])), Math.max(...pts.map((q) => q[1]))];
+  }
 
   let ymin = Infinity;
   let ymax = -Infinity;
@@ -193,18 +235,14 @@ export function tilesInView(view, opts, stats) {
   let ty0 = clampIdx(Math.floor((ymin - rangeEps(ymin)) / S), 'ty');
   let ty1 = clampIdx(Math.floor((ymax + rangeEps(ymax)) / S), 'ty');
 
-  // 직육면체-구 판정: 최소 거리² ≤ (maxDistM + 여유)²
-  const D = opts.maxDistM + rangeEps(opts.maxDistM) + rangeEps(Math.hypot(camX, camY, camZ));
-  const D2 = D * D;
-  const [zMin, zMax] = opts.zRangeM;
-  const gap = (c, lo, hi) => (c < lo ? lo - c : c > hi ? c - hi : 0);
-  const dz = gap(camZ, zMin, zMax);
-  // z 판이 구 밖이면 어떤 타일도 구와 만나지 않는다(빈 행을 수백만 번 도는 일을 막는다)
-  if (dz > D) return [];
   // 구가 닿는 y 는 camY ± √(D²−dz²) 뿐이므로 행 범위를 먼저 좁힌다
-  const hy = Math.sqrt(Math.max(0, D2 - dz * dz));
   ty0 = Math.max(ty0, clampIdx(Math.floor((camY - hy - rangeEps(camY - hy)) / S), 'ty'));
   ty1 = Math.min(ty1, clampIdx(Math.floor((camY + hy + rangeEps(camY + hy)) / S), 'ty'));
+
+  if (narrow) {
+    ty0 = Math.max(ty0, Math.floor((narrow[0] - rangeEps(narrow[0])) / S));
+    ty1 = Math.min(ty1, Math.floor((narrow[1] + rangeEps(narrow[1])) / S));
+  }
 
   const out = [];
   for (let ty = ty0; ty <= ty1; ty += 1) {
