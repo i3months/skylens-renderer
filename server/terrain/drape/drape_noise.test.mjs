@@ -130,18 +130,31 @@ const F363_UNDECIDED = 11, REVIEW2_UNDECIDED = 8, TAIL_UNDECIDED = 8;
 // 시드 k·7919, k = 1..20(drape.test.mjs 의 SEEDS 와 같은 생성식).
 const NOISE_SEEDS = Array.from({ length: 20 }, (_, i) => (i + 1) * 7919);
 
+// 이동 0 귀무 입력(진폭, 잡음, 시드) 별 측정 결과 지연 계산 캐시: F-363·F-359 검토 #3·F-385 ⑩ 시험이 겹치는 입력을 한 번만 잰다.
+const nullMeasured = new Map();
+const nullImages = new Map();
+function nullMeasure(amp, noise, seed) {
+  const key = `${amp}|${noise}|${seed}`;
+  let m = nullMeasured.get(key);
+  if (m === undefined) {
+    if (!nullImages.has(amp)) nullImages.set(amp, lowContrastImage(LOW.sine(amp)));
+    const img = nullImages.get(amp);
+    m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, (p) => p, { noise, seed }));
+    nullMeasured.set(key, m);
+  }
+  return m;
+}
+
 test('F-363 저대비 사인 블록 + ±2·±3 DN 잡음, 이동 0: 시드 20개 — 거짓 local 0, 불확정 타일 기록값 이하', () => {
   // 수정 전(재적합 이상치의 잔차 ≥ 0.5 만으로 local): 사인 2 DN ±3 DN 에서 시드 55433·87109·118785·142542 의 블록 (64,32) 가
   // 거짓 local(142542 는 maxMisalignPx 1.412 — 어긋남이 없는데 정합 ≤ 1 px 실패), 사인 1 DN ±3 DN 에서도 2개.
   // 불확정 타일(측정, F-359 검토 #4): 80회 중 F363_UNDECIDED 회 — 거짓 불확정 비율로 기록한다(0 이 아니다).
-  const id = (p) => p;
   const bad = [];
   let undecided = 0;
   for (const [amp, noises] of [[2, [2, 3]], [1, [2, 3]]]) {
-    const img = lowContrastImage(LOW.sine(amp));
     for (const noise of noises) {
       for (const seed of NOISE_SEEDS) {
-        const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, id, { noise, seed }));
+        const m = nullMeasure(amp, noise, seed);
         const why = nullViolation(m);
         if (why) bad.push([amp, noise, seed, why]);
         if (m.undecidedBlocks) undecided++;
@@ -205,12 +218,10 @@ const NULL_TAIL = [
 ];
 
 test('F-359 검토 #3 귀무 꼬리: 짝 검정 t 가 큰 이동 0 입력 8회 — 거짓 local 0, 입력별 t = 기록 ±0.01, PAIRED_K 리터럴·여유', () => {
-  const id = (p) => p;
   const bad = [];
   let undecided = 0;
   for (const [amp, noise, seed, tRec] of NULL_TAIL) {
-    const img = lowContrastImage(LOW.sine(amp));
-    const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, id, { noise, seed }));
+    const m = nullMeasure(amp, noise, seed);
     const at = `사인 ${amp} DN ±${noise} seed ${seed}`;
     const tested = m.blocks.filter((b) => Number.isFinite(b.pairedT));
     // 이 입력들은 짝 검정 경로를 실제로 지나야 한다(경로가 바뀌어 검정을 안 하면 이 시험은 아무것도 지키지 않는다).
@@ -282,15 +293,29 @@ const POS_KNOWN_FAIL = [
 ];
 const posKey = (noise, amp, g, seed) => `${noise}|${amp}|${g}|${seed}`;
 const POS_KNOWN = new Set(POS_KNOWN_FAIL.map((k) => posKey(...k)));
+/** 입력 (잡음, 진폭, g, seed) 별 측정 결과 지연 계산 캐시. 같은 입력을 여러 시험(일반·낡음·todo·F-380)이 공유하므로 한 번만 잰다. */
+const posMeasured = new Map();
+const posImages = new Map();
+function posMeasure(noise, amp, g, e, seed) {
+  const key = posKey(noise, amp, g, seed);
+  let m = posMeasured.get(key);
+  if (m === undefined) {
+    const ik = `${amp}|${g}`;
+    if (!posImages.has(ik)) posImages.set(ik, lowContrastImage(LOW.sine(amp)));
+    const img = posImages.get(ik);
+    const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
+    m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise, seed }));
+    posMeasured.set(key, m);
+  }
+  return m;
+}
 /** 양성 입력에서 'measured 이면서 maxMisalignPx ≤ 1' 인 [진폭, g, seed, 보고, 불확정 수] 목록. pick 으로 알려진 실패 포함 여부를 고른다. */
 function posFailures(noise, pick) {
   const bad = [];
   for (const [amp, g, e] of POS_CASES) {
-    const img = lowContrastImage(LOW.sine(amp));
-    const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
     for (const seed of POS_SEEDS) {
       if (!pick(POS_KNOWN.has(posKey(noise, amp, g, seed)))) continue;
-      const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise, seed }));
+      const m = posMeasure(noise, amp, g, e, seed);
       if (m.status === 'measured' && m.maxMisalignPx <= ALIGN_TOLERANCE_PX) bad.push([amp, g, seed, m.maxMisalignPx, m.undecidedBlocks]);
     }
   }
@@ -302,27 +327,17 @@ for (const noise of [1, 2]) {
     assert.deepEqual(posFailures(noise, (known) => !known), []);
   });
 }
-// 알려진 실패 목록의 사전 기록 실패 수: 잡음 DN → [진폭, g, 실패 수]. 다음 회차부터 늘면 실패한다(F-387).
-// 측정(시드 30개씩): ±1 DN 은 사인 2 DN g −0.375 만 3, ±2 DN 은 사인 2 DN g −0.25 가 4, 사인 2.5 DN g −0.25 가 2,
-// 사인 2 DN g −0.375 가 12(처음 측정 뒤 목록에 들어간 15건 = ±1 DN 3 + ±2 DN 12). 목록에 없는 조합은 0.
-const POS_KNOWN_COUNTS = {
-  1: [[1.5, -0.125, 0], [2, -0.25, 0], [2.5, -0.25, 0], [2, -0.375, 3]],
-  2: [[1.5, -0.125, 0], [2, -0.25, 4], [2.5, -0.25, 2], [2, -0.375, 12]],
-};
+// 알려진 실패 목록 POS_KNOWN_FAIL 은 현재 21건이다. 잡음별 합계: ±1 DN 3건(사인 2 DN g −0.375), ±2 DN 18건(사인 2 DN g −0.25 가 4,
+// 사인 2.5 DN g −0.25 가 2, 사인 2 DN g −0.375 가 12). 조합별 수(±1 DN 3, ±2 DN 18)는 잡음별 합계이지 개별 조합 값이 아니다.
+// 아래 시험은 실제 정합 통과 키 집합 = 목록을 단언하므로 어느 쪽으로 바뀌어도 실패한다 — 목록 밖 시드가 새로 통과해도,
+// 목록 안 시드가 고쳐져도(개선 시 목록에서 제거). 별도 기록 상수는 이 단언과 같은 것을 두 번 적는 셈이라 두지 않는다.
 for (const noise of [1, 2]) {
-  test(`F-387 알려진 실패 목록 ±${noise} DN 은 낡지 않았다: 실제 정합 통과 키 집합 = 목록, 조합별 실패 수 = 기록값`, () => {
-    // todo 시험은 통과·실패가 결과에 영향이 없어, 목록 시드가 고쳐져도 알 수 없다. 여기서 목록과 실제 실패 집합이 같음을 단언한다:
-    // 시드가 통과로 바뀌면(목록이 낡으면) 이 시험이 실패하므로 목록에서 빼야 하고, 목록 밖 실패는 위 일반 시험이 잡는다.
+  test(`F-387 알려진 실패 목록 ±${noise} DN 은 낡지 않았다: 실제 정합 통과 키 집합 = 목록`, () => {
+    // todo 시험은 통과·실패가 결과에 영향이 없어, 목록 시드가 고쳐져도 알 수 없다. 여기서 목록과 실제 실패 집합이 같음을 단언한다.
     const fails = posFailures(noise, (known) => known);
     const actual = fails.map(([amp, g, seed]) => posKey(noise, amp, g, seed)).sort();
     const listed = POS_KNOWN_FAIL.filter((k) => k[0] === noise).map((k) => posKey(...k)).sort();
-    assert.deepEqual(actual, listed);
-    // 조합별 실제 실패 수 = 기록값(합계도 같아야 한다 — 기록에 없는 조합이 목록에 들어오면 실패).
-    for (const [amp, g, count] of POS_KNOWN_COUNTS[noise]) {
-      const n = fails.filter((f) => f[0] === amp && f[1] === g).length;
-      assert.equal(n, count, `±${noise} DN 사인 ${amp} DN g ${g} 실패 ${n}건 ≠ 기록 ${count}건`);
-    }
-    assert.equal(fails.length, POS_KNOWN_COUNTS[noise].reduce((t, c) => t + c[2], 0));
+    assert.deepEqual(actual, listed, `±${noise} DN 알려진 실패 목록이 실제와 다르다: 어느 쪽으로 바뀌어도 실패한다 — 개선(통과로 바뀐 시드)이면 POS_KNOWN_FAIL 에서 제거하고, 새 실패면 원인을 확인한다`);
   });
 }
 const posKnownFor = (noise) => POS_KNOWN_FAIL.filter((k) => k[0] === noise);
@@ -340,11 +355,9 @@ test('F-380 불확정 블록은 측정값처럼 읽히지 않는다: 사인 1.5 
   // 시드 하나뿐이면 그 시드가 고쳐질 때 시험이 아무것도 지키지 않으므로(F-385 ⑩) 시드 30개 전부에서 구조 단언을 하고,
   // 2007922 는 불확정 블록이 실제로 있어야 한다(이 시드 입력이 불확정 경로를 지나는지 고정).
   const [amp, g, e] = POS_CASES[0];
-  const img = lowContrastImage(LOW.sine(amp));
-  const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
   let withUndecided = 0;
   for (const seed of POS_SEEDS) {
-    const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise: 1, seed }));
+    const m = posMeasure(1, amp, g, e, seed);
     assert.equal(m.status, 'measured', `seed ${seed}`);
     const und = m.blocks.filter((b) => b.undecided);
     assert.equal(m.undecidedBlocks, und.length, `seed ${seed} 불확정 수`);
@@ -363,12 +376,10 @@ test('F-380 불확정 블록은 측정값처럼 읽히지 않는다: 사인 1.5 
 test('F-385 ⑩ 귀무(불확정 0)에서 blockMaxPx = 블록 hypot(dx, dy) 최댓값: 사인 2 DN ±2·±3 DN 이동 0 시드 20개', () => {
   // 불확정 블록이 없으면 blockMaxPx 에 합칠 undecidedMaxPx 가 없으므로(0) 측정 블록의 hypot 최댓값과 같아야 한다.
   // 불확정 블록이 있는 회차는 위 F-380 시험이 지키므로 여기서 세지 않는다.
-  const id = (p) => p;
-  const img = lowContrastImage(LOW.sine(2));
   let checked = 0;
   for (const noise of [2, 3]) {
     for (const seed of NOISE_SEEDS) {
-      const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, id, { noise, seed }));
+      const m = nullMeasure(2, noise, seed);
       if (m.status !== 'measured' || m.undecidedBlocks) continue;
       checked++;
       const want = m.blocks.reduce((mx, b) => Math.max(mx, Math.hypot(b.dx, b.dy)), 0);
