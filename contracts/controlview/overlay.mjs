@@ -47,7 +47,7 @@ export const TOWER_OVERLAY_MODULES = Object.freeze({
   validate: { file: 'validate.mjs', fn: 'checkDrones(list)·checkDetections(list)·checkPath(path)·checkSize(size)·checkOpts(opts) -> 정규화된 복사본   TOWER_OVERLAY_API 의 검사 규칙' },
   project: { file: 'project.mjs', fn: 'projectPoints(view, items) -> {id,u,v,depth,visible}[];  unprojectPoint(view, u, v, depth) -> [e,n,u]' },
   clip: { file: 'clip.mjs', fn: 'clipPolyline(view, points, nearM) -> polylines   TOWER_OVERLAY_FORMULA.pathClip' },
-  store: { file: 'store.mjs', fn: 'createOverlayStore() -> {setDrones, setDetections, setPath, removePath, clear, counts, drones(), detections(), paths()}   상태만. 투영 없음' },
+  store: { file: 'store.mjs', fn: 'createOverlayStore() -> {setDrones, setDetections, setPath, removePath, clear, counts, drones(), detections(), paths()}   상태만. 투영 없음. 이미 validate 를 거친 값을 받는다(검사 안 함). drones()·detections()·paths() 는 깊은 복사를 돌려준다(밖에서 고쳐도 상태 불변)' },
   index: { file: 'index.mjs', fn: 'createTowerOverlay(opts?) 조립' },
 });
 
@@ -56,12 +56,12 @@ export const TOWER_OVERLAY_TEST_NAMES = Object.freeze([
   'view: poseToView 는 syncCamera 의 view 와 같다',
   'validate: 형식 위반은 TypeError, 범위 위반은 RangeError, 중복 id 는 RangeError',
   'store: setDrones 는 교체이고 누적하지 않는다',
-  'store: 검사에 실패하면 이전 상태가 그대로다',
   'project: 알려진 카메라·점의 화면 좌표(숫자 박음)',
   'project: 카메라 뒤 점은 visible=false, u=v=0',
   'project: ENU 왕복 오차 ≤ 1 cm',
   'clip: 선분이 근평면을 가로지르면 교점에서 자른다',
   'clip: 전부 뒤에 있으면 polyline 이 없다',
+  'index: 검사에 실패하면 이전 상태가 그대로다',
   'index: 입력 순서·개수·id 를 지킨다',
   'index: 받지 않은 위치를 지어내지 않는다(보간·외삽 없음)',
   'index: 네트워크·타이머를 쓰지 않는다',
