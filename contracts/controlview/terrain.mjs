@@ -29,5 +29,5 @@ export const TERRAIN_DEFAULTS = Object.freeze({
   nearM: 0.01,
 });
 
-/** SPEC S9 synthetic 8-viewpoint SSIM floor: reference = LOD 0 mesh (not original point cloud), 3 sites at eye height 17 m from synthetic.json, 160×90 resolution */
+/** 8시점 SSIM 하한(SPEC S9 의 합성 근사). 기준 영상 = 같은 DEM 의 LOD 0 메시(원본 점군 아님), 시점 3곳 눈 높이 17 m(synthetic.json), 해상도 160×90 (결정 0046). */
 export const TERRAIN_SSIM_MIN = 0.95;

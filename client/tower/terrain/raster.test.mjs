@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { emptyResult } from '../../../contracts/raster/index.mjs';
 import { rasterizeTriangles } from './raster.mjs';
+import { traceMesh } from './ref_trace.mjs';
 
 const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 // 100×100, fx=fy=100, 주점 (50,50): z=10 에서 u = 10·x + 50, v = 10·y + 50.
@@ -158,7 +159,11 @@ test('A2_offscreen_degenerate_nonfinite', () => {
   const partial = makeMesh([[[-10, -3, 10], [1, -3, 10], [-3, 1, 10]]], [0]); // 왼쪽으로 삐져나감
   const o2 = emptyResult(100, 100);
   rasterizeTriangles(cam100(), partial, () => [1, 2, 3], o2);
-  assert.ok(countFilled(o2) > 0 && o2.index.length === 100 * 100, '경계로 잘려 그려짐');
+  // 화면 안(x≥0)만 그려지고, 삼각형이 닿지 않는 오른쪽 아래는 비어 있다. 출력 배열 길이는 그대로.
+  assert.equal(o2.index.length, 100 * 100);
+  assert.equal(countFilled(o2), 1250, '경계로 잘려 화면 안쪽만 그려짐');
+  assert.equal(o2.index[0], -1, '삼각형 밖 화소는 비어 있음');
+  assert.equal(o2.index[30 * 100 + 0], 0, '왼쪽 화면 경계 화소(0,30)는 그려짐');
 
   // 퇴화(세 점 일직선, 면적 0): 0 화소, 던지지 않음.
   const degen = makeMesh([[[-3, -3, 10], [0, 0, 10], [3, 3, 10]]], [0]);
@@ -206,4 +211,27 @@ test('A2_performance_640x360_50k', () => {
   rasterizeTriangles(cam, mesh, shade, out);
   const ms = performance.now() - t0;
   assert.ok(ms < 1000, `5만 삼각형 ${ms.toFixed(1)}ms (1000ms 이내)`);
+});
+
+// ⑩ 근평면 절단 보간: 절단점의 x·y 는 변을 따라 tI=(near−z0)/(z1−z0) 로 선형 보간된다.
+//    독립 광선 추적기(ref_trace)와 화소 단위로 비교한다(둘 다 z ≥ near 만 본다). 단일 삼각형이라 경계 화소 말고는 일치해야 한다.
+//    ㉠ 꼭짓점 하나가 뒤(절단 결과 4각형) ㉡ 꼭짓점 둘이 뒤(절단 결과 3각형).
+test('A2_near_plane_clip_interpolation_matches_reference', () => {
+  const cases = [
+    { name: '한 꼭짓점 뒤', tri: [[-3, -3, 10], [3, -3, 10], [0, 3, -5]], count: 7619, maxMismatch: 2 },
+    { name: '두 꼭짓점 뒤', tri: [[-2, -1, 6], [4, -2, -3], [-5, 3, -2]], count: 1286, maxMismatch: 0 },
+  ];
+  for (const { name, tri, count, maxMismatch } of cases) {
+    const mesh = makeMesh([tri], [0]);
+    const out = emptyResult(100, 100);
+    rasterizeTriangles(cam100(), mesh, () => [1, 1, 1], out);
+    const ref = traceMesh(cam100(), mesh, () => [1, 1, 1]);
+    assert.equal(countFilled(out), count, `${name}: 덮인 화소 수`);
+    let mismatch = 0;
+    for (let i = 0; i < out.index.length; i += 1) {
+      if (out.index[i] !== ref.index[i]) mismatch += 1;
+      else if (out.index[i] !== -1) assert.ok(Math.abs(out.depth[i] - ref.depth[i]) < 1e-3, `${name}: 화소 ${i} 깊이`);
+    }
+    assert.ok(mismatch <= maxMismatch, `${name}: 참조와 다른 화소 ${mismatch}`);
+  }
 });
