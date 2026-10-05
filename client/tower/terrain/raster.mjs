@@ -130,7 +130,7 @@ export function rasterizeTriangles(camera, mesh, shadeTriangle, out, opts = unde
       for (let px = pxMin; px <= pxMax; px += 1) {
         if ((w0 > 0 || (w0 === 0 && tl0)) && (w1 > 0 || (w1 === 0 && tl1)) && (w2 > 0 || (w2 === 0 && tl2))) {
           const inv = (w0 * aiz + w1 * biz + w2 * ciz) * invArea; // 원근 보정된 1/z
-          const z = 1 / inv;
+          const z = Math.fround(1 / inv); // 깊이 버퍼는 Float32 이므로 저장값과 같은 정밀도로 비교한다
           const pix = rowOff + px;
           if (index[pix] === -1 || z < depth[pix]) { // 같은 깊이는 먼저 그린 삼각형 유지
             depth[pix] = z;
