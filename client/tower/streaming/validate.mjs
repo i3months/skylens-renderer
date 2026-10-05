@@ -4,9 +4,11 @@ import { TOWER_STREAMING_LIMITS } from '../../../contracts/controlview/streaming
 import { poseToView } from '../overlay/view.mjs';
 
 const OPT_KEYS = ['maxDistM', 'zRangeM', 'maxInflight', 'retainMargin', 'maxHeld', 'nearM'];
-export const TILE_INDEX_MAX = 1_000_000; // 타일 번호 절댓값 상한(64 m 타일 기준 64000 km)
+export const TILE_INDEX_MAX = TOWER_STREAMING_LIMITS.tileIndexMax; // 타일 번호 절댓값 상한(계약 한 곳)
+export const MAX_COORD_M = TOWER_STREAMING_LIMITS.maxCoordM;
 const INT_RANGES = { maxInflight: [1, 1_000_000], retainMargin: [0, 16], maxHeld: [1, 1_000_000] };
 
+const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 const num = (v, name) => {
   if (typeof v !== 'number') throw new TypeError(`${name} 는 숫자여야 한다`);
@@ -32,7 +34,7 @@ export function checkOpts(opts) {
   if (opts === undefined) opts = {};
   if (!isObj(opts)) throw new TypeError('opts 는 객체여야 한다');
   const raw = {};
-  for (const k of OPT_KEYS) raw[k] = opts[k]; // 접근자는 한 번만 읽는다
+  for (const k of OPT_KEYS) raw[k] = hasOwn(opts, k) ? opts[k] : undefined; // 자기 속성만, 접근자는 한 번만 읽는다
   const keys = Object.keys(opts);
   // 1단계: 형식
   for (const k of OPT_KEYS) {
@@ -54,6 +56,7 @@ export function checkOpts(opts) {
   else {
     const [a, b] = raw.zRangeM;
     if (!Number.isFinite(a) || !Number.isFinite(b) || !(a <= b)) throw new RangeError('opts.zRangeM 는 유한한 [min,max] (min ≤ max) 여야 한다');
+    if (!Number.isFinite(Math.fround(a)) || !Number.isFinite(Math.fround(b))) throw new RangeError('opts.zRangeM 는 float32 로도 유한해야 한다');
     out.zRangeM = [norm(a), norm(b)];
   }
   for (const k of ['maxInflight', 'retainMargin', 'maxHeld']) {
@@ -72,4 +75,10 @@ export function checkTile(tx, ty) {
 /** pose·size 검사는 poseToView 가 던지는 규칙을 그대로 따른다(위임). 검사를 통과하면 view 를 돌려준다. */
 export function checkView(pose, size) {
   return poseToView(pose, size);
+}
+
+/** 좌표 범위 검사: |pos.x|,|pos.y| + maxDistM 이 maxCoordM 을 넘으면 RangeError. pos 는 checkView 를 통과한 값이어야 한다. */
+export function checkCoordRange(pos, maxDistM) {
+  const ext = Math.max(Math.abs(pos[0]), Math.abs(pos[1])) + maxDistM;
+  if (!(ext <= MAX_COORD_M)) throw new RangeError(`|pos.x|,|pos.y| + maxDistM 가 maxCoordM(${MAX_COORD_M}) 를 넘는다`);
 }

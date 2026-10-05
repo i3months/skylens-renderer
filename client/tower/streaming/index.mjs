@@ -2,7 +2,7 @@
 // 상태는 held·inflight 두 집합뿐이다. 계산은 tilesInView·planRequests 에 맡기고, 던지면 상태를 바꾸지 않는다(계산 후 한 번에 반영).
 // 네트워크·타이머를 쓰지 않는다.
 import { TOWER_STREAMING_LIMITS } from '../../../contracts/controlview/streaming.mjs';
-import { checkOpts, checkTile, checkView } from './validate.mjs';
+import { checkOpts, checkTile, checkView, checkCoordRange } from './validate.mjs';
 import { tilesInView } from './visible.mjs';
 import { planRequests, tileKey } from './plan.mjs';
 
@@ -28,16 +28,25 @@ export function createTowerStreaming(opts, deps = DEFAULT_DEPS) {
 
   // 시점 → needed (상태를 바꾸지 않는다). 검사 위반은 여기서 던진다.
   function neededFor(pose, size) {
-    const view = checkView(pose, size);
+    // pos 는 한 번만 읽어 복사한다(검사한 값과 center 가 같아야 한다)
+    const isObj = pose !== null && typeof pose === 'object';
+    const rawPos = isObj ? pose.pos : undefined; // 접근자는 한 번만 읽는다
+    let snap = pose;
+    if (isObj && Array.isArray(rawPos)) {
+      snap = {};
+      for (const k of Object.keys(pose)) if (k !== 'pos') snap[k] = pose[k];
+      snap.pos = rawPos.slice();
+    }
+    const view = checkView(snap, size);
+    checkCoordRange(snap.pos, o.maxDistM);
     const needed = d.tilesInView(view, o);
     if (needed.length > maxTiles) throw new RangeError(`needed ${needed.length} 개가 maxTilesPerUpdate(${maxTiles}) 를 넘는다`);
-    return needed;
+    return { needed, center: [snap.pos[0], snap.pos[1]] };
   }
 
   return {
     update(pose, size) {
-      const needed = neededFor(pose, size);
-      const center = [pose.pos[0], pose.pos[1]]; // poseToView 가 pos 형식을 이미 검사했다
+      const { needed, center } = neededFor(pose, size);
       const r = d.planRequests({ needed, held: new Set(held), inflight: new Set(inflight), opts: o, center });
       held = new Set(r.held);
       inflight = new Set(r.inflight);
@@ -57,7 +66,7 @@ export function createTowerStreaming(opts, deps = DEFAULT_DEPS) {
       return inflight.delete(d.tileKey(tx, ty));
     },
     missing(pose, size) {
-      return copyTiles(neededFor(pose, size).filter((t) => !held.has(d.tileKey(t.tx, t.ty))));
+      return copyTiles(neededFor(pose, size).needed.filter((t) => !held.has(d.tileKey(t.tx, t.ty))));
     },
     state() {
       return { held: sortedTiles(held), inflight: sortedTiles(inflight) };
