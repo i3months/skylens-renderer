@@ -29,7 +29,12 @@ function normalizeLambert(m) {
   const len = Math.hypot(l[0], l[1], l[2]);
   if (!Number.isFinite(len) || len === 0) throw new RangeError(`raster: lambert.l 길이가 0 이거나 유한하지 않음: [${l[0]}, ${l[1]}, ${l[2]}]`);
   if (!(m.ambient >= 0 && m.ambient <= 1)) throw new RangeError(`raster: lambert.ambient 는 [0,1]: ${String(m.ambient)}`);
-  return { l: [l[0] / len, l[1] / len, l[2] / len], baseRgb: m.baseRgb, ambient: m.ambient };
+  const b = m.baseRgb;
+  if (!b || b.length !== 3) throw new TypeError(`raster: lambert.baseRgb 는 길이 3 배열: ${String(b)}`);
+  for (let k = 0; k < 3; k += 1) {
+    if (!(Number.isFinite(b[k]) && b[k] >= 0 && b[k] <= 255)) throw new RangeError(`raster: lambert.baseRgb[${k}] 는 유한한 0..255: ${String(b[k])}`);
+  }
+  return { l: [l[0] / len, l[1] / len, l[2] / len], baseRgb: [b[0], b[1], b[2]], ambient: m.ambient };
 }
 
 /**
@@ -39,7 +44,8 @@ function normalizeLambert(m) {
  * @param {(tri:number)=>number[]} shadeTriangle 삼각형 번호 → [r,g,b] (0..255 정수)
  * @param {import('../../../contracts/raster/index.mjs').RenderResult} out emptyResult 로 만든 결과(제자리 갱신)
  * @param {{ lambert?:{l:number[],baseRgb:number[],ambient:number}, normals?:'vertex'|'face' }} [opts]
- *   lambert: 화소별 음영 서술(없으면 shadeTriangle 결과의 lambert 속성). normals 'face' 면 정점 법선이 있어도 면 음영.
+ *   lambert: 화소별 음영 서술(없으면 shadeTriangle 결과의 lambert 속성). 있으면 우선 적용하고 baseRgb(길이 3, 0..255)·l·ambient 를 그리기 전에 검증한다.
+ *   normals 'face' 면 정점 법선이 있어도 면 음영.
  * @returns {void}
  */
 export function rasterizeTriangles(camera, mesh, shadeTriangle, out, opts = undefined) {

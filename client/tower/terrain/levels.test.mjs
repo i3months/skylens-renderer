@@ -165,3 +165,29 @@ test('cells·heights 길이·위치 범위 위반은 추월(skip) 수준에서�
     assert.deepEqual(coords(s), ['5,6']);
   }
 });
+
+test('보관한 heights 는 입력과 떨어져 있다: 도착 뒤 입력 heights 를 바꿔도 보관 값은 그대로다', () => {
+  const s = createTerrainState();
+  const input = tile(0, 0, 2);
+  input.heights.set([1, 2, 3, 4]);
+  s.accept(0, [input]);
+  input.heights[0] = 99;
+  assert.deepEqual([...s.tiles()[0].heights], [1, 2, 3, 4]);
+  assert.notEqual(s.tiles()[0].heights, input.heights);
+});
+
+test('종류 오류(TypeError)는 skip 경로와 비skip 경로가 같고, 범위 오류(RangeError)도 같다', () => {
+  const kinds = [
+    [TypeError, { ...tile(0, 0), tx: 1.5 }],
+    [TypeError, null],
+    [RangeError, { ...tile(0, 0), cells: 1, heights: new Float32Array(1) }],
+  ];
+  for (const [Kind, bad] of kinds) {
+    const fresh = createTerrainState();
+    assert.throws(() => fresh.accept(0, [bad]), Kind);
+    const s = createTerrainState();
+    s.accept(3, [tile(5, 6, 8)]);
+    assert.equal(s.peek(1), 'skip');
+    assert.throws(() => s.accept(1, [bad]), Kind, '추월(skip) 경로');
+  }
+});
