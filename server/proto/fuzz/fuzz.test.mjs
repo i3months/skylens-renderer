@@ -58,6 +58,16 @@ test('깨진 복호기 3: count 를 믿고 힙 배열을 먼저 할당 -> alloc 
   globalThis.__sink = null;
 });
 
+// 시드가 고정이라 같은 입력 열이 재생된다. 부하로 한 번 튄 위반(GC·스케줄링 정지로 time 이 200 ms 를 넘는 등)은 두 번째
+// 실행에서 같은 (index, kind) 로 다시 나오지 않고, 코덱이 실제로 느리거나 선할당하면 입력이 같으므로 매번 다시 나온다.
+// 벽시계 한 번의 관측으로 판정하지 않으려고 두 실행에서 모두 나온 위반만 돌려준다.
+function reproducibleViolations(codec, opts) {
+  const first = runFuzz(codec, opts).violations;
+  if (first.length === 0) return [];
+  const again = new Set(runFuzz(codec, opts).violations.map((v) => `${v.index}:${v.kind}`));
+  return first.filter((v) => again.has(`${v.index}:${v.kind}`));
+}
+
 // typed array·Buffer 선할당은 힙(used_heap_size) 밖이라 arrayBuffers 증가분으로만 보인다.
 const preallocDecoders = {
   'new Uint8Array(count*4096)': (b) => { if (b.length >= 14 && b[0] === 3) globalThis.__sink = new Uint8Array((b[12] | (b[13] << 8)) * 4096); },
@@ -73,8 +83,8 @@ for (const [name, pre] of Object.entries(preallocDecoders)) {
       globalThis.__sink = null;
       assert.ok(r.violations.length >= 1, `${dir} 위반 0`);
       assert.ok(r.violations.some((v) => v.kind === 'alloc'), JSON.stringify(r.violations.slice(0, 2)));
-      const base = runFuzz(refCodec(dir), { iterations: 20000, seed: SEED });
-      assert.equal(base.violations.length, 0);
+      const stable = reproducibleViolations(refCodec(dir), { iterations: 20000, seed: SEED });
+      assert.equal(stable.length, 0, JSON.stringify(stable.slice(0, 2)));
     }
   });
 }
