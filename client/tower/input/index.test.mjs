@@ -26,7 +26,7 @@ test('index: keyDown → step → camera 가 한 프레임 안 동기 호출에�
 test('index: 네트워크·타이머를 쓰지 않는다', () => {
   for (const f of ['index.mjs', 'state.mjs', 'keys.mjs', 'camera.mjs']) {
     const src = readFileSync(new URL(`./${f}`, import.meta.url), 'utf8');
-    for (const w of ['fetch', 'setTimeout', 'setInterval', 'XMLHttpRequest', 'WebSocket']) {
+    for (const w of ['fetch', 'setTimeout', 'setInterval', 'setImmediate', 'XMLHttpRequest', 'WebSocket']) {
       assert.equal(src.includes(w), false, `${f}: ${w}`);
     }
   }
