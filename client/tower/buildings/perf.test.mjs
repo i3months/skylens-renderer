@@ -214,7 +214,7 @@ test('buildings layer 성능: 렌더 ≤ 1500ms, setMode ≤ 1ms (평균)', asyn
 
   // 묶음 받기
   const result = layer.accept(0, bundle);
-  assert.ok(['first', 'replace', 'skip'].includes(result), `accept 반환값 ${result}`);
+  assert.equal(result, 'first', `첫 accept 반환값 ${result}`);
 
   // 테스트 모드
   const modes = ['black', 'points', 'aerial'];
