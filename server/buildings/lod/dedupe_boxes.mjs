@@ -2,11 +2,13 @@
 // 완전히 들어가고 높이도 그 이하(최대 FOLD_Z_TOL_M = 1 cm 튀어나온 것까지 포함)인 요소를 군집 후보에서 뺀다. 같은 자리 동일 상자 N 채가 응집 단계에서 쌍 N^2 개를
 // 만들어 초선형이 되는 것을 막는다. 빠진 요소는 대표 상자 안에 가려지므로 출력 상자는 같다(ids 는 호출 쪽이 따로 유지한다).
 // 대가: 대표보다 위·아래로 최대 1 cm 튀어나온 상자도 접혀 그 1 cm 는 출력 상자에서 빠질 수 있다.
-// 대표 탐색은 minZ 순위 위의 구간 트리(노드 최대 maxZ)로 z 조건을 만족하는 대표만 방문한다(대표가 줄지 않는 1~5 cm 간격에서도 선형에 가깝다).
+// 대표 탐색은 minZ 순위 위의 구간 트리(노드 최대 maxZ)로 z 조건을 만족하는 대표만 방문한다. 비용은 z 로 쌓인 경우(대표가 줄지 않는 1~5 cm 간격 포함)에만 선형에 가깝다:
+// 같은 z 에서 xy 로만 갈라진 상자는 z 조건을 모두 만족하므로 여전히 입력 × 대표 수다(F-371: xy 색인은 하지 않았다).
 const EPS = 1e-9;
 
 // 마지막 호출의 입출력 수(시험이 접기가 실제로 쓰였는지 확인한다).
-export const foldStats = { calls: 0, input: 0, output: 0 };
+// covers: covers() 호출 수(작업량 계수; 선형 비교면 입력×대표, 색인이면 입력×(z 허용 안 대표 수)).
+export const foldStats = { calls: 0, input: 0, output: 0, covers: 0 };
 
 // 풋프린트가 상자 전체를 채우는 직사각형인가: 넓이 있는 삼각형의 모든 꼭짓점이 상자 모서리에 있다.
 function isRect(m) {
@@ -33,6 +35,7 @@ function sameFill(a, b) {
 export const FOLD_Z_TOL_M = 0.01;
 
 function covers(a, b) {
+  foldStats.covers++;
   if (b.minX < a.minX - EPS || b.maxX > a.maxX + EPS || b.minY < a.minY - EPS || b.maxY > a.maxY + EPS) return false;
   if (b.maxZ > a.maxZ + FOLD_Z_TOL_M || b.minZ < a.minZ - FOLD_Z_TOL_M) return false;
   return a.rect || sameFill(a, b);
@@ -63,7 +66,7 @@ export function foldContained(singles) {
   const find = (node, lo, hi, lim, minTop, m) => { // 순위 [lo,hi) 중 lim 미만만
     if (lo >= lim || top[node] < minTop) return false;
     if (hi - lo === 1) {
-      for (const r of leaves[lo]) if (covers(r, m)) return true;
+      for (const r of leaves[lo] ?? []) if (covers(r, m)) return true;
       return false;
     }
     const mid = (lo + hi) >> 1;

@@ -108,7 +108,10 @@ function fold90(a) {
 // 공유 변 상쇄 뒤에는 격자·부채꼴처럼 안쪽 변이 많은 지붕은 활성 선분이 경계 쪽만 남아 상한에 걸리지 않는다(삼각형 12800개 한 동 73 ms).
 // 상한에 걸리는 것은 서로 겹쳐 쌓인 층(경계가 많이 겹치는 입력)이다. 같은 모양 직사각 지붕 2장씩 160층 이상(roof_area.test.mjs)이 걸리고,
 // 상한 바로 아래 150층 한 동은 약 3 ms 라 상한을 낮출 이유가 측정으로는 없었다.
-const WINDING_WORK_CAP = 400000;
+export const WINDING_WORK_CAP = 400000;
+// 작업량 계수(시험이 벽시계 대신 이것으로 판정한다): calls 호출 수, segs 수평이 아닌 입력 선분, kept 공유 변 상쇄 뒤 선분,
+// active 구간별 활성 선분 수의 합(감김 누적과 정렬이 도는 양), capped 상한에 걸려 null 을 돌려준 호출.
+export const windingStats = { calls: 0, segs: 0, kept: 0, active: 0, capped: 0 };
 const HK = new Float64Array(4), HU = new Uint32Array(HK.buffer);
 function windingArea(segs) {
   const n = segs.length / 5;
@@ -124,6 +127,7 @@ function windingArea(segs) {
     sx[c] = x1; sx2[c] = x2; sy2[c] = y2; sy[c] = y1; sm[c] = (y2 - y1) / (x2 - x1); sdir[c] = dir; sch[c] = segs[i * 5 + 4];
     c++;
   }
+  windingStats.segs += c;
   // 같은 채널에서 같은 선분이 반대 방향으로 한 쌍 있으면 감김수 기여가 서로 정확히 지워지므로(메시 안쪽 공유 변) 미리 뺀다.
   // 결과는 그대로이고 활성 선분이 경계 쪽으로만 남는다(격자 지붕에서 약 3분의 2 감소). 정점은 float32 에서 온 값이라 좌표가 정확히 같다.
   if (c > 1) {
@@ -154,6 +158,8 @@ function windingArea(segs) {
     }
     c = w;
   }
+  windingStats.calls++;
+  windingStats.kept += c;
   if (c === 0) return 0;
   const ex = new Float64Array(c * 2);
   for (let s = 0; s < c; s++) { ex[2 * s] = sx[s]; ex[2 * s + 1] = sx2[s]; }
@@ -173,8 +179,9 @@ function windingArea(segs) {
   let act = 0, work = 0;
   for (let i = 0; i + 1 < nx; i++) {
     act += diff[i];
+    windingStats.active += act;
     work += act * (Math.log2(act + 1) + 1);
-    if (work > WINDING_WORK_CAP) return null;
+    if (work > WINDING_WORK_CAP) { windingStats.capped++; return null; }
   }
   const cur = new Int32Array(c); // 활성 선분 번호, 직전 구간의 y 순서
   const yk = new Float64Array(c); // 선분 번호 → 이번 구간 가운데 x 에서의 y
@@ -342,6 +349,9 @@ function inTri(px, py, t, o) {
 
 // 건물을 방향 φ 좌표계(u = x cosφ + y sinφ, v = −x sinφ + y cosφ)로 옮긴 요소: 그 좌표계 AABB,
 // 넓이 있는 삼각형(fill, 안 판정용)과 모든 삼각형 변의 중복 없는 선분(segs, 거리용; 퇴화한 벽 삼각형은 선분으로 남는다).
+// 작업량 계수(시험이 벽시계 대신 이것으로 판정한다): segs 점-선분 거리 계산 수, frameSegs toFrame 이 만든 중복 없는 선분 수.
+export const distStats = { segs: 0, frameSegs: 0 };
+const SK = new Float64Array(4), SU = new Uint32Array(SK.buffer);
 function toFrame(it, phi) {
   const c = Math.cos(phi), s = Math.sin(phi);
   const src = it.tris, tris = new Float64Array(src.length);
@@ -352,18 +362,32 @@ function toFrame(it, phi) {
     if (u < minX) minX = u; if (u > maxX) maxX = u;
     if (v < minY) minY = v; if (v > maxY) maxY = v;
   }
-  const fill = [], segs = [], seen = new Set();
+  const fill = [], segs = [];
+  // 중복 변 제거: 방향을 정규화한 끝점 4개가 같은 선분은 한 번만 남긴다(처음 나온 것). 문자열 키 대신 좌표 비트 해시 표(열린 주소)를 쓴다(F-367: 800삼각형 200동에서 toFrame 이 가장 컸다).
+  let cap = 16;
+  while (cap < (tris.length / 2) * 2) cap <<= 1;
+  const tab = new Int32Array(cap).fill(-1); // 선분 번호(segs 안 위치 / 4)
+  const addSeg = (px, py, qx, qy) => {
+    SK[0] = px + 0; SK[1] = py + 0; SK[2] = qx + 0; SK[3] = qy + 0; // +0: -0 을 0 으로(=== 와 같게)
+    let h = 0x811c9dc5;
+    for (let q = 0; q < 8; q++) h = Math.imul(h ^ SU[q], 0x85ebca6b) ^ (h >>> 13);
+    for (let i = h & (cap - 1); ; i = (i + 1) & (cap - 1)) {
+      const o = tab[i];
+      if (o === -1) { tab[i] = segs.length / 4; segs.push(px, py, qx, qy); return; }
+      const b = o * 4;
+      if (segs[b] === px && segs[b + 1] === py && segs[b + 2] === qx && segs[b + 3] === qy) return;
+    }
+  };
   for (let o = 0; o < tris.length; o += 6) {
     const ax = tris[o], ay = tris[o + 1], bx = tris[o + 2], by = tris[o + 3], cx = tris[o + 4], cy = tris[o + 5];
     if (Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) > 1e-9) fill.push(ax, ay, bx, by, cx, cy);
-    for (const [px, py, qx, qy] of [[ax, ay, bx, by], [bx, by, cx, cy], [cx, cy, ax, ay]]) {
-      const fwd = px < qx || (px === qx && py <= qy);
-      const key = fwd ? `${px},${py},${qx},${qy}` : `${qx},${qy},${px},${py}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      segs.push(px, py, qx, qy);
+    for (let e = 0; e < 3; e++) {
+      const px = e === 0 ? ax : e === 1 ? bx : cx, py = e === 0 ? ay : e === 1 ? by : cy;
+      const qx = e === 0 ? bx : e === 1 ? cx : ax, qy = e === 0 ? by : e === 1 ? cy : ay;
+      if (px < qx || (px === qx && py <= qy)) addSeg(px, py, qx, qy); else addSeg(qx, qy, px, py);
     }
   }
+  distStats.frameSegs += segs.length / 4;
   return {
     it, order: it.order, minX, minY, maxX, maxY, minZ: it.minZ, maxZ: it.maxZ, roofMin: it.roofMin, err: 0,
     fill: Float64Array.from(fill), segs: Float64Array.from(segs),
@@ -405,6 +429,7 @@ function memberDist2(x, y, m, best) {
     for (let o = 0; o < t.length; o += 6) if (inTri(x, y, t, o)) return 0;
   }
   const s = m.segs;
+  distStats.segs += s.length / 4;
   for (let o = 0; o < s.length; o += 4) {
     const d = segDist2(x, y, s[o], s[o + 1], s[o + 2], s[o + 3]);
     if (d < best) best = d;
@@ -699,10 +724,12 @@ function pairKey(A, B) {
 // 인접 후보 쌍(mayMerge)만 큐에 넣고, 합칠 때마다 새 군집과 남은 군집 사이 쌍만 넣는다(죽은 군집의 쌍은 꺼낼 때 버린다).
 // 오차는 꺼낸 쌍만 잰다. 넘는 쌍은 버리고, 그 군집이 다른 군집과 합쳐지면 새 쌍으로 다시 들어온다.
 function agglomerate(singles, tol, hideTol) {
-  let list = singles.map((m) => makeCluster([m], m.err));
+  const all = singles.map((m) => makeCluster([m], m.err));
   const heap = [];
+  const index = makeClusterIndex(singles, hideTol);
   const push = (A, B) => { if (mayMerge(A, B, hideTol)) heapPush(heap, pairEntry(A, B, pairKey(A, B))); };
-  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) push(list[i], list[j]);
+  // 후보 쌍은 색인이 돌려준 군집만 mayMerge 로 확인한다(전쌍 비교 없음). 쌍마다 한 번: 앞서 넣은 군집과만 짝짓는다.
+  for (const C of all) { index.forEachNear(C, (D) => push(C, D)); index.add(C); }
   while (heap.length) {
     const top = heapPop(heap);
     if (!top.a.alive || !top.b.alive) continue;
@@ -710,12 +737,71 @@ function agglomerate(singles, tol, hideTol) {
     const err = mergeError(top.a, top.b, tol, hideTol, gaps);
     if (err > tol) continue;
     top.a.alive = false; top.b.alive = false;
+    index.remove(top.a); index.remove(top.b);
     const C = makeCluster(top.a.members.concat(top.b.members), err, top.a, top.b, gaps);
-    list = list.filter((c) => c.alive);
-    for (const D of list) push(C, D);
-    list.push(C);
+    index.forEachNear(C, (D) => push(C, D));
+    index.add(C);
+    all.push(C);
   }
-  return list;
+  return all.filter((c) => c.alive);
+}
+
+// mayMerge 후보만 돌려주는 군집 색인(xy 격자 × 높이 띠). 돌려주는 집합은 mayMerge 를 통과하는 군집을 모두 포함한다(더 있을 수 있어 호출 쪽이 mayMerge 로 거른다).
+//  - xy: 군집은 상자 최소 모서리가 속한 칸 하나에만 놓인다(큰 상자를 여러 칸에 넣으면 같은 자리에 쌓인 입력에서 칸마다 같은 군집을 다시 훑는다).
+//    D 가 C 와 틈 ≤ hideTol 이면 D.minX ≥ C.minX − hideTol − W 이고 D.minX ≤ C.maxX + hideTol (Y 도 같게). W 는 지금까지 색인한 군집의 가장 큰 폭(줄지 않는다)이라
+//    조회는 그 범위의 칸만 본다. 칸 크기 G = max(hideTol, 입력 범위/8).
+//  - 높이: mayMerge 의 계단 조건 max(A.maxZ, B.maxZ) − min(A.minTop, B.minTop) ≤ hideTol 에서 B.minTop ∈ [A.maxZ − hideTol, A.minTop + hideTol]
+//    (B.minTop ≤ B.maxZ 이므로). 군집은 minTop 띠(너비 hideTol) 하나에 놓이고 조회는 이 구간의 띠만 본다. 구간 양끝에 1e-9 여유.
+//  - minTop·maxZ 가 유한하지 않거나 maxZ − minTop > hideTol 인 군집은 어느 쌍도 통과할 수 없어 색인하지 않는다.
+// 작업량 계수 agglomerateStats.visited: 조회가 훑은 군집 수(전쌍 비교면 n²/2, 색인이면 후보 수에 비례).
+export const agglomerateStats = { calls: 0, clusters: 0, visited: 0 };
+function makeClusterIndex(singles, hideTol) {
+  agglomerateStats.calls++;
+  agglomerateStats.clusters += singles.length;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const m of singles) {
+    if (m.minX < x0) x0 = m.minX; if (m.maxX > x1) x1 = m.maxX;
+    if (m.minY < y0) y0 = m.minY; if (m.maxY > y1) y1 = m.maxY;
+  }
+  const G = Math.max(hideTol, (Math.max(x1 - x0, y1 - y0) || 0) / 8, 1e-9);
+  const B = Math.max(hideTol, 1e-9), EPSZ = 1e-9;
+  let W = 0, H = 0;
+  const occ = { cx0: Infinity, cx1: -Infinity, cy0: Infinity, cy1: -Infinity, zb0: Infinity, zb1: -Infinity }; // 색인한 칸 범위(줄지 않는다): 조회 반복을 여기로 자른다
+  const cells = new Map();
+  const keyOf = (cx, cy, zb) => `${cx},${cy},${zb}`;
+  const indexable = (C) => Number.isFinite(C.minTop) && Number.isFinite(C.maxZ) && C.maxZ - C.minTop <= hideTol;
+  const keyFor = (C) => keyOf(Math.floor(C.minX / G), Math.floor(C.minY / G), Math.floor(C.minTop / B));
+  return {
+    add(C) {
+      if (!indexable(C)) return;
+      if (C.maxX - C.minX > W) W = C.maxX - C.minX;
+      if (C.maxY - C.minY > H) H = C.maxY - C.minY;
+      const cx = Math.floor(C.minX / G), cy = Math.floor(C.minY / G), zb = Math.floor(C.minTop / B);
+      if (cx < occ.cx0) occ.cx0 = cx; if (cx > occ.cx1) occ.cx1 = cx;
+      if (cy < occ.cy0) occ.cy0 = cy; if (cy > occ.cy1) occ.cy1 = cy;
+      if (zb < occ.zb0) occ.zb0 = zb; if (zb > occ.zb1) occ.zb1 = zb;
+      const k = keyOf(cx, cy, zb);
+      let set = cells.get(k);
+      if (!set) { set = new Set(); cells.set(k, set); }
+      set.add(C);
+    },
+    remove(C) {
+      if (!indexable(C)) return;
+      const k = keyFor(C), set = cells.get(k);
+      if (set) { set.delete(C); if (!set.size) cells.delete(k); }
+    },
+    forEachNear(C, fn) {
+      if (!indexable(C)) return;
+      const a0 = Math.max(occ.cx0, Math.floor((C.minX - hideTol - W - EPSZ) / G)), a1 = Math.min(occ.cx1, Math.floor((C.maxX + hideTol + EPSZ) / G));
+      const b0 = Math.max(occ.cy0, Math.floor((C.minY - hideTol - H - EPSZ) / G)), b1 = Math.min(occ.cy1, Math.floor((C.maxY + hideTol + EPSZ) / G));
+      const z0 = Math.max(occ.zb0, Math.floor((C.maxZ - hideTol - EPSZ) / B)), z1 = Math.min(occ.zb1, Math.floor((C.minTop + hideTol + EPSZ) / B));
+      for (let zb = z0; zb <= z1; zb++) for (let cx = a0; cx <= a1; cx++) for (let cy = b0; cy <= b1; cy++) {
+        const set = cells.get(keyOf(cx, cy, zb));
+        if (!set) continue;
+        for (const D of set) { agglomerateStats.visited++; fn(D); }
+      }
+    },
+  };
 }
 
 // 한 칸의 상자 후보를 벽 방향으로 묶는다. 90° 주기 원 위에서 가장 큰 빈 구간을 끊고 펼친 뒤,

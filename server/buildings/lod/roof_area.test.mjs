@@ -1,7 +1,7 @@
 // F-360: 지붕 넓이 검사의 비용 상한과 근거리 생략. F-355: 삼각형 쪽·벽 쪽 감김을 따로 센다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBuildingLod } from './index.mjs';
+import { buildBuildingLod, windingStats, distStats, WINDING_WORK_CAP } from './index.mjs';
 import { prism } from './scene.mjs';
 
 // 같은 높이(z=5) 직사각 지붕을 L 장 겹쳐 쌓은 메시(한 장은 삼각형 2개, 층마다 가장자리를 0.01 m 씩 안쪽으로).
@@ -18,42 +18,56 @@ function layers(L, ox = 0, oy = 0) {
 }
 
 const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
-// 기준값은 F-360 확인 기준 그대로(수치를 측정에 맞춰 바꾸지 않는다). 가장 빠른 3회로 부하 잡음을 거른다.
-const best = (f) => { let b = Infinity; for (let i = 0; i < 3; i++) { const t = performance.now(); f(); b = Math.min(b, performance.now() - t); } return b; };
+// F-370: 벽시계 대신 작업량 계수(windingStats·distStats)로 판정한다. 계수는 결정적이라 병렬 부하와 무관하다.
+// 비율 기준 RATIO_MAX: 입력을 2 배로 할 때 선형 작업은 2.0 배, 이차 작업은 4.0 배다. 2.2 = 선형 + 10 %(구간·경계 반올림 여유)이고
+// 이차와는 크게 갈린다. 측정값에 맞춘 값이 아니라 이 두 극 사이에서 정했다.
+const RATIO_MAX = 2.2;
+const resetStats = () => { Object.assign(windingStats, { calls: 0, segs: 0, kept: 0, active: 0, capped: 0 }); Object.assign(distStats, { segs: 0, frameSegs: 0 }); };
+const fan = (T) => {
+  const pos = [0, 0, 5];
+  for (let i = 0; i <= T; i++) { const a = ((Math.PI * 2 * i) / T) * 0.9; pos.push(30 * Math.cos(a), 30 * Math.sin(a), 5); }
+  const idx = [];
+  for (let i = 1; i <= T; i++) idx.push(0, i, i + 1);
+  return { positions: new Float32Array(pos), indices: new Uint32Array(idx) };
+};
+const grid = (ox, oy, N = 20) => {
+  const pos = [], idx = [];
+  for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) pos.push(ox + i + Math.sin(i * 7.1 + j * 3.3) * 0.3, oy + j + Math.cos(i * 2.9 + j * 5.7) * 0.3, 5);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const a = j * (N + 1) + i, b = a + 1, c = a + N + 1, d = c + 1; idx.push(a, b, d, a, d, c); }
+  return { positions: new Float32Array(pos), indices: new Uint32Array(idx) };
+};
 
-test('n=4096 원통 프리즘 한 동은 100 ms 이하(원거리, 근거리)', () => {
-  const n = 4096;
-  const ring = [];
-  for (let i = 0; i < n; i++) ring.push([20 * Math.cos((2 * Math.PI * i) / n), 20 * Math.sin((2 * Math.PI * i) / n)]);
-  const mesh = prism(ring, 3);
-  for (const dist of [300, 5000]) {
-    const ms = best(() => buildBuildingLod([{ id: 1, mesh }], dist));
-    assert.ok(ms <= 100, `${dist} m: ${ms.toFixed(1)} ms`);
+// 원통 프리즘은 벽 방향이 하나로 지배되지 않아(원) 지붕 검사·거리 측정에 들어가기 전에 원본으로 남는다. 그래서 n 이 커져도 두 계수가 0 이다.
+// 이 시험은 그 경로가 이차 작업 쪽으로 바뀌지 않았는지(계수가 0 이 아니게 되면 비율 시험으로 바꿔야 한다) 지킨다.
+test('n=2048·4096 원통 프리즘 한 동은 원본 유지이고 지붕·거리 작업 계수는 0(원거리, 근거리)', () => {
+  for (const n of [2048, 4096]) {
+    const ring = [];
+    for (let i = 0; i < n; i++) ring.push([20 * Math.cos((2 * Math.PI * i) / n), 20 * Math.sin((2 * Math.PI * i) / n)]);
+    const mesh = prism(ring, 3);
+    for (const dist of [300, 5000]) {
+      resetStats();
+      const out = buildBuildingLod([{ id: 1, mesh }], dist);
+      assert.ok(same(out[0].mesh.indices, mesh.indices), `${n}·${dist} m: 원본 유지`);
+      assert.equal(windingStats.active + distStats.segs + distStats.frameSegs, 0, `${n}·${dist} m`);
+    }
   }
 });
 
-test('위 향한 부채꼴 삼각형 10000개 한 동은 1 s 미만이고 원본 유지(자기 상자와의 오차가 큼)', () => {
-  const T = 10000;
-  const pos = [0, 0, 5];
-  for (let i = 0; i <= T; i++) { const a = ((Math.PI * 2 * i) / T) * 0.9; pos.push(30 * Math.cos(a), 30 * Math.sin(a), 5); }
-  const idx = [];
-  for (let i = 1; i <= T; i++) idx.push(0, i, i + 1);
-  const mesh = { positions: new Float32Array(pos), indices: new Uint32Array(idx) };
-  let out;
-  const ms = best(() => { out = buildBuildingLod([{ id: 1, mesh }], 5000); });
-  assert.ok(ms < 1000, `${ms.toFixed(1)} ms`);
-  assert.ok(same(out[0].mesh.indices, mesh.indices));
-});
-
-test('근거리(500 m 미만)는 지붕 넓이 검사를 하지 않는다: 부채꼴 10000개가 30 ms 이하', () => {
-  const T = 10000;
-  const pos = [0, 0, 5];
-  for (let i = 0; i <= T; i++) { const a = ((Math.PI * 2 * i) / T) * 0.9; pos.push(30 * Math.cos(a), 30 * Math.sin(a), 5); }
-  const idx = [];
-  for (let i = 1; i <= T; i++) idx.push(0, i, i + 1);
-  const mesh = { positions: new Float32Array(pos), indices: new Uint32Array(idx) };
-  const near = best(() => buildBuildingLod([{ id: 1, mesh }], 100));
-  assert.ok(near <= 30, `${near.toFixed(1)} ms`);
+// 부채꼴 삼각형 T 개(위 향함, 자기 상자와의 오차가 커서 원본 유지)의 지붕 검사 작업: 활성 선분 합이 T 에 선형이고 상한 아래.
+test('위 향한 부채꼴 삼각형 한 동: 원본 유지, 활성 선분 합은 T 에 선형(T 2 배 → ≤ 2.2 배)이고 작업량 상한 아래', () => {
+  const run = (T) => {
+    const mesh = fan(T);
+    resetStats();
+    const out = buildBuildingLod([{ id: 1, mesh }], 5000);
+    assert.ok(same(out[0].mesh.indices, mesh.indices), `T=${T}: 원본 유지`);
+    return { ...windingStats };
+  };
+  const a = run(5000), b = run(10000);
+  assert.equal(b.capped, 0);
+  // 공유 변 상쇄 뒤 남는 선분은 경계뿐이다: 바깥 호 T 개 + 반지름 2 개, 검사 두 번(foot·up) 합쳐 2 × (T + 2). 상쇄가 빠지면 6 T(삼각형 변 3 개 × 2 번)로 는다.
+  assert.ok(b.kept <= 2 * (10000 + 2) + 4, `남은 선분 ${b.kept}`);
+  assert.ok(b.active <= WINDING_WORK_CAP, `활성 합 ${b.active}`);
+  assert.ok(b.active / a.active <= RATIO_MAX, `활성 합 T=5000 ${a.active}, T=10000 ${b.active}`);
 });
 
 // F-368 ①: 상한을 넘으면 '통과' 가 아니라 원본 유지다. 같은 모양의 상한 아래 메시는 20000 m 에서 상자 10삼각형이 되므로 상한만 다르다.
@@ -66,16 +80,20 @@ test('작업량 상한을 넘는 메시는 20000 m 에서도 원본 유지, 상�
   assert.ok(same(o[0].mesh.positions, over.positions));
 });
 
-// F-368 ②: 근거리 생략. 상한 아래에서 가장 비싼 층 메시 200동은 원거리 검사 시 약 0.5 s(측정: Node 22, 4코어)이고
-// 근거리에서 검사를 하면 그만큼 늘어난다. 정상은 약 16 ms 다.
-test('근거리(300 m)는 상한 아래 비싼 메시 200동도 100 ms 이하(검사를 안 한다)', () => {
+// F-368 ②: 근거리 생략. 근거리(300 m)에서는 지붕 넓이 검사가 한 번도 불리지 않고(windingArea 호출 0), 같은 입력이 원거리에서는 동마다 두 번(foot·up) 불린다.
+// 호출 계수라 근거리에서 검사를 하도록 바뀐 변이에서 바로 실패한다(벽시계 시험이 아님).
+test('근거리(300 m)는 상한 아래 비싼 메시 200동에서도 지붕 넓이 검사를 부르지 않는다', () => {
   const bs = [];
   for (let k = 0; k < 200; k++) bs.push({ id: k + 1, mesh: layers(150, (k % 15) * 40, Math.floor(k / 15) * 40) });
-  const near = best(() => buildBuildingLod(bs, 300));
-  assert.ok(near <= 100, `${near.toFixed(1)} ms`);
-  // 대조: 같은 입력이 원거리에서는 검사가 실제로 돈다(느려진다). 근거리 단언이 빈 시험이 아님을 보인다.
-  const far = best(() => buildBuildingLod(bs, 5000));
-  assert.ok(far > near * 3, `near ${near.toFixed(1)} ms, far ${far.toFixed(1)} ms`);
+  resetStats();
+  buildBuildingLod(bs, 300);
+  assert.equal(windingStats.calls, 0);
+  assert.equal(windingStats.active, 0);
+  // 대조: 같은 입력이 원거리에서는 검사가 실제로 돈다. 위 단언이 빈 시험이 아님을 보인다.
+  resetStats();
+  buildBuildingLod(bs, 5000);
+  assert.equal(windingStats.calls, 400, '동마다 foot·up 두 번');
+  assert.ok(windingStats.active > 0);
 });
 
 // F-368 ③: 양성 대조. 상한 아래의 정상 프리즘은 원거리에서 상자가 된다(상한 0 이면 전부 원본 유지가 되어 이 시험이 깨진다).
@@ -91,15 +109,16 @@ test('상한 아래 정상 프리즘(한 변에 꼭짓점이 하나 더 있는 3
   }
 });
 
-// F-367: 삼각형 800개 격자 지붕(정점 xy 를 0.3 m 흔든 것) 200동 원거리 5000 m 빌드는 1 s 이하(개선 전 약 4.2~6.3 s).
-test('삼각형 800개 격자 지붕 200동 5000 m 빌드는 1 s 이하', () => {
+// F-367: 삼각형 800개 격자 지붕(정점 xy 를 0.3 m 흔든 것) 200동 원거리 5000 m 빌드. 개선 전 약 4.2~6.3 s, 지금 0.3~0.6 s(Node 22, 4코어, 참고용 측정이고 시험은 시간을 보지 않는다).
+// 판정은 계수: (1) 공유 변 상쇄가 격자 안쪽 변을 지워 한 검사에 남는 선분이 경계 4N 개 이하다(안 지우면 한 동 2400 개),
+// (2) 동 수 2 배 → 활성 합 ≤ 2.2 배, (3) 상한에 걸린 검사 없음.
+test('삼각형 800개 격자 지붕 200동 5000 m: 안쪽 변 상쇄(남는 선분 ≤ 4N), 활성 합 선형, 상한 미도달', () => {
   const N = 20, bs = [];
-  for (let k = 0; k < 200; k++) {
-    const ox = (k % 15) * 40, oy = Math.floor(k / 15) * 40, pos = [], idx = [];
-    for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) pos.push(ox + i + Math.sin(i * 7.1 + j * 3.3) * 0.3, oy + j + Math.cos(i * 2.9 + j * 5.7) * 0.3, 5);
-    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const a = j * (N + 1) + i, b = a + 1, c = a + N + 1, d = c + 1; idx.push(a, b, d, a, d, c); }
-    bs.push({ id: k + 1, mesh: { positions: new Float32Array(pos), indices: new Uint32Array(idx) } });
-  }
-  const ms = best(() => buildBuildingLod(bs, 5000));
-  assert.ok(ms <= 1000, `${ms.toFixed(1)} ms`);
+  for (let k = 0; k < 200; k++) bs.push({ id: k + 1, mesh: grid((k % 15) * 40, Math.floor(k / 15) * 40, N) });
+  const run = (list) => { resetStats(); buildBuildingLod(list, 5000); return { ...windingStats }; };
+  const half = run(bs.slice(0, 100)), full = run(bs);
+  assert.equal(full.calls, 400);
+  assert.equal(full.capped, 0);
+  assert.ok(full.kept <= 400 * 4 * N, `남은 선분 ${full.kept}`); // 호출당 4N = 80(경계), 합쳐서 400 × 80
+  assert.ok(full.active / half.active <= RATIO_MAX, `활성 합 100동 ${half.active}, 200동 ${full.active}`);
 });
