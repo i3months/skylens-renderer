@@ -589,9 +589,14 @@ const GAP_MAX_CELLS = 1 << 14;
 export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
   // 칸 수 계수는 칸마다 올리지 않고 호출 끝에 예산 감소분으로 한 번 올린다(작은 입력의 핫 루프에서 계수 오버헤드를 뺀다, F-383).
   // 예산을 넘긴 마지막 칸(거부)은 세지 않는다.
-  const c0 = budget.cells;
+  // 진입 예산이 음수·NaN 이면 한 칸도 못 쓰니 0, Infinity 면 뺄셈이 NaN 이 되므로 큰 유한값으로 바꿔 돌린 뒤 되돌린다.
+  const orig = budget.cells;
+  const inf = orig === Infinity;
+  const c0 = inf ? Number.MAX_SAFE_INTEGER : (orig > 0 ? orig : 0);
+  if (inf) budget.cells = c0;
   const res = gapCellErrorImpl(x0, y0, x1, y1, members, limit, box, budget);
-  distStats.gapCells += c0 - Math.max(budget.cells, 0);
+  distStats.gapCells += c0 - (budget.cells > 0 ? budget.cells : 0);
+  if (inf) budget.cells = Infinity;
   return res;
 }
 function gapCellErrorImpl(x0, y0, x1, y1, members, limit, box, budget) {
@@ -628,7 +633,11 @@ function gapCellErrorImpl(x0, y0, x1, y1, members, limit, box, budget) {
         if (c2 <= r * r || r >= limit) break;
       }
     } else {
-      for (const m of near) c2 = memberDist2(mx, my, m, c2);
+      // 색인 경로와 같은 AABB 사전 거름: AABB 거리² 가 c2 이상이면 c2 를 낮출 수 없으니 건너뛴다(값 동일, distStats.segs 는 그만큼 덜 센다).
+      for (const m of near) {
+        const ox = Math.max(m.minX - mx, 0, mx - m.maxX), oy = Math.max(m.minY - my, 0, my - m.maxY);
+        if (ox * ox + oy * oy < c2) c2 = memberDist2(mx, my, m, c2);
+      }
     }
     const eC = Math.sqrt(c2);
     const xC = Math.min(mx - box.minX, box.maxX - mx, my - box.minY, box.maxY - my);
@@ -639,22 +648,8 @@ function gapCellErrorImpl(x0, y0, x1, y1, members, limit, box, budget) {
     if (idx) {
       idx.query(cx0, cy0, cx1, cy1, eC + half, (m) => { eUb2 = edgeFar2(m, cx0, cy0, cx1, cy1, eUb2); });
     } else {
-      for (const m of near) {
-        const ox = Math.max(m.minX - cx1, 0, cx0 - m.maxX), oy = Math.max(m.minY - cy1, 0, cy0 - m.maxY);
-        if (ox * ox + oy * oy >= eUb2) continue;
-        const s = m.segs;
-        for (let o = 0; o < s.length; o += 4) {
-          const ax = s[o], ay = s[o + 1], bx = s[o + 2], by = s[o + 3];
-          let far = segDist2(cx0, cy0, ax, ay, bx, by);
-          if (far >= eUb2) continue;
-          far = Math.max(far, segDist2(cx1, cy0, ax, ay, bx, by));
-          if (far >= eUb2) continue;
-          far = Math.max(far, segDist2(cx0, cy1, ax, ay, bx, by));
-          if (far >= eUb2) continue;
-          far = Math.max(far, segDist2(cx1, cy1, ax, ay, bx, by));
-          if (far < eUb2) eUb2 = far;
-        }
-      }
+      // 색인 없는 경로도 같은 edgeFar2 를 쓴다(AABB 사전 거름·꼭짓점 최대 거리 한 벌, 복제 방지).
+      for (const m of near) eUb2 = edgeFar2(m, cx0, cy0, cx1, cy1, eUb2);
     }
     const eUb = Math.sqrt(eUb2);
     const xUb = Math.min(cx1 - box.minX, box.maxX - cx0, cy1 - box.minY, box.maxY - cy0);
