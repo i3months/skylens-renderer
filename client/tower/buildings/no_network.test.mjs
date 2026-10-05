@@ -4,41 +4,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import https from 'node:https';
 import net from 'node:net';
-import dns from 'node:dns';
-import { createFetchOnSetModeFake, createReacceptOnSetModeFake, createCleanFake } from './no_network_fake.mjs';
+import http2 from 'node:http2';
+import dns, { lookup as namedLookup } from 'node:dns';
+import { installNetworkSpies } from './network_spies.mjs';
+import {
+  createFetchOnSetModeFake, createReacceptOnSetModeFake, createCleanFake,
+  createDelayedFetchFake, createNamedDnsLookupFake,
+} from './no_network_fake.mjs';
 
 const MODES = ['points', 'black', 'aerial'];
 const SWITCHES = 200;
-
-/** 호출 횟수를 세는 감시자를 전역·node 모듈에 건다. restore() 로 모두 원복하고, calls 로 기록을 읽는다. */
-function installNetworkSpies() {
-  const calls = [];
-  const restores = [];
-  const patch = (obj, key, make) => {
-    const had = Object.prototype.hasOwnProperty.call(obj, key);
-    const orig = obj[key];
-    obj[key] = make();
-    restores.push(() => { if (had) obj[key] = orig; else delete obj[key]; });
-  };
-  patch(globalThis, 'fetch', () => () => { calls.push('fetch'); return new Promise(() => {}); });
-  patch(globalThis, 'WebSocket', () => function SpyWebSocket() { calls.push('WebSocket'); throw new Error('감시자: WebSocket 생성'); });
-  patch(globalThis, 'XMLHttpRequest', () => function SpyXHR() { calls.push('XMLHttpRequest'); throw new Error('감시자: XMLHttpRequest 생성'); });
-  for (const [label, mod] of [['http', http], ['https', https]]) {
-    for (const fn of ['request', 'get']) {
-      patch(mod, fn, () => () => { calls.push(`${label}.${fn}`); throw new Error(`감시자: ${label}.${fn}`); });
-    }
-  }
-  for (const fn of ['connect', 'createConnection']) {
-    patch(net, fn, () => () => { calls.push(`net.${fn}`); throw new Error(`감시자: net.${fn}`); });
-  }
-  patch(net.Socket.prototype, 'connect', () => function spyConnect() { calls.push('net.Socket.connect'); throw new Error('감시자: Socket.connect'); });
-  for (const fn of ['lookup', 'resolve']) {
-    patch(dns, fn, () => () => { calls.push(`dns.${fn}`); throw new Error(`감시자: dns.${fn}`); });
-  }
-  return { calls, restore: () => { for (const r of restores.reverse()) r(); } };
-}
 
 /** 위에서 내려다보는 카메라(영상 위 = 북, 높이 40 m). 건물 한 동(10 m 상자)이 약 33 화소 폭으로 보인다. */
 function topDownCamera() {
@@ -115,7 +91,7 @@ export async function runNoNetworkCheck(factory) {
   } catch (e) {
     problems.push(`예외: ${e && e.message}`);
   } finally {
-    spies.restore();
+    await spies.restore();
   }
   if (spies.calls.length !== 0) problems.push(`네트워크 감시자 호출 ${spies.calls.length} 번: ${[...new Set(spies.calls)].join(',')}`);
   if (acceptCalls !== 1) problems.push(`accept 호출 ${acceptCalls} 번 (기대 1)`);
@@ -136,21 +112,30 @@ test('실제 층: 옵션 200 번 전환에 네트워크 0, accept 1 번, 옵션�
   assert.equal(r.acceptCalls, 1);
 });
 
-test('감시자 자체: 설치하면 호출을 세고, 원복하면 원래 전역으로 돌아온다', () => {
-  const before = { fetch: globalThis.fetch, ws: globalThis.WebSocket, req: http.request, lookup: dns.lookup, connect: net.connect };
+test('감시자 자체: 설치하면 호출을 세고, 원복하면 원래 전역으로 돌아온다', async () => {
+  const before = {
+    fetch: globalThis.fetch, ws: globalThis.WebSocket, req: http.request, lookup: dns.lookup, connect: net.connect,
+    plookup: dns.promises.lookup, h2: http2.connect, named: namedLookup,
+  };
   const s = installNetworkSpies();
   globalThis.fetch('x');
   assert.throws(() => http.request('http://x'));
   assert.throws(() => net.connect(1));
   assert.throws(() => dns.lookup('x', () => {}));
+  assert.throws(() => namedLookup('x', () => {}), '이름으로 가져온 lookup 도 잡혀야 함(syncBuiltinESMExports)');
+  assert.throws(() => http2.connect('http://x'));
+  await assert.rejects(dns.promises.lookup('x'));
   assert.equal(typeof globalThis.WebSocket, 'function');
-  assert.deepEqual(s.calls, ['fetch', 'http.request', 'net.connect', 'dns.lookup']);
-  s.restore();
+  assert.deepEqual(s.calls, ['fetch', 'http.request', 'net.connect', 'dns.lookup', 'dns.lookup', 'http2.connect', 'dns.promises.lookup']);
+  await s.restore();
   assert.equal(globalThis.fetch, before.fetch);
   assert.equal(globalThis.WebSocket, before.ws);
   assert.equal(http.request, before.req);
   assert.equal(dns.lookup, before.lookup);
+  assert.equal(namedLookup, before.named);
   assert.equal(net.connect, before.connect);
+  assert.equal(dns.promises.lookup, before.plookup);
+  assert.equal(http2.connect, before.h2);
 });
 
 test('가짜 층(위반 없음): 검사 함수를 통과한다(양성 대조)', async () => {
@@ -172,4 +157,18 @@ test('음성 (b): 전환마다 accept 를 다시 요구하는 층은 검사에�
   assert.equal(r.acceptCalls, 1 + SWITCHES);
   assert.ok(r.problems.some((p) => p.includes('accept 호출')), r.problems.join('|'));
   assert.equal(r.networkCalls.length, 0);
+});
+
+test('음성 M4: setTimeout 으로 미룬 fetch 도 감시자가 잡아 검사에서 실패한다', async () => {
+  const r = await runNoNetworkCheck(createDelayedFetchFake);
+  assert.equal(r.ok, false);
+  assert.ok(r.networkCalls.includes('fetch'), r.networkCalls.join(','));
+  assert.ok(r.problems.some((p) => p.includes('네트워크 감시자 호출') && p.includes('fetch')), r.problems.join('|'));
+});
+
+test('음성 M3: 이름으로 가져온 node:dns lookup 호출도 감시자가 잡아 검사에서 실패한다', async () => {
+  const r = await runNoNetworkCheck(createNamedDnsLookupFake);
+  assert.equal(r.ok, false);
+  assert.ok(r.networkCalls.includes('dns.lookup'), r.networkCalls.join(','));
+  assert.ok(r.problems.some((p) => p.includes('네트워크 감시자 호출') && p.includes('dns.lookup')), r.problems.join('|'));
 });
