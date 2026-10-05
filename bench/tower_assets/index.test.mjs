@@ -46,13 +46,13 @@ test('드레이프 크기: 256 타일, 조각 = 38 + 16 + rgb + mask(화소당 1
   assert.equal(result.drape.size[1], 256 * piece(64));
   assert.equal(result.drape.size[2], 256 * piece(32));
   assert.equal(result.drape.size[3], 256 * piece(16));
-  // 회귀 값(리터럴): 위 식과 독립으로 못박는다.
+  // 실측 고정(회귀용) 리터럴: 위 식과 독립으로 못박는다.
   assert.equal(result.drape.size[0], 16791040);
   assert.equal(result.drape.size[2], 1062400);
   assert.ok(result.drape.size[0] > result.drape.size[1] && result.drape.size[1] > result.drape.size[2]);
 });
 
-// 회귀 값(regression values): 현재 구현이 낸 숫자를 못박는다. 바뀌면 의도한 변경인지 확인하고 갱신할 것.
+// 실측 고정(회귀용): 현재 구현이 낸 숫자를 못박는다(해석값 아님, 내부 일관성과 독립). 바뀌면 의도한 변경인지 확인하고 갱신할 것.
 // 직렬화/지형 머리/초기 LOD/압출 건수가 조용히 바뀌는 변형을 잡는다.
 test('회귀 리터럴: 크기 내역·총합·초기 단계', () => {
   assert.equal(INITIAL_TERRAIN_LOD, 3);
@@ -70,7 +70,7 @@ test('회귀 리터럴: 압출 결과 건수·정점·인덱스·wallMask', () =
   assert.equal(result.buildings.meshCount, 6191);
   assert.equal(result.buildings.size.vertices, 1783008);
   assert.equal(result.buildings.size.indices, 891504);
-  assert.equal(result.buildings.size.wallMask, 148584); // 정점당 1 B = 1783008 / 12
+  assert.equal(result.buildings.size.wallMask, 148584); // 실측 고정(회귀용); 정점당 1 B = 1783008 / 12
   // 건물 직렬화 = 건물당 (프레임 38 + 조각 머리 16) + positions + indices + wallMask.
   assert.equal(result.buildings.size.serialized, 6191 * (38 + 16) + 1783008 + 891504 + 148584);
 });
@@ -81,9 +81,9 @@ test('지형 크기 식: 조각 = 38 + 16 + 12·c² + 24·(c−1)², LOD 별 cel
   for (let lod = 0; lod < 4; lod++) assert.equal(result.smoothTerrain.size[lod], 256 * piece(result.smoothTerrain.cells[lod]));
   // 잡음 DEM 은 모든 LOD 가 cells 65 (원본 격자).
   for (let lod = 0; lod < 4; lod++) assert.equal(result.terrain.size[lod], 256 * piece(65));
-  assert.equal(result.terrain.size[3], 38158848);
+  assert.equal(result.terrain.size[3], 38158848); // 실측 고정(회귀용)
   assert.equal(result.breakdown.terrain, 256 * piece(65));
-  assert.equal(result.smoothTerrain.size[3], 655872);
+  assert.equal(result.smoothTerrain.size[3], 655872); // 실측 고정(회귀용)
 });
 
 test('초과 기록 필드가 실제 크기와 일치한다(상한 변경 없이 넘으면 넘는 대로 기록)', () => {
