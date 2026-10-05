@@ -18,11 +18,27 @@
 //   참고로 지면 δ(m) 하나 모형(결과 ≈ I(P + δ))도 풀어 globalShift 로 남긴다(영상 이동의 되찾기 확인용, 정합 오차에는 쓰지 않는다).
 // unprojectRef 는 제품 역투영과 같은 식을 이 파일에 다시 적은 것이므로, contracts/raster 투영(server/raster_ref/project)으로
 //   되돌려 원 화소 중심·깊이와 1e-6 이내인지 따로 검산한다.
+// 정상 경로는 정합 오차 ≤ 1 px 에 더해 전체 화면 이동 s 의 성분마다 |du|, |dv| ≤ GOOD_AXIS_MAX_PX 를 단언한다
+//   (반 화소 어긋남은 묶음 최대 errPx 가 0.5~0.8 px 라 1 px 단언만으로는 통과하므로, F-406 ⑥).
 // 음성: 무늬를 동쪽으로 옮긴 영상으로 만든 타일. 옮김 양은 시점마다 "화면 1.5 화소"가 되도록 정한다
-//   (측정기와 같은 화면 모형으로 지면 1 m 동쪽 이동을 선형 최소제곱한 |s| = pxPerM 로 나눈 값 → 전체 |s| 는 구성상 ≈ 1.5).
-//   이것은 모든 시점에서 1 px 초과로 잡혀야 한다.
+//   (측정기와 같은 화면 모형으로 지면 1 m 동쪽 이동을 선형 최소제곱한 |s| = pxPerM 로 나눈 값).
+//   이것은 모든 시점에서 1 px 초과로 잡혀야 한다. 구성값 단언은 크기 1.5 가 아니라, 그 음성 측정의 표본 집합에서 지면 이동
+//   (−옮김, 0) 을 같은 화면 모형으로 옮긴 벡터 expectScreen 과 측정한 전체 s 벡터의 차로 한다.
+//   진단(시드 11 aerial_overview 가 전체 2.105 px 로 나온 원인): 옮김 2.336 m 가 FOLD_MARGIN_M(1.5 m) 보다 크고, 지면 균일 옮김은
+//   화면 균일 이동이 아니라서(먼 화소일수록 J·s 가 크다) 화소마다 평가 점 P + J·s 가 원천 점 P − 옮김 에서 벗어난다. 그래서 P 가
+//   접힘선에서 1.5 m 넘게 떨어진 화소라도 풀이의 평가 점이 접힘선 0.05 m 안에 들어간다. 이중선형 재구성의 꼭짓점은 평평해
+//   그 점의 중앙 차분 기울기가 0 에 가깝고(0.052/m, 보통 약 16/m), 화면 정규화 잔차(잔차 ÷ 기울기)가 −88 px 로 튄다(중앙값 0.23).
+//   가우스–뉴턴은 반복 0~18 동안 −1.50~−1.51 사이를 오가며 1e-5 수렴에 이르지 못하다가 반복 19(마지막)에서 이 화소 하나로
+//   −1.512 → −2.104 로 뛰었고 그 값이 결과가 됐다. 측정 모형이 아니라 풀이의 수치 발산이므로 허용을 넓히지 않고 두 가지로 고친다.
+//   (가) solveScreen 은 반복마다 평가 점이 접힘선에서 EVAL_FOLD_MARGIN_M 안인 채널을 뺀다(정상 경로는 s ≈ 0 이라 걸리지 않는다: 시드 1..6 정상 측정 기록이 그대로다).
+//   (나) 음성 측정은 원천 점 P − 옮김 도 접힘선에서 FOLD_MARGIN_M 넘게 떨어지고 P 와 같은 삼각파 비탈에 있는 채널만 쓴다
+//   (measureView 의 srcShift; 비탈을 넘는 화소는 결과 색이 반사되어 모형 I(P + J·s) 가 맞지 않는다. top_down 은 옮김이 약 3.0 m
+//   = 2·FOLD_MARGIN_M 이라 거리 조건만으로는 접힘선을 사이에 둔 화소가 남을 수 있어 같은 비탈 조건을 함께 건다).
+//   (나) 만으로는 시드 12 aerial_oblique_ne 에서 같은 발산이 났고(전체 2.143 px), (가) 만으로도 시드 11 은 1.502 px 가 된다.
+//   (나) 는 발산 방지가 아니라 모형이 성립하지 않는 화소를 빼는 것이라 함께 둔다.
+//   구성 벡터와의 차는 시드 1..18 에서 최대 0.095 px(가깝고 낮은 시점의 2차 항 몫, 구성은 J 선형 환산)로 SCR_BUILD_TOL 안이다.
 //   참고로 고정 1.5 영상 화소(0.75 m) 어긋남도 잰다. 높고 먼 시점은 화면 한 화소가 지면 0.75 m 보다 넓어 화면 이동이 1 px 미만일 수
-//   있으므로, 예상 화면 이동 > 1.5 px 인 시점 이름 목록(MUST_CATCH_IMG)을 미리 고정해 그 시점들만 1 px 초과를 단언한다.
+//   있으므로, 시점 이름 목록 대신 예상 화면 이동(pxPerM·0.75)이 CATCH_EXPECT_MIN_PX 를 넘는 시점에서만 1 px 초과를 단언한다.
 // 빈 화소: 지형 render 가 빈 화소(depth 0)인 곳은 결과도 depth 0, 색 0, index −1 그대로다.
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -49,14 +65,20 @@ const FOLD_MARGIN_M = 1.5; // 삼각파 접힘선에서 이만큼 안쪽은 그 
 const EDGE_MARGIN_M = 1; // 영상 바깥 경계 근처(기준 표본이 고정되는 곳)는 뺀다
 const GROUP_MIN_PX = 20; // 타일 묶음 풀이에 필요한 최소 화소 수
 const COLOR_MAE_MAX = 2; // 정상 경로 R·G 평균 절대 차 상한(접힘·격자와 무관한 채널, 반올림·이음 고정 몫)
+// 풀이의 평가 점이 접힘선에서 이만큼 안에 들면 그 반복에서 그 채널을 쓰지 않는다: 이중선형 재구성은 접힘선을 걸친 영상 한 화소
+// (0.5 m) 안에서 꼭짓점이 평평해져 중앙 차분(±0.05 m) 기울기가 0 으로 가고, 화면 정규화 잔차(잔차 ÷ 기울기)가 발산한다.
+const EVAL_FOLD_MARGIN_M = IMG_PX_M + 0.05;
 const JAC_H_PX = 0.5; // 화면 야코비안 J 중앙 차분 간격(px, 주점 이동량)
 const JAC_CONSIST = 0.25; // 앞·뒤 한쪽 차분이 이 비율 넘게 다르면(가림 경계·끊김) 그 화소는 뺀다
 const SELF_UNIFORM_PX = 0.5; // 측정기 자체 검증: 화면 균일 이동(u, v 각각)
 const SELF_UNIFORM_TOL = 0.05; // 그 측정값 |s| 허용(0.5·√2 ± 이 값)
-const SCR_BUILD_TOL = 0.15; // 화면 1.5 px 음성의 전체 |s| 가 구성값 1.5 와 다를 수 있는 폭(10%)
+const SCR_BUILD_TOL = 0.15; // 화면 1.5 px 음성의 전체 s 벡터가 구성 벡터 expectScreen 과 다를 수 있는 폭(1.5 px 의 10%, 2차 항 몫)
+const GOOD_AXIS_MAX_PX = 0.25; // 정상 경로 전체 화면 이동 성분 상한(px). 정상 구현 측정 최대 |성분| 0.0049 px(시드 1..18 의 144 시점), 반 화소 변이는 약 0.5
 const ROUNDTRIP_TOL = 1e-6; // unprojectRef → project 왕복 허용(px, 깊이는 m)
-// 0.75 m 어긋남에서 예상 화면 이동(pxPerM·0.75)이 1.5 px 를 넘어 반드시 1 px 초과로 잡혀야 하는 시점(눈 높이가 낮고 가까운 시점).
-const MUST_CATCH_IMG = ['edge_far', 'low_close_box', 'street_level'];
+// 0.75 m 어긋남에서 예상 화면 이동(pxPerM·0.75)이 이 값을 넘는 시점은 반드시 1 px 초과로 잡혀야 한다.
+// 문턱 1 px 에 1 px 여유: 예상값은 J 만 쓴 선형 환산이고 측정은 2차 항·삼각파 비선형을 담아 서로 몇 % 다르다.
+// 예상값이 (1, 2] px 인 시점(tower_mid 1.25~1.57 등)은 단언하지 않는다.
+const CATCH_EXPECT_MIN_PX = 2;
 
 // ---- 무늬 ----
 function tri(t) { const m = ((t % 2) + 2) % 2; return m <= 1 ? m : 2 - m; } // 0..1..0, 주기 2
@@ -69,6 +91,8 @@ function patternAt(ph, x, y) {
   const b = Math.min(gx, gy) < GRID_HALF_W_M ? 220 : 30;
   return [r, g, b];
 }
+/** 삼각파 비탈 구간 번호(접힘선 사이 같은 구간이면 같다). */
+function slopeIdx(v, p) { return Math.floor((v + p) / TRI_HALF_M); }
 /** 접힘선(삼각파 꼭짓점)까지 거리(m). */
 function foldDist(v, p) { const t = (v + p) / TRI_HALF_M; return Math.abs(t - Math.round(t)) * TRI_HALF_M; }
 
@@ -228,8 +252,11 @@ function solveScreen(img, samples, init = [0, 0]) {
       const x = s.P[0] + J[0] * du + J[1] * dv + 0.5 * (H[0] * du * du + 2 * H[1] * du * dv + H[2] * dv * dv);
       const y = s.P[1] + J[2] * du + J[3] * dv + 0.5 * (H[3] * du * du + 2 * H[4] * du * dv + H[5] * dv * dv);
       const f = sampleImage(img, x, y);
-      if (s.useR) add((sampleImage(img, x + h, y)[0] - sampleImage(img, x - h, y)[0]) / (2 * h), J[0] + H[0] * du + H[1] * dv, J[1] + H[1] * du + H[2] * dv, s.c[0] - f[0]);
-      if (s.useG) add((sampleImage(img, x, y + h)[1] - sampleImage(img, x, y - h)[1]) / (2 * h), J[2] + H[3] * du + H[4] * dv, J[3] + H[4] * du + H[5] * dv, s.c[1] - f[1]);
+      // 평가 점이 접힘선 근처면 기울기가 0 에 가까워 정규화가 발산한다(머리 주석 진단). 그 반복에서 그 채널을 뺀다.
+      const okR = s.useR && foldDist(x, img.ph.px) > EVAL_FOLD_MARGIN_M;
+      const okG = s.useG && foldDist(y, img.ph.py) > EVAL_FOLD_MARGIN_M;
+      if (okR) add((sampleImage(img, x + h, y)[0] - sampleImage(img, x - h, y)[0]) / (2 * h), J[0] + H[0] * du + H[1] * dv, J[1] + H[1] * du + H[2] * dv, s.c[0] - f[0]);
+      if (okG) add((sampleImage(img, x, y + h)[1] - sampleImage(img, x, y - h)[1]) / (2 * h), J[2] + H[3] * du + H[4] * dv, J[3] + H[4] * du + H[5] * dv, s.c[1] - f[1]);
     }
     const det = a00 * a11 - a01 * a01;
     if (!(Math.abs(det) > 0)) break;
@@ -260,9 +287,11 @@ function groundToScreen(samples, d) {
 
 /**
  * 한 시점의 정합 측정. 결과 = 드레이프 층 출력, 기준 = 지형 depth → ENU → 원본 이중선형.
- * @returns {{ errPx, globalPx, globalScreen, globalShift, groups, mae, n, pxPerM }}
+ * srcShift(m, 음성 시험만): 구성상 결과 ≈ I(P + srcShift) 일 때. 원천 점 P + srcShift 도 접힘선에서 FOLD_MARGIN_M 넘게
+ * 떨어지고 P 와 같은 비탈에 있는 채널만 쓰고(머리 주석의 시드 11 진단), 그 표본 집합에서 srcShift 를 화면으로 옮긴 expectScreen 을 함께 돌려준다.
+ * @returns {{ errPx, globalPx, globalScreen, globalShift, groups, mae, n, pxPerM, expectScreen }}
  */
-function measureView(cam, geo, result, img) {
+function measureView(cam, geo, result, img, srcShift = null) {
   const all = [];
   const groups = new Map();
   let maeSum = 0, maeN = 0;
@@ -272,8 +301,9 @@ function measureView(cam, geo, result, img) {
     const { P, J, H } = gp;
     if (P[0] < IMG_MIN + EDGE_MARGIN_M || P[0] > IMG_MAX - EDGE_MARGIN_M || P[1] < IMG_MIN + EDGE_MARGIN_M || P[1] > IMG_MAX - EDGE_MARGIN_M) continue;
     const c = [result.color[3 * p], result.color[3 * p + 1], result.color[3 * p + 2]];
-    const useR = foldDist(P[0], img.ph.px) > FOLD_MARGIN_M;
-    const useG = foldDist(P[1], img.ph.py) > FOLD_MARGIN_M;
+    const srcOk = (v, d, ph) => !srcShift || (foldDist(v + d, ph) > FOLD_MARGIN_M && slopeIdx(v + d, ph) === slopeIdx(v, ph));
+    const useR = foldDist(P[0], img.ph.px) > FOLD_MARGIN_M && srcOk(P[0], srcShift?.[0], img.ph.px);
+    const useG = foldDist(P[1], img.ph.py) > FOLD_MARGIN_M && srcOk(P[1], srcShift?.[1], img.ph.py);
     const ref = sampleImage(img, P[0], P[1]);
     if (useR) { maeSum += Math.abs(c[0] - ref[0]); maeN++; }
     if (useG) { maeSum += Math.abs(c[1] - ref[1]); maeN++; }
@@ -300,7 +330,8 @@ function measureView(cam, geo, result, img) {
   // 지면 1 m 동쪽 이동이 측정기 화면 모형에서 몇 px 인지. 음성 시험의 옮김 양 환산에 쓴다.
   const e = groundToScreen(all, [1, 0]);
   const pxPerM = Math.hypot(e[0], e[1]);
-  return { errPx, globalPx, globalScreen, globalShift, groups: per, mae: maeN ? maeSum / maeN : 0, n: all.length, pxPerM };
+  const expectScreen = srcShift ? groundToScreen(all, srcShift) : null;
+  return { errPx, globalPx, globalScreen, globalShift, groups: per, mae: maeN ? maeSum / maeN : 0, n: all.length, pxPerM, expectScreen };
 }
 
 function drapeTilesFor(image) {
@@ -315,7 +346,7 @@ function terrainTilesFor(dem) {
   return tiles;
 }
 
-describe('드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 1..6)', () => {
+describe(`드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 ${SEEDS.join(',')})`, () => {
   let createDrapeLayer;
   let cams;
   const scenes = [];
@@ -363,7 +394,7 @@ describe('드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 1..6
         }
         return {
           cam, tr, geo, before0, out, outBad, m, mBad: measureView(cam, geo, outBad, img), scrShiftM,
-          mScr: measureView(cam, geo, outScr, img), mUni: measureView(cam, geo, fakeU, img),
+          mScr: measureView(cam, geo, outScr, img, [-scrShiftM, 0]), mUni: measureView(cam, geo, fakeU, img),
         };
       });
       scenes.push({ seed, views });
@@ -376,7 +407,7 @@ describe('드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 1..6
           + ` | 정상 오차 ${v.m.errPx.toFixed(4)} px (전체 s=(${v.m.globalScreen.map((q) => q.toFixed(4)).join(', ')}) px, δ=(${v.m.globalShift.map((q) => q.toFixed(4)).join(', ')}) m,`
           + ` 최악 타일 ${worst.k} ${worst.px.toFixed(4)} px, 묶음 ${v.m.groups.length}, R·G 평균차 ${v.m.mae.toFixed(3)})`
           + ` | 균일 0.707px ${v.mUni.errPx.toFixed(3)} px (전체 ${v.mUni.globalPx.toFixed(3)} px)`
-          + ` | 화면 1.5px 어긋남(${v.scrShiftM.toFixed(3)} m) ${v.mScr.errPx.toFixed(3)} px (전체 ${v.mScr.globalPx.toFixed(3)} px)`
+          + ` | 화면 1.5px 어긋남(${v.scrShiftM.toFixed(3)} m) ${v.mScr.errPx.toFixed(3)} px (전체 ${v.mScr.globalPx.toFixed(3)} px, s−구성 ${Math.hypot(v.mScr.globalScreen[0] - v.mScr.expectScreen[0], v.mScr.globalScreen[1] - v.mScr.expectScreen[1]).toFixed(3)} px)`
           + ` | 영상 1.5화소 어긋남(예상 ${(v.m.pxPerM * SHIFT_IMG_PX * IMG_PX_M).toFixed(3)} px) ${v.mBad.errPx.toFixed(3)} px (전체 ${v.mBad.globalPx.toFixed(3)} px, δx=${v.mBad.globalShift[0].toFixed(3)} m)`);
       }
     }
@@ -447,7 +478,7 @@ describe('드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 1..6
     assert.ok(n > 1000, `왕복 검산 화소 ${n}`);
   });
 
-  test(`정상 타일: 8시점 × 시드 1..6 모두 정합 오차 ≤ ${DRAPE_ALIGN_MAX_PX} px`, () => {
+  test(`정상 타일: 8시점 × 시드 ${SEEDS.join(',')} 모두 정합 오차 ≤ ${DRAPE_ALIGN_MAX_PX} px`, () => {
     assert.equal(DRAPE_ALIGN_MAX_PX, 1);
     for (const s of scenes) {
       for (const v of s.views) {
@@ -457,26 +488,41 @@ describe('드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 1..6
     }
   });
 
+  test(`정상 타일: 전체 화면 이동 s 의 성분마다 |du|, |dv| ≤ ${GOOD_AXIS_MAX_PX} px (반 화소 어긋남을 잡는다)`, () => {
+    // 시점마다 모아 몇 시점이 넘었는지 한 번에 보인다(다른 단언에 가려지지 않게 따로 둔다).
+    const over = [];
+    for (const s of scenes) {
+      for (const v of s.views) {
+        const [du, dv] = v.m.globalScreen;
+        if (!(Math.abs(du) <= GOOD_AXIS_MAX_PX && Math.abs(dv) <= GOOD_AXIS_MAX_PX)) over.push(`시드 ${s.seed} ${v.cam.name} s=(${du.toFixed(3)}, ${dv.toFixed(3)})`);
+      }
+    }
+    assert.deepEqual(over, [], `전체 화면 이동 성분 > ${GOOD_AXIS_MAX_PX} px: ${over.length}/${SEEDS.length * 8} 시점: ${over.join('; ')}`);
+  });
+
   test(`음성: 영상을 화면 ${SHIFT_SCREEN_PX} 화소만큼 어긋나게 만든 타일은 모든 시점에서 ${DRAPE_ALIGN_MAX_PX} px 초과로 잡힌다`, () => {
     for (const s of scenes) {
       for (const v of s.views) {
         assert.ok(v.mScr.errPx > DRAPE_ALIGN_MAX_PX, `시드 ${s.seed} ${v.cam.name}: 어긋남 ${v.mScr.errPx.toFixed(3)} px 을 못 잡음`);
-        // 옮김 양을 측정기 화면 모형으로 환산했으므로 전체 |s| 는 구성상 1.5 px 이다.
-        assert.ok(Math.abs(v.mScr.globalPx - SHIFT_SCREEN_PX) <= SCR_BUILD_TOL, `시드 ${s.seed} ${v.cam.name}: 전체 ${v.mScr.globalPx.toFixed(3)} px 대 구성 ${SHIFT_SCREEN_PX}`);
+        // 구성 벡터: 같은 표본 집합에서 지면 (−옮김, 0) 을 측정기 화면 모형(J 선형)으로 옮긴 것. 크기는 구성상 ≈ 1.5 px.
+        const [eu, ev] = v.mScr.expectScreen;
+        const [gu, gv] = v.mScr.globalScreen;
+        const diff = Math.hypot(gu - eu, gv - ev);
+        assert.ok(diff <= SCR_BUILD_TOL, `시드 ${s.seed} ${v.cam.name}: 전체 s=(${gu.toFixed(3)}, ${gv.toFixed(3)}) 대 구성 (${eu.toFixed(3)}, ${ev.toFixed(3)}), 차 ${diff.toFixed(3)} px`);
         assert.ok(Math.abs(v.mScr.globalShift[0] + v.scrShiftM) < 0.1 * v.scrShiftM + 0.02, `δx ${v.mScr.globalShift[0]} 대 ${-v.scrShiftM}`);
       }
     }
   });
 
-  test(`참고 음성: 영상을 ${SHIFT_IMG_PX} 영상 화소(0.75 m) 어긋나게 만든 타일은 δx ≈ −0.75 m 로 되찾고, 고정 목록 ${MUST_CATCH_IMG.join('·')} 시점에서는 ${DRAPE_ALIGN_MAX_PX} px 초과다`, () => {
+  test(`참고 음성: 영상을 ${SHIFT_IMG_PX} 영상 화소(0.75 m) 어긋나게 만든 타일은 δx ≈ −0.75 m 로 되찾고, 예상 화면 이동 > ${CATCH_EXPECT_MIN_PX} px 인 시점에서는 ${DRAPE_ALIGN_MAX_PX} px 초과다`, () => {
     for (const s of scenes) {
-      // 예상 화면 이동(pxPerM × 0.75 m)이 1.5 px 를 넘는 시점 집합은 미리 고정한 목록과 정확히 같아야 한다.
-      const expectBig = s.views.filter((v) => v.m.pxPerM * SHIFT_IMG_PX * IMG_PX_M > 1.5).map((v) => v.cam.name).sort();
-      assert.deepEqual(expectBig, [...MUST_CATCH_IMG].sort(), `시드 ${s.seed}: 예상 1.5 px 초과 시점 ${expectBig.join(',')}`);
-      for (const name of MUST_CATCH_IMG) {
-        const v = s.views.find((w) => w.cam.name === name);
-        assert.ok(v, `시드 ${s.seed}: 시점 ${name} 이 없다`);
-        assert.ok(v.mBad.errPx > DRAPE_ALIGN_MAX_PX, `시드 ${s.seed} ${name}: 어긋남 ${v.mBad.errPx.toFixed(3)} px 을 못 잡음`);
+      // 예상 화면 이동(pxPerM × 0.75 m)이 문턱보다 충분히 큰 시점만 초과를 단언한다(이름 목록을 고정하지 않는다).
+      const big = s.views.filter((v) => v.m.pxPerM * SHIFT_IMG_PX * IMG_PX_M > CATCH_EXPECT_MIN_PX);
+      // 공허한 통과 방지: 시드마다 적어도 한 시점(낮은 눈 높이 시점은 예상 2.3 px 이상)은 단언 대상이어야 한다.
+      assert.ok(big.length >= 1, `시드 ${s.seed}: 예상 화면 이동 > ${CATCH_EXPECT_MIN_PX} px 인 시점이 없다`);
+      for (const v of big) {
+        assert.ok(v.mBad.errPx > DRAPE_ALIGN_MAX_PX,
+          `시드 ${s.seed} ${v.cam.name}: 예상 ${(v.m.pxPerM * SHIFT_IMG_PX * IMG_PX_M).toFixed(3)} px 인 어긋남을 ${v.mBad.errPx.toFixed(3)} px 로 못 잡음`);
       }
       for (const v of s.views) {
         // 되찾은 이동은 어긋남 방향·크기와 맞아야 한다(동쪽으로 0.75 m 민 영상 → 결과 ≈ I(P − 0.75 eₓ)).
