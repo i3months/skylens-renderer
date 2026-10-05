@@ -40,8 +40,9 @@ export function installNetworkSpies() {
   for (const fn of dnsNames(dns.promises)) patch(dns.promises, fn, () => () => { calls.push(`dns.promises.${fn}`); return Promise.reject(new Error(`감시자: dns.promises.${fn}`)); });
   for (const fn of dnsNames(dns.promises.Resolver.prototype)) patch(dns.promises.Resolver.prototype, fn, () => () => { calls.push(`dns.promises.Resolver.${fn}`); return Promise.reject(new Error(`감시자: dns.promises.Resolver.${fn}`)); });
   syncBuiltinESMExports();
-  // 나머지(node:timers 이름 가져오기 등)는 integration 파일 끝 감시에 맡긴다.
   mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  // mock.timers 가 node:timers 의 export 를 바꾼 뒤에 다시 맞춰야 import { setInterval } from 'node:timers' 이름도 가짜 타이머에 묶인다.
+  syncBuiltinESMExports();
   let restored = false;
   const restore = async () => {
     if (restored) return;
