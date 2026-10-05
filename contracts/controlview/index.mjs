@@ -60,3 +60,4 @@ export * from './drape.mjs';
 export * from './buildings.mjs';
 export * from './input.mjs';
 export * from './chase.mjs';
+export * from './overlay.mjs';

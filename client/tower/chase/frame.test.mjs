@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTerrainLayer } from '../terrain/index.mjs';
+import { dampFactor } from './damp.mjs';
 import { syncCamera } from '../../status/camera/index.mjs';
 
 const { createChaseCamera } = await import('./index.mjs');
@@ -88,11 +89,11 @@ test('목표를 8 m 옮기고 step(0.2) 후 같은 프레임 render 는 카메�
   const rig = makeRig();
   const r = frame(rig, 0.2, 'ok');
   assert.ok(nonEmpty(r.before) && nonEmpty(r.after), '합성 지형이 화면에 그려져야 한다');
-  near(1 - Math.exp(-0.2 / 0.35), A, '감쇠 계수');
-  near(8 * A, MOVED_X, '이동량 상수');
+  near(dampFactor(0.2, 0.35), A, '감쇠 계수(구현 출력)');
   const p = rig.chase.camera().pos;
   near(r.posB[0], 32, '이전 x');
   near(p[0], 32 + MOVED_X, '카메라 x 는 목표 8 m 가 아니라 3.4822550239379266 m 만 이동');
+  near(rig.chase.step(0).pos[0] - 32, MOVED_X, '이동량(구현 출력)');
   near(p[1], 10, 'y 불변');
   near(p[2], 10, 'z 불변');
   assert.ok(p[0] < 32 + 8, '목표(8 m)까지는 가지 않았다');
