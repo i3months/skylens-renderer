@@ -3,7 +3,8 @@
 //   - 화면 가로·세로에 grid=[gw,gh] 개씩 고르게 광선을 쏜다. 양 끝 광선은 화면 가장자리에서 EDGE_INSET(폭의 1e-4)만큼 안쪽이다
 //     (가장자리를 거의 그대로 덮되, 경계 위 부동소수 오차로 구현의 닫힌 판정과 어긋나지 않게 한다).
 //   - 광선 위 점은 카메라 깊이 s(카메라 z 축 성분)로 매긴다: X = pos + s·d, d = R_c2w·[(u−cx)/f, (v−cy)/f, 1].
-//   - s 는 [nearM, maxDistM] 이고 지면 직육면체 slab(z ∈ zRangeM) 안이어야 한다.
+//   - s ≥ nearM(근평면, 깊이 기준)이고 점의 카메라 거리 ‖X − pos‖ = s·‖d‖ ≤ maxDistM(원거리, 유클리드 거리 기준 — 계약 변경 반영)이며
+//     지면 직육면체 slab(z ∈ zRangeM) 안이어야 한다.
 //   - 그 구간 위 점들이 지나는 타일 (floor(x/64), floor(y/64)) 을 모은다. 표본은 구간을 타일 격자선 교차점으로 나눈 각 조각의
 //     중점과 두 끝점이다. 이는 고정 간격(예: 64/8 m) 표본을 한없이 촘촘히 한 극한과 같은 집합이다(조각 안에서는 타일이 바뀌지 않는다).
 // 표본이므로 결과는 참 '필요' 집합의 부분집합이다(모서리만 스치는 타일은 놓칠 수 있다). 그래서 오라클 ⊆ 구현 needed 는
@@ -107,7 +108,8 @@ export function oracleTiles(pose, size, opts = {}) {
       const dx = M[0] * a + M[1] * b + M[2];
       const dy = M[3] * a + M[4] * b + M[5];
       const dz = M[6] * a + M[7] * b + M[8];
-      let s0 = o.nearM, s1 = o.maxDistM;
+      // 근평면은 깊이, 원거리는 유클리드 거리: ‖s·d‖ ≤ maxDistM → s ≤ maxDistM/‖d‖.
+      let s0 = o.nearM, s1 = o.maxDistM / Math.hypot(dx, dy, dz);
       // slab 높이 범위로 자른다.
       if (Math.abs(dz) < 1e-12) {
         if (pz < zMin || pz > zMax) continue;
