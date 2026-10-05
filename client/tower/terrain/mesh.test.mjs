@@ -1,0 +1,124 @@
+// T15.1-A1 지형 메시 이음 시험. 참조 구현은 server/terrain/mesh_lod(시험에서만 가져온다), 합성 DEM 은 여기서 만든다.
+// 실행: node --test client/tower/terrain/mesh.test.mjs
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { buildLayerMesh } from './mesh.mjs';
+import { buildTerrainTile, terrainTileToMesh } from '../../../server/terrain/mesh_lod/index.mjs';
+
+// 257×257 표본, 1 m 셀 → 64 m 타일 4×4 = 16장.
+const N = 257;
+function makeDem(f) {
+  const h = new Float32Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) h[j * N + i] = f(i, j);
+  return { originX: 0, originY: 0, cellM: 1, width: N, height: N, heights: h };
+}
+const dem = makeDem((x, y) => 0.1 * x + 0.05 * y + 3 * Math.sin(x / 9) * Math.cos(y / 7));
+
+function tilesAt(lod, coords) {
+  return coords.map(([tx, ty]) => buildTerrainTile(dem, tx, ty, lod));
+}
+
+test('빈 배열은 빈 메시를 돌려준다', () => {
+  const m = buildLayerMesh([]);
+  assert.equal(m.positions.length, 0);
+  assert.equal(m.indices.length, 0);
+  assert.equal(m.tileOfTriangle.length, 0);
+  assert.ok(m.positions instanceof Float32Array && m.indices instanceof Uint32Array && m.tileOfTriangle instanceof Int32Array);
+});
+
+for (const lod of [0, 1, 2, 3]) {
+  test(`LOD ${lod}: 타일별 정점·인덱스가 참조 구현과 일치한다`, () => {
+    const tiles = tilesAt(lod, [[0, 0], [1, 0], [2, 1], [3, 3]]);
+    const m = buildLayerMesh(tiles);
+    const c = tiles[0].cells;
+    const vN = c * c * 3;
+    const iN = (c - 1) * (c - 1) * 6;
+    assert.equal(m.positions.length, 4 * vN);
+    assert.equal(m.indices.length, 4 * iN);
+    tiles.forEach((t, n) => {
+      const ref = terrainTileToMesh(t);
+      assert.deepEqual(Array.from(m.positions.subarray(n * vN, (n + 1) * vN)), Array.from(ref.positions));
+      const got = Array.from(m.indices.subarray(n * iN, (n + 1) * iN), (v) => v - n * c * c);
+      assert.deepEqual(got, Array.from(ref.indices));
+    });
+  });
+}
+
+test('tileOfTriangle 은 삼각형마다 입력 배열 순서의 타일 번호를 준다', () => {
+  const tiles = tilesAt(2, [[3, 2], [0, 0], [1, 1]]); // 순서가 (tx,ty) 순이 아님
+  const m = buildLayerMesh(tiles);
+  const per = (tiles[0].cells - 1) ** 2 * 2;
+  assert.equal(m.tileOfTriangle.length, 3 * per);
+  for (let n = 0; n < 3; n++) for (let k = 0; k < per; k++) assert.equal(m.tileOfTriangle[n * per + k], n);
+});
+
+test('모든 삼각형이 위에서 볼 때 반시계이고 인덱스가 범위 안이다', () => {
+  const m = buildLayerMesh(tilesAt(1, [[0, 0], [1, 0]]));
+  const P = m.positions;
+  const nv = P.length / 3;
+  for (let t = 0; t < m.indices.length; t += 3) {
+    const [a, b, c] = [m.indices[t], m.indices[t + 1], m.indices[t + 2]];
+    assert.ok(a < nv && b < nv && c < nv);
+    const cross = (P[b * 3] - P[a * 3]) * (P[c * 3 + 1] - P[a * 3 + 1]) - (P[b * 3 + 1] - P[a * 3 + 1]) * (P[c * 3] - P[a * 3]);
+    assert.ok(cross > 0, `삼각형 ${t / 3} 가 반시계가 아니다`);
+  }
+});
+
+test('경계 정점: 이웃 타일 가장자리 x·y 가 비트 일치한다', () => {
+  const tiles = tilesAt(2, [[1, 0], [2, 0], [1, 1]]);
+  const m = buildLayerMesh(tiles);
+  const c = tiles[0].cells;
+  const v = (n, i, j) => (n * c * c + j * c + i) * 3;
+  for (let j = 0; j < c; j++) {
+    const a = v(0, c - 1, j), b = v(1, 0, j); // 동쪽 가장자리 = 이웃 서쪽 가장자리
+    assert.equal(m.positions[a], 128);
+    assert.ok(Object.is(m.positions[a], m.positions[b]));
+    assert.ok(Object.is(m.positions[a + 1], m.positions[b + 1]));
+    assert.equal(m.positions[a + 2], m.positions[b + 2]); // 같은 DEM 표본이므로 높이도 같다
+  }
+  for (let i = 0; i < c; i++) {
+    const a = v(0, i, c - 1), b = v(2, i, 0); // 북쪽 가장자리 = 이웃 남쪽 가장자리
+    assert.equal(m.positions[a + 1], 64);
+    assert.ok(Object.is(m.positions[a + 1], m.positions[b + 1]));
+    assert.ok(Object.is(m.positions[a], m.positions[b]));
+  }
+});
+
+test('음수 타일 번호도 64·tx 로 놓인다', () => {
+  const h = new Float32Array(9).fill(5);
+  const m = buildLayerMesh([{ tx: -2, ty: -1, lod: 3, cells: 3, heights: h }]);
+  assert.equal(m.positions[0], -128);
+  assert.equal(m.positions[1], -64);
+  assert.equal(m.positions[(2 * 3 + 2) * 3], -64);
+  assert.equal(m.positions[(2 * 3 + 2) * 3 + 1], 0);
+});
+
+test('cells=2 최소 타일은 정점 4개·삼각형 2개', () => {
+  const m = buildLayerMesh([{ tx: 0, ty: 0, lod: 3, cells: 2, heights: new Float32Array([1, 2, 3, 4]) }]);
+  assert.equal(m.positions.length, 12);
+  assert.deepEqual(Array.from(m.indices), [0, 1, 3, 0, 3, 2]);
+  assert.deepEqual(Array.from(m.positions), [0, 0, 1, 64, 0, 2, 0, 64, 3, 64, 64, 4]);
+});
+
+test('입력 검증 음성 사례는 terrain: 접두의 RangeError', () => {
+  const ok = () => ({ tx: 0, ty: 0, lod: 0, cells: 3, heights: new Float32Array(9) });
+  const bad = (x) => ({ ...ok(), ...x });
+  const cases = {
+    '배열 아님(null)': null,
+    '배열 아님(객체)': {},
+    '타일이 null': [null],
+    'cells 비정수': [bad({ cells: 2.5 })],
+    'cells 1': [bad({ cells: 1, heights: new Float32Array(1) })],
+    'heights 길이 불일치': [bad({ heights: new Float32Array(8) })],
+    'heights 가 일반 배열': [bad({ heights: [0, 0, 0, 0, 0, 0, 0, 0, 0] })],
+    'heights NaN': [bad({ heights: new Float32Array([0, 0, 0, 0, NaN, 0, 0, 0, 0]) })],
+    'heights Infinity': [bad({ heights: new Float32Array([0, 0, 0, 0, 0, 0, 0, Infinity, 0]) })],
+    'tx 비정수': [bad({ tx: 0.5 })],
+    'ty NaN': [bad({ ty: NaN })],
+    '(tx,ty) 중복': [ok(), ok()],
+    'cells 가 타일마다 다름': [ok(), bad({ tx: 1, cells: 2, heights: new Float32Array(4) })],
+  };
+  for (const [name, input] of Object.entries(cases)) {
+    assert.throws(() => buildLayerMesh(input), (e) => e instanceof RangeError && e.message.startsWith('terrain:'), name);
+  }
+});

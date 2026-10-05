@@ -27,12 +27,12 @@ export const CONTROLVIEW_METHOD_MAP = Object.freeze([
 
 /** 모듈 경로(client/tower/<module>/index.mjs). */
 export const controlviewModulePath = (module) => {
-  if (!CONTROLVIEW_METHOD_MAP.some((r) => r.module === module)) throw new RangeError(`unknown controlview module: ${String(module)}`);
+  if (!CONTROLVIEW_METHOD_MAP.some((r) => r.module === module)) throw new RangeError(`unknown controlview module: ${typeof module === 'string' ? module : typeof module}`);
   return `client/tower/${module}/index.mjs`;
 };
 
 /** 번들·대역폭 문턱(TASKS T15.10, SPEC). */
-// 번들은 gzip, KB = 1000 B(SPEC), 구간당 3 MB(SPEC S6).
+// 번들은 gzip, KB = 1000 B (이 계약의 해석, SPEC 미정의), 구간당 3 MB(SPEC S6).
 export const CONTROLVIEW_LIMITS = Object.freeze({ bundleBytes: 300_000, initialBytes: 15_000_000, segmentBytes: 3_000_000 });
 export const CONTROLVIEW_TERRAIN_MIN_SSIM = 0.95;
 export const CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M = 0.01;
@@ -41,14 +41,15 @@ export const CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M = 0.01;
  * 드레이프 정합 판정(T15.2, F-391 ⑨). measure 는 server/terrain/drape measureDrapeAlignment 의 출력.
  * 이동량을 모르는 local 블록이 있으면(unmeasuredLocalBlocks > 0) maxMisalignPx 가 그 블록을 반영하지 않으므로 통과로 세지 않는다.
  * NaN 은 어떤 허용 비교도 통과하지 못한다. 필드가 없으면(undefined) 알 수 없으므로 통과가 아니다.
+ * tolPx 는 유한 비음수이어야 한다.
  * @param {{maxMisalignPx:number, unmeasuredLocalBlocks:number}} measure
- * @param {number} tolPx
+ * @param {number} tolPx 유한 비음수.
  * @returns {boolean}
  */
 export function isDrapeAligned(measure, tolPx) {
   // 입력을 강제 변환하지 않는다: null·문자열·음수·비유한(JSON 이 NaN 을 null 로 바꾼 값 포함)은 모두 통과가 아니다(F-392 ①).
   if (!measure || typeof measure.maxMisalignPx !== 'number' || !Number.isFinite(measure.maxMisalignPx) || measure.maxMisalignPx < 0) return false;
-  if (typeof tolPx !== 'number' || !(tolPx >= 0)) return false;
+  if (typeof tolPx !== 'number' || !Number.isFinite(tolPx) || tolPx < 0) return false;
   return measure.unmeasuredLocalBlocks === 0 && measure.maxMisalignPx <= tolPx;
 }
 
