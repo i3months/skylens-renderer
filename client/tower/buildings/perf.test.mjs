@@ -1,8 +1,12 @@
 // 건물 층 성능 시험. 3000개 건물 묶음을 세 카메라(위에서 내려다봄 + 비스듬 2종)로 세 옵션 각각 렌더(RUNS=5회 중앙값).
 // 시간 문턱은 CPU 잡음 여유: 참조 구현의 거친 상한.
+// 렌더 문턱 1500 ms 는 CPU 래스터의 회귀 감시용일 뿐이다. SPEC S1 의 33 ms 와는 무관하며, 실기기 fps 는 T17 [local] 에서 잰다.
+// 각 모드·카메라 조합은 덮인 화소가 0보다 커야 한다(빈 결과를 내는 변이가 빠른 채 통과하지 못하게 한다).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
+import { EMPTY_INDEX } from '../../../contracts/raster/index.mjs';
+import { makeAerialImage } from './fixtures.mjs';
 
 const W = 1280, H = 720;
 const RUNS = 5;
@@ -156,7 +160,7 @@ function createSyntheticBundle() {
     points: new Float32Array(points),
   }];
 
-  return { groups, image: null };
+  return { groups, image: makeAerialImage() };
 }
 
 /** 시점(eye)에서 목표(target)를 보는 카메라. OpenCV 축(x 오른쪽, y 아래, z 앞), X_c = R·X_w + t. */
@@ -182,6 +186,13 @@ function makeCameras() {
   ];
 }
 
+/** 렌더 결과에서 덮인 화소 수(index 가 EMPTY_INDEX 가 아닌 화소) */
+function coveredPixels(result) {
+  let n = 0;
+  for (let i = 0; i < result.index.length; i++) if (result.index[i] !== EMPTY_INDEX) n++;
+  return n;
+}
+
 /** RUNS회 호출해서 중앙값 얻기 */
 function medianMs(fn) {
   const times = [];
@@ -195,15 +206,8 @@ function medianMs(fn) {
 }
 
 test('buildings layer 성능: 렌더 ≤ 1500ms, setMode ≤ 1ms (평균)', async () => {
-  let layer;
-  try {
-    const { createBuildingsLayer } = await import('./index.mjs');
-    layer = createBuildingsLayer({ mode: 'black' });
-  } catch (err) {
-    // index.mjs가 없으면 정상적인 실패 (구현 미완)
-    console.log('✓ index.mjs 미존재 (구현 미완): 테스트 건너뛰기');
-    return;
-  }
+  const { createBuildingsLayer } = await import('./index.mjs');
+  const layer = createBuildingsLayer({ mode: 'black' });
 
   const bundle = createSyntheticBundle();
   const cameras = makeCameras();
@@ -221,7 +225,10 @@ test('buildings layer 성능: 렌더 ≤ 1500ms, setMode ≤ 1ms (평균)', asyn
 
     // 세 카메라로 렌더
     const modeTimes = [];
-    for (const camera of cameras) {
+    for (const [ci, camera] of cameras.entries()) {
+      const covered = coveredPixels(layer.render(camera));
+      console.log(`  ${mode} 카메라 ${ci}: 덮인 화소 ${covered}`);
+      assert.ok(covered > 0, `${mode} 카메라 ${ci}: 덮인 화소 0`);
       const medianT = medianMs(() => {
         layer.render(camera);
       });
