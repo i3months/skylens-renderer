@@ -152,3 +152,111 @@ test('F-377: 칸당 본 건물 수는 near 수와 무관하다', () => {
   assert.ok(per[1] <= 12, `칸당 건물 ${per.map((p) => p.toFixed(1)).join(', ')}`);
   assert.ok(per[1] <= 2 * per[0] + 1, `n 4배에 칸당 건물 ${per.map((p) => p.toFixed(1)).join(' → ')}`);
 });
+
+// F-382: 색인의 big 목록(GAP_IDX_REG = 64 칸보다 많이 걸치는 건물)과 변 한계 조회 반지름(eC + half)이 결과를 바꾸지 않음을 지킨다.
+// 큰 건물이 가장 가까운 건물이 되도록 틈 직사각형을 그 곁에 두고, 칸이 큰 큰-틈(조회 반지름의 half 가 큰 경우)을 넣는다.
+// big 목록을 빼면(for (const k of big) 삭제) 큰 건물이 e 를 정하는 칸에서, 조회 반지름을 eC 로 줄이면 eC 와 eC + half 사이의
+// 건물이 변 한계를 낮추지 못해 e·w 상한(또는 분기 수 = 남은 예산)이 기준과 달라진다.
+test('F-382: big 건물(64 칸 초과)을 섞어도 기준 구현과 결과·남은 예산이 같다', () => {
+  const r = rng(382);
+  let hits = 0, nulls = 0, bigTrials = 0, bigVisits = 0, bigTotal = 0, cellsTotal = 0;
+  for (let t = 0; t < 700; t++) {
+    const k = 30 + Math.floor(r() * 10), sp = 0.5 + r() * 1.5, sz = sp * (0.6 + r() * 0.39);
+    const ms = [];
+    for (let j = 0; j < k; j++) {
+      for (let i = 0; i < k; i++) {
+        if (r() < 0.25) continue;
+        ms.push(member(i * sp, j * sp, i * sp + sz, j * sp + sz));
+      }
+    }
+    const W = k * sp;
+    // 큰 건물: 정의역 대부분을 덮는 넓은 상자나 긴 상자(칸 64 초과). 틈 직사각형 곁(가장자리)에 놓는다.
+    const nBig = 1 + Math.floor(r() * 3);
+    for (let b = 0; b < nBig; b++) {
+      const kind = Math.floor(r() * 2), th = 3 * W; // 정의역 밖으로 넘치게 두꺼워 정의역에 잘려 칸 수백 개를 덮는다
+      const gap = sp * (0.6 + r()) + b * 0.4 * sp; // 격자 가장자리에서 큰 건물까지 (limit 안)
+      if (kind === 0) ms.push(member(-3 * W, -gap - th, 3 * W, -gap));
+      else ms.push(member(-gap - th, -3 * W, -gap, 3 * W));
+    }
+    const x0 = -sp * r(), y0 = r() * W * 0.15, x1 = x0 + (0.1 + r() * 0.3) * W, y1 = y0 + (0.1 + r() * 0.3) * W;
+    const limit = sp * (r() < 0.5 ? 0.3 + r() * 3 : 8 + r() * 10); // 작은 limit 은 칸이 쪼개지는(조회 반지름 half 가 의미 있는) 경우
+    const box = { minX: -W, minY: -W, maxX: 2 * W, maxY: 2 * W };
+    const cells = r() < 0.2 ? 1 : 1 << 14; // 1 은 예산 소진 거부
+    const b1 = { cells }, b2 = { cells };
+    Object.assign(distStats, { gapCalls: 0, gapNear: 0, gapCells: 0, gapVisits: 0, gapBig: 0 });
+    const got = gapCellError(x0, y0, x1, y1, ms, limit, box, b1);
+    const st = { ...distStats };
+    const want = ref(x0, y0, x1, y1, ms, limit, box, b2);
+    assert.deepEqual(got, want, `시행 ${t}`);
+    assert.equal(b1.cells, b2.cells, `시행 ${t} 남은 예산`);
+    if (got) hits++; else nulls++;
+    if (st.gapBig > 0) {
+      bigTrials++; bigTotal += st.gapBig; cellsTotal += st.gapCells;
+      // 모든 조회가 big 을 한 번씩 훑는다: 칸마다 조회 2 회(중심 거리, 변 한계) 이상.
+      bigVisits += st.gapVisits;
+      assert.ok(st.gapVisits >= st.gapCells * st.gapBig, `시행 ${t} big 방문 ${st.gapVisits} < 칸 ${st.gapCells} × big ${st.gapBig}`);
+    }
+  }
+  // 양성 대조: big 경로, 받아들임, 거부가 모두 충분히 나와야 한다.
+  assert.ok(bigTrials > 100 && bigTotal > 150, `big 시행 ${bigTrials} big 합 ${bigTotal}`);
+  assert.ok(hits > 30 && nulls > 30, `hits ${hits} nulls ${nulls}`);
+  assert.ok(bigVisits >= cellsTotal, `big 방문 ${bigVisits} 칸 ${cellsTotal}`);
+});
+
+// 큰 limit(칸이 큰 틈)에서 변 한계 조회 반지름 eC + half 를 따로 지킨다: 촘촘한 건물 + 넓은 틈 + limit 이 틈 폭의 몇 배.
+test('F-382: 큰 limit 의 넓은 틈에서 변 한계 조회가 기준 구현과 같다', () => {
+  const r = rng(3820);
+  let hits = 0, nulls = 0;
+  for (let t = 0; t < 300; t++) {
+    const k = 5 + Math.floor(r() * 8), sp = 1, sz = 0.5 + r() * 0.45;
+    const ms = [];
+    for (let j = 0; j < k; j++) for (let i = 0; i < k; i++) if (r() > 0.4) ms.push(member(i * sp, j * sp, i * sp + sz, j * sp + sz));
+    const W = k * sp;
+    const limit = (1 + r() * 8) * sp;
+    const x0 = -r() * limit, y0 = -r() * limit, x1 = W + r() * limit, y1 = W + r() * limit;
+    const box = { minX: x0 - r(), minY: y0 - r(), maxX: x1 + r(), maxY: y1 + r() };
+    const cells = r() < 0.3 ? 120 : 1 << 14;
+    const b1 = { cells }, b2 = { cells };
+    const got = gapCellError(x0, y0, x1, y1, ms, limit, box, b1);
+    const want = ref(x0, y0, x1, y1, ms, limit, box, b2);
+    assert.deepEqual(got, want, `시행 ${t}`);
+    assert.equal(b1.cells, b2.cells, `시행 ${t} 남은 예산`);
+    if (got) hits++; else nulls++;
+  }
+  assert.ok(hits > 30 && nulls > 30, `hits ${hits} nulls ${nulls}`);
+});
+
+// F-383: limit 이 무한이거나 폭이 넘치면(정의역 폭이 유한하지 않거나 칸 크기가 유한하지 않음) nx·ny 가 NaN 이라 RangeError 가 났다.
+// 이때는 색인 없이 전부 훑어 기준 구현과 같은 값을 낸다.
+test('F-383: 정의역 폭이 유한하지 않은 limit 은 전수 경로로 기준과 같은 값을 낸다', () => {
+  const ms = [];
+  for (let j = 0; j < 6; j++) for (let i = 0; i < 6; i++) ms.push(member(i, j, i + 0.6, j + 0.6)); // 36 채 > 16
+  const box = { minX: 0, minY: 0, maxX: 6, maxY: 6 };
+  for (const limit of [Infinity, 1e308, 1e200, 1e154]) {
+    const b1 = { cells: 1 << 14 }, b2 = { cells: 1 << 14 };
+    let got;
+    assert.doesNotThrow(() => { got = gapCellError(0.6, 0.6, 5, 5, ms, limit, box, b1); }, `limit ${limit}`);
+    const want = ref(0.6, 0.6, 5, 5, ms, limit, box, b2);
+    assert.deepEqual(got, want, `limit ${limit}`);
+    assert.equal(b1.cells, b2.cells, `limit ${limit} 남은 예산`);
+    assert.ok(got, `limit ${limit} 는 받아들여져야 한다`);
+  }
+});
+
+// F-383: near ≤ 16 인 작은 입력은 색인을 만들지 않고(오버헤드 없이) 같은 값을 낸다.
+test('F-383: near 가 작으면 색인 없이 기준과 같은 값(big 목록도 만들지 않음)', () => {
+  const r = rng(383);
+  for (let t = 0; t < 100; t++) {
+    const n = 2 + Math.floor(r() * 15), ms = [];
+    for (let i = 0; i < n; i++) { const x = r() * 6, y = r() * 6; ms.push(member(x, y, x + 0.3 + r(), y + 0.3 + r())); }
+    const box = { minX: -1, minY: -1, maxX: 8, maxY: 8 };
+    const limit = 0.5 + r() * 3;
+    const b1 = { cells: 1 << 14 }, b2 = { cells: 1 << 14 };
+    Object.assign(distStats, { gapBig: 0 });
+    const got = gapCellError(1, 1, 5, 5, ms, limit, box, b1);
+    assert.equal(distStats.gapBig, 0);
+    const want = ref(1, 1, 5, 5, ms, limit, box, b2);
+    assert.deepEqual(got, want, `시행 ${t}`);
+    assert.equal(b1.cells, b2.cells, `시행 ${t} 남은 예산`);
+  }
+});
