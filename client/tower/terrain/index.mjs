@@ -7,7 +7,7 @@
 //    (이유: 수준마다 cells 가 다르고 타일 경계 정점을 공유하지 않아, 낮은 수준과 섞으면 이음에 틈·겹침이 생긴다.
 //     지역별 수준 상태는 두지 않는다. 일부 지역만 보내면 나머지는 빈 화소가 된다.)
 //  - 새 메시를 먼저 만들고 성공했을 때만 수준·타일 상태를 바꾼다(실패하면 던지고 상태는 그대로).
-//  - 면 색은 accept 에서 한 번만 계산한다. render 는 셰이딩을 호출하지 않는다.
+//  - 음영 서술(면 색과 lambert 속성)은 accept 에서 한 번만 만들고, 화소별 계산은 raster 가 한다. render 는 shade 를 호출하지 않는다.
 import { TERRAIN_DEFAULTS } from '../../../contracts/controlview/terrain.mjs';
 import { assertCamera, emptyResult } from '../../../contracts/raster/index.mjs';
 import { buildLayerMesh } from './mesh.mjs';
@@ -27,6 +27,8 @@ export function createTerrainLayer(opts) {
   const shade = o.shade ?? shadeLambert;
   // 인자를 만드는 즉시 한 번 검사한다(잘못된 값은 render 가 아니라 생성에서 던진다).
   shadeLambert([0, 0, 1], lightDir, baseRgb, ambient);
+  // 화소별 음영 서술은 층 인자에서 한 번 만든다. 주입 shade 가 lambert 속성 없는 배열을 줘도 시험 경로와 실경로의 화소가 같다.
+  const lambert = shadeLambert([0, 0, 1], lightDir, baseRgb, ambient).lambert;
   const state = createTerrainState();
   let mesh = buildLayerMesh([]);
   let colors = []; // 삼각형별 [r,g,b], accept 에서 한 번 계산
@@ -49,7 +51,7 @@ export function createTerrainLayer(opts) {
       // 호출자가 결과를 바꿔도 되도록 매 호출 새로 만든다(공유하면 별칭 문제). raster.mjs 는 건드리지 않는다.
       const out = emptyResult(camera.width, camera.height);
       if (mesh.indices.length === 0) return out;
-      rasterizeTriangles(camera, mesh, (tri) => colors[tri], out);
+      rasterizeTriangles(camera, mesh, (tri) => colors[tri], out, { lambert });
       return out;
     },
     state() {
