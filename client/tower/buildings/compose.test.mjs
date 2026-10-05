@@ -211,6 +211,20 @@ test('into.color 가 over.depth 버퍼를 공유(종류가 달라도)하면 Rang
   assert.deepEqual([...base.depth], [1, 1, 0, 0]);
 });
 
+test('into.depth 가 같은 ArrayBuffer 의 겹치지 않는 view 면 RangeError, 입력 불변', () => {
+  const { base, over } = sharedFixture();
+  const shared = new ArrayBuffer(32);
+  const baseBig = new Float32Array(shared, 0, 4);
+  baseBig.set([1, 1, 0, 0]);
+  const baseObj = { ...base, depth: baseBig };
+  const intoDepth = new Float32Array(shared, 16, 4);
+  const into = emptyResult(2, 2);
+  into.depth = intoDepth;
+  assert.throws(() => composeLayers(baseObj, over, into), RangeError);
+  assert.deepEqual([...baseBig], [1, 1, 0, 0]);
+  assert.deepEqual([...over.depth], [2, 0, 2, 0]);
+});
+
 test('into 내부 color·depth·index 가 버퍼를 공유하면 RangeError', () => {
   const { base, over } = sharedFixture();
   const into = emptyResult(2, 2);
@@ -230,4 +244,27 @@ test('다른 버퍼의 into 는 통과하고 결과는 depth [1,1,2,0]', () => {
   assert.deepEqual([...out.depth], [1, 1, 2, 0]);
   assert.deepEqual([...base.depth], [1, 1, 0, 0]);
   assert.deepEqual([...over.depth], [2, 0, 2, 0]);
+});
+
+test('into 버퍼의 쓰레기 값을 fill 로 지운다', () => {
+  // base 와 over 에서 덮지 않은 화소들을 fill 로 지워야 함
+  const base = make([{ i: 0, d: 2, idx: 10, rgb: [1, 2, 3] }]); // 화소 0 만 덮음
+  const over = make([{ i: 1, d: 1, idx: 20, rgb: [4, 5, 6] }]); // 화소 1 만 덮음
+  const into = emptyResult(4, 4);
+  // 덮이지 않는 화소들(2, 3, ..., 15)에 쓰레기 값 설정
+  for (let i = 2; i < 16; i += 1) {
+    into.depth[i] = 9;
+    into.index[i] = 7;
+    into.color[3 * i] = 255;
+    into.color[3 * i + 1] = 255;
+    into.color[3 * i + 2] = 255;
+  }
+  const result = composeLayers(base, over, into);
+  // 덮인 화소들은 소스에서 나옴
+  assert.deepEqual(px(result, 0), { d: 2, idx: 10, rgb: [1, 2, 3] });
+  assert.deepEqual(px(result, 1), { d: 1, idx: 20, rgb: [4, 5, 6] });
+  // 덮이지 않은 화소들은 fill 로 지워짐
+  for (let i = 2; i < 16; i += 1) {
+    assert.deepEqual(px(result, i), { d: 0, idx: -1, rgb: [0, 0, 0] }, `픽셀 ${i} 이 fill 로 지워지지 않음`);
+  }
 });

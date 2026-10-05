@@ -53,7 +53,43 @@ import { buildDrapeTile } from '../../../server/terrain/drape/index.mjs';
 import { project as projectContract } from '../../../server/raster_ref/project/index.mjs';
 
 // ---- 미리 정한 수치(측정에 맞춰 바꾸지 않는다) ----
-const SEEDS = [1, 2, 3, 4, 5, 6];
+// DRAPE_SEEDS 환경변수로 시드 범위 지정: '7-12' 또는 '7,8,9' 형식. 없으면 기본 [1..6]
+function parseSeedsEnv() {
+  const env = process.env.DRAPE_SEEDS;
+  if (!env) return [1, 2, 3, 4, 5, 6];
+
+  const seeds = [];
+  const parts = env.split(',');
+
+  for (const part of parts) {
+    // 토큰은 /^\s*\d+\s*$/ 또는 /^\s*(\d+)\s*-\s*(\d+)\s*$/ 로만 받는다
+    const rangeMatch = part.match(/^\s*(\d+)\s*-\s*(\d+)\s*$/);
+    if (rangeMatch) {
+      const start = parseInt(rangeMatch[1], 10);
+      const end = parseInt(rangeMatch[2], 10);
+      if (start > end) {
+        throw new Error(`범위 오류: "${part}" (시작 > 끝)`);
+      }
+      for (let i = start; i <= end; i++) seeds.push(i);
+    } else if (/^\s*\d+\s*$/.test(part)) {
+      // 단일 숫자
+      seeds.push(parseInt(part.trim(), 10));
+    } else if (part.trim() === '') {
+      // 빈 문자열은 오류
+      throw new Error(`토큰 오류: 빈 문자열`);
+    } else {
+      // 그 외는 모두 오류
+      throw new Error(`토큰 오류: "${part}"`);
+    }
+  }
+
+  if (seeds.length === 0) {
+    throw new Error('시드 목록이 비었음');
+  }
+
+  return seeds;
+}
+const SEEDS = parseSeedsEnv();
 const IMG_PX_M = 0.5; // 영상 화소 크기(m)
 const IMG_MIN = -128, IMG_MAX = 128; // 영상 범위(ENU, 지형 DEM 과 같다)
 const TRI_HALF_M = 16; // 삼각파 반주기(0 → 255 까지 16 m)
@@ -514,10 +550,16 @@ describe(`드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 ${SE
     }
   });
 
-  test(`참고 음성: 영상을 ${SHIFT_IMG_PX} 영상 화소(0.75 m) 어긋나게 만든 타일은 δx ≈ −0.75 m 로 되찾고, 예상 화면 이동 > ${CATCH_EXPECT_MIN_PX} px 인 시점에서는 ${DRAPE_ALIGN_MAX_PX} px 초과다`, () => {
+  test(`참고 음성: 영상을 ${SHIFT_IMG_PX} 영상 화소(0.75 m) 어긋나게 만든 타일은 δx ≈ −0.75 m 로 되찾고, 예상 화면 이동 > ${CATCH_EXPECT_MIN_PX} px 인 시점에서는 ${DRAPE_ALIGN_MAX_PX} px 초과다`, (t) => {
     for (const s of scenes) {
       // 예상 화면 이동(pxPerM × 0.75 m)이 문턱보다 충분히 큰 시점만 초과를 단언한다(이름 목록을 고정하지 않는다).
       const big = s.views.filter((v) => v.m.pxPerM * SHIFT_IMG_PX * IMG_PX_M > CATCH_EXPECT_MIN_PX);
+      const skipped = s.views.length - big.length;
+      if (t.diagnostic) {
+        t.diagnostic(`시드 ${s.seed}: 예상 화면 이동 ≤ ${CATCH_EXPECT_MIN_PX} px 로 단언을 건너뛴 시점 ${skipped}/${s.views.length}`);
+      } else {
+        console.log(`[seed ${s.seed}] skipped assertion count: ${skipped}/${s.views.length}`);
+      }
       // 공허한 통과 방지: 시드마다 적어도 한 시점(낮은 눈 높이 시점은 예상 2.3 px 이상)은 단언 대상이어야 한다.
       assert.ok(big.length >= 1, `시드 ${s.seed}: 예상 화면 이동 > ${CATCH_EXPECT_MIN_PX} px 인 시점이 없다`);
       for (const v of big) {
@@ -579,5 +621,34 @@ test('tileKey 는 contracts tileBounds 규약과 같다', () => {
     const [tx, ty] = tileKey(x, y).split(',').map(Number);
     const b = tileBounds(tx, ty);
     assert.ok(x >= b.minX && x < b.maxX && y >= b.minY && y < b.maxY, `${x},${y} → ${tx},${ty}`);
+  }
+});
+
+// parseSeedsEnv 엄격 검증: 잘못된 형식 5가지는 모두 Error 던진다
+test('parseSeedsEnv: 잘못된 5가지 형식(7..12, 7.5, 7abc, 1e3, 빈 문자열)은 모두 Error', () => {
+  const oldEnv = process.env.DRAPE_SEEDS;
+  try {
+    // 1. 이중 점 형식 '7..12'
+    process.env.DRAPE_SEEDS = '7..12';
+    assert.throws(() => parseSeedsEnv(), Error);
+
+    // 2. 소수점 형식 '7.5'
+    process.env.DRAPE_SEEDS = '7.5';
+    assert.throws(() => parseSeedsEnv(), Error);
+
+    // 3. 문자 섞임 형식 '7abc'
+    process.env.DRAPE_SEEDS = '7abc';
+    assert.throws(() => parseSeedsEnv(), Error);
+
+    // 4. 과학 표기법 형식 '1e3'
+    process.env.DRAPE_SEEDS = '1e3';
+    assert.throws(() => parseSeedsEnv(), Error);
+
+    // 5. 빈 문자열(쉼표만 있는 경우)
+    process.env.DRAPE_SEEDS = ',';
+    assert.throws(() => parseSeedsEnv(), Error);
+  } finally {
+    if (oldEnv === undefined) delete process.env.DRAPE_SEEDS;
+    else process.env.DRAPE_SEEDS = oldEnv;
   }
 });

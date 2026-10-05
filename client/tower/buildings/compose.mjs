@@ -33,7 +33,7 @@ function checkDepths(depth, name) {
  * 두 렌더 결과를 깊이로 합친다.
  * @param {import('../../../contracts/raster/index.mjs').RenderResult} base 같은 깊이에서 이기는 쪽
  * @param {import('../../../contracts/raster/index.mjs').RenderResult} over
- * @param {import('../../../contracts/raster/index.mjs').RenderResult} [into] 주면 이 버퍼를 지우고 다시 써서 돌려준다(새 배열 0). base·over 와 같은 객체·같은 배열이면 던진다.
+ * @param {import('../../../contracts/raster/index.mjs').RenderResult} [into] 주면 이 버퍼를 지우고 다시 써서 돌려준다(새 배열 0). base·over 와 같은 객체·버퍼(.buffer)를 공유하면 던진다. 한 ArrayBuffer 의 겹치지 않는 구간도 거절하는 보수적 동작이다.
  * @returns {import('../../../contracts/raster/index.mjs').RenderResult} into 또는 새 결과
  */
 export function composeLayers(base, over, into) {
