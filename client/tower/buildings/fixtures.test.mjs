@@ -1,9 +1,9 @@
-// 합성 건물 번들·카메라(fixtures.mjs) 시험: 결정성, 계약 형태, uv 관례, 카메라.
+// 합성 건물 번들·카메라(test_support/fixtures.mjs) 시험: 결정성, 계약 형태, uv 관례, 카메라.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   makeBundle, makeCameras, makeFootprints, makeAerialImage, bundleFromFootprints, bundleBytes, flipV, AERIAL_BOUNDS,
-} from './fixtures.mjs';
+} from './test_support/fixtures.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { buildingHeightM } from '../../../contracts/tower_assets/index.mjs';
 

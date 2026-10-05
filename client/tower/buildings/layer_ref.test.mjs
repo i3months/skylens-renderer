@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createBuildingsLayer } from './index.mjs';
-import { makeBundle, makeCameras } from './fixtures.mjs';
+import { makeBundle, makeCameras } from './test_support/fixtures.mjs';
 import { refRenderBuildings } from './ref_trace.mjs';
 import { BUILDINGS_DEFAULTS } from '../../../contracts/controlview/buildings.mjs';
 import { DISPLAY_MODES } from '../../../contracts/tower_assets/index.mjs';
