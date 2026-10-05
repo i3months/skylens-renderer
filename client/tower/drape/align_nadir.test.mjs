@@ -9,6 +9,8 @@
 //  - 정합 측정: 결과 ≈ g·기준(i + dx, j + dy) 의 최소 제곱 (dx, dy, g). 정수 이동 전역 탐색 → 가우스-뉴턴 서브픽셀 정밀화.
 //    기준은 해석 함수라(임의 소수 화소 위치에서 광선–평면 교점을 다시 계산) 기준 영상을 다시 보간하지 않는다.
 //  - 음성 시험: 영상 bounds 를 0.5 m·2 m 옮겨 만든 타일을 먹이면 측정 이동량이 1 px 를 넘어야 한다(측정 도구가 이동을 본다는 증거).
+//  - 측정 정밀도: 정상 경로는 합격선(1 px)과 따로 |dx|, |dy| ≤ NADIR_PRECISION_PX(0.1 px)를 단언한다. 1 px 합격선만으로는
+//    화소 중심 +0.5 를 빠뜨린 역투영(화면 균일 (0.5, 0.5) px = 0.707 px 어긋남)도 통과하므로, 그런 반 화소 규약 오류를 이 단언이 잡는다.
 // 허용 1 px(DRAPE_ALIGN_MAX_PX)은 계약값 그대로 쓰고 바꾸지 않는다. 측정 수치는 출력한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,6 +28,8 @@ const IMG_N = Math.round((IMG_MAX - IMG_MIN) / IMG_PX_M); // 1152
 const NOISE_CELL_M = 1.6;
 const GRID_M = 5;
 const GRID_LINE_M = 0.5;
+// 정상 경로 측정 정밀도(축마다, px). 미리 정한 값이며 측정에 맞춰 바꾸지 않는다.
+const NADIR_PRECISION_PX = 0.1;
 
 /** 비주기 값 잡음 격자(결정적). */
 function makeNoiseLattice(seed) {
@@ -224,6 +228,8 @@ for (const { name, cam } of VIEWS) {
     const m = measureShift(cam, out, pixels, searchFor(cam));
     console.log(`[정합 ${name} 음영 끔] ${fmt(m)} (허용 ${DRAPE_ALIGN_MAX_PX} px, 화소 ${pixels.length})`);
     assert.ok(m.px <= DRAPE_ALIGN_MAX_PX, `정합 오차 ${m.px} px > ${DRAPE_ALIGN_MAX_PX}`);
+    // 합격선과 별개의 정밀도 단언: 반 화소 규약 오류(0.5 px)는 여기서 실패한다.
+    assert.ok(Math.abs(m.dx) <= NADIR_PRECISION_PX && Math.abs(m.dy) <= NADIR_PRECISION_PX, `정상 경로 이동 (${m.dx}, ${m.dy}) px 가 축마다 ${NADIR_PRECISION_PX} px 를 넘는다`);
     assert.ok(Math.abs(m.g - 1) < 0.02, `음영 끔인데 이득 ${m.g}`);
     assert.ok(m.mae < 3, `정합 뒤 잔차가 크다: ${m.mae}`);
   });
@@ -233,7 +239,26 @@ for (const { name, cam } of VIEWS) {
     const m = measureShift(cam, out, pixels, searchFor(cam));
     console.log(`[정합 ${name} 기본 음영] ${fmt(m)}`);
     assert.ok(m.px <= DRAPE_ALIGN_MAX_PX, `정합 오차 ${m.px} px > ${DRAPE_ALIGN_MAX_PX}`);
+    assert.ok(Math.abs(m.dx) <= NADIR_PRECISION_PX && Math.abs(m.dy) <= NADIR_PRECISION_PX, `정상 경로 이동 (${m.dx}, ${m.dy}) px 가 축마다 ${NADIR_PRECISION_PX} px 를 넘는다`);
     assert.ok(m.g > 0.5 && m.g < 1.4, `이득 ${m.g}`);
+  });
+
+  test(`${name} 측정기 자체 검증: 화면 균일 (0.5, 0.5) px 이동은 0.707 ± 0.05 px 로 재고 정밀도 단언에서 걸린다`, () => {
+    // 드레이프 층 대신 기준을 화면에서 (0.5, 0.5) px 옮겨 반올림한 가짜 결과(측정기만 시험).
+    const fake = { color: new Uint8Array(cam.width * cam.height * 3) };
+    const c = [0, 0, 0];
+    for (const p of pixels) {
+      const i = p % cam.width, j = (p - i) / cam.width;
+      const { x, y } = rayPlaneEnu(cam, i + 1, j + 1);
+      sampleImage(IMAGE, x, y, c);
+      for (let k = 0; k < 3; k++) fake.color[p * 3 + k] = Math.round(c[k]);
+    }
+    const m = measureShift(cam, fake, pixels, searchFor(cam));
+    console.log(`[자체 검증 ${name} 균일 0.5 px] ${fmt(m)}`);
+    assert.ok(Math.abs(m.px - 0.5 * Math.SQRT2) <= 0.05, `균일 0.707 px 이동을 ${m.px} px 로 잼`);
+    assert.ok(Math.abs(m.dx - 0.5) <= 0.05 && Math.abs(m.dy - 0.5) <= 0.05, `방향 (${m.dx}, ${m.dy})`);
+    // 1 px 합격선은 통과하지만 정밀도 단언(축마다 ≤ 0.1 px)은 넘는다.
+    assert.ok(m.px <= DRAPE_ALIGN_MAX_PX && Math.abs(m.dx) > NADIR_PRECISION_PX && Math.abs(m.dy) > NADIR_PRECISION_PX);
   });
 
   for (const [ox, oy] of [[0.5, 0], [0, 2]]) {
