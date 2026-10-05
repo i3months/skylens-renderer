@@ -253,15 +253,17 @@ function strideFor(w, h, budget) {
  *      dx = ax + kxx·di + kxy·dj,  dy = ay + kyx·di + kyy·dj
  *    축척(kxx, kyy)과 회전·전단(kxy, kyx)을 모두 담는다. 잔차 > 0.5 px 블록은 하나씩 빼며 다시 맞추고(절반 넘게 빠지면 측정 불가),
  *    모든 블록을 모형 예측 ±1 px 에서 1/32 px 까지 다시 찾아 무늬 주기 일치(가짜 최소)를 바로잡는다. 예측 근처 최소가 블록 자체
- *    최소보다 1.5배 넘게 나쁜 블록은 아핀으로 설명되지 않는 진짜 국소 어긋남(local)으로 남긴다.
+ *    최소보다 1.5배 넘게, 그리고 평균 제곱 차로 1(채널값²) 넘게 나쁜 블록만 아핀으로 설명되지 않는 진짜 국소 어긋남(local)으로
+ *    남긴다(무늬가 거의 없는 블록은 비만 커지고 차는 잡음 수준).
  *    전역 가설이 여럿이면 아핀 변위장 아래 타일 전체 평균 제곱 차가 가장 작은 가설을 고른다.
- * 4) edgeMaxPx = 피복 범위(tile.coverage.bounds 를 타일로 자른 사각형, 없으면 타일 전체 ±W/2, ±H/2) 네 모서리의 모형 변위
+ * 4) edgeMaxPx = 피복 범위(타일 ∩ coverage.mask 피복 픽셀을 감싸는 사각형 ∩ coverage.bounds, 둘 다 없으면 타일 전체) 네 모서리의 모형 변위
  *    최댓값(아핀 변위장의 크기는 볼록이라 사각형 안 최댓값은 모서리; 영상 자료가 없는 곳까지 외삽하지 않음),
  *    localMaxPx = local 블록 실측 이동량 크기 최댓값, maxMisalignPx = max(edgeMaxPx, localMaxPx).
  *    다음이면 status = 'unmeasurable' 이고 maxMisalignPx·edgeMaxPx·축척 등은 NaN 이다(0 으로 보고하지 않는다; NaN 은 어떤
  *    `<= 허용` 판정도 통과하지 못한다): 전역 비용면이 ±1 px 이동에 평평함(균일한 색 등), 아핀에 여분이 없음(블록 6개 미만이면서
  *    2×2 이상 블록 격자 전체 피복도 아님 — 3~5블록 정확 적합은 잡음을 모서리 외삽으로 부풀림), 블록 중심이 한 직선 위,
- *    이상치 제거 뒤 남은 블록이 그 하한 미만. 비용면이 한 축이라도 평평한 블록은 블록 측정에서 뺀다.
+ *    이상치 제거 뒤 남은 블록이 그 하한 미만. 비용면이 한 축이라도 평평한(±1 px 상승 ≤ 1/12 채널값² = uint8 반올림 잡음 분산)
+ *    블록은 블록 측정에서 뺀다.
  * @returns {{status:'measured'|'unmeasurable', reason?:string, maxMisalignPx:number, dxPx:number, dyPx:number, rms:number,
  *   samples:number, globalDxPx:number, globalDyPx:number, blockMaxPx:number, residualMaxPx:number, edgeMaxPx:number,
  *   localMaxPx:number, scaleX:number, scaleY:number, rotationRad:number,
@@ -443,14 +445,31 @@ export function measureDrapeAlignment(image, tile) {
     return false;
   }
 
-  // 모서리 외삽 범위(블록 좌표 di, dj = 픽셀 − 타일 중심): coverage.bounds 를 타일 안으로 자른 사각형, 없거나 잘못되면 타일 전체.
-  let ei0 = -TW / 2, ei1 = TW / 2, ej0 = -TH / 2, ej1 = TH / 2;
+  // 모서리 외삽 범위(픽셀 좌표): 타일 ∩ mask 피복(mask > 0) 픽셀을 감싸는 사각형 ∩ coverage.bounds.
+  // 영상 자료가 실제로 있는 곳까지만 외삽한다 — bounds 가 없는 타일도 mask 로 피복 범위를 안다(블록이 한 구석에만 있을 때
+  // 타일 반대편 모서리까지 외삽하면 블록 잡음이 부푼다). mask·bounds 가 없거나 잘못되면 그 제한은 건너뛴다(타일 전체).
+  let ri0 = 0, ri1 = TW, rj0 = 0, rj1 = TH;
+  if (mask && mask.length === TW * TH) {
+    let mi0 = TW, mi1 = 0, mj0 = TH, mj1 = 0;
+    for (let j = 0; j < TH; j++) {
+      for (let i = 0; i < TW; i++) {
+        if (!mask[j * TW + i]) continue;
+        if (i < mi0) mi0 = i;
+        if (i + 1 > mi1) mi1 = i + 1;
+        if (j < mj0) mj0 = j;
+        mj1 = j + 1;
+      }
+    }
+    if (mi1 > mi0 && mj1 > mj0) { ri0 = mi0; ri1 = mi1; rj0 = mj0; rj1 = mj1; }
+  }
   const cbx = tile.coverage?.bounds;
   if (cbx && [cbx.minX, cbx.minY, cbx.maxX, cbx.maxY].every(Number.isFinite)) {
-    const i0 = Math.max(0, (cbx.minX - tb.minX) / pw), i1 = Math.min(TW, (cbx.maxX - tb.minX) / pw);
-    const j0 = Math.max(0, (tb.maxY - cbx.maxY) / ph), j1 = Math.min(TH, (tb.maxY - cbx.minY) / ph);
-    if (i1 > i0 && j1 > j0) { ei0 = i0 - TW / 2; ei1 = i1 - TW / 2; ej0 = j0 - TH / 2; ej1 = j1 - TH / 2; }
+    const i0 = Math.max(ri0, (cbx.minX - tb.minX) / pw), i1 = Math.min(ri1, (cbx.maxX - tb.minX) / pw);
+    const j0 = Math.max(rj0, (tb.maxY - cbx.maxY) / ph), j1 = Math.min(rj1, (tb.maxY - cbx.minY) / ph);
+    if (i1 > i0 && j1 > j0) { ri0 = i0; ri1 = i1; rj0 = j0; rj1 = j1; }
   }
+  // 블록 좌표(di, dj = 픽셀 − 타일 중심).
+  const ei0 = ri0 - TW / 2, ei1 = ri1 - TW / 2, ej0 = rj0 - TH / 2, ej1 = rj1 - TH / 2;
 
   const ex = blockEdges(TW), ey = blockEdges(TH);
   const blockPx = { width: ex[1] - ex[0], height: ey[1] - ey[0] };
@@ -511,22 +530,27 @@ export function measureDrapeAlignment(image, tile) {
     }
     let fit = robustAffine(blocks, minBlocks);
     if (!fit) return unmeasurable('블록 이동량이 한 아핀 모형으로 모이지 않거나 블록 중심이 한 직선 위');
-    for (const b of blocks) {
-      const [px, py] = fit.at(b.di, b.dj);
+    // 블록 b 를 모형 예측 근처(±1 px)에서 다시 찾는다. 예측 근처 최소가 자기 최소보다 상대(ALIAS_MSE_RATIO 배 초과)와
+    // 절대(LOCAL_MIN_MSE 초과) 모두 뚜렷이 나쁠 때만 local(true 반환), 아니면 예측 근처 값을 쓴다. 무늬가 거의 없는 블록은
+    // 평균 제곱 차 자체가 작아 비만으로는 잡음 최소도 '뚜렷'해지므로 절대 차를 함께 본다. 예측 근처를 못 재면 null.
+    const settle = (b, at, keep) => {
+      const [px, py] = at(b.di, b.dj);
       const near = search(b.xs, b.ys, px, py, REFINE_STAGES, b.minN);
-      if (near.n === 0) continue;
-      if (fit.inlier.has(b) || near.mse <= b.mse * ALIAS_MSE_RATIO + 1e-9) {
+      if (near.n === 0) return null;
+      if (keep || near.mse <= b.mse * ALIAS_MSE_RATIO + 1e-9 || near.mse - b.mse <= LOCAL_MIN_MSE) {
         b.dx = near.dx; b.dy = near.dy; b.mse = near.mse; b.n = near.n;
-      } else {
-        b.local = true;
+        return false;
       }
-    }
+      return true;
+    };
+    for (const b of blocks) if (settle(b, fit.at, fit.inlier.has(b))) b.local = true;
     const affineBlocks = blocks.filter((b) => !b.local);
     fit = robustAffine(affineBlocks, minBlocks);
     if (!fit) return unmeasurable('블록 이동량이 한 아핀 모형으로 모이지 않거나 블록 중심이 한 직선 위');
-    for (const b of affineBlocks) if (!fit.inlier.has(b)) b.local = true;
+    // 다시 맞춘 모형의 이상치도 같은 기준으로 판정한다(예측 근처를 못 재면 local).
+    for (const b of affineBlocks) if (!fit.inlier.has(b) && settle(b, fit.at, false) !== false) b.local = true;
 
-    // 4) 피복 범위(coverage.bounds = 타일 ∩ 영상, 없으면 타일) 네 모서리의 모형 변위 최댓값, 그리고 모형으로 설명되지 않는
+    // 4) 피복 사각형(위 ei0..ej1: 타일 ∩ mask 피복 ∩ coverage.bounds) 네 모서리의 모형 변위 최댓값, 그리고 모형으로 설명되지 않는
     //    블록(local)의 실측 이동량 크기. 영상 자료가 없는 곳까지 외삽하지 않는다(완전 피복 타일이면 타일 네 모서리).
     let edgeMaxPx = 0;
     for (const ci of [ei0, ei1]) for (const cj of [ej0, ej1]) edgeMaxPx = Math.max(edgeMaxPx, Math.hypot(...fit.at(ci, cj)));
@@ -554,10 +578,15 @@ const ALT_GLOBAL_MAX = 2;
 const OUTLIER_PX = 0.5;
 // 이상치 블록의 예측 근처 최소의 평균 제곱 차가 자기 최소의 이 배 이내면 '무늬 주기 일치'로 보고 예측 근처 값을 쓴다.
 const ALIAS_MSE_RATIO = 1.5;
+// local(국소 어긋남) 판정의 절대 유의성: 예측 근처 최소가 자기 최소보다 이만큼(채널값², 1 DN rms 차) 넘게 나빠야 한다.
+// uint8 반올림 잡음 분산 1/12 의 12배 — 그보다 작은 차는 무늬 없는 블록의 잡음 최소일 뿐이다.
+const LOCAL_MIN_MSE = 1;
 // 아핀 적합에 필요한 블록 수(블록 격자 전체가 피복되지 않은 타일). 6 매개변수 정확 적합(3블록)은 잡음을 모서리로 부풀린다.
 const MIN_AFFINE_BLOCKS = 6;
-// 비용면 평평 판정: ±1 px 이동의 평균 제곱 차 상승(채널값²)이 이 이하면 그 축 이동량을 구별할 수 없다(uint8 반올림 잡음 1/12 보다 작음).
-const FLAT_MSE = 0.01;
+// 비용면 평평 판정: ±1 px 이동의 평균 제곱 차 상승(채널값²)이 이 이하면 그 축 이동량을 구별할 수 없다.
+// 경계 = uint8 반올림 잡음 분산 1/12: 높은 밉에서 박스 평균으로 잡음이 반올림 수준까지 줄어든 블록(무늬 없는 영상)은
+// 상승이 이보다 작아 잡음 최소를 이동량으로 잘못 보고했다(0.01 이던 때 ±3 DN 잡음 영상에서 1 px 넘는 거짓 실패).
+const FLAT_MSE = 1 / 12;
 
 /**
  * 블록 이동량 (di, dj) → (dx, dy) 에 아핀 최소제곱. 블록 3개 미만이거나 중심이 한 직선 위면 null.
