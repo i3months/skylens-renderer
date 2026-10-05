@@ -73,20 +73,40 @@ test('같은 녹화를 새 view 두 개로 재생하면 Snapshot[] 이 JSON 으�
 });
 
 test('손계산 기대값: 모드·held·드론 마커·카메라 이동', () => {
-  const rec = makeRecording(20240615);
-  const s = replayRecording(newView(), rec, SIZE);
+  // 난수 없이 손으로 정한 10프레임(dt 0.1 s): 프레임 0 에서 ArrowUp 을 누른 채 유지, 드론 2기, 프레임 1 에서 (0,0) 도착
+  const frames = Array.from({ length: 10 }, () => ({ dtSec: 0.1 }));
+  frames[0].keys = { down: ['ArrowUp'] };
+  frames[0].drones = [{ id: 'a', enu: [10, 50, 30] }, { id: 'b', enu: [-20, 80, 35] }];
+  frames[1].arrivedTiles = [[0, 0]];
+  frames[5].available = false;
+  frames[8].available = true;
+  const s = replayRecording(newView(), { version: 1, frames }, SIZE);
+  assert.equal(s.length, 10);
   // 가용성: 프레임 0~4 live, 5~7 fallback, 8 이후 live
-  for (let i = 0; i < s.length; i += 1) assert.equal(s[i].mode, i >= 5 && i < 8 ? 'fallback' : 'live', `frame ${i}`);
+  for (let i = 0; i < 10; i += 1) assert.equal(s[i].mode, i >= 5 && i < 8 ? 'fallback' : 'live', `frame ${i}`);
+  // 카메라: 프레임 0 은 아직 드론이 없어(데이터는 step 뒤에 들어간다) 입력 카메라가 북쪽으로 10 m/s·0.1 s = 1 m 가서 [32, 33, 50].
+  // 프레임 1 부터는 첫 드론 a(10,50,30, 방위 0)를 추적: 뒤 30 m·위 10 m 라 [10, 20, 40]
+  const r9 = (p) => p.map((x) => Math.round(x * 1e9) / 1e9);
+  assert.deepEqual(r9(s[0].camera.pos), [32, 33, 50]);
+  assert.deepEqual(r9(s[1].camera.pos), [10, 20, 40]);
+  assert.deepEqual(r9(s[9].camera.pos), [10, 20, 40]);
+  // fallback 모드에서는 3D 층 결과를 내지 않는다
+  for (const i of [5, 6, 7]) {
+    assert.equal(s[i].camera, null);
+    assert.equal(s[i].overlay, null);
+    assert.equal(s[i].streaming, null);
+    assert.equal(s[i].fallback.banner, '실시간 3D 불가');
+    assert.equal(s[i].fallback.drones.length, 2);
+  }
   // 프레임 0 에서 드론 2기를 넣었다 → 3D 층 오버레이 드론 2개
   assert.equal(s[0].overlay.drones.length, 2);
-  // 타일 (0,0) 은 카메라 바로 아래라 첫 프레임에 요청되고, 프레임 1 도착으로 held 에 든다
-  assert.ok(s[0].streaming.inflight.some((t) => t.tx === 0 && t.ty === 0));
-  assert.ok(s[1].streaming.held.some((t) => t.tx === 0 && t.ty === 0));
-  // 프레임 0 에서 ArrowUp(앞)을 눌러 두고 프레임 0 의 dt 만큼 북쪽(+y)으로 간다: y = 32 + 10·dt0, x = 32, 고도 50
-  const dt0 = rec.frames[0].dtSec;
-  assert.ok(Math.abs(s[0].camera.pos[0] - 32) < 1e-9);
-  assert.ok(Math.abs(s[0].camera.pos[1] - (32 + 10 * dt0)) < 1e-9);
-  assert.equal(s[0].camera.pos[2], 50);
+  // 프레임 0 의 요청 목록(16개, state() 가 (tx,ty) 사전순으로 내준다)
+  const tiles0 = [[-2, 2], [-2, 3], [-1, 1], [-1, 2], [-1, 3], [-1, 4], [0, 0], [0, 1], [0, 2], [0, 3], [0, 4], [1, 1], [1, 2], [1, 3], [2, 2], [2, 3]];
+  assert.deepEqual(s[0].streaming.inflight.map((t) => [t.tx, t.ty]), tiles0);
+  assert.deepEqual(s[0].streaming.held, []);
+  // 프레임 1 에서 (0,0) 이 도착해 held 로 옮겨지고 inflight 는 15개가 된다
+  assert.deepEqual(s[1].streaming.held, [{ tx: 0, ty: 0 }]);
+  assert.equal(s[1].streaming.inflight.length, 15);
 });
 
 test('중간에 던지는 입력을 한 프레임 넣어도 이후 스냅샷은 그 프레임을 건너뛴 재생과 같다', () => {
@@ -108,14 +128,35 @@ test('중간에 던지는 입력을 한 프레임 넣어도 이후 스냅샷은 
   assert.equal(JSON.stringify([...head, ...tail]), JSON.stringify(full));
 });
 
-test('같은 view 에서 재생 → clear → 다시 재생하면 첫 재생과 같다', () => {
+test('다른 시드의 녹화도 새 view 두 개에서 같은 Snapshot[] 을 낸다', () => {
   const rec = makeRecording(4242);
+  const a = replayRecording(newView(), rec, SIZE);
+  const b = replayRecording(newView(), rec, SIZE);
+  assert.equal(JSON.stringify(a), JSON.stringify(b));
+});
+
+test('clear() 뒤 snapshot 의 overlay 목록과 fallback 목록이 비어 있다(입력 자세·타일 상태는 유지)', () => {
   const view = newView();
-  const first = replayRecording(view, rec, SIZE);
+  const s = replayRecording(view, makeRecording(4242), SIZE);
+  const last = s[s.length - 1];
+  // 비우기 전에는 비어 있지 않아야 시험이 공허하지 않다(드론은 프레임 69 에 2기, 경로는 프레임 10 의 p1)
+  assert.equal(last.overlay.drones.length, 2);
+  assert.equal(last.overlay.paths.length, 1);
   view.clear();
-  // reset 이 있는 구현이면 타일·입력 상태까지 되돌린다(없으면 clear 만으로 같아야 한다)
-  if (typeof view.reset === 'function') view.reset();
-  view.setAvailable(true);
-  const second = replayRecording(view, rec, SIZE);
-  assert.equal(JSON.stringify(second), JSON.stringify(first));
+  const after = view.snapshot(SIZE);
+  assert.deepEqual(after.overlay.drones, []);
+  assert.deepEqual(after.overlay.detections, []);
+  assert.deepEqual(after.overlay.paths, []);
+  assert.deepEqual(after.fallback.drones, []);
+  assert.deepEqual(after.fallback.detections, []);
+  assert.deepEqual(after.fallback.paths, []);
+  // 입력 자세(추적 카메라 포함)와 타일 상태는 clear 가 건드리지 않는다
+  assert.deepEqual(after.camera, last.camera);
+  assert.deepEqual(after.streaming, last.streaming);
+  // fallback 으로 바꾸면 비어 있는 목록과 배너만 나온다
+  view.setAvailable(false);
+  const fb = view.snapshot(SIZE);
+  assert.equal(fb.mode, 'fallback');
+  assert.equal(fb.fallback.empty, true);
+  assert.deepEqual(fb.fallback.drones, []);
 });
