@@ -288,7 +288,7 @@ A camera that follows the drone target with exponential damping. Contract: `cont
 
 ### Tower drone, path and detection markers (T15.6)
 
-A compute-only module that turns the ENU positions of drones, paths and detection markers into screen (CSS pixel) coordinates. Contract: `contracts/controlview/overlay.mjs`; implementation: `client/tower/overlay/` (validation, store, projection, near-plane clipping, assembly, view). Lists are replaced on every call and positions that were not received are never interpolated or extrapolated. Paths are cut at the near plane (0.1 m) and the part behind the camera is dropped. The ENU round trip stays within 1 cm in tests (measured maximum 4.2e-9 m). Estimated until compared with the original. No network or timers. Tests: `node --test "client/tower/overlay/*.test.mjs"`.
+A compute-only module that turns the ENU positions of drones, paths and detection markers into screen (CSS pixel) coordinates. Contract: `contracts/controlview/overlay.mjs`; implementation: `client/tower/overlay/` (validation, store, projection, near-plane clipping, assembly, view (camera pose → screen)). Lists are replaced on every call and positions that were not received are never interpolated or extrapolated. Paths are cut at the near plane (0.1 m) and the part behind the camera is dropped. The ENU round trip stays within 1 cm in tests (measured maximum 4.2e-9 m). Estimated until compared with the original. No network or timers. Tests: `node --test "client/tower/overlay/*.test.mjs"`.
 
 ### Control tower piece request (streaming)
 
