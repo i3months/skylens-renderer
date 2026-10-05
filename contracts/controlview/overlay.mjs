@@ -47,7 +47,7 @@ export const TOWER_OVERLAY_MODULES = Object.freeze({
   validate: { file: 'validate.mjs', fn: 'checkDrones(list)·checkDetections(list)·checkPath(path)·checkSize(size)·checkOpts(opts) -> 정규화된 복사본   TOWER_OVERLAY_API 의 검사 규칙' },
   project: { file: 'project.mjs', fn: 'projectPoints(view, items) -> {id,u,v,depth,visible}[];  unprojectPoint(view, u, v, depth) -> [e,n,u]' },
   clip: { file: 'clip.mjs', fn: 'clipPolyline(view, points, nearM) -> polylines   TOWER_OVERLAY_FORMULA.pathClip' },
-  store: { file: 'store.mjs', fn: 'createOverlayStore() -> {setDrones, setDetections, setPath, removePath, clear, counts, drones(), detections(), paths()}   상태만. 투영 없음. 이미 validate 를 거친 값을 받는다(검사 안 함). drones()·detections()·paths() 는 깊은 복사를 돌려준다(밖에서 고쳐도 상태 불변)' },
+  store: { file: 'store.mjs', fn: 'createOverlayStore() -> {setDrones, setDetections, setPath, removePath, clear, counts, hasPath, drones(), detections(), paths(), dronesRaw(), detectionsRaw(), pathsRaw()}   상태만. 투영 없음. 이미 validate 를 거친 값을 받는다(검사 안 함). drones()·detections()·paths() 는 깊은 복사를 돌려준다(밖에서 고쳐도 상태 불변). dronesRaw()·detectionsRaw()·pathsRaw() 는 복사 없이 안쪽 배열을 돌려주는 읽기 전용 경로이며 호출자는 고치지 않는다(프레임 경로용)' },
   index: { file: 'index.mjs', fn: 'createTowerOverlay(opts?) 조립' },
 });
 

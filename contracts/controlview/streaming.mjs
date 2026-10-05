@@ -4,10 +4,12 @@
 // 좌표: GeoAnchor 기준 ENU(x=동, y=북, z=위), 1 unit = 1 m. 타일 번호는 contracts/tower_assets 의 tileOf·tileBounds(한 변 64 m)와 같다.
 // 카메라: contracts/statusview CameraPose {pos, quat, fovY} 와 Size {width, height} → overlay/view.mjs poseToView 와 같은 View(X_c = R·X_w + t, OpenCV 축).
 // 원칙: 도착한 것만 그린다 — 도착 전 타일은 보충하지 않는다. 이 층은 '보이는데 요청하지 않은 타일'을 0 으로 만드는 것이 목표다.
-// 정의: 타일 (tx,ty) 는 ENU 직육면체 [tx·64,(tx+1)·64] × [ty·64,(ty+1)·64] × zRangeM 이 시야 사각뿔(좌우상하 4면)과 근평면(깊이 ≥ nearM)·원평면(카메라로부터의 유클리드 거리 ≤ maxDistM) 안에서 만나면 '필요(needed)' 하다. 판정은 보수적이다(과포함 허용, 누락 불허).
+// 정의: 타일 (tx,ty) 는 ENU 직육면체 [tx·64,(tx+1)·64] × [ty·64,(ty+1)·64] × zRangeM 이 시야 사각뿔(좌우상하 4면)과 근평면(깊이 ≥ nearM)·거리 구(카메라로부터의 유클리드 거리 ≤ maxDistM) 안에서 만나면 '필요(needed)' 하다. 판정은 보수적이다(과포함 허용, 누락 불허).
 
 export const TOWER_STREAMING_LIMITS = Object.freeze({
   maxDistM: 1500, zMinM: -100, zMaxM: 600, maxInflight: 16, retainMargin: 1, maxHeld: 4096, nearM: 0.1, maxTilesPerUpdate: 4096,
+  // 타일 번호 상한(|tx|,|ty| ≤ tileIndexMax)과 좌표 상한(maxCoordM = tileIndexMax·64 m). update·missing 은 |pos.x|,|pos.y| + maxDistM 이 maxCoordM 을 넘으면 RangeError(상태 불변).
+  tileIndexMax: 1e6, maxCoordM: 6.4e7,
 });
 
 /**
@@ -22,8 +24,8 @@ export const TOWER_STREAMING_LIMITS = Object.freeze({
  */
 export const TOWER_STREAMING_API = Object.freeze({
   create: 'createTowerStreaming(opts?) -> TowerStreaming   opts: {maxDistM?, zRangeM?:[min,max], maxInflight?, retainMargin?, maxHeld?, nearM?}(TOWER_STREAMING_LIMITS 기본). 형식 위반 TypeError, 알 수 없는 키·범위 위반 RangeError',
-  update: 'streaming.update(pose:CameraPose, size:Size) -> Plan   시점 한 번에 상태를 갱신하고 계획을 돌려준다. 던지면 상태 불변. 한 호출의 needed 가 maxTilesPerUpdate 를 넘으면 RangeError(상태 불변)',
-  arrived: 'streaming.arrived(tx,ty) -> boolean   inflight 였던 타일이면 held 로 옮기고 true. inflight 가 아니면(요청한 적 없거나 이미 취소·도착) 상태를 바꾸지 않고 false(요청하지 않은 타일을 받아들이지 않는다)',
+  update: 'streaming.update(pose:CameraPose, size:Size) -> Plan   시점 한 번에 상태를 갱신하고 계획을 돌려준다. 던지면 상태 불변. |pos.x|,|pos.y| + maxDistM > maxCoordM 이면 RangeError. 한 호출의 needed 가 maxTilesPerUpdate 를 넘으면 RangeError(상태 불변)',
+  arrived: 'streaming.arrived(tx,ty) -> boolean   inflight 였던 타일이면 held 로 옮기고 true. inflight 가 아니면(요청한 적 없거나 이미 취소·도착) 상태를 바꾸지 않고 false(요청하지 않은 타일을 받아들이지 않는다). 이 층에는 요청 세대가 없다: 취소 뒤 다시 요청한 타일에 옛 응답이 오면 받아들여지므로, 호출자가 요청 식별자로 늦은 응답을 걸러낸 뒤 arrived 를 부른다',
   failed: 'streaming.failed(tx,ty) -> boolean   inflight 였던 타일을 뺀다(재시도는 다음 update 가 needed 이면 다시 요청). 아니면 false',
   missing: 'streaming.missing(pose:CameraPose, size:Size) -> TileId[]   지금 시점에서 필요하지만 held 가 아닌 타일(상태를 바꾸지 않는다). 렌더 쪽 "도착 전" 안내용',
   state: 'streaming.state() -> {held:TileId[], inflight:TileId[]}   (tx,ty) 사전순 새 배열',
