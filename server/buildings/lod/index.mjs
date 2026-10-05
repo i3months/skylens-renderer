@@ -373,7 +373,9 @@ function inTri(px, py, t, o) {
 // 넓이 있는 삼각형(fill, 안 판정용)과 모든 삼각형 변의 중복 없는 선분(segs, 거리용; 퇴화한 벽 삼각형은 선분으로 남는다).
 // 작업량 계수(시험이 벽시계 대신 이것으로 판정한다): segs 점-선분 거리 계산 수, frameSegs toFrame 이 만든 중복 없는 선분 수,
 // addCalls toFrame 의 선분 추가 시도 수(삼각형 변마다 1), probes 그 해시 표 탐사 수(시도마다 1 + 충돌로 더 본 칸; 선형 탐색이면 시도 수의 제곱으로 는다).
-export const distStats = { segs: 0, frameSegs: 0, addCalls: 0, probes: 0 };
+// gapCellError(F-377): gapCalls 호출 수, gapNear 호출마다 near 건물 수의 합, gapCells 분기-한계로 잰 칸 수, gapVisits 색인 조회가 넘긴 건물 수
+// (칸마다 near 전부를 훑으면 gapCells × near 로 는다).
+export const distStats = { segs: 0, frameSegs: 0, addCalls: 0, probes: 0, gapCalls: 0, gapNear: 0, gapCells: 0, gapVisits: 0 };
 const SK = new Float64Array(4), SU = new Uint32Array(SK.buffer);
 function toFrame(it, phi) {
   const c = Math.cos(phi), s = Math.sin(phi);
@@ -591,25 +593,40 @@ export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
     if (ox * ox + oy * oy <= limit * limit) near.push(m);
   }
   if (near.length === 0) return null;
+  distStats.gapCalls++;
+  distStats.gapNear += near.length;
+  // F-377: 칸마다 near 전부를 훑으면 한 칸에 촘촘한 건물 수천 채일 때 병합 한 번이 (칸 수 × near) 라 초선형이었다.
+  // near 를 xy 격자(gapIndex)에 넣고, 칸마다 그 칸 근처(아래 반지름) AABB 의 건물만 본다. 빠지는 건물은 AABB 거리가
+  // 반지름보다 커서 예전 식에서도 결과(최솟값)를 바꿀 수 없다: 같은 e·w 상한, 같은 거부(병합 결과가 같다).
+  const idx = gapIndex(near, x0 - limit, y0 - limit, x1 + limit, y1 + limit);
   let eMax = 0, wMax = 0;
   const stack = [x0, y0, x1, y1];
   const minDiag = limit * 1e-6;
   while (stack.length) {
     const cy1 = stack.pop(), cx1 = stack.pop(), cy0 = stack.pop(), cx0 = stack.pop();
     if (--budget.cells < 0) return null;
+    distStats.gapCells++;
     const mx = (cx0 + cx1) / 2, my = (cy0 + cy1) / 2;
     const half = 0.5 * Math.hypot(cx1 - cx0, cy1 - cy0);
+    // 중심 거리: 반지름 r 안(AABB 기준)의 건물로 c2 를 구한다. c2 ≤ r² 이면 r 밖 건물은 거리 > r 라 c2 를 못 낮춘다.
+    // 아니면 r 을 두 배로(limit 까지). limit 안에 아무도 없으면 eC > limit 이고 xC ≥ 0 이라 예전처럼 거부.
     let c2 = Infinity;
-    for (const m of near) c2 = memberDist2(mx, my, m, c2);
+    for (let r = idx.g / 4; ; r = Math.min(2 * r, limit)) {
+      idx.query(mx, my, mx, my, r, (m) => {
+        const ox = Math.max(m.minX - mx, 0, mx - m.maxX), oy = Math.max(m.minY - my, 0, my - m.maxY);
+        if (ox * ox + oy * oy < c2) c2 = memberDist2(mx, my, m, c2);
+      });
+      if (c2 <= r * r || r >= limit) break;
+    }
     const eC = Math.sqrt(c2);
     const xC = Math.min(mx - box.minX, box.maxX - mx, my - box.minY, box.maxY - my);
     if (Math.min(2 * eC, eC + xC) > limit) return null;
     // 변 한계: 변에 대한 가장 먼 꼭짓점 거리의 최솟값. AABB 가 칸보다 현재 한계 이상 먼 구성 건물은
-    // 한계를 낮출 수 없다.
+    // 한계를 낮출 수 없다(그래서 처음 한계 eC + half 반지름 안의 건물만 색인에서 꺼낸다).
     let eUb2 = (eC + half) * (eC + half);
-    for (const m of near) {
+    idx.query(cx0, cy0, cx1, cy1, eC + half, (m) => {
       const ox = Math.max(m.minX - cx1, 0, cx0 - m.maxX), oy = Math.max(m.minY - cy1, 0, cy0 - m.maxY);
-      if (ox * ox + oy * oy >= eUb2) continue;
+      if (ox * ox + oy * oy >= eUb2) return;
       const s = m.segs;
       for (let o = 0; o < s.length; o += 4) {
         const ax = s[o], ay = s[o + 1], bx = s[o + 2], by = s[o + 3];
@@ -622,7 +639,7 @@ export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
         far = Math.max(far, segDist2(cx1, cy1, ax, ay, bx, by));
         if (far < eUb2) eUb2 = far;
       }
-    }
+    });
     const eUb = Math.sqrt(eUb2);
     const xUb = Math.min(cx1 - box.minX, box.maxX - cx0, cy1 - box.minY, box.maxY - cy0);
     const wUb = Math.min(2 * eUb, eUb + xUb);
@@ -635,6 +652,61 @@ export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
     stack.push(cx0, cy0, mx, my, mx, cy0, cx1, my, cx0, my, mx, cy1, mx, my, cx1, cy1);
   }
   return { e: eMax, w: wMax };
+}
+
+// gapCellError 의 near 건물 xy 격자(F-377). 정의역 [X0,X1]×[Y0,Y1] 은 틈 직사각형을 limit 만큼 넓힌 것(near 건물의 AABB 는 모두 이와 겹친다).
+// 칸 크기 G 는 칸 수가 near 수 정도(축당 GAP_IDX_AXIS 이하)가 되게 고른다. 건물은 AABB 가 걸치는 칸(정의역으로 자른) 전부에 놓이고,
+// GAP_IDX_REG 칸보다 많이 걸치면 big 목록에 두어 모든 조회가 훑는다. near 가 GAP_IDX_MIN 개 이하면 격자 없이 전부 훑는다.
+// query(qx0, qy0, qx1, qy1, r, f): AABB 가 [qx0 − r, qx1 + r]×[qy0 − r, qy1 + r] 와 겹치는 건물을 모두(더 있을 수 있음) 한 번씩 f 에 넘긴다.
+//  구간을 정의역으로 자르는 것은 단조라, 겹치는 두 구간은 잘라도 겹친다(놓치는 건물이 없다). 칸 번호 계산이 NaN 이면 0 칸.
+//  쿼리 반지름 r 은 반올림 여유로 1e-9 + |좌표|·2^-44 를 더 넓힌다(호출 쪽이 정확한 AABB 거리로 다시 거른다).
+// 작업량 계수 distStats.gapVisits: f 에 넘긴 건물 수(near 전부 훑는 예전 방식이면 칸 수 × near).
+const GAP_IDX_AXIS = 256;
+const GAP_IDX_REG = 64;
+const GAP_IDX_MIN = 16;
+function gapIndex(near, X0, Y0, X1, Y1) {
+  if (near.length <= GAP_IDX_MIN) {
+    return {
+      g: Infinity,
+      query(qx0, qy0, qx1, qy1, r, f) { distStats.gapVisits += near.length; for (const m of near) f(m); },
+    };
+  }
+  const W = X1 - X0, H = Y1 - Y0;
+  const G = Math.max(Math.sqrt((W * H) / near.length), Math.max(W, H) / GAP_IDX_AXIS, 1e-9);
+  const nx = Math.min(GAP_IDX_AXIS, Math.floor(W / G) + 1), ny = Math.min(GAP_IDX_AXIS, Math.floor(H / G) + 1);
+  const ix = (v) => { const i = Math.floor((v - X0) / G); return i >= 0 ? Math.min(i, nx - 1) : 0; };
+  const iy = (v) => { const i = Math.floor((v - Y0) / G); return i >= 0 ? Math.min(i, ny - 1) : 0; };
+  const cells = new Array(nx * ny);
+  const big = [];
+  for (let k = 0; k < near.length; k++) {
+    const m = near[k];
+    const a0 = ix(m.minX), a1 = ix(m.maxX), b0 = iy(m.minY), b1 = iy(m.maxY);
+    if ((a1 - a0 + 1) * (b1 - b0 + 1) > GAP_IDX_REG) { big.push(k); continue; }
+    for (let b = b0; b <= b1; b++) for (let a = a0; a <= a1; a++) (cells[b * nx + a] ||= []).push(k);
+  }
+  const stamp = new Int32Array(near.length);
+  let q = 0;
+  return {
+    g: G,
+    query(qx0, qy0, qx1, qy1, r, f) {
+      q++;
+      const s = r + 1e-9 + Math.max(Math.abs(qx0), Math.abs(qx1), Math.abs(qy0), Math.abs(qy1)) * 2 ** -44;
+      for (const k of big) { distStats.gapVisits++; f(near[k]); }
+      const a0 = ix(qx0 - s), a1 = ix(qx1 + s), b0 = iy(qy0 - s), b1 = iy(qy1 + s);
+      for (let b = b0; b <= b1; b++) {
+        for (let a = a0; a <= a1; a++) {
+          const c = cells[b * nx + a];
+          if (!c) continue;
+          for (const k of c) {
+            if (stamp[k] === q) continue;
+            stamp[k] = q;
+            distStats.gapVisits++;
+            f(near[k]);
+          }
+        }
+      }
+    },
+  };
 }
 
 // 같은 φ 좌표계의 두 군집 A, B 를 상자 하나로 합칠 때의 오차 상한(m). tol 초과면 tol 초과라는 뜻만 있다.
