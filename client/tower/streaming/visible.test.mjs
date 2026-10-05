@@ -363,3 +363,40 @@ test('카메라 회전 R: 직교하면 정상', () => {
   assert.ok(Array.isArray(r));
   assert.ok(r.length > 0);
 });
+
+test('무작위 자세: 행 범위 좁히기 결과 = 옛 결과', () => {
+  const rand = rng(8201005);
+  const size = { width: 1600, height: 900 };
+  for (let i = 0; i < 300; i += 1) {
+    const D = 300 + rand() * 1200;
+    const z = rand() < 0.5 ? rand() * 300 : (rand() - 0.5) * 3 * D;
+    const p = pose([(rand() - 0.5) * 4000, (rand() - 0.5) * 4000, z], (rand() - 0.5) * 2 * Math.PI, (rand() - 0.5) * Math.PI, 0.6 + rand() * 2.2);
+    const opts = { maxDistM: D, zRangeM: [0, 100 + rand() * 200], nearM: 0.1 + rand() };
+    const view = poseToView(p, size);
+    const run = (stats) => { try { return tilesInView(view, opts, stats); } catch (e) { if (e instanceof RangeError) return e.message; throw e; } };
+    const a = run({ rows: 0, cells: 0 });
+    const b = run({ rows: 0, cells: 0, noRowNarrow: true });
+    assert.deepEqual(a, b, `옛 결과와 다르다 (시점 ${i})`);
+  }
+});
+
+test('고고도·큰 maxDistM(fovY 0.6~2.8, z=600+f·6e7): 행 수 상한(우선), 시간 느슨', () => {
+  const size = { width: 1600, height: 900 };
+  const D = 6e7;
+  for (const fovY of [0.6, 1.2, 2.0, 2.8]) {
+    for (const f of [0.3, 0.6, 0.9, 0.99]) {
+      for (const pitch of [-Math.PI / 2, -0.4, 0, 0.4]) {
+        const p = pose([0, 0, 600 + f * 6e7], 1, pitch, fovY);
+        const opts = { maxDistM: D, zRangeM: [0, 600], nearM: 1 };
+        const stats = { rows: 0, cells: 0 };
+        const t0 = performance.now();
+        let r;
+        try { r = tilesInView(poseToView(p, size), opts, stats); } catch (e) { if (e instanceof RangeError) continue; throw e; }
+        const ms = performance.now() - t0;
+        // 행 수는 결정적 작업량 상한(좁히기 끈 옛 동작은 이 격자에서 최대 150 만 행)이다. 시간은 느슨한 안전 단언
+        assert.ok(stats.rows <= 40000, `행 ${stats.rows} 결과 ${r.length} fovY ${fovY} f ${f}`);
+        assert.ok(ms < 1000, `${ms} ms`);
+      }
+    }
+  }
+});

@@ -320,3 +320,30 @@ test('update: 돌려준 계획을 바꿔도 의존 함수 결과·상태에 영�
   assert.deepEqual(s.state().inflight, [tile(0, 0), tile(0, 1), tile(1, 0)]);
   assert.deepEqual(ctx.needed, T1);
 });
+
+test('update·missing: pos·quat 접근자는 한 번만 읽고, 비배열 pos·quat 는 TypeError (늘 스냅샷)', () => {
+  const { s } = make();
+  const counts = { pos: 0, quat: 0 };
+  const acc = {
+    get pos() { counts.pos += 1; return [10, 20, 100]; },
+    get quat() { counts.quat += 1; return [0, 0, 0, 1]; },
+    fovY: 1,
+  };
+  s.update(acc, size);
+  assert.deepEqual(counts, { pos: 1, quat: 1 });
+  s.missing(acc, size);
+  assert.deepEqual(counts, { pos: 2, quat: 2 });
+  // 비배열(유사 배열·접근자가 매번 다른 값을 주는 객체)은 다시 읽지 못하게 TypeError
+  let reads = 0;
+  const arrayLike = { get pos() { reads += 1; return { 0: 10, 1: 20, 2: 100, length: 3 }; }, quat: [0, 0, 0, 1], fovY: 1 };
+  assert.throws(() => s.update(arrayLike, size), T);
+  assert.throws(() => s.missing(arrayLike, size), T);
+  assert.equal(reads, 2);
+  assert.throws(() => s.update({ ...pose, quat: { 0: 0, 1: 0, 2: 0, 3: 1, length: 4 } }, size), T);
+  assert.throws(() => s.update({ ...pose, quat: 'abcd' }, size), T);
+  // 접근자가 읽을 때마다 바꿔도 검사한 값과 사용한 값이 같다(center 는 첫 읽기 값)
+  let n = 0;
+  const flip = { get pos() { n += 1; return n === 1 ? [10, 20, 100] : [1e30, 0, 0]; }, quat: [0, 0, 0, 1], fovY: 1 };
+  assert.doesNotThrow(() => s.update(flip, size));
+  assert.equal(n, 1);
+});
