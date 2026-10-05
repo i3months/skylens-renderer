@@ -151,6 +151,8 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 서버 렌더 불가 시 받은 드론·경로·탐지 마커만 2D 지도(북쪽 위)에 그리는 그리기 목록 계산 전용 모듈. 배너 '실시간 3D 불가'를 표시한다. 계약 `contracts/controlview/fallback.mjs`, 구현 `client/tower/fallback/`(포장·변환·조립). 받지 않은 위치는 보간·외삽하지 않고 받은 것만 그린다. 사람 확인 전 임시다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/fallback/*.test.mjs"`.
 
+**조립(`client/tower/e2e/`).** 입력·추적·오버레이·스트리밍·폴백을 한 객체(`createControlView`)로 묶고, 녹화 재생(`replayRecording`)이 같은 입력에서 같은 상태를 내는지 시험한다. 계약 `contracts/controlview/e2e.mjs`. 서버 불가 구간에서는 3D 층 결과를 내지 않고 폴백만 낸다. 네트워크를 쓰지 않는다. 시험: `node --test "client/tower/e2e/*.test.mjs"`.
+
 ## English
 
 Server-side renderer for SkyLens. Work in progress.
@@ -300,5 +302,7 @@ A compute-only module that conservatively computes terrain tiles visible from th
 
 ### Control tower fallback
 
-A compute-only module that draws only received drones, paths and detection markers on a 2D map (north up) when server rendering is unavailable. Displays a banner "3D real-time unavailable". Contract: `contracts/controlview/fallback.mjs`; implementation: `client/tower/fallback/` (packing, conversion, assembly). Positions not received are never interpolated or extrapolated; only what is received is drawn. Temporary pending human confirmation. No network or timers. Tests: `node --test "client/tower/fallback/*.test.mjs"`.
+A compute-only module that draws only received drones, paths and detection markers on a 2D map (north up) when server rendering is unavailable. Displays a banner "Real-time 3D unavailable". Contract: `contracts/controlview/fallback.mjs`; implementation: `client/tower/fallback/` (packing, conversion, assembly). Positions not received are never interpolated or extrapolated; only what is received is drawn. Temporary pending human confirmation. No network or timers. Tests: `node --test "client/tower/fallback/*.test.mjs"`.
+
+**Assembly (`client/tower/e2e/`).** Wires input, chase, overlay, streaming and fallback into one object (`createControlView`); recording replay (`replayRecording`) is tested to give the same state for the same input. Contract: `contracts/controlview/e2e.mjs`. While the server is unavailable only the fallback is produced, not the 3D layers. No network. Tests: `node --test "client/tower/e2e/*.test.mjs"`.
 
