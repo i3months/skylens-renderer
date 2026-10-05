@@ -1,13 +1,14 @@
 // 관제탑 드레이프 타일 저장소(T15.2). 도착한 수준의 타일 묶음이 이전 묶음을 통째로 교체한다(누적 아님).
 // 결정은 contracts/levels 의 decideArrival 을 쓴다: first/replace 면 교체, skip 이면 상태를 바꾸지 않는다.
 // 새 색인을 먼저 만들고 검증이 모두 끝난 뒤에만 교체하므로 던져도 상태는 그대로다(원자적).
+// 수준 판정은 묶음 전체 단위다(타일별이 아니라 accept 한 번에 한 번 결정한다).
 // 주의: 보관 타일은 방어적 복사 없이 호출자가 준 객체·배열을 그대로 참조한다.
 //   호출자는 넘긴 뒤 타일(rgb·coverage.mask 포함)을 바꾸지 않아야 한다. lookup 도 같은 객체를 돌려준다.
-import { DRAPE_MIP_COUNT } from '../../../contracts/tower_assets/index.mjs';
+import { DRAPE_MIP_COUNT, TERRAIN_TILE_SIZE_M } from '../../../contracts/tower_assets/index.mjs';
 import { NONE, decideArrival, assertLevel, ACTIONS } from '../../../contracts/levels/index.mjs';
 
-/** 드레이프 타일 한 변의 ENU 길이(m). 지형 타일과 같다: tx = floor(x/64). */
-const TILE_SIZE_M = 64;
+/** 드레이프 타일 한 변의 ENU 길이(m). 지형 타일과 같은 계약 상수를 쓴다: tx = floor(x/TILE_SIZE_M). */
+const TILE_SIZE_M = TERRAIN_TILE_SIZE_M;
 
 function assertInt(value, name, i) {
   if (typeof value !== 'number' || !Number.isInteger(value)) throw new TypeError(`tiles[${i}].${name} 는 정수여야 한다: ${String(value)}`);
@@ -40,12 +41,14 @@ function assertTile(tile, i) {
 function buildIndex(tiles) {
   if (!Array.isArray(tiles)) throw new TypeError('tiles 는 배열이어야 한다');
   const index = new Map();
-  tiles.forEach((tile, i) => {
+  // 인덱스 순회: forEach 는 빈 칸(sparse)을 건너뛰어 검증이 새므로 쓰지 않는다. 빈 칸은 undefined → TypeError.
+  for (let i = 0; i < tiles.length; i++) {
+    const tile = tiles[i];
     assertTile(tile, i);
     const key = `${tile.tx},${tile.ty}`;
     if (index.has(key)) throw new RangeError(`묶음 안 (tx,ty) 중복: ${key}`);
     index.set(key, tile);
-  });
+  }
   return index;
 }
 
