@@ -20,7 +20,7 @@
 //   변이 farOwn 문턱 0.52 : 이 파일 6/6 통과(생존). 거리 0.5~0.52 사례를 찾지 못해서다 — 가장 가까운 사례의 거리가 0.5202 라 0.521 이상만 잡는다.
 //   거리 0.5~0.52 탐색: 사인 1.5·2·3 DN × g −0.75..0.125(e 는 g+e −1.25~−1.5 또는 −0.9·−1) × 잡음 ±1..3 DN × 시드 30~70(기점 8000011·9000011·9500011·9700011)
 //   약 6000회에서 조건(창 안 잔차 < 0.499·거리 0.5~0.7·local/불확정) 블록은 g ≈ −0.5 부근에서만 나왔고 거리 0.5~0.52 는 0.5202 한 건뿐이었다.
-//   A 사례는 (진폭, g) 가 서로 다른 셋(1.5/−0.515625, 2/−0.5, 3/−0.5)으로 바꿨고, 잔차 사례는 창 안 잔차 ≥ 0.52 인 둘(s4D·s6E)을 더했다.
+//   A 사례는 (진폭, g) 가 서로 다른 셋(1.5/−0.515625, 2/−0.5, 3/−0.5)으로 바꿨고, 잔차 사례는 창 안 잔차 0.5201 인 둘(s4D·s6E, 단언 하한은 0.51)을 더했다.
 // 도우미(makeImage·boxMean·warpedTile·HASH·TEX_A·LOW·lowContrastImage·probeBlock)는 drape_farown.test.mjs 에서 그대로 복사했다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -218,7 +218,7 @@ for (const [amp, g, e, noise, seed] of A_CASES) {
 }
 
 // (b) 잔차 문턱: 창 안 잔차 ≥ 0.5, 자기 최소–예측 < 0.5(farOwn 거짓) → 잔차 경로로만 든다(문턱 1.0 이면 놓친다).
-// 처음 사례(s3C)는 창 안 잔차가 0.5 위 0.004 뿐이라 단언 ≥ 0.501 이 약했다. 새 사례는 창 안 잔차 ≥ 0.52 를 단언한다.
+// 처음 사례(s3C)는 창 안 잔차가 0.5 위 0.004 뿐이라 단언 ≥ 0.501 이 약했다. 새 사례는 창 안 잔차 ≥ 0.51 을 단언한다(실측 0.5201 이라 float 오차에 쓰는 여유 0.0001 이 아니라 0.0101 의 마진을 둔다, F-397 ⑧).
 // 새 사례 마진(탐색 때 잰 값): 창 안 잔차 0.5201(0.5 위 0.0201), 자기 최소–예측 거리 0.4954·0.4951(0.5 아래 0.005).
 // 탐색: 이동 0, 저대비 영역 [16,48]×[8,56] m, 사인 1.5·2·3·4·6·10 DN × 잡음 ±4..8 DN × 시드 40~160(기점 7100011·7300011·7600011 + k·7919)
 // 중 local/불확정이면서 창 안 잔차 ≥ 0.52·거리 < 0.5 인 블록은 위 두 건뿐이었다(약 4000회 측정, 거리 < 0.485 는 0건).
@@ -226,8 +226,8 @@ for (const [amp, g, e, noise, seed] of A_CASES) {
 const B_CASES = [
   // [이름, 저대비 무늬, 영역, 잡음 ±DN, seed, 블록 i0, j0, 창 안 잔차 하한]
   ['s3C', LOW.sine(3), [16, 48, 8, 56], 5, 7047525, 48, 16, 0.5 + 1e-3],
-  ['s4D', LOW.sine(4), [16, 48, 8, 56], 5, 7474229, 32, 32, 0.52],
-  ['s6E', LOW.sine(6), [16, 48, 8, 56], 6, 7339606, 64, 64, 0.52],
+  ['s4D', LOW.sine(4), [16, 48, 8, 56], 5, 7474229, 32, 32, 0.51],
+  ['s6E', LOW.sine(6), [16, 48, 8, 56], 6, 7339606, 64, 64, 0.51],
 ];
 for (const [name, low, region, noise, seed, i0, j0, wrMin] of B_CASES) {
   test(`F-391 ⑥ 잔차 문턱: ${name} ±${noise} DN seed ${seed} 이동 0 — 창 안 잔차 ≥ ${wrMin.toFixed(3)}·farOwn 거짓인 블록 (${i0},${j0}) 은 local 또는 불확정`, () => {
@@ -242,6 +242,8 @@ for (const [name, low, region, noise, seed, i0, j0, wrMin] of B_CASES) {
     const p = probeBlock(img, tile, m, i0, j0);
     assert.ok(p.wr >= wrMin && p.wr < 1, `전제가 깨졌다 — 사례를 다시 탐색한다. 창 안 잔차 ${p.wr}`);
     assert.ok(p.dist < 0.5 - 1e-3, `전제가 깨졌다 — 사례를 다시 탐색한다. 자기 최소 (${p.own.dx}, ${p.own.dy}) 예측 (${p.pred}) 거리 ${p.dist}`);
-    assert.ok(b.local || b.undecided, `블록 (${i0},${j0}) local ${b.local} undecided ${b.undecided}`);
+    // 이동 0 입력이라 이 블록은 local(거짓 local, F-363)이 아니라 불확정이어야 한다 — 짝 검정·PAIRED_K 가 퇴행해 local 이 되면 실패(F-393 ⑬).
+    assert.equal(b.undecided, true, `블록 (${i0},${j0}) pairedT ${b.pairedT}`);
+    assert.equal(b.local, false, `블록 (${i0},${j0}) 이동 0 인데 local pairedT ${b.pairedT}`);
   });
 }

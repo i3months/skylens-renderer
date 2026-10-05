@@ -1,8 +1,9 @@
 // F-390 ⑥: 짝 검정 경로에서 예측 위치를 잴 수 없는(t === null) local 블록은 unexcludedPx 를 0('이동 없음')이 아니라 NaN 으로 두고,
 // 그런 블록 수를 출력 필드 unmeasuredLocalBlocks 로 드러낸다. NaN 은 unexcludedMaxPx·maxMisalignPx 상한을 오염시키지 않는다.
-// t === null 은 재적합 이상치 블록의 예측 위치가 영상 밖으로 나가 표본이 절반 미만이 되어야 해서 합성 영상으로 만들지 못했다
-// (영상 자르기·아핀 축척·국소 이동 조합 약 3400 건에서 0 건). 그래서 집계(unexcludedSummary)를 직접 시험하고, 실제 측정 출력에는
-// 필드가 있고 해당 블록이 없을 때 0 인지, 측정 불가 출력에서는 NaN 인지 본다.
+// 호출부 t === null 은 공개 API 로 도달하지 않는다(decisions/0044 T15.1): 예측 위치 표본이 minN 미만인 블록은 그 전에 settle 의 search 가
+// null 을 내 짝 검정 경로가 아니라 `out !== false` 경로로 가고, 그 local 은 unexcludedPx 를 대입받지 않는다(F-393 ①: 집계가 미측정으로 센다,
+// 끝에서 끝까지 사례는 drape_unmeasured_summary.test.mjs). 그래서 여기서는 집계(unexcludedSummary)를 직접 시험하고, 실제 측정 출력에서는
+// 필드가 있고 NaN 이 상한을 오염시키지 않는지, 측정 불가 출력에서는 NaN 인지 본다.
 // 도우미(makeImage·boxMean·warpedTile·HASH·TEX_A·LOW·lowContrastImage)는 drape_farown.test.mjs 에서 그대로 복사했다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -137,7 +138,7 @@ test('F-390 집계: 0 은 잰 결과(이동 없음)라 unmeasured 로 세지 않
   assert.equal(s.unexcludedMaxPx, 0.75);
 });
 
-test('F-390 출력: 측정된 타일은 unmeasuredLocalBlocks 를 정수로 낸다(예측 위치를 못 잰 블록 없음 → 0)', () => {
+test('F-390 출력: 측정된 타일은 unmeasuredLocalBlocks 를 정수로 낸다(이 입력엔 배제 못 한 이동량을 재지 않은 local 블록이 없음 → 0)', () => {
   const img = lowContrastImage(LOW.sine(2.5));
   const g = -0.375, e = -1.125;
   const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });

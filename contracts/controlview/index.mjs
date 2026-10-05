@@ -39,7 +39,7 @@ export const CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M = 0.01;
 
 /**
  * 드레이프 정합 판정(T15.2, F-391 ⑨). measure 는 server/terrain/drape measureDrapeAlignment 의 출력.
- * 이동량을 모르는 local 블록이 있으면(unmeasuredLocalBlocks > 0) maxMisalignPx 가 그 블록을 반영하지 않으므로 통과로 세지 않는다.
+ * 이동량을 모르는 local 블록이 있으면(unmeasuredLocalBlocks > 0) 그 블록의 배제 못 한 이동량이 unexcludedMaxPx 에 들어가지 않으므로 통과로 세지 않는다.
  * NaN 은 어떤 허용 비교도 통과하지 못한다. 필드가 없으면(undefined) 알 수 없으므로 통과가 아니다.
  * tolPx 는 유한 비음수이어야 한다.
  * unmeasuredLocalBlocks = unexcludedPx 가 수가 아닌 local 블록 수: 첫 안착 local, 잔차 재적합 local(out !== false: 예측 근처 최소가 뚜렷이 나쁘거나 예측 위치 표본 부족).

@@ -11,6 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ALIGN_TOLERANCE_PX, TERRAIN_TILE_SIZE_M, tileBounds } from '../../../contracts/tower_assets/index.mjs';
+import { isDrapeAligned } from '../../../contracts/controlview/index.mjs';
 import { measureDrapeAlignment, drapeTileSize, buildDrapeTile, unexcludedSummary } from './index.mjs';
 
 /** 합성 영상: 각 픽셀 중심 ENU 로 색을 정한다. 행 0 = 북. */
@@ -160,4 +161,27 @@ test('공개 API: 첫 settle 경로 local(무늬 영상의 블록 하나를 정�
   assert.equal(m.unmeasuredLocalBlocks, 1);
   assert.equal(m.unexcludedMaxPx, 0);
   assert.equal(m.localMaxPx, 3);
+});
+
+test('집계: 음수·null·문자열 unexcludedPx 도 잰 크기가 아니다 → unmeasuredLocalBlocks 로 센다, 상한은 그대로 (F-397 ②)', () => {
+  assert.deepEqual(unexcludedSummary([{ local: true, unexcludedPx: -1 }]), { unexcludedMaxPx: 0, unmeasuredLocalBlocks: 1 });
+  assert.deepEqual(unexcludedSummary([{ local: true, unexcludedPx: null }]), { unexcludedMaxPx: 0, unmeasuredLocalBlocks: 1 });
+  assert.deepEqual(unexcludedSummary([{ local: true, unexcludedPx: '2' }]), { unexcludedMaxPx: 0, unmeasuredLocalBlocks: 1 });
+  assert.deepEqual(unexcludedSummary([{ local: true, unexcludedPx: -0.5 }, { local: true, unexcludedPx: 0.5 }]), { unexcludedMaxPx: 0.5, unmeasuredLocalBlocks: 1 });
+});
+
+test('공개 API: maxMisalignPx ≤ 1 이면서 unmeasuredLocalBlocks ≥ 1 인 출력은 isDrapeAligned 가 거짓 (F-397 ④)', () => {
+  // 첫 settle 경로 local: 블록 (64,32) 를 x 로 정수 1 px 만 옮긴다 → 자기 최소 1 px(localMaxPx 1)이라 maxMisalignPx 가 허용 1 px 이하인데,
+  // 이 local 은 배제 못 한 이동량을 재지 않아(unmeasuredLocalBlocks 1) 상한이 아니다. 통과로 세면 안 된다.
+  const img = makeImage({ minX: -64, minY: -64, maxX: 128, maxY: 128 }, 384, 384, TEX_A);
+  const t = buildDrapeTile(img, 0, 0, 0);
+  for (let j = 32; j < 48; j++) for (let i = 64; i < 80; i++) t.rgb.copyWithin((j * 128 + i) * 3, (j * 128 + i + 1) * 3, (j * 128 + i + 2) * 3);
+  const m = measureDrapeAlignment(img, t);
+  assert.equal(m.status, 'measured', m.reason);
+  assert.deepEqual(m.blocks.filter((b) => b.local).map(({ i0, j0, dx, dy }) => [i0, j0, dx, dy]), [[64, 32, 1, 0]]);
+  assert.ok(m.maxMisalignPx <= ALIGN_TOLERANCE_PX, `maxMisalignPx ${m.maxMisalignPx}`);
+  assert.equal(m.unmeasuredLocalBlocks, 1);
+  assert.equal(isDrapeAligned(m, ALIGN_TOLERANCE_PX), false);
+  // 같은 출력에서 미측정 수만 0 으로 바꾸면 통과 — 거짓의 원인이 미측정 수임을 가른다.
+  assert.equal(isDrapeAligned({ ...m, unmeasuredLocalBlocks: 0 }, ALIGN_TOLERANCE_PX), true);
 });

@@ -852,8 +852,9 @@ export function unexcludedSummary(blocks) {
   let unexcludedMaxPx = 0, unmeasuredLocalBlocks = 0;
   for (const b of blocks) {
     if (!b.local) continue;
-    // 수가 아니면(undefined 포함 — 첫 settle·`out !== false` 경로 local 은 unexcludedPx 를 대입하지 않는다) 배제 못 한 이동량을 잰 적이 없다(F-393 ①).
-    if (typeof b.unexcludedPx !== 'number' || Number.isNaN(b.unexcludedPx)) unmeasuredLocalBlocks++;
+    // 0 이상의 수가 아니면(undefined 포함 — 첫 settle·`out !== false` 경로 local 은 unexcludedPx 를 대입하지 않는다; NaN·음수도 잰 크기가 아니다)
+    // 배제 못 한 이동량을 잰 적이 없다(F-393 ①, F-397 ②). 크기는 음수일 수 없으므로 음수는 측정 결과가 아니라 오염된 값이다.
+    if (!(typeof b.unexcludedPx === 'number' && b.unexcludedPx >= 0)) unmeasuredLocalBlocks++;
     else if (b.unexcludedPx > 0) unexcludedMaxPx = Math.max(unexcludedMaxPx, b.unexcludedPx);
   }
   return { unexcludedMaxPx, unmeasuredLocalBlocks };
