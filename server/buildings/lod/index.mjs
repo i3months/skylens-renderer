@@ -390,7 +390,9 @@ function toFrame(it, phi) {
   let cap = 16;
   while (cap < (tris.length / 2) * 2) cap <<= 1;
   const tab = new Int32Array(cap).fill(-1); // 선분 번호(segs 안 위치 / 4)
-  const addSeg = (px, py, qx, qy) => {
+  // norm 은 비교용 정규화 끝점, segs 는 처음 나온 방향 그대로(거리 계산이 방향에 따라 ulp 단위로 달라져 옛 문자열 키 판과 결과가 어긋나지 않게).
+  const norm = [];
+  const addSeg = (px, py, qx, qy, rev) => {
     SK[0] = px + 0; SK[1] = py + 0; SK[2] = qx + 0; SK[3] = qy + 0; // +0: -0 을 0 으로(=== 와 같게)
     let h = 0x811c9dc5;
     for (let q = 0; q < 8; q++) h = Math.imul(h ^ SU[q], 0x85ebca6b) ^ (h >>> 13);
@@ -398,9 +400,13 @@ function toFrame(it, phi) {
     for (let i = h & (cap - 1); ; i = (i + 1) & (cap - 1)) {
       distStats.probes++;
       const o = tab[i];
-      if (o === -1) { tab[i] = segs.length / 4; segs.push(px, py, qx, qy); return; }
+      if (o === -1) {
+        tab[i] = norm.length / 4; norm.push(px, py, qx, qy);
+        if (rev) segs.push(qx, qy, px, py); else segs.push(px, py, qx, qy);
+        return;
+      }
       const b = o * 4;
-      if (segs[b] === px && segs[b + 1] === py && segs[b + 2] === qx && segs[b + 3] === qy) return;
+      if (norm[b] === px && norm[b + 1] === py && norm[b + 2] === qx && norm[b + 3] === qy) return;
     }
   };
   for (let o = 0; o < tris.length; o += 6) {
@@ -409,7 +415,7 @@ function toFrame(it, phi) {
     for (let e = 0; e < 3; e++) {
       const px = e === 0 ? ax : e === 1 ? bx : cx, py = e === 0 ? ay : e === 1 ? by : cy;
       const qx = e === 0 ? bx : e === 1 ? cx : ax, qy = e === 0 ? by : e === 1 ? cy : ay;
-      if (px < qx || (px === qx && py <= qy)) addSeg(px, py, qx, qy); else addSeg(qx, qy, px, py);
+      if (px < qx || (px === qx && py <= qy)) addSeg(px, py, qx, qy, false); else addSeg(qx, qy, px, py, true);
     }
   }
   distStats.frameSegs += segs.length / 4;
@@ -772,58 +778,116 @@ function agglomerate(singles, tol, hideTol) {
 }
 
 // mayMerge 후보만 돌려주는 군집 색인(xy 격자 × 높이 띠). 돌려주는 집합은 mayMerge 를 통과하는 군집을 모두 포함한다(더 있을 수 있어 호출 쪽이 mayMerge 로 거른다).
-//  - xy: 군집은 상자 최소 모서리가 속한 칸 하나에만 놓인다(큰 상자를 여러 칸에 넣으면 같은 자리에 쌓인 입력에서 칸마다 같은 군집을 다시 훑는다).
-//    D 가 C 와 틈 ≤ hideTol 이면 D.minX ≥ C.minX − hideTol − W 이고 D.minX ≤ C.maxX + hideTol (Y 도 같게). W 는 지금까지 색인한 군집의 가장 큰 폭(줄지 않는다)이라
-//    조회는 그 범위의 칸만 본다. 칸 크기 G = max(hideTol, 입력 범위/8).
+//  - xy: 군집은 상자가 걸치는 칸 전부에 놓이고, 조회는 [minX − hideTol, maxX + hideTol] × [minY − hideTol, maxY + hideTol] 이 걸치는 칸만 본다.
+//    D 가 C 와 틈 ≤ hideTol 이면 D 상자가 이 범위와 겹치므로 D 가 놓인 칸 하나 이상을 본다. 한 조회 안에서 같은 군집은 한 번만 넘긴다(표식).
+//    예전처럼 최소 모서리 칸 하나에만 놓고 지금까지의 최대 폭 W 만큼 넓혀 보면, 긴 건물 하나가 들어온 뒤의 모든 조회가 한 축 전체를 훑었다(F-373).
+//  - 칸 크기 G = max(hideTol, 입력 상자 긴 변의 중앙값, 입력 범위 / XY_MAX_CELLS, 1e-9): 전형 상자가 축마다 칸 1~2 개에 걸치고, 축당 칸 수는 XY_MAX_CELLS 이하.
+//    예전 G = max(hideTol, 범위/8) 은 칸이 9×9 이하라 같은 높이 띠의 촘촘한 건물이 칸마다 n/64 개씩 쌓였다(F-373).
 //  - 높이: mayMerge 의 계단 조건 max(A.maxZ, B.maxZ) − min(A.minTop, B.minTop) ≤ hideTol 에서 B.minTop ∈ [A.maxZ − hideTol, A.minTop + hideTol]
-//    (B.minTop ≤ B.maxZ 이므로). 군집은 minTop 띠(너비 hideTol) 하나에 놓이고 조회는 이 구간의 띠만 본다. 구간 양끝에 1e-9 여유.
+//    (B.minTop ≤ B.maxZ 이므로). 군집은 minTop 띠(너비 B = hideTol) 하나에 놓이고 조회는 이 구간의 띠만 본다.
+//  - 반올림 여유: 조회 구간 양끝을 slack = 1e-9 + max(|좌표|, hideTol)·2^-44 만큼 넓힌다(mayMerge 의 뺄셈·곱셈 반올림보다 크다).
+//  - 걸치는 칸이 REG_MAX_CELLS 를 넘는 군집과, |좌표|/G 나 |높이|/B 가 IDX_MAX(2^40) 를 넘는 군집은 격자에 넣지 않고 따로 목록(big)에 둔다.
+//    모든 조회가 big 을 훑고, 칸 번호가 IDX_MAX 를 넘거나 범위 칸 수가 격자 군집 수보다 많은 조회는 격자 군집 전부를 훑는다(전쌍 비교).
+//    큰 좌표에서 칸 번호 floor(좌표/B) 가 2^53 을 넘으면 칸 번호 ++ 가 값을 바꾸지 못해 조회 반복이 끝나지 않았다(F-372). 지금 칸 반복은 횟수 기반이고
+//    칸 번호는 IDX_MAX 이하라 정확한 정수다.
 //  - minTop·maxZ 가 유한하지 않거나 maxZ − minTop > hideTol 인 군집은 어느 쌍도 통과할 수 없어 색인하지 않는다.
-// 작업량 계수 agglomerateStats.visited: 조회가 훑은 군집 수(전쌍 비교면 n²/2, 색인이면 후보 수에 비례).
-export const agglomerateStats = { calls: 0, clusters: 0, visited: 0 };
+// 비용: 군집 하나의 등록·삭제는 걸치는 칸 수(REG_MAX_CELLS 이하), 조회는 범위 칸 수(빈 칸 포함, 격자 군집 수 이하) + 그 칸의 군집 수 + big 수.
+//  같은 높이 띠의 촘촘한 건물, 그 사이에 긴 건물 몇 채가 섞인 경우는 n 에 선형이다(cluster_index.test.mjs). 최악은 여전히 이차다(상수배 감소):
+//  병합으로 REG_MAX_CELLS 칸을 넘는 군집이 많아져 big 이 커지거나, 한 칸·한 높이 띠에 서로 합칠 수 없는 군집이 많이 겹쳐 쌓이면
+//  (dedupe 가 접지 못한 같은 자리 상자) 조회가 그들을 모두 훑는다.
+// 작업량 계수 agglomerateStats: visited 조회가 넘긴 군집 수(중복 없음, 전쌍 비교면 n²/2), cells 조회가 본 칸 수(빈 칸 포함),
+//  hits 칸·목록에서 꺼낸 군집 수(여러 칸에 놓인 군집은 칸마다 센다), regs 등록한 칸 수, big big 목록에 넣은 군집 수.
+export const agglomerateStats = { calls: 0, clusters: 0, visited: 0, cells: 0, hits: 0, regs: 0, big: 0 };
+const XY_MAX_CELLS = 1024;
+const REG_MAX_CELLS = 256;
+const IDX_MAX = 2 ** 40;
 function makeClusterIndex(singles, hideTol) {
   agglomerateStats.calls++;
   agglomerateStats.clusters += singles.length;
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  const sizes = [];
   for (const m of singles) {
     if (m.minX < x0) x0 = m.minX; if (m.maxX > x1) x1 = m.maxX;
     if (m.minY < y0) y0 = m.minY; if (m.maxY > y1) y1 = m.maxY;
+    const s = Math.max(m.maxX - m.minX, m.maxY - m.minY);
+    if (Number.isFinite(s)) sizes.push(s);
   }
-  const G = Math.max(hideTol, (Math.max(x1 - x0, y1 - y0) || 0) / 8, 1e-9);
-  const B = Math.max(hideTol, 1e-9), EPSZ = 1e-9;
-  let W = 0, H = 0;
-  const occ = { cx0: Infinity, cx1: -Infinity, cy0: Infinity, cy1: -Infinity, zb0: Infinity, zb1: -Infinity }; // 색인한 칸 범위(줄지 않는다): 조회 반복을 여기로 자른다
-  const cells = new Map();
+  sizes.sort((p, q) => p - q);
+  const typical = sizes.length ? sizes[sizes.length >> 1] : 0;
+  const span = Math.max(x1 - x0, y1 - y0);
+  // 범위가 유한하지 않으면(float 범위 끝의 좌표) 칸 크기를 최대로 둔다: 큰 좌표 군집은 IDX_MAX 검사에서 big 으로 간다.
+  const G = Math.min(Number.MAX_VALUE, Math.max(hideTol, typical, Number.isFinite(span) ? span / XY_MAX_CELLS : Number.MAX_VALUE, 1e-9));
+  const B = Math.max(hideTol, 1e-9);
+  const cells = new Map(); // 칸 키 → 군집 Set
+  const grid = new Set(); // 격자에 넣은 산 군집
+  const big = new Set(); // 격자에 넣지 않은 산 군집(전쌍 비교)
+  const recs = new Map(); // 군집 → { big, a0, na, b0, nb, zb, mark }
+  let stamp = 0;
   const keyOf = (cx, cy, zb) => `${cx},${cy},${zb}`;
   const indexable = (C) => Number.isFinite(C.minTop) && Number.isFinite(C.maxZ) && C.maxZ - C.minTop <= hideTol;
-  const keyFor = (C) => keyOf(Math.floor(C.minX / G), Math.floor(C.minY / G), Math.floor(C.minTop / B));
+  const slackOf = (p, q) => 1e-9 + Math.max(hideTol, Math.abs(p), Math.abs(q)) * 2 ** -44;
+  // 실수 구간 [lo, hi] 가 걸치는 칸 번호 범위 { c0, n }(n = 칸 수). 번호가 IDX_MAX 를 넘거나 유한하지 않으면 null.
+  const cellRange = (lo, hi, g) => {
+    const c0 = Math.floor(lo / g), c1 = Math.floor(hi / g);
+    if (!(Math.abs(c0) <= IDX_MAX && Math.abs(c1) <= IDX_MAX)) return null;
+    return { c0, n: c1 - c0 + 1 };
+  };
+  const visit = (D, fn) => {
+    agglomerateStats.hits++;
+    const r = recs.get(D);
+    if (r.mark === stamp) return;
+    r.mark = stamp;
+    agglomerateStats.visited++;
+    fn(D);
+  };
   return {
     add(C) {
       if (!indexable(C)) return;
-      if (C.maxX - C.minX > W) W = C.maxX - C.minX;
-      if (C.maxY - C.minY > H) H = C.maxY - C.minY;
-      const cx = Math.floor(C.minX / G), cy = Math.floor(C.minY / G), zb = Math.floor(C.minTop / B);
-      if (cx < occ.cx0) occ.cx0 = cx; if (cx > occ.cx1) occ.cx1 = cx;
-      if (cy < occ.cy0) occ.cy0 = cy; if (cy > occ.cy1) occ.cy1 = cy;
-      if (zb < occ.zb0) occ.zb0 = zb; if (zb > occ.zb1) occ.zb1 = zb;
-      const k = keyOf(cx, cy, zb);
-      let set = cells.get(k);
-      if (!set) { set = new Set(); cells.set(k, set); }
-      set.add(C);
+      const rx = cellRange(C.minX, C.maxX, G), ry = cellRange(C.minY, C.maxY, G), rz = cellRange(C.minTop, C.minTop, B);
+      if (!rx || !ry || !rz || rx.n * ry.n > REG_MAX_CELLS) {
+        recs.set(C, { big: true, mark: 0 });
+        big.add(C);
+        agglomerateStats.big++;
+        return;
+      }
+      recs.set(C, { big: false, a0: rx.c0, na: rx.n, b0: ry.c0, nb: ry.n, zb: rz.c0, mark: 0 });
+      grid.add(C);
+      for (let i = 0; i < rx.n; i++) for (let j = 0; j < ry.n; j++) {
+        const k = keyOf(rx.c0 + i, ry.c0 + j, rz.c0);
+        let set = cells.get(k);
+        if (!set) { set = new Set(); cells.set(k, set); }
+        set.add(C);
+        agglomerateStats.regs++;
+      }
     },
     remove(C) {
-      if (!indexable(C)) return;
-      const k = keyFor(C), set = cells.get(k);
-      if (set) { set.delete(C); if (!set.size) cells.delete(k); }
+      const r = recs.get(C);
+      if (!r) return;
+      recs.delete(C);
+      if (r.big) { big.delete(C); return; }
+      grid.delete(C);
+      for (let i = 0; i < r.na; i++) for (let j = 0; j < r.nb; j++) {
+        const k = keyOf(r.a0 + i, r.b0 + j, r.zb), set = cells.get(k);
+        if (set) { set.delete(C); if (!set.size) cells.delete(k); }
+      }
     },
     forEachNear(C, fn) {
       if (!indexable(C)) return;
-      const a0 = Math.max(occ.cx0, Math.floor((C.minX - hideTol - W - EPSZ) / G)), a1 = Math.min(occ.cx1, Math.floor((C.maxX + hideTol + EPSZ) / G));
-      const b0 = Math.max(occ.cy0, Math.floor((C.minY - hideTol - H - EPSZ) / G)), b1 = Math.min(occ.cy1, Math.floor((C.maxY + hideTol + EPSZ) / G));
-      const z0 = Math.max(occ.zb0, Math.floor((C.maxZ - hideTol - EPSZ) / B)), z1 = Math.min(occ.zb1, Math.floor((C.minTop + hideTol + EPSZ) / B));
-      for (let zb = z0; zb <= z1; zb++) for (let cx = a0; cx <= a1; cx++) for (let cy = b0; cy <= b1; cy++) {
-        const set = cells.get(keyOf(cx, cy, zb));
-        if (!set) continue;
-        for (const D of set) { agglomerateStats.visited++; fn(D); }
+      stamp++;
+      for (const D of big) visit(D, fn);
+      const sx = slackOf(C.minX, C.maxX), sy = slackOf(C.minY, C.maxY), sz = slackOf(C.minTop, C.maxZ);
+      const rx = cellRange(C.minX - hideTol - sx, C.maxX + hideTol + sx, G);
+      const ry = cellRange(C.minY - hideTol - sy, C.maxY + hideTol + sy, G);
+      const rz = cellRange(C.maxZ - hideTol - sz, C.minTop + hideTol + sz, B);
+      // 칸 번호가 범위 밖이거나 범위 칸 수가 격자 군집 수보다 많으면 격자 군집 전부를 훑는다(그편이 싸다).
+      if (!rx || !ry || !rz || rx.n * ry.n * rz.n > grid.size) {
+        for (const D of grid) visit(D, fn);
+        return;
+      }
+      for (let k = 0; k < rz.n; k++) for (let i = 0; i < rx.n; i++) for (let j = 0; j < ry.n; j++) {
+        agglomerateStats.cells++;
+        const set = cells.get(keyOf(rx.c0 + i, ry.c0 + j, rz.c0 + k));
+        if (set) for (const D of set) visit(D, fn);
       }
     },
   };
