@@ -145,3 +145,22 @@ test('F-363 ±1 DN 잡음만 있는 128² 영상, 이동 0, 밉 0~2: local 0, �
     }
   }
 });
+
+test('F-359 검토 #2 음성 대조(짝 검정): 감독 F-363 입력과 사인 2 DN ±3 DN 시드 21~40, 이동 0 — local 0·maxMisalignPx < 1', () => {
+  // 잔차 경로의 유의성을 같은 표본 픽셀 짝 검정으로 바꾼 뒤에도 잡음 최소를 국소 어긋남으로 보고하지 않는다.
+  const id = (p) => p;
+  const runs = [];
+  const nimg = noiseImage(128, 3, 104729);
+  for (const seed of [7919, 79190]) runs.push([`noiseImage(128,±3,104729) 밉 2 ±1 seed ${seed}`, nimg, warpedTile(nimg, 0, 0, 2, id, { noise: 1, seed })]);
+  const s1 = lowContrastImage(LOW.sine(1));
+  runs.push(['사인 1 DN 밉 1 ±3 seed 87109', s1, warpedTile(s1, 0, 0, 1, id, { noise: 3, seed: 87109 })]);
+  const s2 = lowContrastImage(LOW.sine(2));
+  for (let k = 21; k <= 40; k++) runs.push([`사인 2 DN ±3 seed ${k * 7919}`, s2, warpedTile(s2, 0, 0, 0, id, { noise: 3, seed: k * 7919 })]);
+  const bad = [];
+  for (const [at, img, tile] of runs) {
+    const m = measureDrapeAlignment(img, tile);
+    const local = m.blocks.filter((b) => b.local).map(({ i0, j0, dx, dy }) => [i0, j0, dx, dy]);
+    if (m.status !== 'measured' || local.length || !(m.maxMisalignPx < ALIGN_TOLERANCE_PX)) bad.push([at, m.status, m.maxMisalignPx, local]);
+  }
+  assert.deepEqual(bad, []);
+});

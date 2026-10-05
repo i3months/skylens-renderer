@@ -730,23 +730,50 @@ function shiftedTile(img, g, e) {
 test('F-359 재적합 이상치의 예측 ±0.5 px 최소가 탐색 경계에 닿으면 local: 저대비 사인 + 전역 g + 블록 e, 보고 ≥ 실제 |g+e| − 0.15 px', () => {
   // 수정 전(잔차 > 0.5 만 local): 경계에 닿은 잔차가 정확히 0.5 라 local 도 적합도 아닌 채 예측 + 0.5 로 남아
   // 보고 0.25·0.5·0.125·0.125 px(실제 1.5·1.5·1.5·1.125 px).
-  // [진폭, g, e, 보고 크기를 실제와 비교하는가]. 허용 오차 0.15 px 는 F-357 시험과 같은 값(미리 정한 값).
-  // 알려진 부족 보고(F-366 보고, 코드 쪽 문제로 시험을 맞추지 않음): 앞의 세 경우는 실제 1.5·1.5·1.5 px 에 대해
-  // 보고 1.1875·1.1875·1.34375 px(부족 0.3125·0.3125·0.15625 > 0.15), 네 번째는 실제 1.125 px 에 보고 1.0 px(부족 0.125).
-  // 앞의 세 경우는 local 판정만 단언하고, 크기 단언(≥ 실제 − 0.15)은 통과하는 네 번째 경우에만 건다.
-  const cases = [[2.5, -0.25, -1.25, false], [2.5, -0.5, -1, false], [1.5, -0.125, -1.375, false], [2, 0.125, 1, true]];
+  // 허용 오차 0.15 px 는 F-357 시험과 같은 값(미리 정한 값). 네 입력 모두 정답과 비교한다(F-366: 측정값에 맞춘 예외 없음).
+  const cases = [[2.5, -0.25, -1.25], [2.5, -0.5, -1], [1.5, -0.125, -1.375], [2, 0.125, 1]];
   const TOL = 0.15;
-  for (const [amp, g, e, exact] of cases) {
+  const bad = [];
+  for (const [amp, g, e] of cases) {
     const at = `사인 ${amp} DN g=${g} e=${e}`;
     const truth = Math.abs(g + e);
     const img = lowContrastImage(LOW.sine(amp));
     const m = measureDrapeAlignment(img, shiftedTile(img, g, e));
     const blk = assertLocalBlock(m, at);
-    assert.ok(m.maxMisalignPx > 1 - 1e-9, `${at}: 보고 ${m.maxMisalignPx}`); // 수정 전 0.25·0.5·0.125·0.125 와 구별
-    if (!exact) continue;
-    assert.ok(m.maxMisalignPx >= truth - TOL, `${at}: 보고 ${m.maxMisalignPx} < 실제 ${truth} - ${TOL}`);
-    assert.ok(Math.abs(blk.dx - (g + e)) <= TOL && Math.abs(blk.dy) <= TOL, `${at}: 블록 ${blk.dx}, ${blk.dy} (실제 ${g + e}, 0)`);
+    if (!(m.maxMisalignPx >= truth - TOL) || !(Math.abs(blk.dx - (g + e)) <= TOL) || !(Math.abs(blk.dy) <= TOL)) {
+      bad.push(`${at}: 보고 ${m.maxMisalignPx}, 블록 ${blk.dx}, ${blk.dy} (실제 ${g + e}, 0)`);
+    }
   }
+  assert.deepEqual(bad, []);
+});
+
+test('F-359 검토 #2 저대비 사인 블록의 실제 1.375~1.5 px 국소 어긋남(잡음 없음·±1·±2 DN 잡음): 블록 local, 보고 ≥ |g+e| − 0.15 이고 > 1 px', () => {
+  // 수정 전(잔차 경로 유의성 = localSignificant, 문턱 max(own, 1/12)·√(2/(3n))): 13경우 모두 블록 local 아님, 보고 0.125~0.384 px.
+  // 감독 재현 입력: shiftedTile 5경우 + warpedTile(블록 x 32..40·y 40..48 m 만 g+e, 나머지 g) 2 무늬 × 잡음 ±1·±2 × seed 7919·15838.
+  const TOL = 0.15;
+  const inputs = [];
+  for (const [amp, g, e] of [[1, -0.25, -1.25], [1, -0.125, -1.375], [1, 0.125, 1.25], [1, -0.375, -1.125], [2, -0.375, -1.125]]) {
+    inputs.push([`shiftedTile 사인 ${amp} DN g=${g} e=${e}`, amp, g, e, (img) => shiftedTile(img, g, e)]);
+  }
+  for (const [amp, g, e] of [[2.5, -0.25, -1.25], [1.5, -0.125, -1.375]]) {
+    const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
+    for (const noise of [1, 2]) {
+      for (const seed of [7919, 15838]) {
+        inputs.push([`warpedTile 사인 ${amp} DN g=${g} e=${e} ±${noise} seed ${seed}`, amp, g, e, (img) => warpedTile(img, 0, 0, 0, warp, { noise, seed })]);
+      }
+    }
+  }
+  const bad = [];
+  for (const [at, amp, g, e, make] of inputs) {
+    const img = lowContrastImage(LOW.sine(amp));
+    const m = measureDrapeAlignment(img, make(img));
+    const truth = Math.abs(g + e);
+    const blk = m.blocks.find((b) => b.i0 === 64 && b.j0 === 32);
+    if (m.status !== 'measured' || !blk?.local || !(m.maxMisalignPx >= truth - TOL) || !(m.maxMisalignPx > ALIGN_TOLERANCE_PX)) {
+      bad.push(`${at}: ${m.status} 보고 ${m.maxMisalignPx}, 블록 ${blk && [blk.dx, blk.dy, blk.local]} (실제 ${g + e})`);
+    }
+  }
+  assert.deepEqual(bad, []);
 });
 
 test('F-353 평평 블록 과반: 피복 블록의 절반 넘게 두 축 모두 평평하면 측정 불가, 제외 블록 수·면적 비를 보고', () => {
