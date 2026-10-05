@@ -11,7 +11,10 @@
 //   결과 색 ≈ I(P + δ) 모형(I = 원본 영상 이중선형, P = 화소의 ENU 점)으로 δ(m)를 가우스–뉴턴 최소제곱으로 푼다.
 //   δ 는 시점 전체 하나와 드레이프 타일별 하나씩 푼다(타일 단위 어긋남도 잡는다). 결과의 무늬는 지면에서 −δ 만큼 옮겨 보이므로
 //   화면 이동 = |π(P − δ) − π(P)| (π = 카메라 투영, 화면 화소). 묶음마다 그 RMS 를 내고, 시점의 정합 오차 = 묶음 RMS 최대값.
-// 음성: 영상 bounds 를 동쪽으로 1.5 영상 화소(0.75 m) 옮겨 만든 타일은 모든 시점에서 1 px 초과로 잡혀야 한다.
+// 음성: 영상 bounds 를 동쪽으로 옮겨 만든 타일. 옮김 양은 시점마다 "화면 1.5 화소"가 되도록 정한다
+//   (그 시점 측정 화소 전체에서 지면 1 m 동쪽 이동의 화면 RMS 로 나눈 값). 이것은 모든 시점에서 1 px 초과로 잡혀야 한다.
+//   참고로 고정 1.5 영상 화소(0.75 m) 어긋남도 재서 출력한다. 높고 먼 시점은 화면 한 화소가 지면 0.75 m 보다 넓어
+//   화면 이동이 1 px 미만일 수 있으므로(측정 0.38~0.9 px) 이 경우는 되찾은 δx 가 −0.75 m 인지만 단언한다.
 // 빈 화소: 지형 render 가 빈 화소(depth 0)인 곳은 결과도 depth 0, 색 0, index −1 그대로다.
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,7 +33,8 @@ const IMG_MIN = -128, IMG_MAX = 128; // 영상 범위(ENU, 지형 DEM 과 같다
 const TRI_HALF_M = 16; // 삼각파 반주기(0 → 255 까지 16 m)
 const GRID_M = 8; // 격자 간격
 const GRID_HALF_W_M = 0.5; // 격자선 반폭
-const SHIFT_IMG_PX = 1.5; // 음성 시험 어긋남(영상 화소)
+const SHIFT_SCREEN_PX = 1.5; // 음성 시험 어긋남(화면 화소, 시점마다 지면 거리로 환산)
+const SHIFT_IMG_PX = 1.5; // 참고 음성 시험 어긋남(영상 화소)
 const FOLD_MARGIN_M = 1.5; // 삼각파 접힘선에서 이만큼 안쪽은 그 채널을 풀이에 쓰지 않는다
 const EDGE_MARGIN_M = 1; // 영상 바깥 경계 근처(기준 표본이 고정되는 곳)는 뺀다
 const GROUP_MIN_PX = 20; // 타일 묶음 풀이에 필요한 최소 화소 수
@@ -183,7 +187,9 @@ function measureView(cam, terrain, result, img) {
     per.push({ k, n: list.length, px, d: dd });
     errPx = Math.max(errPx, px);
   }
-  return { errPx, globalPx, globalShift, groups: per, mae: maeN ? maeSum / maeN : 0, n: all.length };
+  // 지면 1 m 동쪽 이동이 화면에서 몇 px 인지(RMS). 음성 시험의 옮김 양 환산에 쓴다.
+  const pxPerM = screenRms(cam, all, [1, 0]);
+  return { errPx, globalPx, globalShift, groups: per, mae: maeN ? maeSum / maeN : 0, n: all.length, pxPerM };
 }
 
 function drapeTilesFor(image) {
@@ -223,7 +229,14 @@ describe('드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 1..6
         const before0 = { color: tr.color.slice(), depth: tr.depth.slice(), index: tr.index.slice() };
         const out = good.apply(cam, tr);
         const outBad = bad.apply(cam, tr);
-        return { cam, tr, before0, out, outBad, m: measureView(cam, tr, out, img), mBad: measureView(cam, tr, outBad, img) };
+        const m = measureView(cam, tr, out, img);
+        // 화면 1.5 화소 어긋남: 이 시점에서 지면 거리로 환산해 영상 bounds 만 옮긴다(rgb 는 같다).
+        const scrShiftM = SHIFT_SCREEN_PX / m.pxPerM;
+        const scrImg = { ...img, bounds: { ...img.bounds, minX: img.bounds.minX + scrShiftM, maxX: img.bounds.maxX + scrShiftM } };
+        const scrLayer = createDrapeLayer({ shade: false });
+        assert.equal(scrLayer.accept(0, drapeTilesFor(scrImg)), 'first');
+        const outScr = scrLayer.apply(cam, tr);
+        return { cam, tr, before0, out, outBad, m, mBad: measureView(cam, tr, outBad, img), scrShiftM, mScr: measureView(cam, tr, outScr, img) };
       });
       scenes.push({ seed, views });
     }
@@ -234,12 +247,15 @@ describe('드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 1..6
         lines.push(`  시드 ${s.seed} ${v.cam.name.padEnd(18)} 화소 ${String(v.m.n).padStart(5)}`
           + ` | 정상 오차 ${v.m.errPx.toFixed(4)} px (전체 ${v.m.globalPx.toFixed(4)} px, δ=(${v.m.globalShift.map((q) => q.toFixed(4)).join(', ')}) m,`
           + ` 최악 타일 ${worst.k} ${worst.px.toFixed(4)} px, 묶음 ${v.m.groups.length}, R·G 평균차 ${v.m.mae.toFixed(3)})`
-          + ` | 1.5화소 어긋남 ${v.mBad.errPx.toFixed(3)} px (전체 ${v.mBad.globalPx.toFixed(3)} px, δx=${v.mBad.globalShift[0].toFixed(3)} m)`);
+          + ` | 화면 1.5px 어긋남(${v.scrShiftM.toFixed(3)} m) ${v.mScr.errPx.toFixed(3)} px (전체 ${v.mScr.globalPx.toFixed(3)} px)`
+          + ` | 영상 1.5화소 어긋남 ${v.mBad.errPx.toFixed(3)} px (전체 ${v.mBad.globalPx.toFixed(3)} px, δx=${v.mBad.globalShift[0].toFixed(3)} m)`);
       }
     }
     const goodMax = Math.max(...scenes.flatMap((s) => s.views.map((v) => v.m.errPx)));
+    const scrMin = Math.min(...scenes.flatMap((s) => s.views.map((v) => v.mScr.errPx)));
     const badMin = Math.min(...scenes.flatMap((s) => s.views.map((v) => v.mBad.errPx)));
-    console.log(`[align_oblique] 기준 ${DRAPE_ALIGN_MAX_PX} px. 정상 최대 ${goodMax.toFixed(4)} px, 어긋남 최소 ${badMin.toFixed(3)} px\n${lines.join('\n')}`);
+    console.log(`[align_oblique] 기준 ${DRAPE_ALIGN_MAX_PX} px. 정상 최대 ${goodMax.toFixed(4)} px, 화면 1.5px 어긋남 최소 ${scrMin.toFixed(3)} px,`
+      + ` 영상 1.5화소 어긋남 최소 ${badMin.toFixed(3)} px\n${lines.join('\n')}`);
   });
 
   test('측정기 자체 검증: 기준 영상을 결과로 넣으면 이동 0, 무늬 0.75 m 이동은 그대로 되찾는다', () => {
@@ -275,14 +291,29 @@ describe('드레이프 정합: 기복 지형 · 비스듬한 8시점(시드 1..6
     }
   });
 
-  test(`음성: 영상을 ${SHIFT_IMG_PX} 영상 화소 어긋나게 만든 타일은 모든 시점에서 ${DRAPE_ALIGN_MAX_PX} px 초과로 잡힌다`, () => {
+  test(`음성: 영상을 화면 ${SHIFT_SCREEN_PX} 화소만큼 어긋나게 만든 타일은 모든 시점에서 ${DRAPE_ALIGN_MAX_PX} px 초과로 잡힌다`, () => {
     for (const s of scenes) {
       for (const v of s.views) {
-        assert.ok(v.mBad.errPx > DRAPE_ALIGN_MAX_PX, `시드 ${s.seed} ${v.cam.name}: 어긋남 ${v.mBad.errPx.toFixed(3)} px 을 못 잡음`);
+        assert.ok(v.mScr.errPx > DRAPE_ALIGN_MAX_PX, `시드 ${s.seed} ${v.cam.name}: 어긋남 ${v.mScr.errPx.toFixed(3)} px 을 못 잡음`);
+        assert.ok(Math.abs(v.mScr.globalShift[0] + v.scrShiftM) < 0.1 * v.scrShiftM + 0.02, `δx ${v.mScr.globalShift[0]} 대 ${-v.scrShiftM}`);
+      }
+    }
+  });
+
+  test(`참고 음성: 영상을 ${SHIFT_IMG_PX} 영상 화소(0.75 m) 어긋나게 만든 타일은 δx ≈ −0.75 m 로 되찾고, 가까운 시점에서는 ${DRAPE_ALIGN_MAX_PX} px 초과다`, () => {
+    let caught = 0;
+    for (const s of scenes) {
+      for (const v of s.views) {
+        // 예상 화면 이동(지면 0.75 m × px/m)이 1.5 px 를 넘는 시점은 반드시 잡혀야 한다.
+        if (v.m.pxPerM * SHIFT_IMG_PX * IMG_PX_M > 1.5) {
+          assert.ok(v.mBad.errPx > DRAPE_ALIGN_MAX_PX, `시드 ${s.seed} ${v.cam.name}: 어긋남 ${v.mBad.errPx.toFixed(3)} px 을 못 잡음`);
+          caught++;
+        }
         // 되찾은 이동은 어긋남 방향·크기와 맞아야 한다(동쪽으로 0.75 m 민 영상 → 결과 ≈ I(P − 0.75 eₓ)).
         assert.ok(Math.abs(v.mBad.globalShift[0] + SHIFT_IMG_PX * IMG_PX_M) < 0.1, `δx ${v.mBad.globalShift[0]}`);
       }
     }
+    assert.ok(caught >= SEEDS.length, `반드시 잡혀야 할 시점 수 ${caught}`);
   });
 
   test('빈 화소는 그대로 빈 화소이고 depth·index 는 바뀌지 않으며 입력 terrain 은 바뀌지 않는다', () => {
