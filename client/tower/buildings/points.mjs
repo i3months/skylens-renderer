@@ -2,6 +2,7 @@
 // 좌표·투영은 contracts/raster 규약 그대로다: X_c = R·X_w + t, d = X_c.z, u = fx·X_c.x/d + cx, v = fy·X_c.y/d + cy.
 // 설계 요약
 // - 칸: 화소 (i,j) = [i,i+1)×[j,j+1) 이므로 점의 칸은 (floor(u), floor(v)) 이다(round 가 아님). 화면 밖이면 버린다.
+// - 투영 분모는 double d0, float32 로 반올림한 d 는 깊이 시험·기록에만 쓴다(lines.mjs 와 같은 규약).
 // - 근평면: d > nearM(BUILDINGS_DEFAULTS.nearM = 0.01 m)인 점만 그린다(카메라 뒤·카메라 평면 위 점 제외).
 // - 깊이 시험: 빈 화소(깊이 0)이거나 d < out.depth 일 때만 쓴다(엄격). 같은 깊이면 먼저 그린 점이 남는다.
 //   쓰면 depth = d, index = 묶음 번호, color = rgb.
@@ -39,8 +40,8 @@ export function rasterizePoints(camera, groups, rgb, out) {
       if (!Number.isFinite(d)) continue; // float32 유한 범위 밖이면 그리지 않는다
       const xc = R[0] * x + R[1] * y + R[2] * z + t[0];
       const yc = R[3] * x + R[4] * y + R[5] * z + t[1];
-      const i = Math.floor((fx * xc) / d + cx);
-      const j = Math.floor((fy * yc) / d + cy);
+      const i = Math.floor((fx * xc) / d0 + cx);
+      const j = Math.floor((fy * yc) / d0 + cy);
       if (!(i >= 0 && j >= 0 && i < W && j < H)) continue;
       const p = j * W + i;
       const old = depth[p];

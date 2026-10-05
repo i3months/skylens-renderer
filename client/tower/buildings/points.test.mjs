@@ -88,3 +88,11 @@ test('입력 검증: 비유한 좌표·길이·크기', () => {
   assert.throws(() => rasterizePoints(camA(), [{ points: new Float32Array(4) }], RGB, out), TypeError);
   assert.throws(() => rasterizePoints(camA(), [], RGB, emptyResult(W, H + 1)), RangeError);
 });
+
+test('투영 분모는 double 깊이: fround 깊이로 나누면 칸이 밀리는 경계 입력', () => {
+  const cam = { width: 2000, height: 4, K: { fx: 1000, fy: 1000, cx: 0, cy: 2 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0.1] };
+  const out = emptyResult(2000, 4);
+  rasterizePoints(cam, [grp([[1, 0, 1.5]])], RGB, out);
+  assert.equal(out.index[2 * 2000 + 625], 0);
+  assert.equal(out.index[2 * 2000 + 624], -1);
+});
