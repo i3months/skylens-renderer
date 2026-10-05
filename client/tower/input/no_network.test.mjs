@@ -7,7 +7,12 @@ test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocke
   const spies = installNetworkSpies();
   try {
     // 동적 import 로 index.mjs 불러오기. 아직 없으면 실패한다.
-    const mod = await import('./index.mjs');
+    let mod;
+    try {
+      mod = await import('./index.mjs');
+    } catch (e) {
+      assert.fail(`client/tower/input/index.mjs 를 불러올 수 없음(조립 전이면 정상 실패): ${e && e.message}`);
+    }
     assert.equal(typeof mod.createTowerInput, 'function', 'createTowerInput 을 내보내야 함');
 
     // 입력 층 생성
