@@ -62,8 +62,8 @@ function parseSeedsEnv() {
   const parts = env.split(',');
 
   for (const part of parts) {
-    // 토큰은 /^\s*\d+\s*$/ 또는 /^\s*(\d+)\s*-\s*(\d+)\s*$/ 로만 받는다
-    const rangeMatch = part.match(/^\s*(\d+)\s*-\s*(\d+)\s*$/);
+    // 토큰은 /^\s*[1-9]\d*\s*$/ 또는 /^\s*([1-9]\d*)\s*-\s*([1-9]\d*)\s*$/ 로만 받는다
+    const rangeMatch = part.match(/^\s*([1-9]\d*)\s*-\s*([1-9]\d*)\s*$/);
     if (rangeMatch) {
       const start = parseInt(rangeMatch[1], 10);
       const end = parseInt(rangeMatch[2], 10);
@@ -71,7 +71,7 @@ function parseSeedsEnv() {
         throw new Error(`범위 오류: "${part}" (시작 > 끝)`);
       }
       for (let i = start; i <= end; i++) seeds.push(i);
-    } else if (/^\s*\d+\s*$/.test(part)) {
+    } else if (/^\s*[1-9]\d*\s*$/.test(part)) {
       // 단일 숫자
       seeds.push(parseInt(part.trim(), 10));
     } else if (part.trim() === '') {
@@ -624,8 +624,8 @@ test('tileKey 는 contracts tileBounds 규약과 같다', () => {
   }
 });
 
-// parseSeedsEnv 엄격 검증: 잘못된 형식 5가지는 모두 Error 던진다
-test('parseSeedsEnv: 잘못된 5가지 형식(7..12, 7.5, 7abc, 1e3, 빈 문자열)은 모두 Error', () => {
+// parseSeedsEnv 엄격 검증: 잘못된 형식은 모두 Error 던진다
+test('parseSeedsEnv: 잘못된 형식(7..12, 7.5, 7abc, 1e3, 0, 0-2, ,)은 모두 Error', () => {
   const oldEnv = process.env.DRAPE_SEEDS;
   try {
     // 1. 이중 점 형식 '7..12'
@@ -644,9 +644,30 @@ test('parseSeedsEnv: 잘못된 5가지 형식(7..12, 7.5, 7abc, 1e3, 빈 문자�
     process.env.DRAPE_SEEDS = '1e3';
     assert.throws(() => parseSeedsEnv(), Error);
 
-    // 5. 빈 문자열(쉼표만 있는 경우)
+    // 5. 0 은 시드 최솟값이 아니므로 오류
+    process.env.DRAPE_SEEDS = '0';
+    assert.throws(() => parseSeedsEnv(), Error);
+
+    // 6. 범위에 0 이 포함되면 오류
+    process.env.DRAPE_SEEDS = '0-2';
+    assert.throws(() => parseSeedsEnv(), Error);
+
+    // 7. 쉼표만 있는 경우 빈 토큰이라 오류
     process.env.DRAPE_SEEDS = ',';
     assert.throws(() => parseSeedsEnv(), Error);
+  } finally {
+    if (oldEnv === undefined) delete process.env.DRAPE_SEEDS;
+    else process.env.DRAPE_SEEDS = oldEnv;
+  }
+});
+
+// parseSeedsEnv 기본값 검증: 빈 문자열이나 정의되지 않은 환경변수는 기본값 반환
+test('parseSeedsEnv: 빈 문자열은 기본값 [1..6] 반환', () => {
+  const oldEnv = process.env.DRAPE_SEEDS;
+  try {
+    process.env.DRAPE_SEEDS = '';
+    const result = parseSeedsEnv();
+    assert.deepEqual(result, [1, 2, 3, 4, 5, 6]);
   } finally {
     if (oldEnv === undefined) delete process.env.DRAPE_SEEDS;
     else process.env.DRAPE_SEEDS = oldEnv;
