@@ -77,3 +77,10 @@ export function createNamedDnsLookupFake() {
     try { namedLookup('example.invalid', () => {}); } catch { /* 호출 자체가 위반 */ }
   });
 }
+
+/** 변이 M5: 전환 때 1000 ms 뒤에 fetch 를 부르는 층(짧은 대기로는 놓치는 지연 변이). */
+export function createSlowDelayedFetchFake() {
+  return baseFake(() => {
+    setTimeout(() => { globalThis.fetch('http://127.0.0.1:1/aerial.png'); }, 1000);
+  });
+}

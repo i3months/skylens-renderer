@@ -10,7 +10,7 @@ import dns, { lookup as namedLookup } from 'node:dns';
 import { installNetworkSpies } from './network_spies.mjs';
 import {
   createFetchOnSetModeFake, createReacceptOnSetModeFake, createCleanFake,
-  createDelayedFetchFake, createNamedDnsLookupFake,
+  createDelayedFetchFake, createNamedDnsLookupFake, createSlowDelayedFetchFake,
 } from './no_network_fake.mjs';
 
 const MODES = ['points', 'black', 'aerial'];
@@ -112,12 +112,13 @@ test('실제 층: 옵션 200 번 전환에 네트워크 0, accept 1 번, 옵션�
   assert.equal(r.acceptCalls, 1);
 });
 
-test('감시자 자체: 설치하면 호출을 세고, 원복하면 원래 전역으로 돌아온다', async () => {
+test('감시자 자체: 설치하면 호출을 세고, 원복하면 원래 전역으로 돌아온다', async (t) => {
   const before = {
     fetch: globalThis.fetch, ws: globalThis.WebSocket, req: http.request, lookup: dns.lookup, connect: net.connect,
     plookup: dns.promises.lookup, h2: http2.connect, named: namedLookup,
   };
   const s = installNetworkSpies();
+  t.after(() => s.restore()); // 단언이 실패해도 전역을 원복한다(restore 는 두 번 불러도 안전)
   globalThis.fetch('x');
   assert.throws(() => http.request('http://x'));
   assert.throws(() => net.connect(1));
@@ -171,4 +172,10 @@ test('음성 M3: 이름으로 가져온 node:dns lookup 호출도 감시자가 �
   assert.equal(r.ok, false);
   assert.ok(r.networkCalls.includes('dns.lookup'), r.networkCalls.join(','));
   assert.ok(r.problems.some((p) => p.includes('네트워크 감시자 호출') && p.includes('dns.lookup')), r.problems.join('|'));
+});
+
+test('음성 M5: 1000 ms 뒤로 미룬 fetch 도 mock 타이머 runAll 로 잡혀 검사에서 실패한다', async () => {
+  const r = await runNoNetworkCheck(createSlowDelayedFetchFake);
+  assert.equal(r.ok, false);
+  assert.ok(r.networkCalls.includes('fetch'), r.networkCalls.join(','));
 });
