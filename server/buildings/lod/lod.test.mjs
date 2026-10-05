@@ -157,8 +157,8 @@ function viewRows(city, t, tag = '') {
 }
 
 // 40 m 필지 장면은 이 시점 거리(≤ 약 3 km)에서 합칠 이웃이 없어 감소율이 0 이다. 감소율은 진단 기록만 하고,
-// 단언은 SSIM 퇴행 없음뿐이다. 감소율 단언은 아래 20 m 필지 다중 시드 장면에서 한다.
-test(`진단: 40 m 필지 혼합 도시 8시점 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM} (감소율은 기록만)`, (t) => {
+// 단언은 원본과 면 수가 같음뿐이다. 감소율 단언은 아래 20 m 필지 다중 시드 장면에서 한다.
+test(`진단: 40 m 필지 혼합 도시 8시점 원본과 면 수 동일 (감소율은 기록만)`, (t) => {
   const rows = viewRows(CITY, t);
   // 출력이 원본과 같으면 SSIM 은 항상 1 이라 단언이 의미가 없다. 삼각형 수가 같음을 직접 확인한다(F-321).
   for (const r of rows) assert.equal(r.lodTris, r.origTris, `${r.view}: 40 m 필지 장면인데 면 수가 달라짐`);
@@ -191,7 +191,7 @@ function sweepAssert(t, seeds, cityOf) {
     t.diagnostic(`${name}: 최저 건물 영역 SSIM ${pv.min.toFixed(4)} (시드 ${pv.minSeed}), 시드 합계 감소율 ${(red * 100).toFixed(1)}%${floor === undefined ? ' (하한 없음, > 0 단언)' : ` (하한 ${(floor * 100).toFixed(1)}%)`}`);
     assert.ok(pv.min >= BUILDING_LOD_MIN_SSIM, `${name}: 최저 SSIM ${pv.min} (시드 ${pv.minSeed}) < ${BUILDING_LOD_MIN_SSIM}`);
     if (floor !== undefined) assert.ok(red >= floor, `${name}: 시드 합계 감소율 ${(red * 100).toFixed(2)}% < 하한 ${(floor * 100).toFixed(1)}% (${pv.orig} → ${pv.lod})`);
-    // 하한 없는 시점도 시드 합계 감소 > 0 (결정 0044 §7). LOD 를 끄면 합계가 0 이 되어 여기서 실패한다.
+    // 하한 없는 시점도 시드 합계 감소 > 0 (결정 0044 §8). LOD 를 끄면 합계가 0 이 되어 여기서 실패한다.
     else assert.ok(pv.lod < pv.orig, `${name}: 시드 합계 감소 없음 (${pv.orig} → ${pv.lod})`);
   }
 }
