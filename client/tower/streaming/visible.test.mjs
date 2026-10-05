@@ -344,3 +344,22 @@ test('골든 대신 포함 관계: 오라클 ⊆ 결과 ⊆ 반경 정사각 ∩
 const EXPECT_WIDE = [
   [-2, -1], [-2, 0], [-2, 1], [-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 0], [0, 1], [1, -1], [1, 0], [1, 1],
 ];
+
+test('카메라 회전 R: 직교하지 않으면 RangeError', () => {
+  const base = poseToView({ pos: [0, 0, 100], quat: [0, 0, 0, 1], fovY: 1 }, SQ);
+  const opts = { maxDistM: 500, zRangeM: [0, 10], nearM: 0.1 };
+  // 비직교: R 행을 스케일링하면 R·Rᵀ ≠ I
+  const badR = base.R.slice();
+  badR[0] *= 2; // 첫 행 스케일
+  const badView = { ...base, R: badR };
+  assert.throws(() => tilesInView(badView, opts), RangeError);
+});
+
+test('카메라 회전 R: 직교하면 정상', () => {
+  // 하향 자세: pose() 함수가 만든 쿼터니언은 직교 회전 행렬을 만든다
+  const v = poseToView(pose([32, 32, 100], 0, -Math.PI / 2, FOV_HALF), SQ);
+  const opts = { maxDistM: 500, zRangeM: [0, 10], nearM: 0.1 };
+  const r = tilesInView(v, opts);
+  assert.ok(Array.isArray(r));
+  assert.ok(r.length > 0);
+});
