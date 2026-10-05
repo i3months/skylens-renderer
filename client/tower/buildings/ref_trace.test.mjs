@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { refRenderBuildings, intersectTriangle, sampleAerial } from './ref_trace.mjs';
-import { makeBundle, makeCameras, makeFootprints, bundleFromFootprints, makeAerialImage } from './fixtures.mjs';
+import { makeBundle, makeCameras, makeFootprints, bundleFromFootprints, makeAerialImage } from './test_support/fixtures.mjs';
 import { assertRenderResult } from '../../../contracts/raster/index.mjs';
 import { BUILDINGS_DEFAULTS } from '../../../contracts/controlview/buildings.mjs';
 import { buildingHeightM } from '../../../contracts/tower_assets/index.mjs';
@@ -80,7 +80,7 @@ test('상자 하나: top 지붕 중심 화소 깊이 = 120 − 12 = 108 (1e-4), 
   for (const mode of ['black', 'aerial']) {
     const r = refRenderBuildings(cam, boxBundle(), mode, { lines: false });
     assertRenderResult(r);
-    const o = 22 * 80 + 40; // 화소 중심 (40.5, 22.5): 주점에서 반 화소 → 지붕 중심 근처(약 0.78 m)
+    const o = 21 * 80 + 40; // 화소 중심 (40.5, 22.5): 주점에서 반 화소 → 지붕 중심 근처(약 0.78 m)
     assert.ok(Math.abs(r.depth[o] - 108) <= 1e-4, `${mode} 깊이 ${r.depth[o]}`);
     assert.equal(r.index[o], 0);
     for (const q of [0, 79, 44 * 80, 44 * 80 + 79]) { assert.equal(r.depth[q], 0); assert.equal(r.index[q], -1); }
@@ -226,15 +226,15 @@ test('sampleAerial: 화소 중심은 그 화소 색, 계약 v = 0 이 북', () =
 test('points: 점 하나 = floor 칸 한 화소, 깊이 시험, 카메라 뒤 점은 버린다', () => {
   const cam = camOf('top');
   const base = boxBundle();
-  const g = { ...base.groups[0], points: Float32Array.of(0.3, 0.3, 12, 0.3, 0.3, 2, 0, 0, 200, 1000, 0, 0) };
-  const g2 = { ...base.groups[0], points: Float32Array.of(0.3, 0.3, 2) };
+  const g = { ...base.groups[0], points: Float32Array.of(0.8, 0.8, 12, 0.874074, 0.874074, 2, 0, 0, 200, 1000, 0, 0) };
+  const g2 = { ...base.groups[0], points: Float32Array.of(0.874074, 0.874074, 2) };
   const r = refRenderBuildings(cam, { groups: [g, g2], image: null }, 'points');
   assertRenderResult(r);
-  const { K } = cam;
-  const col = Math.floor(K.fx * 0.3 / 108 + K.cx), row = Math.floor(K.fy * -0.3 / 108 + K.cy);
-  const o = row * 80 + col;
-  assert.ok(Math.abs(r.depth[o] - 108) <= 1e-4);
-  assert.equal(r.index[o], 0);
+  // 손 계산: top 카메라 수평 화각 60°, 폭 80 → fx = fy = 40/tan30° = 69.282, 주점 (40, 22.5). 눈 (0,0,120) 에서 수직으로 내려다봄(위 = 북).
+  // 점 (0.8, 0.8, 12): 깊이 120−12 = 108, u = 69.282·0.8/108 + 40 = 40.513 → 열 40(round 면 41), v = 69.282·(−0.8)/108 + 22.5 = 21.987 → 행 21(round 면 22).
+  const o = 21 * 80 + 40;
+  assert.ok(Math.abs(r.depth[o] - 108) <= 1e-4, `깊이 108 이어야 함: ${r.depth[o]}`);
+  assert.equal(r.index[o], 0, '같은 광선 위 더 먼 점(깊이 118, 좌표 0.8·118/108 = 0.874074, 같은 묶음 한 점 + 두 번째 묶음)이 이기면 안 된다');
   assert.deepEqual([...r.color.subarray(3 * o, 3 * o + 3)], [...BUILDINGS_DEFAULTS.pointRgb]);
   let n = 0;
   for (const i of r.index) if (i >= 0) n++;
@@ -318,7 +318,8 @@ test('변이 — 대각선: 올바른 뒤집기는 결과 불변, 한쪽만 뒤�
   // 한쪽만: 두 번째 삼각형만 반대 대각선 쪽으로 바꾼다 → 지붕에 구멍·겹침이 생긴다
   const half = Uint32Array.from(g.mesh.indices);
   half.set(flipB, t1);
-  assert.ok(p !== undefined && q !== undefined);
+  assert.equal(new Set([p, q, o0, o1]).size, 4, '공유 변 두 끝점과 마주 보는 두 꼭짓점은 서로 다른 네 점');
+  assert.notDeepEqual(flipA, A, '뒤집은 삼각형은 원래와 다르다');
   for (const cam of CAMS) {
     const ref = refRenderBuildings(cam, base, 'aerial');
     const fl = refRenderBuildings(cam, withIndices(base, flipped), 'aerial');

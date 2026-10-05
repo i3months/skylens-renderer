@@ -1,10 +1,10 @@
 // 건물 층 통합 시험용 번들 조립 헬퍼. 실제 서버 자산 파이프라인(extrude → lod → black → aerial_uv → points)의 출력으로
 // BuildingBundle(contracts/controlview/buildings.mjs)을 만든다. 시험 전용이라 server/ 를 가져와도 된다(클라이언트 본 코드는 안 된다).
-import { extrudeAll } from '../../../server/buildings/extrude/index.mjs';
-import { buildBuildingLod } from '../../../server/buildings/lod/index.mjs';
-import { buildBlackBuilding } from '../../../server/buildings/black/index.mjs';
-import { buildAerialUv } from '../../../server/buildings/aerial_uv/index.mjs';
-import { sampleBuildingPoints } from '../../../server/buildings/points/index.mjs';
+import { extrudeAll } from '../../../../server/buildings/extrude/index.mjs';
+import { buildBuildingLod } from '../../../../server/buildings/lod/index.mjs';
+import { buildBlackBuilding } from '../../../../server/buildings/black/index.mjs';
+import { buildAerialUv } from '../../../../server/buildings/aerial_uv/index.mjs';
+import { sampleBuildingPoints } from '../../../../server/buildings/points/index.mjs';
 
 export const BUILDING_COUNT = 40;
 export const GRID_COLS = 8;

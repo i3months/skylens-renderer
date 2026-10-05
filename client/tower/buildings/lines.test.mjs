@@ -79,7 +79,9 @@ test('수평선 한 줄: 화소 수 = floor(u1) − floor(u0) + 1 = 21, 한 행,
   const want = [];
   for (let i = 10; i <= 30; i += 1) want.push(`${i},24`);
   assert.deepEqual(painted(out), want.sort());
-  assert.equal(want.length, 21);
+  assert.equal(painted(out).length, 21);
+  assert.equal(out.index[at(out, 9, 24)], -1, '왼쪽 끝 바로 밖 화소는 비어 있다');
+  assert.equal(out.index[at(out, 31, 24)], -1, '오른쪽 끝 바로 밖 화소는 비어 있다');
   for (let i = 10; i <= 30; i += 1) assert.ok(near(out.depth[at(out, i, 24)], 5));
 });
 

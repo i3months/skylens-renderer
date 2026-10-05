@@ -19,12 +19,12 @@
 // uv 규약: 계약은 서버 aerial_uv 와 같다(v = 0 이 북). uv='server'(기본)면 서버 출력 그대로,
 //   uv='flipped' 면 v 를 1 − v 로 뒤집어(flipV) 넣는다(뒤집기 변이 시험용).
 
-import { extrudeBuilding } from '../../../server/buildings/extrude/index.mjs';
-import { buildBuildingLod } from '../../../server/buildings/lod/index.mjs';
-import { buildBlackBuilding } from '../../../server/buildings/black/index.mjs';
-import { buildAerialUv } from '../../../server/buildings/aerial_uv/index.mjs';
-import { sampleBuildingPoints } from '../../../server/buildings/points/index.mjs';
-import { assertCamera } from '../../../contracts/raster/index.mjs';
+import { extrudeBuilding } from '../../../../server/buildings/extrude/index.mjs';
+import { buildBuildingLod } from '../../../../server/buildings/lod/index.mjs';
+import { buildBlackBuilding } from '../../../../server/buildings/black/index.mjs';
+import { buildAerialUv } from '../../../../server/buildings/aerial_uv/index.mjs';
+import { sampleBuildingPoints } from '../../../../server/buildings/points/index.mjs';
+import { assertCamera } from '../../../../contracts/raster/index.mjs';
 
 /** 합성 항공영상 범위(ENU m). 필지 배치 전체(±39 m)를 덮는다. */
 export const AERIAL_BOUNDS = Object.freeze({ minX: -48, minY: -48, maxX: 48, maxY: 48 });
