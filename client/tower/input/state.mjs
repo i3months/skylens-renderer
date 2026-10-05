@@ -25,13 +25,17 @@ function checkOpts(opts) {
   for (const k of ['speedMps', 'yawRateRad', 'altRateMps', 'maxDtSec']) {
     if (c[k] > MAX_RATE) throw new RangeError(`${k} 는 ${MAX_RATE} 이하여야 한다`);
   }
-  // 시야각과 피치는 camera.mjs 와 같은 규칙으로 생성 때 검사한다(float32 반올림 뒤에도 0<fovY<π).
+  // 시야각은 camera.mjs 와 같은 규칙으로 검사한다(float32 반올림 뒤에도 0<fovY<π).
   const f32Fov = Math.fround(c.fovYRad);
   if (!(c.fovYRad > 0 && c.fovYRad < Math.PI) || !(f32Fov > 0 && f32Fov < Math.PI)) {
     throw new RangeError(`fovYRad 는 0<fovY<π 여야 한다(float32 반올림 후에도): ${c.fovYRad}`);
   }
+  // 피치는 camera.mjs 와 달리 범위를 제한한다(camera.mjs 는 유한성만 검사).
   if (c.pitchRad < -Math.PI / 2 || c.pitchRad > Math.PI / 2) throw new RangeError('pitchRad 는 [-π/2, π/2] 안이어야 한다');
   if (c.minAltM > c.maxAltM) throw new RangeError('minAltM 은 maxAltM 이하여야 한다');
+  // 기본 pos[2] 도 float32 로 유한해야 한다.
+  if (!Number.isFinite(Math.fround(c.minAltM))) throw new RangeError('minAltM 은 float32 로도 유한해야 한다');
+  if (!Number.isFinite(Math.fround(c.maxAltM))) throw new RangeError('maxAltM 은 float32 로도 유한해야 한다');
   let pos = [0, 0, c.minAltM];
   if (opts.pos !== undefined) {
     if (!Array.isArray(opts.pos) || opts.pos.length !== 3) throw new TypeError('pos 는 길이 3 배열이어야 한다');

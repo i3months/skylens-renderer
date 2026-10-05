@@ -154,7 +154,17 @@ test('state: fovYRad·pitchRad·pos float32 검사', () => {
   createPoseState({ pos: [3e38, 0, 5] });
 });
 
-test('index: 생성 때 극단 opts 를 거부하고 1e308 속도에서 camera() 가 던지지 않는다', async () => {
+test('state: minAltM·maxAltM 는 float32 로 유한해야 한다(기본 pos[2] 검사)', () => {
+  // minAltM 이 float32 범위를 넘으면 기본 pos[2] 가 float32 로 유한하지 않으므로 거부한다.
+  assert.throws(() => createPoseState({ minAltM: -1e300, maxAltM: 1e300 }), RangeError);
+  assert.throws(() => createPoseState({ minAltM: 1e308 }), RangeError);
+  assert.throws(() => createPoseState({ maxAltM: 1e308 }), RangeError);
+  assert.throws(() => createPoseState({ minAltM: -1e308 }), RangeError);
+  // float32 범위 내 극단 값은 통과한다.
+  createPoseState({ minAltM: -1e37, maxAltM: 1e37 });
+});
+
+test('index: 생성 때 극단 opts 를 거부하고 1e6 속도에서 camera() 가 유한한 pos 와 quat 를 돌려준다', async () => {
   const { createTowerInput } = await import('./index.mjs');
   assert.throws(() => createTowerInput({ fovYRad: 4 }), RangeError);
   assert.throws(() => createTowerInput({ fovYRad: Math.PI }), RangeError);
@@ -166,5 +176,7 @@ test('index: 생성 때 극단 opts 를 거부하고 1e308 속도에서 camera()
   t.keyDown('ArrowUp');
   t.keyDown('KeyE');
   t.step(1e6);
-  t.camera();
+  const cam = t.camera();
+  assert.ok(cam.pos.every(Number.isFinite), 'camera pos 는 유한해야 한다');
+  assert.ok(cam.quat.every(Number.isFinite), 'camera quat 는 유한해야 한다');
 });
