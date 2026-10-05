@@ -2,13 +2,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTowerStreaming } from './index.mjs';
-import { checkOpts, TILE_INDEX_MAX } from './validate.mjs';
+import { checkOpts, checkCoordRange, TILE_INDEX_MAX } from './validate.mjs';
+import { poseToView } from '../overlay/view.mjs';
 import { tilesInView } from './visible.mjs';
 import { TOWER_STREAMING_LIMITS as L } from '../../../contracts/controlview/streaming.mjs';
 
 const R = RangeError;
 const size = { width: 800, height: 600 };
 const emptyState = { held: [], inflight: [] };
+const poseToViewOf = (pose) => poseToView(pose, { width: 800, height: 600 });
 
 function timed(fn) {
   const t0 = performance.now();
@@ -165,4 +167,162 @@ test('F-438 ④ update 는 검사한 pos 를 center 로 쓴다(접근자가 두 
   const s2 = createTowerStreaming({}, deps);
   s2.update(pose2, size);
   assert.deepEqual(centerSeen, [5, 6]);
+});
+
+// ── F-439 ② 경계·상태 불변·z 멀리 있는 시점 ──
+
+function pose(pos, yaw, fovY = 1) {
+  // 카메라 축 OpenCV: elev=0 이면 th = −π/2 (회전 후 앞축이 수평). 시험용 자세 공식은 visible.test.mjs 와 같다.
+  const th = -Math.PI / 2;
+  const qa = [0, 0, Math.sin(yaw / 2), Math.cos(yaw / 2)];
+  const qb = [Math.sin(th / 2), 0, 0, Math.cos(th / 2)];
+  const quat = [
+    qa[3] * qb[0] + qa[0] * qb[3] + qa[1] * qb[2] - qa[2] * qb[1],
+    qa[3] * qb[1] - qa[0] * qb[2] + qa[1] * qb[3] + qa[2] * qb[0],
+    qa[3] * qb[2] + qa[0] * qb[1] - qa[1] * qb[0] + qa[2] * qb[3],
+    qa[3] * qb[3] - qa[0] * qb[0] - qa[1] * qb[1] - qa[2] * qb[2],
+  ];
+  return { pos, quat, fovY };
+}
+
+const IMAX = L.tileIndexMax;
+const inRange = (list) => list.every((t) => Math.abs(t.tx) <= IMAX && Math.abs(t.ty) <= IMAX);
+
+// 네 방향 경계: |pos| + maxDistM = maxCoordM 에서 그 방향을 본다. 반대편 한 칸(−IMAX−1)은 경계 여유로 자르고 던지지 않는다.
+const DIRS = [
+  { name: '+x', yaw: -Math.PI / 2, pos: (m) => [m, 0, 100] },
+  { name: '−x', yaw: Math.PI / 2, pos: (m) => [-m, 0, 100] },
+  { name: '+y', yaw: 0, pos: (m) => [0, m, 100] },
+  { name: '−y', yaw: Math.PI, pos: (m) => [0, -m, 100] },
+];
+for (const dir of DIRS) {
+  test(`수평 경계 ${dir.name}: 경계 끝에서 그쪽을 봐도 던지지 않고 번호는 ±tileIndexMax 안, 경계 타일 포함`, () => {
+    const m = L.maxCoordM - L.maxDistM;
+    const s = createTowerStreaming();
+    const p = pose(dir.pos(m), dir.yaw);
+    const miss = s.missing(p, size);
+    assert.ok(miss.length > 0);
+    assert.ok(inRange(miss), 'missing 전체 결과가 ±tileIndexMax 안이어야 한다');
+    const up = s.update(p, size);
+    assert.ok(inRange(up.needed));
+    // 경계에 닿는 번호: +방향은 IMAX(맞닿음), −방향은 −IMAX−1 이 잘려 −IMAX
+    const axis = dir.name.endsWith('x') ? 'tx' : 'ty';
+    const sign = dir.name[0] === '+' ? 1 : -1;
+    assert.ok(up.needed.some((t) => t[axis] === sign * IMAX), `${axis}=${sign * IMAX} 타일이 있어야 한다`);
+    // 같은 자세에서 한 칸 넘어가면(경계 + 64 m) 진입 검사에서 RangeError
+    const over = pose(dir.pos(m + 64), dir.yaw);
+    assert.throws(() => s.update(over, size), R);
+    assert.throws(() => s.missing(over, size), R);
+  });
+}
+
+test('tilesInView 직접 호출: 경계 한 칸 넘침(−IMAX−1)은 −IMAX 로 자르고, 두 칸 이상은 루프 전에 던진다', () => {
+  // clampIdx 는 ±(IMAX+1) 까지만 허용한다(경계 맞닿음 여유). 진입 검사를 거치지 않는 직접 호출에서도 번호는 ±IMAX 안.
+  const edge = L.maxCoordM; // = IMAX·64
+  const o = checkOpts({});
+  const mk = (x, y, yaw) => poseToViewOf(pose([x, y, 100], yaw));
+  const west = tilesInView(mk(-(edge - o.maxDistM), 0, Math.PI / 2), o);
+  assert.ok(west.length > 0 && inRange(west));
+  assert.ok(west.some((t) => t.tx === -IMAX));
+  // 한 칸 더 멀리(IMAX+2 번 타일이 범위에 들어옴): 던진다
+  const far = timed(() => tilesInView(mk(-(edge + 64 * 3), 0, Math.PI / 2), o));
+  assert.ok(far.err instanceof R, String(far.err));
+  assert.match(far.err.message, /tileIndexMax/);
+  const farY = timed(() => tilesInView(mk(0, edge + 64 * 3, 0), o));
+  assert.ok(farY.err instanceof R, String(farY.err));
+});
+
+test('상태 채운 뒤 범위 밖 update·missing 은 상태를 그대로 둔다(x, y 각각)', () => {
+  const s = createTowerStreaming();
+  const ok = s.update(pose([100, 100, 100], -Math.PI / 2), size);
+  assert.ok(ok.request.length >= 2);
+  s.arrived(ok.request[0].tx, ok.request[0].ty); // held 1 개 이상, inflight 1 개 이상
+  const before = s.state();
+  assert.ok(before.held.length > 0 && before.inflight.length > 0, JSON.stringify([before.held.length, before.inflight.length]));
+  for (const pos of [[L.maxCoordM, 0, 100], [0, L.maxCoordM, 100], [-1e9, 0, 100], [0, 1e9, 100], [0, -1e9, 100]]) {
+    assert.throws(() => s.update(pose(pos, 0), size), R);
+    assert.throws(() => s.missing(pose(pos, 0), size), R);
+    assert.deepEqual(s.state(), before);
+  }
+});
+
+test('y 만 상한을 넘는 진입 오류 메시지는 maxCoordM 을 말한다', () => {
+  const s = createTowerStreaming();
+  for (const pos of [[0, 7e7, 100], [0, -7e7, 100], [10, 6.4e7, 100]]) {
+    for (const call of ['update', 'missing']) {
+      assert.throws(() => s[call](pose(pos, 0), size), (e) => e instanceof R && /maxCoordM/.test(e.message));
+    }
+  }
+  assert.throws(() => checkCoordRange([0, 7e7, 100], 1500), (e) => e instanceof R && /maxCoordM/.test(e.message));
+  assert.throws(() => checkCoordRange([0, -7e7, 100], 1500), R);
+  assert.doesNotThrow(() => checkCoordRange([0, L.maxCoordM - 1500, 100], 1500));
+});
+
+// ── F-439 ① z 슬랩에서 멀리 있는 시점: 작업량은 결정적 상한으로 본다(시간 단언 없음) ──
+
+const zMax0 = L.zMaxM;
+const farOpts = (maxDistM) => checkOpts({ maxDistM });
+function work(maxDistM, z, x = 0, y = 0) {
+  const o = farOpts(maxDistM);
+  const stats = { rows: 0, cells: 0 };
+  const view = poseToViewOf({ pos: [x, y, z], quat: [1, 0, 0, 0], fovY: 2.5 });
+  let err = null;
+  let val = null;
+  try { val = tilesInView(view, o, stats); } catch (e) { err = e; }
+  const dz = Math.max(0, z - o.zRangeM[1], o.zRangeM[0] - z);
+  const hy = Math.sqrt(Math.max(0, maxDistM * maxDistM - dz * dz));
+  return { err, val, stats, rowBound: Math.ceil((2 * hy) / 64) + 4 };
+}
+
+for (const [d, z] of [[1e6, 999500], [3e6, 2999500], [1e7, 9999000], [6e7, 6e7 - 1000]]) {
+  test(`z 가 슬랩에서 먼 시점 maxDistM=${d}, z=${z}: 행 수·칸 수가 결정적 상한 이하, update·missing 이 던지거나 유효`, () => {
+    const w = work(d, z);
+    assert.ok(w.stats.rows <= w.rowBound, `rows ${w.stats.rows} > ${w.rowBound}`);
+    assert.ok(w.stats.cells <= L.maxTilesPerUpdate + 1 + 2 * w.stats.rows, `cells ${w.stats.cells}`);
+    if (w.err) assert.equal(w.err.message, 'maxTilesPerUpdate');
+    else assert.ok(inRange(w.val));
+    // 공개 API: 시간 초과 없이(--test-timeout 이 지킨다) 던지거나 유효, 던지면 상태 불변
+    const s = createTowerStreaming({ maxDistM: d });
+    const p = { pos: [0, 0, z], quat: [1, 0, 0, 0], fovY: 2.5 };
+    for (const call of ['update', 'missing']) {
+      try { s[call](p, size); } catch (e) { assert.ok(e instanceof R, String(e)); assert.deepEqual(s.state(), emptyState); }
+    }
+  });
+}
+
+test('z 가 슬랩보다 maxDistM 이상 멀면 빈 결과(반복 0)', () => {
+  const o = farOpts(1000);
+  const stats = { rows: 0, cells: 0 };
+  const view = poseToViewOf({ pos: [0, 0, zMax0 + 1000 + 1], quat: [1, 0, 0, 0], fovY: 2.5 });
+  assert.deepEqual(tilesInView(view, o, stats), []);
+  assert.deepEqual(stats, { rows: 0, cells: 0 });
+});
+
+test('퍼즈 3: maxDistM 1e5..6e7, z = zMax + D − U(0,0.01D), 결정적 작업량 상한·시간 초과 0', () => {
+  let seed = 0xf439;
+  const rnd = () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  let maxRows = 0, maxCells = 0, thrown = 0, ok = 0;
+  for (let i = 0; i < 400; i += 1) {
+    const D = 10 ** (5 + rnd() * (Math.log10(6e7) - 5));
+    const z = zMax0 + D - rnd() * 0.01 * D;
+    const room = L.maxCoordM - D;
+    const x = (rnd() * 2 - 1) * room;
+    const y = (rnd() * 2 - 1) * room;
+    const a = rnd() * 2 * Math.PI;
+    const q = [rnd() - 0.5, rnd() - 0.5, rnd() - 0.5, rnd() - 0.5];
+    const n = Math.hypot(...q);
+    const o = farOpts(D);
+    const stats = { rows: 0, cells: 0 };
+    const view = poseToViewOf({ pos: [x, y, z], quat: q.map((v) => v / n), fovY: 0.1 + (a % 2.4) });
+    let err = null;
+    let val = null;
+    try { val = tilesInView(view, o, stats); } catch (e) { err = e; }
+    const dz = Math.max(0, z - o.zRangeM[1]);
+    const rowBound = Math.ceil((2 * Math.sqrt(Math.max(0, D * D - dz * dz))) / 64) + 4;
+    assert.ok(stats.rows <= rowBound, `i=${i} rows ${stats.rows} > ${rowBound}`);
+    assert.ok(stats.cells <= L.maxTilesPerUpdate + 1 + 2 * stats.rows, `i=${i} cells ${stats.cells}`);
+    maxRows = Math.max(maxRows, stats.rows); maxCells = Math.max(maxCells, stats.cells);
+    if (err) { assert.equal(err.message, 'maxTilesPerUpdate', `i=${i}: ${err}`); thrown += 1; } else { assert.ok(inRange(val)); ok += 1; }
+  }
+  console.log(`fuzz3: ok=${ok} maxTiles=${thrown} maxRows=${maxRows} maxCells=${maxCells}`);
 });
