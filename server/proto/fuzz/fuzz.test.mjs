@@ -101,14 +101,21 @@ const inCheckOne = (marker = 'checkOne') => {
 
 test('time 주입 1: 첫 계측 decode 에서 250 ms 1회 정지는 재현되지 않아 위반 0(일회성 정지는 오탐 아님)', () => {
   const ok = makeDecoder('c2s');
-  let stalls = 0, instrumented = 0;
+  let stalls = 0, instrumented = 0, stalledInput = null, reran = false, ranAfter = 0;
   const hiccup = (b) => {
-    if (inCheckOne()) { instrumented++; if (stalls === 0) { stalls++; spin(250); } }
+    if (inCheckOne()) {
+      instrumented++;
+      if (stalledInput && !reran) { ranAfter++; if (ranAfter === 1) reran = Buffer.from(b).equals(stalledInput); }
+      if (stalls === 0) { stalls++; stalledInput = Buffer.from(b); spin(250); }
+    }
     return ok(b);
   };
   const r = runFuzz({ ...refCodec('c2s'), decode: hiccup }, { iterations: 2000, seed: SEED });
   assert.equal(stalls, 1, `정지는 계측 decode 에서 정확히 한 번 주입되어야 한다: ${stalls}`);
   assert.ok(instrumented >= 2000, `계측 decode 가 반복마다 불려야 한다(재실행 포함): ${instrumented}`);
+  // 정지가 시간 판정에 반영됐다는 증거: 정지 직후 첫 계측 decode 가 같은 입력의 재실행이다(250 ms 가 한도를 넘어 time 으로 읽혀 한 번 더 돌았다).
+  // 정지가 판정에 안 잡혔다면 다음 계측 호출은 다음 입력이다.
+  assert.equal(reran, true, '정지된 입력이 곧바로 다시 복호되어야 한다(time 재실행)');
   assert.equal(r.violations.length, 0, JSON.stringify(r.violations.slice(0, 2)));
 });
 

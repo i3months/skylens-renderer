@@ -1,7 +1,7 @@
 // F-330 동일·포함 상자 접기 검증. 벽시계가 아니라 접기 뒤 군집 후보 수(foldStats)로 단언한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBuildingLod } from './index.mjs';
+import { buildBuildingLod, agglomerateStats } from './index.mjs';
 import { foldContained, foldStats, FOLD_Z_TOL_M } from './dedupe_boxes.mjs';
 import { prism } from './scene.mjs';
 
@@ -148,8 +148,6 @@ test('foldContained: 무작위 입력 20 시드에서 선형 비교 구현과 �
       return items;
     };
     const a = mk();
-    const b = mk.call(null); // 같은 시드 흐름을 다시 만들 수 없으므로 복사본을 쓴다
-    void b;
     const copy = a.map((m) => ({ ...m, it: m.it }));
     const got = foldContained(a).map((m) => m.order);
     const want = foldLinear(copy).map((m) => m.order);
@@ -158,31 +156,55 @@ test('foldContained: 무작위 입력 20 시드에서 선형 비교 구현과 �
   }
 });
 
-// 벽시계는 환경 의존이라 한도를 넉넉히(1 s) 둔다. 색인 이전 구현은 step 0.01 에서 약 2.5 s, 0.02 에서 약 2.3 s 였다.
-// 접기 단계만 잰다(buildBuildingLod 전체의 남은 비용은 응집 단계 몫이다).
+// F-370: 벽시계 대신 작업량 계수로 판정한다(병렬 부하에 영향받지 않는다). foldStats.covers 는 covers() 호출 수다.
+// 비율 기준 RATIO_MAX: 입력 2 배일 때 선형 작업은 2.0 배, 이차는 4.0 배. 2.2 = 선형 + 10 % 여유로, 측정값에 맞춘 값이 아니라 두 극 사이에서 정했다.
+// 절대 상한: 입력 하나가 비교하는 대표는 minZ 가 ±FOLD_Z_TOL_M 안인 것뿐이라 step 간격에서 (2·TOL/step + 2) 개 이하다
+// (선형 비교였다면 대표 전부: step 0.02 에서 n=2000 은 약 200 만 회, 이 상한은 6000 회).
+// 참고(시험이 보지 않는 측정, Node 22 4코어): 색인 이전 선형 접기 단독은 n=2000·step 0.02 에서 약 25 ms, n=4000 에서 약 96 ms 였다.
+// F-367 에 적힌 2.3~2.5 s 는 접기가 아니라 접기가 없던 때의 buildBuildingLod 전체(응집 쌍 n²)였다.
+const RATIO_MAX = 2.2;
 const stepCase = (n, step) => {
   const items = [];
   for (let i = 0; i < n; i++) items.push(rectItem(0, 0, 20, 20, i * step, 5 + i * step, i));
-  const t0 = performance.now();
+  Object.assign(foldStats, { calls: 0, input: 0, output: 0, covers: 0 });
   const out = foldContained(items);
-  return { ms: performance.now() - t0, output: out.length };
+  return { covers: foldStats.covers, output: out.length };
 };
 
 for (const step of [0.001, 0.01, 0.02, 0.1]) {
-  test(`minZ = i·${step} 인 20×20 상자 2000채는 1 초 안에 접힌다`, () => {
-    const { ms, output } = stepCase(2000, step);
-    if (step === 0.001) assert.ok(output <= 250, `후보 ${output}`); // 허용 오차 1 cm 칸마다 한 대표
-    if (step >= 0.02) assert.equal(output, 2000); // 1 cm 넘게 벌어지면 하나도 접히지 않는다(이차 비교가 되던 경우)
-    assert.ok(ms < 1000, `${ms} ms`);
+  test(`minZ = i·${step} 인 20×20 상자 n=2000·4000: covers 호출 수가 z 허용 안 대표 수 이하이고 n 에 선형`, () => {
+    const a = stepCase(2000, step), b = stepCase(4000, step);
+    if (step === 0.001) assert.ok(a.output <= 250, `후보 ${a.output}`); // 허용 오차 1 cm 칸마다 한 대표
+    if (step >= 0.02) { assert.equal(a.output, 2000); assert.equal(b.output, 4000); } // 1 cm 넘게 벌어지면 하나도 접히지 않는다
+    for (const [n, r] of [[2000, a], [4000, b]]) {
+      const bound = (2 * FOLD_Z_TOL_M / step + 2) * n;
+      assert.ok(r.covers <= bound, `n=${n}: covers ${r.covers} > ${bound}`);
+    }
+    if (a.covers > 0) assert.ok(b.covers / a.covers <= RATIO_MAX, `covers n=2000 ${a.covers}, n=4000 ${b.covers}`);
   });
 }
 
-test('foldContained: 간격 0.02 에서 n=4000 은 n=2000 의 약 2.5 배 이하(근사 선형)', () => {
-  const best = (n) => Math.min(...[0, 1, 2].map(() => stepCase(n, 0.02).ms));
-  const t2 = best(2000), t4 = best(4000);
-  assert.ok(t4 < 1000, `${t4} ms`);
-  assert.ok(t4 <= Math.max(2.5 * t2, t2 + 150), `n=2000 ${t2} ms, n=4000 ${t4} ms`);
-});
+// F-367: 접기가 안 되는 입력(step 0.02, 1 cm 넘게 벌어짐)은 응집 단계가 전쌍 n²/2 쌍을 만들던 곳이다. 지금은 mayMerge 후보만 훑는다.
+// 계수 agglomerateStats.visited: 응집 색인 조회가 훑은 군집 수(전쌍이면 n=4000 에서 약 800 만).
+// 결과는 색인 이전과 같다: 대표 수 n/25 개 상자(높이 간격 hideTol 0.485 m 안의 25 채씩).
+for (const step of [0.02, 0.05]) {
+  test(`buildBuildingLod: 같은 자리 상자 step ${step} 에서 응집 조회 수가 n 에 선형(n=4000 → 8000 ≤ 2.2 배)이고 n²/2 보다 훨씬 작다`, () => {
+    const run = (n) => {
+      const bs = [];
+      for (let i = 0; i < n; i++) bs.push({ id: i, mesh: lift(prism(rect(0, 0, 20, 20), 5), i * step) });
+      Object.assign(agglomerateStats, { calls: 0, clusters: 0, visited: 0 });
+      const out = buildBuildingLod(bs, FAR);
+      return { visited: agglomerateStats.visited, ids: out.flatMap((g) => g.ids).length, tris: out.reduce((t, g) => t + g.mesh.indices.length / 3, 0), n };
+    };
+    const a = run(4000), b = run(8000);
+    for (const r of [a, b]) {
+      assert.equal(r.ids, r.n);
+      assert.ok(r.visited <= r.n * r.n / 16, `n=${r.n}: 조회 ${r.visited}`); // 전쌍의 1/8 이하(n²/2 의 1/8)
+    }
+    if (step === 0.02) { assert.equal(a.tris, 1600); assert.equal(b.tris, 3200); } // n/25 개 상자 × 10 삼각형
+    assert.ok(b.visited / a.visited <= RATIO_MAX, `조회 n=4000 ${a.visited}, n=8000 ${b.visited}`);
+  });
+}
 
 test('foldContained: 한 개 이하는 그대로', () => {
   assert.deepEqual(foldContained([]), []);
