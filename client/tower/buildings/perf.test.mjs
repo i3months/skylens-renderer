@@ -1,7 +1,7 @@
 // 건물 층 성능 시험. 3000개 건물 묶음을 세 카메라(위에서 내려다봄 + 비스듬 2종)로 세 옵션 각각 렌더(RUNS=5회 중앙값).
 // 시간 문턱은 CPU 잡음 여유: 참조 구현의 거친 상한.
-// 렌더 문턱 300 ms 는 CPU 래스터의 회귀 감시용일 뿐이다. SPEC S1 의 33 ms 와는 무관하며, 실기기 fps 는 T17 [local] 에서 잰다.
-// 각 모드·카메라 조합은 덮인 화소가 0보다 커야 한다(빈 결과를 내는 변이가 빠른 채 통과하지 못하게 한다).
+// 렌더 문턱 300 ms 는 CPU 래스터의 회귀 감시용일 뿐 S1 판정이 아니다. black 최대가 S1 의 33 ms 를 넘을 수 있다(재측정 최대 ~85 ms). 실기기 fps 는 T17 [local] 에서 잰다.
+// 각 모드·카메라 조합의 덮인 화소 수는 측정값과 ±0.1% 안이어야 한다(일부만 그리거나 비우는 변이가 통과하지 못하게 한다).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
@@ -10,15 +10,17 @@ import { makeAerialImage } from './test_support/fixtures.mjs';
 
 const W = 1280, H = 720;
 const RUNS = 5;
+const GROUP_COUNT = 6; // 합성 장면을 나눌 묶음 수(3000개 건물을 500개씩)
 // 합성 항공영상 범위(ENU m): 건물 격자(약 ±1400 m) 전체를 덮는다.
 const AERIAL_BOUNDS_M = { minX: -1500, minY: -1500, maxX: 1500, maxY: 1500 };
-const RENDER_THRESHOLD_MS = 300; // 실측 최대(~86 ms)의 3~4배
-// 모드·카메라(위/남동/북서)별 덮인 화소 하한: 원본 결과(black 261789/398769/415587, points 1348/4268/3995, aerial 251783/383930/400922)의 약 90%
-const MIN_COVERED = {
-  black: [235600, 358800, 374000],
-  points: [1213, 3841, 3595],
-  aerial: [226600, 345500, 360800],
+const RENDER_THRESHOLD_MS = 300; // 재측정 최대(~85 ms, black)의 3배 남짓
+// 모드·카메라(위/남동/북서)별 덮인 화소 수의 측정값. 래스터는 결정적이라 3회 실행이 같았고(묶음 1개·6개 모두), 측정값과 ±0.1% 안이어야 한다.
+const EXPECTED_COVERED = {
+  black: [261789, 398769, 415587],
+  points: [1348, 4268, 3995],
+  aerial: [251783, 383930, 400922],
 };
+const COVERED_TOLERANCE = 0.001;
 // aerial 카메라별 서로 다른 색 수 하한: 원본 결과(19230/51954/48890)의 약 90%. 1×1 단색 영상이면 몇 가지뿐이다.
 const MIN_AERIAL_COLORS = [17300, 46700, 44000];
 const MODE_SWITCH_THRESHOLD_MS = 1;
@@ -156,17 +158,23 @@ function createSyntheticBundle() {
     wallMask[i] = i % 8 < 4 ? 1 : 0;
   }
 
-  const groups = [{
-    ids,
-    mesh: {
-      positions: new Float32Array(positions),
-      indices: new Uint32Array(indices),
-    },
-    edgeLines: new Float32Array(edgeLines),
-    uv,
-    wallMask,
-    points: new Float32Array(points),
-  }];
+  // 여러 묶음(GROUP_COUNT개)으로 나눈다: 묶음마다 건물 구간을 맡고, 인덱스는 묶음 안 정점 번호로 다시 센다.
+  const per = buildingCount / GROUP_COUNT;
+  const groups = [];
+  for (let g = 0; g < GROUP_COUNT; g++) {
+    const b0 = g * per, b1 = b0 + per;
+    groups.push({
+      ids: ids.slice(b0, b1),
+      mesh: {
+        positions: new Float32Array(positions.slice(b0 * 24, b1 * 24)),
+        indices: new Uint32Array(indices.slice(b0 * 36, b1 * 36).map((v) => v - b0 * 8)),
+      },
+      edgeLines: new Float32Array(edgeLines.slice(b0 * 72, b1 * 72)),
+      uv: uv.slice(b0 * 16, b1 * 16),
+      wallMask: wallMask.slice(b0 * 8, b1 * 8),
+      points: new Float32Array(points.slice(b0 * 60, b1 * 60)),
+    });
+  }
 
   return { groups, image: makeAerialImage({ width: 256, height: 256, bounds: AERIAL_BOUNDS_M }) };
 }
@@ -248,9 +256,10 @@ test('buildings layer 성능: 렌더 ≤ 300ms, setMode ≤ 1ms (평균)', async
       const res = layer.render(camera);
       const covered = coveredPixels(res);
       console.log(`  ${mode} 카메라 ${ci}: 덮인 화소 ${covered}`);
-      assert.ok(covered >= MIN_COVERED[mode][ci], `${mode} 카메라 ${ci}: 덮인 화소 ${covered} < 하한 ${MIN_COVERED[mode][ci]}`);
+      const want = EXPECTED_COVERED[mode][ci];
+      assert.ok(Math.abs(covered - want) <= want * COVERED_TOLERANCE, `${mode} 카메라 ${ci}: 덮인 화소 ${covered} 가 측정값 ${want} 의 ±0.1% 밖`);
       if (mode === 'aerial') {
-        // 영상을 실제로 표본했다면 벽 화소 색이 다양해야 한다(1×1 단색 영상이면 몇 가지뿐).
+        // 영상을 표본하는 것은 지붕(wallMask 0)이다. 실제로 표본했다면 지붕 화소 색이 다양해야 한다(1×1 단색 영상이면 몇 가지뿐).
         const colors = distinctCoveredColors(res);
         console.log(`  aerial 카메라 ${ci}: 서로 다른 색 ${colors}`);
         assert.ok(colors >= MIN_AERIAL_COLORS[ci], `aerial 카메라 ${ci}: 서로 다른 색 ${colors} < 하한 ${MIN_AERIAL_COLORS[ci]}`);
@@ -286,6 +295,6 @@ test('buildings layer 성능: 렌더 ≤ 300ms, setMode ≤ 1ms (평균)', async
   const state = layer.state();
   console.log(`상태: level=${state.level}, groupCount=${state.groupCount}, buildingCount=${state.buildingCount}, mode=${state.mode}`);
   assert.equal(state.level, 0);
-  assert.equal(state.groupCount, 1);
+  assert.equal(state.groupCount, GROUP_COUNT);
   assert.equal(state.buildingCount, 3000);
 });
