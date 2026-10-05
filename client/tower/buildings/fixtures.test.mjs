@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  makeBundle, makeCameras, makeFootprints, makeAerialImage, bundleFromFootprints, bundleBytes, serverUvToContract, AERIAL_BOUNDS,
+  makeBundle, makeCameras, makeFootprints, makeAerialImage, bundleFromFootprints, bundleBytes, flipV, AERIAL_BOUNDS,
 } from './fixtures.mjs';
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { buildingHeightM } from '../../../contracts/tower_assets/index.mjs';
@@ -77,7 +77,7 @@ test('uv 규약: 기본은 서버 출력 그대로(v = 0 이 북), flipped 는 v
       assert.ok(Math.abs(s.groups[gi].uv[2 * v + 1] - ve) < 1e-6, 'flipped: v 는 북쪽으로 증가');
     }
   });
-  assert.deepEqual([...serverUvToContract(Float32Array.of(0.25, 0.25, 1, 0))], [0.25, 0.75, 1, 1]);
+  assert.deepEqual([...flipV(Float32Array.of(0.25, 0.25, 1, 0))], [0.25, 0.75, 1, 1]);
 });
 
 test('makeAerialImage: 행 0 = 북, r 동쪽 증가, g 북쪽 증가', () => {

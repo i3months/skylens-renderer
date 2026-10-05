@@ -1,5 +1,5 @@
 // T15.3 rasterizeTextured 시험. 이중선형 정답은 손 계산 값과, 구현과 코드를 공유하지 않는 시험 내부 식으로 따로 구한다.
-// uv 규약: (0,0) = 영상 왼쪽 아래(남서), v 북쪽 증가, 영상 행 0 = 북 → row = (1 − v)·H − 0.5, col = u·W − 0.5.
+// uv 규약(계약 buildings.mjs): (0,0) = 영상 왼쪽 위(북서), v = 0 이 북쪽, 영상 행 0 = 북 → row = v·H − 0.5, col = u·W − 0.5.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { emptyResult } from '../../../contracts/raster/index.mjs';

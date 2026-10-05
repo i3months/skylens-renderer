@@ -15,7 +15,7 @@
 
 /** 건물 층 서명(구현 위치와 함수 이름이 기준). */
 export const BUILDINGS_LAYER_API = Object.freeze({
-  create: 'createBuildingsLayer(opts?) -> BuildingsLayer   opts: { mode?: "points"|"black"|"aerial"(기본 black), lightDirEnu?:[x,y,z], lineRgb?:[r,g,b], pointRgb?:[r,g,b] }',
+  create: 'createBuildingsLayer(opts?) -> BuildingsLayer   opts: { mode?: "points"|"black"|"aerial"(기본 black), lineRgb?:[r,g,b], pointRgb?:[r,g,b] }',
   accept: 'layer.accept(level:0..3, bundle:BuildingBundle) -> "first"|"replace"|"skip"   skip 이면 상태를 바꾸지 않는다. 잘못된 묶음이면 던지고 상태는 그대로. 한 수준 = 전체 묶음 단위',
   setMode: 'layer.setMode(mode) -> void   DISPLAY_MODES 가 아니면 RangeError(상태 그대로). 네트워크·accept 없이 로컬로 바꾼다',
   mode: 'layer.mode() -> "points"|"black"|"aerial"',
@@ -28,7 +28,7 @@ export const BUILDINGS_MODULES = Object.freeze({
   validate: { file: 'validate.mjs', fn: 'validateBundle(bundle) -> void  묶음 검증(길이·유한·인덱스 범위·uv 0..1·wallMask 0|1·edgeLines 6 의 배수·points 3 의 배수). 위반이면 던진다(강제 변환 없음)' },
   levels: { file: 'levels.mjs', fn: 'createBuildingsState() -> { accept(level, bundle) -> action, peek(level) -> action, level(), bundle() }  decideArrival 로 교체·건너뛰기' },
   raster_flat: { file: 'raster_flat.mjs', fn: 'rasterizeFlat(camera, groups, shadeFn, out) -> void  z-버퍼 삼각형 래스터(근평면 z>0.01 m 클리핑, 화소 중심 표본, 원근 보정 깊이). shadeFn(groupIndex, triIndex) -> [r,g,b]. out.index = 묶음 번호' },
-  raster_tex: { file: 'raster_tex.mjs', fn: 'rasterizeTextured(camera, groups, image, out) -> void  uv 를 원근 보정 보간해 image 이중선형 표본. wallMask=1 이거나 image 가 null 이면 검정(0,0,0 이 아니라 black 옵션의 면 색 BUILDINGS_DEFAULTS.faceRgb)' },
+  raster_tex: { file: 'raster_tex.mjs', fn: 'rasterizeTextured(camera, groups, image, out) -> void  uv 를 원근 보정 보간해 image 이중선형 표본. wallMask=1 정점이 하나라도 있는 삼각형이거나 image 가 null 이면 검정(0,0,0 이 아니라 black 옵션의 면 색 BUILDINGS_DEFAULTS.faceRgb)' },
   lines: { file: 'lines.mjs', fn: 'rasterizeLines(camera, groups, rgb, out, opts?) -> void  edgeLines 선분을 근평면에서 잘라 화소로 그린다. 깊이 시험은 opts.depthBias(m, 기본 BUILDINGS_DEFAULTS.lineDepthBiasM)만큼 앞으로 당긴다. out 의 깊이를 갱신한다' },
   points: { file: 'points.mjs', fn: 'rasterizePoints(camera, groups, rgb, out) -> void  표본점 한 개 = 한 화소(round 가 아니라 floor 칸), 깊이 시험' },
   compose: { file: 'compose.mjs', fn: 'composeLayers(base:RenderResult, over:RenderResult) -> RenderResult  화소마다 깊이가 더 가까운 쪽(0 은 없음)의 color·depth·index 를 취한 새 결과. 같은 깊이는 base 유지. 크기가 다르면 던진다. 입력은 바꾸지 않는다' },

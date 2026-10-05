@@ -17,7 +17,7 @@
 //     eye17: 눈 (0,−70,17) → (0,0,8)(눈높이 17 m). 수평 화각 60°, 주점 = 화면 중심.
 //
 // uv 규약: 계약은 서버 aerial_uv 와 같다(v = 0 이 북). uv='server'(기본)면 서버 출력 그대로,
-//   uv='flipped' 면 v 를 1 − v 로 뒤집어(serverUvToContract) 넣는다(뒤집기 변이 시험용).
+//   uv='flipped' 면 v 를 1 − v 로 뒤집어(flipV) 넣는다(뒤집기 변이 시험용).
 
 import { extrudeBuilding } from '../../../server/buildings/extrude/index.mjs';
 import { buildBuildingLod } from '../../../server/buildings/lod/index.mjs';
@@ -45,7 +45,7 @@ export function mulberry32(seed) {
 }
 
 /** 서버 uv(v = 0 이 북) → 계약 uv(v 는 북쪽으로 증가). 새 배열을 돌려준다. */
-export function serverUvToContract(uv) {
+export function flipV(uv) {
   const out = new Float32Array(uv.length);
   for (let i = 0; i < uv.length; i += 2) { out[i] = uv[i]; out[i + 1] = 1 - uv[i + 1]; }
   return out;
@@ -115,7 +115,7 @@ export function bundleFromFootprints(footprints, { image, uv = 'server', lodDist
       ids: [...ids],
       mesh: { positions: mesh.positions, indices: mesh.indices },
       edgeLines,
-      uv: uv === 'flipped' ? serverUvToContract(a.uv) : a.uv,
+      uv: uv === 'flipped' ? flipV(a.uv) : a.uv,
       wallMask: a.wallMask,
       points,
     };
