@@ -206,3 +206,18 @@ test('validate: 크기는 양의 정수만 통과한다', () => {
   assert.throws(() => checkSize({ width: 100, height: Infinity }), R);
   assert.throws(() => checkSize({ width: 0.5, height: 1 }), R);
 });
+
+test('validate: Object.create 상속 속성은 읽지 않는다(드론)', () => {
+  const drone = Object.create({ id: 'z', enu: [0, 0, 0] });
+  assert.throws(() => checkDrones([drone]), T);
+});
+
+test('validate: Object.create 상속 속성은 읽지 않는다(탐지)', () => {
+  const detection = Object.create({ id: 'z', enu: [0, 0, 0] });
+  assert.throws(() => checkDetections([detection]), T);
+});
+
+test('validate: Object.create 상속 속성은 읽지 않는다(경로)', () => {
+  const path = Object.create({ id: 'p', points: [[0, 0, 0], [1, 1, 1]] });
+  assert.throws(() => checkPath(path), T);
+});
