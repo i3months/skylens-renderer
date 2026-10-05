@@ -138,13 +138,29 @@ test('타일 수 상한: 질의·항목이 상한을 넘으면 TowerAssetError, 
   assert.doesNotThrow(() => buildTileIndex(BIG, [{ id: 1, bounds: ok }]));
 });
 
-test('항목 합산 셀 수 상한: 65536 타일짜리 300개는 1초 안에 TowerAssetError (F-319 ⑦)', () => {
+test('항목 합산 셀 수 상한: 65536 타일짜리 300개는 상한을 넘는 즉시 TowerAssetError (F-319 ⑦)', () => {
+  // 벽시계 대신 일의 양으로 센다: 훑은 항목 수와 셀 처리(Map.get, 셀마다 한 번) 횟수.
+  // 상한 1,000,000 / 65536 = 15.26 → 16번째 항목에서 던져야 하고, 그 항목의 셀은 하나도 넣기 전이어야 한다.
   const side = 256 * 64 - 1;
+  const perItem = 65536;
+  const visited = new Set();
   const items = [];
-  for (let i = 0; i < 300; i++) items.push({ id: i, bounds: { minX: 0, minY: 0, maxX: side, maxY: side } });
-  const t0 = Date.now();
-  assert.throws(() => buildTileIndex({ minX: 0, minY: 0, maxX: side, maxY: side }, items), TowerAssetError);
-  assert.ok(Date.now() - t0 < 1000);
+  for (let i = 0; i < 300; i++) {
+    const bounds = { minX: 0, minY: 0, maxX: side, maxY: side };
+    items.push({ id: i, get bounds() { visited.add(i); return bounds; } });
+  }
+  const origGet = Map.prototype.get;
+  let cellOps = 0;
+  Map.prototype.get = function countedGet(k) { cellOps++; return origGet.call(this, k); };
+  try {
+    assert.throws(() => buildTileIndex({ minX: 0, minY: 0, maxX: side, maxY: side }, items), TowerAssetError);
+  } finally {
+    Map.prototype.get = origGet;
+  }
+  const firstOver = Math.floor(TILE_INDEX_MAX_TOTAL_CELLS / perItem) + 1; // 16
+  assert.equal(visited.size, firstOver, `훑은 항목 ${visited.size}`);
+  assert.ok(cellOps <= TILE_INDEX_MAX_TOTAL_CELLS, `셀 처리 ${cellOps}`);
+  assert.equal(cellOps, (firstOver - 1) * perItem);
 });
 
 // F-329 ①: 상한 정확히/상한+1. `>`→`>=`, 상한 값 변경, 한 변 검사 변이를 모두 잡는다.

@@ -3,7 +3,10 @@ import assert from 'node:assert';
 import { runOffline } from './index.mjs';
 import http from 'node:http';
 import { get as namedGet } from 'node:http';
-import { get as namedHttpsGet } from 'node:https';
+import { get as namedHttpsGet, request as namedHttpsRequest } from 'node:https';
+import { request as namedRequest } from 'node:http';
+import { lookup as namedLookup } from 'node:dns';
+import { lookup as namedPromisesLookup } from 'node:dns/promises';
 
 // 네트워크를 사용하지 않는 함수
 test('no network calls', async () => {
@@ -403,4 +406,32 @@ test('import { get } 이름 가져오기도 차단·계수된다', async () => {
   assert.strictEqual(networkCalls, 2);
   assert.strictEqual(namedGet, before.httpGet);
   assert.strictEqual(namedHttpsGet, before.httpsGet);
+});
+
+// F-356 ②: get 뿐 아니라 request, node:dns lookup, node:dns/promises lookup 이름 가져오기도 스텁을 보고 계수된다.
+test('import { request, lookup } 이름 가져오기도 차단·계수된다', async () => {
+  const before = snapshot();
+  assert.strictEqual(namedRequest, before.httpRequest);
+  assert.strictEqual(namedHttpsRequest, before.httpsRequest);
+  assert.strictEqual(namedLookup, dns.lookup);
+  assert.strictEqual(namedPromisesLookup, dns.promises.lookup);
+  const originalLookup = namedLookup;
+  const originalPromisesLookup = namedPromisesLookup;
+  const { networkCalls } = await runOffline(async () => {
+    assert.strictEqual(namedRequest, http.request);
+    assert.strictEqual(namedHttpsRequest, https.request);
+    assert.strictEqual(namedLookup, dns.lookup);
+    assert.strictEqual(namedPromisesLookup, dns.promises.lookup);
+    assert.notStrictEqual(namedLookup, originalLookup);
+    assert.notStrictEqual(namedPromisesLookup, originalPromisesLookup);
+    namedRequest('http://example.com').on('error', () => {});
+    namedHttpsRequest('https://example.com').on('error', () => {});
+    await new Promise((resolve) => namedLookup('example.com', () => resolve()));
+    await assert.rejects(() => namedPromisesLookup('example.com'), /DNS lookup blocked/);
+  });
+  assert.strictEqual(networkCalls, 4);
+  assert.strictEqual(namedRequest, before.httpRequest);
+  assert.strictEqual(namedHttpsRequest, before.httpsRequest);
+  assert.strictEqual(namedLookup, originalLookup);
+  assert.strictEqual(namedPromisesLookup, originalPromisesLookup);
 });
