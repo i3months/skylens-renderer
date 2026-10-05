@@ -10,7 +10,6 @@ import dns from 'node:dns';
 import { syncBuiltinESMExports } from 'node:module';
 import { mock } from 'node:test';
 
-export const SETTLE_MS = 30; // 호환용으로 남김(restore 인자). 실제로는 mock 타이머 runAll 로 대신한다.
 const realSetImmediate = setImmediate; // mock 대상은 setTimeout 뿐이라 setImmediate 는 진짜다
 
 /** 호출 횟수를 세는 감시자를 전역·node 모듈에 건다. await restore() 로 모두 원복하고, calls 로 기록을 읽는다. */
@@ -33,10 +32,16 @@ export function installNetworkSpies() {
   patch(http2, 'connect', () => thrower('http2.connect'));
   for (const fn of ['connect', 'createConnection']) patch(net, fn, () => thrower(`net.${fn}`));
   patch(net.Socket.prototype, 'connect', () => function spyConnect() { calls.push('net.Socket.connect'); throw new Error('감시자: Socket.connect'); });
-  for (const fn of ['lookup', 'resolve']) patch(dns, fn, () => thrower(`dns.${fn}`));
-  for (const fn of ['lookup', 'resolve']) patch(dns.promises, fn, () => () => { calls.push(`dns.promises.${fn}`); return Promise.reject(new Error(`감시자: dns.promises.${fn}`)); });
+  // dns 는 lookup·resolve 외에 resolve4/6·resolveTxt 등 resolve*, reverse, lookupService, Resolver 인스턴스 메서드도 모두 가로챈다.
+  const dnsNames = (obj) => Object.getOwnPropertyNames(obj)
+    .filter((k) => /^(lookup|lookupService|resolve\w*|reverse)$/.test(k) && typeof obj[k] === 'function');
+  for (const fn of dnsNames(dns)) patch(dns, fn, () => thrower(`dns.${fn}`));
+  for (const fn of dnsNames(dns.Resolver.prototype)) patch(dns.Resolver.prototype, fn, () => thrower(`dns.Resolver.${fn}`));
+  for (const fn of dnsNames(dns.promises)) patch(dns.promises, fn, () => () => { calls.push(`dns.promises.${fn}`); return Promise.reject(new Error(`감시자: dns.promises.${fn}`)); });
+  for (const fn of dnsNames(dns.promises.Resolver.prototype)) patch(dns.promises.Resolver.prototype, fn, () => () => { calls.push(`dns.promises.Resolver.${fn}`); return Promise.reject(new Error(`감시자: dns.promises.Resolver.${fn}`)); });
   syncBuiltinESMExports();
-  mock.timers.enable({ apis: ['setTimeout'] });
+  // 나머지(node:timers 이름 가져오기 등)는 integration 파일 끝 감시에 맡긴다.
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
   let restored = false;
   const restore = async () => {
     if (restored) return;
