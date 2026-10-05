@@ -84,6 +84,40 @@ test('경계 정점: 이웃 타일 가장자리 x·y 가 비트 일치한다', (
   }
 });
 
+// cells=7 (cells-1=6, 간격 64/6 이 2의 거듭제곱이 아님): 경계 비트 일치와 안쪽 정점 위치(Float32 로 한 번만 반올림)를 확인한다.
+//   cells=50 은 tx=-1 에서 x0+(c-1)·step 이 (tx+1)·64 와 Float32 로 달라지는 경우라 마지막 열/행 특수 처리를 죽인다.
+for (const c of [7, 50]) test(`경계 정점: 간격이 2의 거듭제곱이 아닌 cells=${c} 에서도 비트 일치하고 안쪽 위치가 식과 같다`, () => {
+  const mk = (tx, ty) => ({ tx, ty, lod: 3, cells: c, heights: new Float32Array(c * c).fill(1) });
+  const tiles = [mk(-3, 0), mk(-2, 0), mk(-3, 1), mk(5, 7), mk(6, 7), mk(5, 8), mk(-1, -1), mk(0, -1), mk(-1, 0)];
+  const m = buildLayerMesh(tiles);
+  const v = (n, i, j) => (n * c * c + j * c + i) * 3;
+  const step = 64 / (c - 1);
+  for (const [w, e, nn] of [[0, 1, 2], [3, 4, 5], [6, 7, 8]]) {
+    for (let j = 0; j < c; j++) {
+      const a = v(w, c - 1, j), b = v(e, 0, j); // 동쪽 가장자리 = 이웃 서쪽 가장자리
+      assert.ok(Object.is(m.positions[a], m.positions[b]));
+      assert.ok(Object.is(m.positions[a + 1], m.positions[b + 1]));
+      assert.equal(m.positions[a], (tiles[w].tx + 1) * 64);
+    }
+    for (let i = 0; i < c; i++) {
+      const a = v(w, i, c - 1), b = v(nn, i, 0); // 북쪽 가장자리 = 이웃 남쪽 가장자리
+      assert.ok(Object.is(m.positions[a], m.positions[b]));
+      assert.ok(Object.is(m.positions[a + 1], m.positions[b + 1]));
+      assert.equal(m.positions[a + 1], (tiles[w].ty + 1) * 64);
+    }
+  }
+  // 안쪽 정점: 원점 + i·(64/6) 을 double 로 계산한 뒤 Float32 로 한 번 반올림한 값과 비트 일치.
+  tiles.forEach((t, n) => {
+    for (let j = 0; j < c - 1; j++) {
+      for (let i = 0; i < c - 1; i++) {
+        const k = v(n, i, j);
+        assert.ok(Object.is(m.positions[k], Math.fround(t.tx * 64 + i * step)), `타일 ${n} (${i},${j}) x`);
+        assert.ok(Object.is(m.positions[k + 1], Math.fround(t.ty * 64 + j * step)), `타일 ${n} (${i},${j}) y`);
+      }
+    }
+  });
+});
+
 test('음수 타일 번호도 64·tx 로 놓인다', () => {
   const h = new Float32Array(9).fill(5);
   const m = buildLayerMesh([{ tx: -2, ty: -1, lod: 3, cells: 3, heights: h }]);

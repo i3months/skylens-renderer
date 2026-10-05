@@ -257,6 +257,14 @@ test('A2_top_left_rule_shared_edges_on_pixel_centers', () => {
   ]) {
     const oA = renderOne(A); const oB = renderOne(B);
     const sA = pixelSet(oA); const sB = pixelSet(oB);
+    // 꼭짓점 순환 순서를 바꿔도(수평 변이 가장자리 함수 0·1·2 번 어디에 오든) 같은 화소 집합이어야 한다.
+    for (const tri of [A, B]) {
+      const base = pixelSet(renderOne(tri));
+      for (const rot of [[1, 2, 0], [2, 0, 1]]) {
+        const got = pixelSet(renderOne(rot.map((k) => tri[k])));
+        assert.deepEqual([...got].sort((x, y) => x - y), [...base].sort((x, y) => x - y), `${name}: 꼭짓점 순환 ${rot}`);
+      }
+    }
     let overlap = 0;
     for (const p of sA) if (sB.has(p)) overlap += 1;
     assert.equal(overlap, 0, `${name}: 이중으로 덮인 화소`);
