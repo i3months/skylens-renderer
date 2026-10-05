@@ -61,14 +61,17 @@ test('다른 타일 번호의 범위를 따른다', () => {
   assert.equal(sampleDrape(t, 32, 32), null);
 });
 
-test('mask 0 화소는 제외하고 가중을 다시 정규화', () => {
+test('표본점이 속한 칸이 mask 0 이면 null, 살아 있는 칸은 mask>0 이웃만 재정규화', () => {
   const t = makeTile(col, (i, j) => (i === 2 && j === 1 ? 0 : 255));
-  // (1,1) 과 (2,1) 중간: (2,1) 제외 -> (1,1) 색 그대로
-  assert.deepEqual(sampleDrape(t, 32, cy(1)), col(1, 1));
-  // 4 이웃 중심: 3 화소 평균 r = (30+50+60)/3 = 46.67 -> 47, g = (101+101+102)/3 = 101.33 -> 101, b = (195+190+190)/3 = 191.67 -> 192
-  assert.deepEqual(sampleDrape(t, 32, 32), [47, 101, 192]);
-  // 가중이 다를 때: x = 28 (fx=0.25) 에서 (1,1)=0.75, (2,1) 제외 -> (1,1) 그대로
+  // 칸 (2,1) = x∈[32,48), y∈(32,48]: 이웃이 살아 있어도 null(메우지 않는다)
+  assert.equal(sampleDrape(t, 32, cy(1)), null);
+  assert.equal(sampleDrape(t, cx(2), cy(1)), null);
+  assert.equal(sampleDrape(t, 47.9, 33), null);
+  // 칸 (1,1) 안 경계 근처: (2,1) 제외 -> (1,1) 색 그대로
+  assert.deepEqual(sampleDrape(t, 31.9, cy(1)), col(1, 1));
   assert.deepEqual(sampleDrape(t, 28, cy(1)), col(1, 1));
+  // 칸 (2,2) 의 왼쪽 위 모서리: 4 이웃 중 3 화소 평균 r = (30+50+60)/3 = 46.67 -> 47, g = 101.33 -> 101, b = 191.67 -> 192
+  assert.deepEqual(sampleDrape(t, 32, 32), [47, 101, 192]);
 });
 
 test('mask 가 1..254 인 부분 화소도 색은 동등 가중', () => {
@@ -80,8 +83,9 @@ test('4 이웃이 모두 mask 0 이면 null, 아니면 값', () => {
   const t = makeTile(col, (i) => (i >= 2 ? 0 : 255));
   assert.equal(sampleDrape(t, cx(2), cy(1)), null);
   assert.equal(sampleDrape(t, cx(3), cy(1)), null);
-  // 경계(i=1,2 사이)는 (1, *) 만 살아 값이 있다
-  assert.deepEqual(sampleDrape(t, 32, cy(1)), col(1, 1));
+  // 경계(i=1,2 사이): x=32 는 칸 i=2(mask 0)라 null, 바로 안쪽 x=31.9 는 (1, *) 만 살아 값이 있다
+  assert.equal(sampleDrape(t, 32, cy(1)), null);
+  assert.deepEqual(sampleDrape(t, 31.9, cy(1)), col(1, 1));
   const all0 = makeTile(col, () => 0);
   assert.equal(sampleDrape(all0, 32, 32), null);
   assert.equal(sampleDrape(all0, 0, 0), null);
