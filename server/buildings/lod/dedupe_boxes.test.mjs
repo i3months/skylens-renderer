@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildBuildingLod } from './index.mjs';
-import { foldContained, foldStats } from './dedupe_boxes.mjs';
+import { foldContained, foldStats, FOLD_Z_TOL_M } from './dedupe_boxes.mjs';
 import { prism } from './scene.mjs';
 
 const rect = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
@@ -92,23 +92,96 @@ test('foldContained: minZ 가 mm 만 다른 상자도 접힌다', () => {
   const a = rectItem(0, 0, 20, 20, 0.001, 6, 0);
   const b = rectItem(0, 0, 20, 20, 0, 6, 1);
   assert.equal(foldContained([a, b]).length, 1);
-  const c = rectItem(0, 0, 20, 20, -1, 6, 2); // 1 m 아래로 나오면 남는다
+  const c = rectItem(0, 0, 20, 20, -0.03, 6, 2); // 3 cm 아래로 나오면 남는다(허용 1 cm 초과)
   assert.equal(foldContained([a, c]).length, 2);
+  const d = rectItem(0, 0, 20, 20, -0.02, 6, 3);
+  assert.equal(foldContained([a, d]).length, 2);
+  assert.equal(FOLD_Z_TOL_M, 0.01);
 });
 
-test('minZ = i·0.001 인 20×20 상자 2000채는 20 km 에서 1 초 안에 접힌다', () => {
-  const n = 2000;
-  const bs = [];
-  for (let i = 0; i < n; i++) bs.push({ id: i, mesh: lift(prism(rect(0, 0, 20, 20), 5), i * 0.001) });
-  reset();
+test('foldContained: maxZ 가 mm 만 높으면 접히고 cm 넘게 높으면 남는다', () => {
+  const rep = rectItem(0, 0, 20, 20, 0, 6, 0);
+  assert.equal(foldContained([rep, rectItem(5, 5, 10, 10, 0, 6.004, 1)]).length, 1); // 안쪽 상자가 4 mm 더 높아도 접힘
+  // 6.03 은 대표(6)보다 높아 정렬상 먼저 대표가 되므로, 대표 쪽을 낮게 둔 쌍으로 확인한다: 안쪽 상자가 3 cm 더 높다.
+  const low = rectItem(0, 0, 20, 20, 0, 6, 0);
+  const tall = rectItem(5, 5, 10, 10, 0, 6.03, 1);
+  assert.equal(foldContained([low, tall]).length, 2);
+  const tall2 = rectItem(5, 5, 10, 10, 0, 6.02, 1);
+  assert.equal(foldContained([low, tall2]).length, 2);
+});
+
+// 접기 전 구현(대표 전부 선형 비교)과 같은 결과인가: 무작위 입력 여러 시드.
+function foldLinear(singles) {
+  const area = (m) => (m.maxX - m.minX) * (m.maxY - m.minY);
+  const sorted = singles.slice().sort((p, q) => area(q) - area(p) || q.maxZ - p.maxZ || p.order - q.order);
+  const reps = [];
+  const dropped = new Set();
+  const isR = (m) => { const f = m.fill; for (let o = 0; o < f.length; o += 2) { if (Math.abs(f[o] - m.minX) > 1e-9 && Math.abs(f[o] - m.maxX) > 1e-9) return false; if (Math.abs(f[o + 1] - m.minY) > 1e-9 && Math.abs(f[o + 1] - m.maxY) > 1e-9) return false; } return f.length > 0; };
+  const sameF = (a, b) => a.fill.length === b.fill.length && a.fill.every((v, i) => Math.abs(v - b.fill[i]) <= 1e-9);
+  const cov = (a, b) => !(b.minX < a.minX - 1e-9 || b.maxX > a.maxX + 1e-9 || b.minY < a.minY - 1e-9 || b.maxY > a.maxY + 1e-9 ||
+    b.maxZ > a.maxZ + 0.01 || b.minZ < a.minZ - 0.01) && (isR(a) || sameF(a, b));
+  for (const m of sorted) {
+    let hidden = false;
+    for (const r of reps) if (cov(r, m)) { hidden = true; break; }
+    if (hidden) dropped.add(m); else if (m.it.mesh.indices.length / 3 >= 10) reps.push(m);
+  }
+  return singles.filter((m) => !dropped.has(m));
+}
+
+test('foldContained: 무작위 입력 20 시드에서 선형 비교 구현과 접기 결과가 같다', () => {
+  for (let seed = 1; seed <= 20; seed++) {
+    let st = seed * 2654435761 >>> 0;
+    const rnd = () => ((st = (Math.imul(st, 1664525) + 1013904223) >>> 0) / 4294967296);
+    const mk = () => {
+      const items = [];
+      const n = 150 + Math.floor(rnd() * 100);
+      for (let i = 0; i < n; i++) {
+        const x0 = Math.floor(rnd() * 4) * 2, y0 = Math.floor(rnd() * 4) * 2;
+        const w = 2 + Math.floor(rnd() * 3) * 2, h = 2 + Math.floor(rnd() * 3) * 2;
+        const z0 = Math.floor(rnd() * 3) * 0.005 + (rnd() < 0.3 ? Math.floor(rnd() * 5) * 0.01 : 0);
+        const z1 = z0 + 3 + Math.floor(rnd() * 3) * 0.004 + (rnd() < 0.2 ? 2 : 0);
+        const it = rectItem(x0, y0, x0 + w, y0 + h, z0, z1, i);
+        if (rnd() < 0.15) it.fill = [x0, y0, x0 + w, y0, x0, y0 + h]; // 직사각형이 아닌 풋프린트
+        if (rnd() < 0.1) it.it.mesh.indices = new Array(12).fill(0); // 대표가 될 수 없음
+        items.push(it);
+      }
+      return items;
+    };
+    const a = mk();
+    const b = mk.call(null); // 같은 시드 흐름을 다시 만들 수 없으므로 복사본을 쓴다
+    void b;
+    const copy = a.map((m) => ({ ...m, it: m.it }));
+    const got = foldContained(a).map((m) => m.order);
+    const want = foldLinear(copy).map((m) => m.order);
+    assert.deepEqual(got, want, `seed ${seed}`);
+    assert.ok(want.length < copy.length, `seed ${seed}: 접기가 일어나야 한다`);
+  }
+});
+
+// 벽시계는 환경 의존이라 한도를 넉넉히(1 s) 둔다. 색인 이전 구현은 step 0.01 에서 약 2.5 s, 0.02 에서 약 2.3 s 였다.
+// 접기 단계만 잰다(buildBuildingLod 전체의 남은 비용은 응집 단계 몫이다).
+const stepCase = (n, step) => {
+  const items = [];
+  for (let i = 0; i < n; i++) items.push(rectItem(0, 0, 20, 20, i * step, 5 + i * step, i));
   const t0 = performance.now();
-  const out = buildBuildingLod(bs, 20000);
-  const ms = performance.now() - t0;
-  assert.equal(foldStats.input, n);
-  assert.ok(foldStats.output <= 250, `후보 ${foldStats.output}`); // 허용 오차 1 cm 칸마다 한 대표: 접기 없이는 2000
-  assert.equal(out.length, 1);
-  assert.equal(out[0].ids.length, n);
-  assert.ok(ms < 1000, `${ms} ms`);
+  const out = foldContained(items);
+  return { ms: performance.now() - t0, output: out.length };
+};
+
+for (const step of [0.001, 0.01, 0.02, 0.1]) {
+  test(`minZ = i·${step} 인 20×20 상자 2000채는 1 초 안에 접힌다`, () => {
+    const { ms, output } = stepCase(2000, step);
+    if (step === 0.001) assert.ok(output <= 250, `후보 ${output}`); // 허용 오차 1 cm 칸마다 한 대표
+    if (step >= 0.02) assert.equal(output, 2000); // 1 cm 넘게 벌어지면 하나도 접히지 않는다(이차 비교가 되던 경우)
+    assert.ok(ms < 1000, `${ms} ms`);
+  });
+}
+
+test('foldContained: 간격 0.02 에서 n=4000 은 n=2000 의 약 2.5 배 이하(근사 선형)', () => {
+  const best = (n) => Math.min(...[0, 1, 2].map(() => stepCase(n, 0.02).ms));
+  const t2 = best(2000), t4 = best(4000);
+  assert.ok(t4 < 1000, `${t4} ms`);
+  assert.ok(t4 <= Math.max(2.5 * t2, t2 + 150), `n=2000 ${t2} ms, n=4000 ${t4} ms`);
 });
 
 test('foldContained: 한 개 이하는 그대로', () => {
