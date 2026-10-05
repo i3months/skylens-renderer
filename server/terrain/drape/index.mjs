@@ -325,7 +325,7 @@ function strideFor(w, h, budget) {
  *    localMaxPx = local 블록 실측 이동량 크기 최댓값, undecidedMaxPx = 불확정 블록이 배제하지 못한 이동량 크기 최댓값,
  *    unexcludedMaxPx = 짝 검정 경로 local 블록이 배제하지 못한 이동량 크기 최댓값(둘 다 자기 최소에서 예측 반대쪽으로 1 px 까지
  *    0.25 px 씩 나가며 짝 검정 t ≤ DRAPE_PAIRED_K 인 점까지; 없으면 0),
- *    unmeasuredLocalBlocks = 짝 검정 경로 local 블록 중 예측 위치를 잴 수 없어(pairedT NaN) 배제 못 한 이동량을 모르는 블록 수
+ *    unmeasuredLocalBlocks = 짝 검정 경로 local 블록 중 예측 위치를 잴 수 없어(pairedT NaN; 짝 검정을 하지 않은 local 블록도 pairedT 가 NaN 이라 blocks 만으로 이 수를 재구성할 수 없다) 배제 못 한 이동량을 모르는 블록 수
  *    (그 블록은 unexcludedMaxPx·maxMisalignPx 의 상한에 들어가지 않는다 — 0 으로 세지 않고 이 수로 드러낸다; unmeasurable 이면 NaN),
  *    maxMisalignPx = max(edgeMaxPx, localMaxPx, undecidedMaxPx, unexcludedMaxPx).
  *    다음이면 status = 'unmeasurable' 이고 maxMisalignPx·edgeMaxPx·축척 등은 NaN 이다(0 으로 보고하지 않는다; NaN 은 어떤
@@ -356,7 +356,7 @@ function strideFor(w, h, budget) {
  *   −f/(1+f)). rotationRad = (kxy − kyx)/2(내용이 ENU 반시계로 θ 돌아간 타일이면 sin θ). blockMaxPx = 블록 이동량 크기 최댓값,
  *   residualMaxPx = 블록 실측과 아핀 모형의 차 최댓값. 단 기준이 섞여 있다: 불확정 블록은 residualMaxPx 에 자기 잔차를 세지 않고
  *   undecidedMaxPx(= 배제하지 못한 이동량의 원점 기준 절대 크기, 모형 예측에서 잰 값이 아님)를 max 로 합친다. 그래서 타일 전체가
- *   g = 3 px 이동하고 불확정 블록이 하나 있으면(불확정은 예측에서 ≥ 0.5 px 떨어진 블록만 된다) 나머지 블록의 모형 잔차는 ~0 이어도 residualMaxPx ≈ 3(원점 기준 배제 못 한 이동량)이 된다. 모형 잔차만의 상한이 필요하면
+ *   g = 3 px 이동하고 불확정 블록이 하나 있으면(불확정은 예측에서 ≥ 0.5 px 떨어진 블록만 된다) 나머지 블록의 모형 잔차는 ~0 이어도 residualMaxPx ≈ 3(원점 기준 배제 못 한 이동량)이 된다(o 의 방향에 따라 약 |g|−0.5 ~ |g|+1.5). 모형 잔차만의 상한이 필요하면
  *   residualMaxPx 가 아니라 blocks 의 non-undecided 블록으로 다시 구해야 한다(별도 필드는 두지 않았다).
  */
 export function measureDrapeAlignment(image, tile) {
@@ -720,7 +720,8 @@ export function measureDrapeAlignment(image, tile) {
     // farOwn 뿐 아니라 잔차 경로(residual ≥ OUTLIER_PX)도 자기 최소가 예측 반대쪽이어도 켜지므로, 실제 이동이 예측을 넘어 반대쪽에
     // 있으면 걷기가 거기까지 닿지 않는다. 잔차 경로 사례: g −0.125 에서 잔차 0.534 로 진입, 보고 1.675.
     // 사례: ±3 DN 사인 2 seed 2007922, o=+0.906, 실제 −1.5, 보고 1.675(거짓 통과는 아님). 양방향 걷기를 임시로 시험하니 기존 시험
-    // 수치(50·45·0·5)는 그대로였으나 farOwn 경로를 지키는 시험이 없어(F-386) 출력 변화를 못 잡으므로 적용하지 않았다.
+    // 수치(50·45·0·5)는 그대로였다. farOwn 경로는 지금 drape_farown(4)·drape_farown_neg(2) 가 지킨다. 미룬 이유는 출력이 바뀌는
+    // 동작 변경이라 T15 와 함께 다루기로 했기 때문이다(F-385 ⑨, decisions/0044).
     const unexcludedPx = (b, [px, py]) => {
       const o = ownFine(b);
       let far = Math.hypot(o.dx, o.dy);
@@ -773,7 +774,7 @@ export function measureDrapeAlignment(image, tile) {
         // local 블록도 보고는 자기 최소지만, 배제하지 못한 이동량은 unexcludedMaxPx 로 maxMisalignPx 에 넣는다(같은 치우침).
         if (t === null || t > PAIRED_K) { markLocal(b); // t === null(예측 위치를 잴 수 없음)이면 배제 못 한 이동량을 모른다: 0('이동 없음')이 아니라 NaN 으로 두고
         // 아래 집계에서 unmeasuredLocalBlocks 로 센다(불확정 dx·dy 를 NaN 으로 드러내는 것과 같은 규칙, F-390 ⑥).
-        b.unexcludedPx = t === null ? NaN : unexcludedPx(b, [px, py]); }
+        b.unexcludedPx = unexcludedOrNaN(t, () => unexcludedPx(b, [px, py])); }
         else markUndecided(b, [px, py]);
       } else if (out !== false) markLocal(b);
     }
@@ -828,6 +829,10 @@ export function measureDrapeAlignment(image, tile) {
  * (Math.max 가 NaN 으로 오염되지 않게) 수만 센다. 0 은 잰 결과(이동 없음)라 상한에 영향이 없다. t === null 블록은 실제 입력으로
  * 만들기 어려워(예측 위치가 영상 밖으로 나가 표본이 절반 미만이 되어야 함) 시험이 이 함수를 직접 부른다.
  */
+/** 짝 검정 t 가 null(예측 위치를 잴 수 없음)이면 배제 못 한 이동량을 모르니 NaN, 아니면 compute() (F-391 ④: 이 대입을 직접 시험하려 분리). */
+export function unexcludedOrNaN(t, compute) {
+  return t === null ? NaN : compute();
+}
 export function unexcludedSummary(blocks) {
   let unexcludedMaxPx = 0, unmeasuredLocalBlocks = 0;
   for (const b of blocks) {

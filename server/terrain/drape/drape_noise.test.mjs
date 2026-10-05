@@ -297,7 +297,7 @@ const POS_KNOWN = new Set(POS_KNOWN_FAIL.map((k) => posKey(...k)));
 const posMeasured = new Map();
 const posImages = new Map();
 function posMeasure(noise, amp, g, e, seed) {
-  const key = posKey(noise, amp, g, seed);
+  const key = `${posKey(noise, amp, g, seed)}|${e}`; // e 도 키에 넣는다(F-391 ⑪): e 만 다른 입력이 캐시를 공유하지 않게
   let m = posMeasured.get(key);
   if (m === undefined) {
     const ik = `${amp}|${g}`;

@@ -68,5 +68,15 @@ test('Infinity 예산 + 예외: finally 가 예산을 Infinity 로 되돌리고 
   distStats.gapCells = 0;
   assert.throws(() => gapCellError(1, 0, 2, 2, [A, bad], 1, box, b), /boom/);
   assert.equal(b.cells, Infinity);
-  assert.ok(Number.isFinite(distStats.gapCells) && distStats.gapCells >= 0);
+  assert.equal(distStats.gapCells, 1); // 예외 전에 쓴 칸 하나를 센다(finally 계수, F-391 ⑩)
+});
+
+test('유한 예산 5 + 예외: 예산 4 가 남고 계수 1 (계수가 finally 에서 올라간다)', () => {
+  const bad = member(0, 0, 1, 2);
+  Object.defineProperty(bad, 'segs', { get() { throw new Error('boom'); } });
+  const b = { cells: 5 };
+  distStats.gapCells = 0;
+  assert.throws(() => gapCellError(1, 0, 2, 2, [A, bad], 1, box, b), /boom/);
+  assert.equal(b.cells, 4);
+  assert.equal(distStats.gapCells, 1);
 });
