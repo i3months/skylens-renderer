@@ -183,8 +183,14 @@ export function tilesInView(view, opts) {
   let ymin = Infinity;
   let ymax = -Infinity;
   for (const [, y] of poly) { if (y < ymin) ymin = y; if (y > ymax) ymax = y; }
-  const ty0 = Math.floor((ymin - rangeEps(ymin)) / S);
-  const ty1 = Math.floor((ymax + rangeEps(ymax)) / S);
+  const IMAX = TOWER_STREAMING_LIMITS.tileIndexMax;
+  // 범위 방어: 한 칸 이내의 넘침(경계 여유)은 자르고, 그보다 크면 던진다. 루프 전에 검사한다.
+  const clampIdx = (v, name) => {
+    if (!(Math.abs(v) <= IMAX + 1)) throw new RangeError(`${name} 가 ±tileIndexMax(${IMAX}) 를 벗어난다: ${v}`);
+    return Math.min(IMAX, Math.max(-IMAX, v));
+  };
+  const ty0 = clampIdx(Math.floor((ymin - rangeEps(ymin)) / S), 'ty');
+  const ty1 = clampIdx(Math.floor((ymax + rangeEps(ymax)) / S), 'ty');
 
   // 직육면체-구 판정: 최소 거리² ≤ (maxDistM + 여유)²
   const D = opts.maxDistM + rangeEps(opts.maxDistM) + rangeEps(Math.hypot(camX, camY, camZ));
@@ -200,8 +206,8 @@ export function tilesInView(view, opts) {
     const r = stripRange(poly, y0 - rangeEps(y0), y1 + rangeEps(y1));
     if (r === null) continue;
     const dy = gap(camY, y0, y1);
-    const tx0 = Math.floor((r[0] - rangeEps(r[0])) / S);
-    const tx1 = Math.floor((r[1] + rangeEps(r[1])) / S);
+    const tx0 = clampIdx(Math.floor((r[0] - rangeEps(r[0])) / S), 'tx');
+    const tx1 = clampIdx(Math.floor((r[1] + rangeEps(r[1])) / S), 'tx');
     for (let tx = tx0; tx <= tx1; tx += 1) {
       const dx = gap(camX, tx * S, (tx + 1) * S);
       if (dx * dx + dy * dy + dz * dz > D2) continue; // 구와 만나지 않는다
