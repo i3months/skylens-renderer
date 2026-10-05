@@ -191,7 +191,10 @@ function fuzzLoop(codec, { iterations, seed, stopAfter }) {
       if (rng.int(10) === 0) input = codec.seedEncode(randomMessage(rng, pick(rng, TYPES))); // 무변형 유효 프레임도 섞는다(성공 경로 확보)
     }
     res.runs++;
-    const v = checkOne(codec, input, opts_time);
+    let v = checkOne(codec, input, opts_time);
+    // 벽시계 판정은 한 번의 관측이라 GC·스케줄링 정지로 튄다. 같은 입력을 한 번 더 돌려 다시 느릴 때만 time 위반으로 둔다
+    // (코덱이 실제로 느리면 입력이 같으므로 매번 느리다). time 이 아닌 종류는 결정적이라 재실행하지 않는다.
+    if (v?.kind === 'time' && checkOne(codec, input, opts_time)?.kind !== 'time') v = null;
     let ok = false;
     if (v) res.violations.push({ index: i, ...v, inputHex: Buffer.from(input.subarray(0, 64)).toString('hex') });
     else { try { codec.decode(input); ok = true; } catch { /* 거부 */ } }
