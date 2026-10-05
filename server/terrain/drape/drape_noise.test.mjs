@@ -388,3 +388,8 @@ test('F-385 ⑩ 귀무(불확정 0)에서 blockMaxPx = 블록 hypot(dx, dy) 최�
   }
   assert.ok(checked >= 20, `불확정 0 회차 ${checked}`);
 });
+
+test('POS_CASES 의 (진폭, g) 는 유일하다(알려진 실패 키 posKey 가 e 를 쓰지 않는 전제, F-392 ⑤)', () => {
+  const keys = POS_CASES.map(([amp, g]) => `${amp}|${g}`);
+  assert.equal(new Set(keys).size, keys.length);
+});

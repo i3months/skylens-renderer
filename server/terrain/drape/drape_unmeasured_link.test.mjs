@@ -1,4 +1,7 @@
-// F-391 ④: 짝 검정 t === null 이면 배제 못 한 이동량을 0 이 아니라 NaN 으로 두는 대입과, 그 NaN 이 unmeasuredLocalBlocks 로 세이는 연결.
+// F-391 ④: 분리 함수 unexcludedOrNaN 과 집계 unexcludedSummary 의 단위 시험(공개 API 의 호출부 연결은 지키지 않는다).
+// 조사 결과 호출부의 t === null 은 공개 API(measureDrapeAlignment)로 도달할 수 없다: 예측 위치를 잴 수 없는 블록은 settle 의 search 가
+// 시작 비용 Infinity − Infinity = NaN 비교로 후보를 못 바꿔 null 을 내고, 짝 검정 경로(out === false)에 들어오지 못한다.
+// 약 17,000 입력에서 0건. 그래서 호출부 변이(`? NaN` → `? 0`)는 공개 출력이 같은 동등 변이다.
 // t === null 입력을 합성 영상으로 만들지 못해(drape_unmeasured.test.mjs 머리 참조) 대입을 unexcludedOrNaN 으로 분리해 직접 시험한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
