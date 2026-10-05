@@ -109,11 +109,10 @@ test('perf: 최악 시점(하향·고도 600·광각·held 가득) 기본값 upd
   assert.ok(p90 <= 8, `p90 ${p90.toFixed(2)} ms > 8 ms`);
 });
 
-test('perf: 최악 시점 retainMargin 16 update p50 ≤ 16 ms, p90 ≤ 8 ms', () => {
+test('perf: 최악 시점 retainMargin 16 update p90 ≤ 8 ms', () => {
   const w = worstCase({ retainMargin: 16 });
   const { p50, p90 } = medianOf(w, 100);
-  console.log(`streaming perf(최악·retainMargin 16): needed ${w.needed}, p50 ${p50.toFixed(2)} ms, p90 ${p90.toFixed(2)} ms (상한 p50 16 ms, p90 8 ms)`);
-  assert.ok(p50 <= 16, `p50 ${p50.toFixed(2)} ms > 16 ms`);
+  console.log(`streaming perf(최악·retainMargin 16): needed ${w.needed}, p50 ${p50.toFixed(2)} ms, p90 ${p90.toFixed(2)} ms (상한 p90 8 ms)`);
   assert.ok(p90 <= 8, `p90 ${p90.toFixed(2)} ms > 8 ms`);
 });
 

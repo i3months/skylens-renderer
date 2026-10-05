@@ -1,4 +1,4 @@
-// 투영 일관성 시험: 투영 수식을 이곳에서 의도적으로 독립적으로 재유도하여 경로 자르기(clip.mjs)와의 상호 검증을 한다.
+// clip.mjs 의 카메라 공간 투영이 projectPoints 와 벌어지지 않게 지킨다(0052 대가)
 // 같은 점을 projectPoints 와 clipPolyline 으로 투영했을 때 u·v·depth 가 같은지 확인해 두 구현이 벌어지지 않게 지킨다.
 import test from 'node:test';
 import assert from 'node:assert/strict';

@@ -5,6 +5,6 @@
   "type": "module",
   "license": "UNLICENSED",
   "scripts": {
-    "test": "node --test --test-timeout=900000 \"**/*.test.mjs\""
+    "test": "node --test --test-timeout=180000 \"**/*.test.mjs\""
   }
 }
