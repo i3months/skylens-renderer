@@ -107,18 +107,23 @@ export const DELAYS = [
 ];
 
 /**
- * 한 타일이 연속으로 deferred 인 시점 수의 상한 K, 그리고 정지 구간 길이를 유도한다.
+ * 한 타일이 연속으로 deferred 인 시점 수의 상한 K 를 유도한다.
  * needed 는 '카메라 지면 투영점에서 가까운 순'이고 요청은 그 순서로 빈 자리(maxInflight)를 채운다. 한 '묶음'(빈 자리 maxInflight 개를
  * 채우고 그것이 모두 도착해 자리가 다시 비기까지)은 최대 지연 D 에 대해 D+1 시점 걸린다(도착은 요청 시점 + D 의 update 뒤에 처리되므로
- * 그 다음 update 에서 자리가 빈다). 시점 하나의 needed 가 N 개이면 정지한 카메라에서 맨 뒤 타일까지 ceil(N/maxInflight) 묶음,
- * 즉 ceil(N/maxInflight)·(D+1) 시점 안에 요청된다. 움직이는 카메라에서는 새로 들어온 가까운 타일이 앞을 차지하므로 이 수를 그대로 쓰면
- * 정상 구현도 넘을 수 있다. 그래서 N 대신 경로 전체 needed 크기의 최댓값 Nmax 를 쓰고 2 배 여유를 둔다:
- *   K = 2 · ceil(Nmax / maxInflight) · (D + 1).
- * (2026-10 측정: 정상 구현의 최대 연속 deferred / K 는 15 실행 중 가장 큰 것이 광각·즉시 70/108. 여유 없이 1 배를 쓰면 이 실행이 넘는다.)
- * 기아 구현(자리가 남아도 요청하지 않음)은 보이는 타일 하나를 경로 끝까지 계속 deferred 로 두므로 K 와 무관하게 걸린다.
+ * 그 다음 update 에서 자리가 빈다). 보이는 타일이 N 개이면 정지한 카메라에서 맨 뒤 타일까지 ceil(N/maxInflight) 묶음,
+ * 즉 ceil(N/maxInflight)·(D+1) 시점 안에 요청된다.
+ * N 은 구현의 needed 가 아니라 오라클(구현과 독립) 크기의 경로 최댓값 Nmax 를 쓴다(구현이 needed 를 부풀려 K 를 키우지 못하게).
+ * 움직이는 카메라에서는 새로 들어온 가까운 타일이 앞을 차지해 뒤 타일이 밀린다. 묶음 하나가 도는 동안 카메라가 움직여 그 타일이
+ * 한 시점 더 밀릴 수 있다고 보고 묶음마다 1 시점을 더한다(배수 여유 대신 묶음당 가산):
+ *   K = ceil(Nmax / maxInflight) · (D + 2).
+ * 위쪽 한계: K 는 그 실행의 전체 시점 수(경로 + 정지 구간)보다 작아야 한다. 그래야 경로 내내 deferred 로 남는 타일이
+ * K 에 반드시 걸린다(K 가 실행보다 길면 이 단언은 아무것도 잡지 못한다). 시험이 K < 전체 시점 수를 함께 단언한다.
+ * 옛 식 2 · ceil(Nmax/maxInflight) · (D+1) 은 무작위 0~5 지연에서 이 한계를 넘었다(예: 직선 전진 384 > 318).
+ * 아래쪽 한계: 여유 없는 ceil(Nmax/maxInflight) · (D+1) 은 광각·즉시 실행에서 정상 구현이 넘는다(오라클 Nmax 837 → 53 < 정상 최대 연속 70).
+ * 자리가 남는데 요청하지 않는 구현(기아)은 K 가 아니라 '빈 자리 낭비 0' 단언(replay 의 wastedSlots)이 매 시점 잡는다.
  */
 export function starveBound(nMax, maxInflight, maxDelay) {
-  return 2 * Math.ceil(nMax / maxInflight) * (maxDelay + 1);
+  return Math.ceil(nMax / maxInflight) * (maxDelay + 2);
 }
 
 /** 정지 구간 길이: 마지막 시점의 needed 전체가 요청·도착하는 데 드는 묶음 수 ceil(N/maxInflight)·(D+1) 에 지연 D 와 여유 1 을 더한다. */
@@ -134,6 +139,11 @@ export function settleSteps(nLast, maxInflight, maxDelay) {
  *                    deferred 는 '요청한 적 있음'이 아니므로 빼지 않는다(F-435). 진단용 수치다.
  *   dropped        : 오라클 − (held ∪ inflight ∪ deferred). 보이는 타일을 계획에서 아예 놓친 경우(경로 중에도 0 이어야 한다).
  *   maxStreak      : 한 타일이 연속 deferred 였던 최대 시점 수(경로 + 정지 구간).
+ *   K              : starveBound(오라클 크기의 경로 최댓값, maxInflight, 최대 지연). maxStreak ≤ K < steps 여야 한다.
+ *   steps          : 전체 시점 수(경로 + 정지 구간).
+ *   wastedSlots    : 매 update 직후(경로 + 정지 구간, 도착 처리 전) 오라클 − (held ∪ inflight) 가 비지 않은데
+ *                    inflight ≠ maxInflight 인 시점 수. 보이는 타일이 아직 요청되지 않았는데 자리가 비어 있으면 낭비다.
+ *                    구현의 needed·deferred 를 쓰지 않으므로 구현과 독립이다(움직이는 동안의 기아도 여기서 걸린다).
  *   immediateViolations : 즉시 도착일 때 경로 중 missing ∩ 오라클 − deferred(자리 부족으로 보류된 것만 허용).
  *   settledMissing : 정지 구간 끝에서 missing ∩ 오라클(deferred 를 빼지 않는다). 모든 지연 모델에서 0 이어야 한다.
  *   settledHeldGap : 정지 구간 끝에서 오라클 − held.
@@ -151,7 +161,9 @@ export function replay(name, poses, makeDelay, maxDelay, { opts, deps } = {}) {
   const r = {
     neverRequested: 0, dropped: 0, maxStreak: 0, maxStreakTile: '', immediateViolations: 0,
     settledMissing: -1, settledHeldGap: -1, protocol: 0, neededMax: 0, settle: 0, report: [],
+    wastedSlots: 0, oracleMax: Math.max(...oracle.map((s) => s.size)), K: 0, steps: 0,
   };
+  r.K = starveBound(r.oracleMax, maxInflight, maxDelay);
   const note = (s) => { if (r.report.length < 5) r.report.push(s); };
 
   const total = poses.length;
@@ -164,6 +176,14 @@ export function replay(name, poses, makeDelay, maxDelay, { opts, deps } = {}) {
     if (step === total - 1) {
       r.settle = settleSteps(plan.needed.length, maxInflight, maxDelay);
       settleEnd = total + r.settle;
+    }
+    // 빈 자리 낭비: update 직후(도착 처리 전) 상태로 잰다.
+    const st0 = streaming.state();
+    const covered0 = keysOf([...st0.held, ...st0.inflight]);
+    const uncovered = [...want].filter((k) => !covered0.has(k));
+    if (uncovered.length > 0 && st0.inflight.length !== maxInflight) {
+      r.wastedSlots += 1;
+      note(`${name} 시점 ${step}: 보이는 ${uncovered[0]} 등 ${uncovered.length} 개가 요청 전인데 inflight ${st0.inflight.length} ≠ ${maxInflight}`);
     }
     for (const t of plan.cancel) pending.delete(tileKey(t.tx, t.ty));
     for (const t of plan.request) {
@@ -211,7 +231,26 @@ export function replay(name, poses, makeDelay, maxDelay, { opts, deps } = {}) {
       if (r.settledMissing > 0) note(`${name}: 정지 ${r.settle} 시점 뒤에도 오라클 ∩ missing ${r.settledMissing}`);
     }
   }
+  r.steps = settleEnd;
   return r;
+}
+
+/**
+ * 기본 maxInflight 재생 결과의 완료 기준 위반 목록(빈 배열이면 통과). replay.test.mjs 가 빈 배열을, 변이 시험이 비지 않음을 단언한다.
+ *   놓친 타일 0 · 빈 자리 낭비 0(움직이는 동안 포함) · 정지 뒤 오라클 ∩ missing = ∅ · 정지 뒤 오라클 ⊆ held ·
+ *   즉시 도착이면 경로 중 missing ∩ 오라클 ⊆ deferred · 최대 연속 deferred ≤ K · 프로토콜 위반 0.
+ * K < 전체 시점 수는 시험 틀 자체의 조건이라 여기서 세지 않고 시험이 따로 단언한다.
+ */
+export function defaultFailures(r) {
+  const out = [];
+  if (r.protocol !== 0) out.push(`protocol ${r.protocol}`);
+  if (r.dropped !== 0) out.push(`dropped ${r.dropped}`);
+  if (r.wastedSlots !== 0) out.push(`wastedSlots ${r.wastedSlots}`);
+  if (r.maxStreak > r.K) out.push(`maxStreak ${r.maxStreak} > K ${r.K} (${r.maxStreakTile})`);
+  if (r.immediateViolations !== 0) out.push(`immediateViolations ${r.immediateViolations}`);
+  if (r.settledMissing !== 0) out.push(`settledMissing ${r.settledMissing}`);
+  if (r.settledHeldGap !== 0) out.push(`settledHeldGap ${r.settledHeldGap}`);
+  return out;
 }
 
 /**

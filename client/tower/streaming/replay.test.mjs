@@ -4,14 +4,16 @@
 // maxInflight 10000 즉시 실행을 더한다. 경로·오라클·재생 함수는 replay_harness.mjs 에 있다.
 // '요청한 적 있음'은 held ∪ inflight(이번 update 가 요청한 것 포함)이다. deferred 는 요청한 적 없음이다(F-435).
 // 기본 maxInflight(16)에서는 자리가 모자라 보이는 타일이 잠시 deferred 로 남는 것이 정상이므로, 그 경우의 완료 기준은
-// (1) 보이는 타일을 계획에서 놓치지 않음(held ∪ inflight ∪ deferred), (2) 같은 타일이 연속 K 시점 넘게 deferred 가 아님(기아 없음),
-// (3) 경로 끝 시점을 충분히 반복한 뒤 오라클 ∩ missing = ∅(deferred 를 빼지 않음)으로 잰다. 자리 제한이 없는 maxInflight 10000 실행은
+// (1) 보이는 타일을 계획에서 놓치지 않음(held ∪ inflight ∪ deferred, 0 개),
+// (2) 빈 자리 낭비 0: 매 update 직후 오라클 − (held ∪ inflight) 가 비지 않으면 inflight = maxInflight(움직이는 동안 포함, 구현과 독립),
+// (3) 같은 타일이 연속 K 시점 넘게 deferred 가 아님(K 는 오라클 크기에서 유도하고 전체 시점 수보다 작다),
+// (4) 경로 끝 시점을 충분히 반복한 뒤 오라클 ∩ missing = ∅(deferred 를 빼지 않음)으로 잰다. 자리 제한이 없는 maxInflight 10000 실행은
 // '요청한 적 없는 보이는 타일 0'·'missing 0'·'오라클 ⊆ held' 를 매 시점 문자 그대로 단언한다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { oracleTiles } from './replay_oracle.mjs';
-import { TOWER_STREAMING_LIMITS, TOWER_STREAMING_MAX_NEVER_REQUESTED } from '../../../contracts/controlview/streaming.mjs';
-import { cam, PATHS, DELAYS, ORACLE, FOV_WIDE, replay, replayUnlimited, starveBound } from './replay_harness.mjs';
+import { TOWER_STREAMING_MAX_NEVER_REQUESTED } from '../../../contracts/controlview/streaming.mjs';
+import { cam, PATHS, DELAYS, ORACLE, FOV_WIDE, replay, replayUnlimited, defaultFailures } from './replay_harness.mjs';
 
 // ── 오라클 자체 시험: 손으로 센 타일 수 ──
 
@@ -72,16 +74,15 @@ test('재생: 광각 경로(fovY 2.2 rad)가 들어 있다', () => {
 
 for (const [name, poses] of PATHS) {
   for (const [dname, makeDelay, maxDelay] of DELAYS) {
-    test(`재생: ${name} · 도착 ${dname} → 놓친 타일 0, 기아 없음, 정지 뒤 missing 0`, () => {
+    test(`재생: ${name} · 도착 ${dname} → 놓친 타일 0, 빈 자리 낭비 0, 기아 없음, 정지 뒤 missing 0`, () => {
       const r = replay(name, poses, makeDelay, maxDelay);
       const msg = r.report.join('; ');
-      assert.equal(r.protocol, 0, msg);
-      assert.equal(r.dropped, TOWER_STREAMING_MAX_NEVER_REQUESTED, msg);
-      const K = starveBound(r.neededMax, TOWER_STREAMING_LIMITS.maxInflight, maxDelay);
-      assert.ok(r.maxStreak <= K, `${name}: 타일 ${r.maxStreakTile} 가 연속 ${r.maxStreak} 시점 deferred(K ${K})`);
-      assert.equal(r.immediateViolations, 0, msg);
-      assert.equal(r.settledMissing, 0, msg);
-      assert.equal(r.settledHeldGap, 0, msg);
+      // K 가 실행 길이보다 길면 경로 내내 deferred 인 타일도 통과하므로 틀 자체를 먼저 확인한다.
+      assert.ok(r.K < r.steps, `${name}: K ${r.K} ≥ 전체 시점 ${r.steps}`);
+      // 놓친 타일은 계약 상수(요청한 적 없음 허용치)가 아니라 문자 그대로 0 과 비교한다.
+      assert.equal(r.dropped, 0, msg);
+      assert.equal(r.wastedSlots, 0, msg);
+      assert.deepEqual(defaultFailures(r), [], msg);
     });
   }
 
