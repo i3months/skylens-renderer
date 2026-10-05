@@ -6,7 +6,8 @@
 // 기본 maxInflight(16)에서는 자리가 모자라 보이는 타일이 잠시 deferred 로 남는 것이 정상이므로, 그 경우의 완료 기준은
 // (1) 보이는 타일을 계획에서 놓치지 않음(held ∪ inflight ∪ deferred, 0 개),
 // (2) 빈 자리 낭비 0: 매 update 직후 오라클 − (held ∪ inflight) 가 비지 않으면 inflight = maxInflight(움직이는 동안 포함, 구현과 독립),
-// (3) 같은 타일이 연속 K 시점 넘게 deferred 가 아님(K 는 오라클 크기에서 유도하고 전체 시점 수보다 작다),
+// (3) 같은 타일이 연속 K 시점 넘게 deferred 가 아님(K 는 오라클 크기에서 정하고 경로 부분 시점 수보다 작다),
+// (3') 진행 하한: 보이는 타일이 기다리는 시점에 retain 밖 inflight 0, 한 타일 연속 inflight ≤ D+1, 오라클 타일을 보류하고 더 먼 타일 요청 0,
 // (4) 경로 끝 시점을 충분히 반복한 뒤 오라클 ∩ missing = ∅(deferred 를 빼지 않음)으로 잰다. 자리 제한이 없는 maxInflight 10000 실행은
 // '요청한 적 없는 보이는 타일 0'·'missing 0'·'오라클 ⊆ held' 를 매 시점 문자 그대로 단언한다.
 import test from 'node:test';
@@ -60,9 +61,9 @@ test('오라클: slab 위(0,0,700) 수직 하향 fov 90° 정사각, maxDist 750
 
 // ── 경로 재생 ──
 
-test('재생: 경로마다 시점 ≥ 120 이고 오라클이 비지 않는다', () => {
+test('재생: 경로마다 시점 ≥ 480 이고 오라클이 비지 않는다', () => {
   for (const [name, poses] of PATHS) {
-    assert.ok(poses.length >= 120, `${name}: ${poses.length}`);
+    assert.ok(poses.length >= 480, `${name}: ${poses.length}`);
     const sizes = ORACLE.get(name).map((s) => s.size);
     assert.ok(Math.min(...sizes) > 0, `${name}: 오라클이 빈 시점이 있다`);
   }
@@ -77,8 +78,9 @@ for (const [name, poses] of PATHS) {
     test(`재생: ${name} · 도착 ${dname} → 놓친 타일 0, 빈 자리 낭비 0, 기아 없음, 정지 뒤 missing 0`, () => {
       const r = replay(name, poses, makeDelay, maxDelay);
       const msg = r.report.join('; ');
-      // K 가 실행 길이보다 길면 경로 내내 deferred 인 타일도 통과하므로 틀 자체를 먼저 확인한다.
-      assert.ok(r.K < r.steps, `${name}: K ${r.K} ≥ 전체 시점 ${r.steps}`);
+      // K 가 경로 부분(정지 구간 제외) 시점 수보다 길면 경로 내내 deferred 인 타일도 통과하므로 틀 자체를 먼저 확인한다(F-441 ①).
+      assert.equal(r.pathSteps, poses.length);
+      assert.ok(r.K < r.pathSteps, `${name}: K ${r.K} ≥ 경로 시점 ${r.pathSteps}`);
       // 놓친 타일은 계약 상수(요청한 적 없음 허용치)가 아니라 문자 그대로 0 과 비교한다.
       assert.equal(r.dropped, 0, msg);
       assert.equal(r.wastedSlots, 0, msg);
