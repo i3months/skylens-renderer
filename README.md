@@ -141,7 +141,7 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 ### 관제탑 드론·경로·탐지 마커 (T15.6)
 
-드론·경로·탐지 마커의 ENU 위치를 화면(CSS 픽셀) 좌표 목록으로 바꾸는 계산 전용 모듈. 계약 `contracts/controlview/overlay.mjs`, 구현 `client/tower/overlay/`(검사·저장·투영·근평면 자르기·조립·카메라 자세). 목록은 호출마다 교체되고 받지 않은 위치는 보간·외삽하지 않는다. 경로는 근평면(0.1 m)에서 잘라 카메라 뒤 조각을 버린다. ENU 왕복 오차는 시험에서 1 cm 이내(측정 최대 4.2e-9 m)다. 원본 대조 전 추정이다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/overlay/*.test.mjs"`.
+드론·경로·탐지 마커의 ENU 위치를 화면(CSS 픽셀) 좌표 목록으로 바꾸는 계산 전용 모듈. 계약 `contracts/controlview/overlay.mjs`, 구현 `client/tower/overlay/`(검사·저장·투영·근평면 자르기·조립·view(카메라 자세→화면)). 목록은 호출마다 교체되고 받지 않은 위치는 보간·외삽하지 않는다. 경로는 근평면(0.1 m)에서 잘라 카메라 뒤 조각을 버린다. ENU 왕복 오차는 시험에서 1 cm 이내(측정 최대 4.2e-9 m)다. 원본 대조 전 추정이다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/overlay/*.test.mjs"`.
 
 ### 관제탑 조각 요청 (streaming)
 
