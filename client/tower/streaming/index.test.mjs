@@ -77,6 +77,21 @@ test('update: 정규화된 opts 와 view, center 를 의존 함수에 넘긴다'
   assert.deepEqual(ctx.center, [10, 20]);
 });
 
+test('update: quat 원소 접근자가 두 번째 읽기에서 값을 바꿔도 검사한 값이 그대로 쓰인다', () => {
+  const ref = make();
+  ref.ctx.needed = T1;
+  ref.s.update({ pos: [10, 20, 100], quat: [0, 0, 0, 1], fovY: 1 }, size);
+  const { s, ctx } = make();
+  ctx.needed = T1;
+  let reads = 0;
+  const quat = [0, 0, 0, 1];
+  // 첫 읽기는 유효한 w=1, 이후 읽기는 비정규(w=0, 영 사원수)로 바뀐다
+  Object.defineProperty(quat, 3, { get() { reads += 1; return reads === 1 ? 1 : 0; } });
+  s.update({ pos: [10, 20, 100], quat, fovY: 1 }, size);
+  assert.equal(reads, 1, 'quat 원소는 한 번만 읽는다');
+  assert.deepEqual(ctx.calls[0].view, ref.ctx.calls[0].view);
+});
+
 test('update: 같은 시점을 다시 부르면 다시 요청하지 않는다', () => {
   const { s, ctx } = make();
   ctx.needed = T1;

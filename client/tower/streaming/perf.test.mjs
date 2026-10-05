@@ -55,42 +55,16 @@ test('perf: 120개 시점 경로 재생 update 한 번 평균(중앙값) ≤ 4 m
   assert.ok(ms <= MAX_MS, `중앙값 ${ms.toFixed(3)} ms > ${MAX_MS} ms`);
 });
 
-/** 같은 프로세스 안 기준 연산: 문자열 키 Set 구성·조회·정렬(update 와 비슷한 JS 작업). 부하가 걸리면 update 와 함께 느려진다. */
-function refOp() {
-  const t0 = performance.now();
-  let acc = 0;
-  for (let rep = 0; rep < 20; rep += 1) {
-    const set = new Set();
-    for (let i = 0; i < 2000; i += 1) set.add(`${(i * 7919) % 211},${(i * 104729) % 197}`);
-    const arr = [...set].map((k) => Number(k.slice(0, k.indexOf(','))));
-    arr.sort((a, b) => a - b);
-    acc += arr[arr.length >> 1];
-  }
-  if (acc < 0) throw new Error('unreachable');
-  return performance.now() - t0;
-}
-
-// 광각 시험은 update 평균 중앙값 ≤ 4 ms 를 요구한다(상한은 낮추지 않는다). CPU 부하로 느려진 경우에는 같은 프로세스의
-// 기준 연산과 번갈아 재어 비(update / 기준)로도 판정한다: 비가 RATIO_MAX 이하면 코드가 느려진 것이 아니라 기계가 느려진 것이다.
-const RATIO_MAX = 0.35;
 const WIDE_ROUNDS = 15;
 
-test('perf: 광각 시점에서도 update 한 번 평균(중앙값) ≤ 4 ms (부하에는 기준 연산 대비 비로 판정)', () => {
+test('perf: 광각 시점에서도 update 한 번 평균(중앙값) ≤ 4 ms', () => {
   const poses = makePath(FOV_WIDE);
-  for (let i = 0; i < 3; i += 1) { replay(poses); refOp(); } // 데우기
+  for (let i = 0; i < 3; i += 1) replay(poses); // 데우기
   const means = [];
-  const ratios = [];
-  for (let r = 0; r < WIDE_ROUNDS; r += 1) {
-    const ref = refOp();
-    const m = replay(poses).meanMs;
-    const ref2 = refOp();
-    means.push(m);
-    ratios.push(m / Math.min(ref, ref2));
-  }
+  for (let r = 0; r < WIDE_ROUNDS; r += 1) means.push(replay(poses).meanMs);
   const ms = median(means);
-  const ratio = median(ratios);
-  console.log(`streaming perf(광각): update 한 번 평균 중앙값 ${ms.toFixed(3)} ms (상한 ${MAX_MS} ms, 최소 ${Math.min(...means).toFixed(3)}), 기준 대비 비 중앙값 ${ratio.toFixed(4)} (상한 ${RATIO_MAX})`);
-  assert.ok(ms <= MAX_MS || ratio <= RATIO_MAX, `중앙값 ${ms.toFixed(3)} ms > ${MAX_MS} ms 이고 비 ${ratio.toFixed(4)} > ${RATIO_MAX}`);
+  console.log(`streaming perf(광각): update 한 번 평균 중앙값 ${ms.toFixed(3)} ms (상한 ${MAX_MS} ms, 최소 ${Math.min(...means).toFixed(3)}·최대 ${Math.max(...means).toFixed(3)})`);
+  assert.ok(ms <= MAX_MS, `중앙값 ${ms.toFixed(3)} ms > ${MAX_MS} ms`);
 });
 
 // 최악 시점 고정 사례: 하향(pitch -90°)·고도 600 m·광각·1920×1080, held 가 needed 로 가득 찬 정상 상태.
@@ -106,15 +80,11 @@ function worstCase(opts) {
   assert.equal(s.state().held.length, plan.needed.length, 'held 가 가득 차야 한다');
   return { s, pose, needed: plan.needed.length };
 }
-// 부하로 한 묶음이 흔들려도 다른 묶음이 한가할 수 있으므로, 묶음을 몇 번 재어 가장 좋은 묶음으로 판정한다(상한은 그대로).
-function bestOf(w, n, key, tries = 6) {
-  let best = null;
-  for (let i = 0; i < tries; i += 1) {
-    const r = timeUpdates(w, n);
-    if (best === null || r[key] < best[key]) best = r;
-    if (best[key] <= (key === 'p90' ? 8 : 16) * 0.5) break; // 여유 있게 통과하면 더 재지 않는다
-  }
-  return best;
+// 묶음을 여러 번 재어 묶음별 p50·p90 의 중앙값으로 판정한다(최소값은 간헐적 퇴행을 가리므로 쓰지 않는다).
+function medianOf(w, n, groups = 5) {
+  const rs = [];
+  for (let i = 0; i < groups; i += 1) rs.push(timeUpdates(w, n));
+  return { p50: median(rs.map((r) => r.p50)), p90: median(rs.map((r) => r.p90)) };
 }
 // 시간은 프로세스 CPU 시간(process.cpuUsage, user+system)으로 잰다: 다른 프로세스가 CPU 를 빼앗아 생기는 대기는 포함하지 않아 부하에 강하다.
 function timeUpdates({ s, pose }, n) {
@@ -133,16 +103,44 @@ function timeUpdates({ s, pose }, n) {
 test('perf: 최악 시점(하향·고도 600·광각·held 가득) 기본값 update p90 ≤ 8 ms', () => {
   const w = worstCase({});
   assert.ok(w.needed > 1000, `needed ${w.needed} 가 최악 사례로 너무 작다`);
-  const { p50, p90 } = bestOf(w, 200, 'p90');
+  const { p50, p90 } = medianOf(w, 200);
   console.log(`streaming perf(최악·기본값): needed ${w.needed}, p50 ${p50.toFixed(2)} ms, p90 ${p90.toFixed(2)} ms (CPU 시간, 상한 8 ms)`);
   assert.ok(p90 <= 8, `p90 ${p90.toFixed(2)} ms > 8 ms`);
 });
 
-test('perf: 최악 시점 retainMargin 16 update p50 ≤ 16 ms', () => {
+test('perf: 최악 시점 retainMargin 16 update p50 ≤ 16 ms, p90 ≤ 8 ms', () => {
   const w = worstCase({ retainMargin: 16 });
-  const { p50, p90 } = bestOf(w, 100, 'p50');
-  console.log(`streaming perf(최악·retainMargin 16): needed ${w.needed}, p50 ${p50.toFixed(2)} ms, p90 ${p90.toFixed(2)} ms (상한 p50 16 ms)`);
+  const { p50, p90 } = medianOf(w, 100);
+  console.log(`streaming perf(최악·retainMargin 16): needed ${w.needed}, p50 ${p50.toFixed(2)} ms, p90 ${p90.toFixed(2)} ms (상한 p50 16 ms, p90 8 ms)`);
   assert.ok(p50 <= 16, `p50 ${p50.toFixed(2)} ms > 16 ms`);
+  assert.ok(p90 <= 8, `p90 ${p90.toFixed(2)} ms > 8 ms`);
+});
+
+// 이동 중 held 부풀림 상태(실측 held 약 2900, p90 약 6~7.3 ms 로 8 ms 에 여유가 없어, 이 상태만 상한을 10 ms 로 둔다): 최악 시점에서 조금씩 이동하며 도착을 즉시 반영해 retain 안쪽 held 가 needed 보다 크게 쌓인 뒤의 update 비용.
+test('perf: 이동 중 held 부풀림 상태(retainMargin 16) update p90 ≤ 10 ms', () => {
+  const s = createTowerStreaming({ maxHeld: 1_000_000, maxInflight: 1_000_000, retainMargin: 16 });
+  const at = (i) => poseToCameraPose({ pos: [i * 40, i * 15, 600], yaw: 0.3, pitch: -Math.PI / 2 }, FOV_WIDE);
+  for (let i = 0; i < 60; i += 1) {
+    const plan = s.update(at(i), WORST_SIZE);
+    for (const t of plan.request) s.arrived(t.tx, t.ty);
+  }
+  const held = s.state().held.length;
+  const needed = s.update(at(60), WORST_SIZE).needed.length;
+  assert.ok(held > needed, `held ${held} 가 needed ${needed} 보다 커야 부풀림 상태다`);
+  const ts = [];
+  for (let i = 61; i < 161; i += 1) {
+    const pose = at(i);
+    const c0 = process.cpuUsage();
+    const plan = s.update(pose, WORST_SIZE);
+    const c = process.cpuUsage(c0);
+    ts.push((c.user + c.system) / 1000);
+    for (const t of plan.request) s.arrived(t.tx, t.ty);
+  }
+  ts.sort((a, b) => a - b);
+  const p50 = ts[50];
+  const p90 = ts[90];
+  console.log(`streaming perf(이동·held 부풀림): held ${held}, needed ${needed}, p50 ${p50.toFixed(2)} ms, p90 ${p90.toFixed(2)} ms (상한 p90 10 ms)`);
+  assert.ok(p90 <= 10, `p90 ${p90.toFixed(2)} ms > 10 ms`);
 });
 
 test('perf: maxDistM 1500·광각 시점의 needed ≤ 4096', () => {

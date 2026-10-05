@@ -28,14 +28,16 @@ export function createTowerStreaming(opts, deps = DEFAULT_DEPS) {
 
   // 시점 → needed (상태를 바꾸지 않는다). 검사 위반은 여기서 던진다.
   function neededFor(pose, size) {
-    // pos 는 한 번만 읽어 복사한다(검사한 값과 center 가 같아야 한다)
+    // pos·quat 는 한 번만 읽어 복사한다(검사한 값과 실제 사용한 값이 같아야 한다. 원소 접근자도 slice 에서 한 번씩만 읽힌다)
     const isObj = pose !== null && typeof pose === 'object';
     const rawPos = isObj ? pose.pos : undefined; // 접근자는 한 번만 읽는다
+    const rawQuat = isObj ? pose.quat : undefined;
     let snap = pose;
-    if (isObj && Array.isArray(rawPos)) {
+    if (isObj && (Array.isArray(rawPos) || Array.isArray(rawQuat))) {
       snap = {};
-      for (const k of Object.keys(pose)) if (k !== 'pos') snap[k] = pose[k];
-      snap.pos = rawPos.slice();
+      for (const k of Object.keys(pose)) if (k !== 'pos' && k !== 'quat') snap[k] = pose[k];
+      if ('pos' in pose) snap.pos = Array.isArray(rawPos) ? rawPos.slice() : rawPos;
+      if ('quat' in pose) snap.quat = Array.isArray(rawQuat) ? rawQuat.slice() : rawQuat;
     }
     const view = checkView(snap, size);
     checkCoordRange(snap.pos, o.maxDistM);
