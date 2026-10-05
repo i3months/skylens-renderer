@@ -356,7 +356,7 @@ function strideFor(w, h, budget) {
  *   −f/(1+f)). rotationRad = (kxy − kyx)/2(내용이 ENU 반시계로 θ 돌아간 타일이면 sin θ). blockMaxPx = 블록 이동량 크기 최댓값,
  *   residualMaxPx = 블록 실측과 아핀 모형의 차 최댓값. 단 기준이 섞여 있다: 불확정 블록은 residualMaxPx 에 자기 잔차를 세지 않고
  *   undecidedMaxPx(= 배제하지 못한 이동량의 원점 기준 절대 크기, 모형 예측에서 잰 값이 아님)를 max 로 합친다. 그래서 타일 전체가
- *   g = 3 px 이동하고 불확정 블록이 하나 있으면(불확정은 예측에서 ≥ 0.5 px 떨어진 블록만 된다) 나머지 블록의 모형 잔차는 ~0 이어도 residualMaxPx ≈ 3(원점 기준 배제 못 한 이동량)이 된다(o 의 방향에 따라 약 |g|−0.5 ~ |g|+1.5). 모형 잔차만의 상한이 필요하면
+ *   g = 3 px 이동하고 불확정 블록이 하나 있으면(불확정은 예측에서 ≥ 0.5 px 떨어진 블록만 된다) 나머지 블록의 모형 잔차는 ~0 이어도 residualMaxPx ≈ 3(원점 기준 배제 못 한 이동량)이 된다(|o−p| = d(≥ 0.5)이면 약 |g|−d ~ |g|+d+1). 모형 잔차만의 상한이 필요하면
  *   residualMaxPx 가 아니라 blocks 의 non-undecided 블록으로 다시 구해야 한다(별도 필드는 두지 않았다).
  */
 export function measureDrapeAlignment(image, tile) {
@@ -716,7 +716,7 @@ export function measureDrapeAlignment(image, tile) {
     // 짝 검정으로 o 보다 유의하게 나쁘지 않은(t ≤ PAIRED_K, 잴 수 없으면 멈춤) 점의 크기 최댓값(o 자신 포함). 자기 최소만 쓰면
     // 저대비 블록의 박스 평균 MSE 최소가 0 쪽으로 치우쳐(실제 1.5 px 에서 자기 최소 0.78~1.0 px) 실제 어긋남을 1 px 이하로
     // 보고했다(F-359 검토 #4 측정: 사인 2 DN ±1·±2 DN 시드 30개 중 불확정 15·15회, local 2회).
-    // 알려진 비대칭(F-385 ⑨, 열림: 검토 사항): 걷기는 예측에서 멀어지는 쪽(o 방향)으로만 간다. 그런데 재적합 이상치 경로(아래)는
+    // 알려진 비대칭(F-385 ⑨, 미룸 — decisions/0044): 걷기는 예측에서 멀어지는 쪽(o 방향)으로만 간다. 그런데 재적합 이상치 경로(아래)는
     // farOwn 뿐 아니라 잔차 경로(residual ≥ OUTLIER_PX)도 자기 최소가 예측 반대쪽이어도 켜지므로, 실제 이동이 예측을 넘어 반대쪽에
     // 있으면 걷기가 거기까지 닿지 않는다. 잔차 경로 사례: g −0.125 에서 잔차 0.534 로 진입, 보고 1.675.
     // 사례: ±3 DN 사인 2 seed 2007922, o=+0.906, 실제 −1.5, 보고 1.675(거짓 통과는 아님). 양방향 걷기를 임시로 시험하니 기존 시험
@@ -824,15 +824,15 @@ export function measureDrapeAlignment(image, tile) {
   }
 }
 
+/** 짝 검정 t 가 null(예측 위치를 잴 수 없음)이면 배제 못 한 이동량을 모르니 NaN, 아니면 compute() (F-391 ④: 이 대입을 직접 시험하려 분리). */
+export function unexcludedOrNaN(t, compute) {
+  return t === null ? NaN : compute();
+}
 /**
  * 짝 검정 경로 local 블록의 배제 못 한 이동량 집계. unexcludedPx 가 NaN 인 local 블록(예측 위치를 못 잼)은 상한 계산에 넣지 않고
  * (Math.max 가 NaN 으로 오염되지 않게) 수만 센다. 0 은 잰 결과(이동 없음)라 상한에 영향이 없다. t === null 블록은 실제 입력으로
  * 만들기 어려워(예측 위치가 영상 밖으로 나가 표본이 절반 미만이 되어야 함) 시험이 이 함수를 직접 부른다.
  */
-/** 짝 검정 t 가 null(예측 위치를 잴 수 없음)이면 배제 못 한 이동량을 모르니 NaN, 아니면 compute() (F-391 ④: 이 대입을 직접 시험하려 분리). */
-export function unexcludedOrNaN(t, compute) {
-  return t === null ? NaN : compute();
-}
 export function unexcludedSummary(blocks) {
   let unexcludedMaxPx = 0, unmeasuredLocalBlocks = 0;
   for (const b of blocks) {

@@ -6,6 +6,10 @@
 // 옮긴 것이고 메서드 이름·인자는 원본과 한 줄씩 대조되지 않았다. 대조는 [local] 이다. 대조 전까지 origin 은 'estimated'.
 //
 // 좌표: GeoAnchor 기준 ENU(x=동, y=북, z=위), 1 unit = 1 m. 카메라: contracts/raster 규약(X_c = R·X_w + t).
+// 씬 규약(x=동, y=위, z=−북)과 ENU 변환은 contracts/statusview 의 sceneToEnu·enuToScene 을 재사용한다. 카메라 축은 OpenCV(x 오른쪽, y 아래, z 앞),
+// quat 는 카메라→ENU 회전이다(statusview/index.mjs 머리와 같음). overlay 의 ENU 일치 1 cm 은 GeoAnchor 기준이다.
+// 층 모듈(terrain·drape·buildings·streaming)은 contracts/levels 의 교체·추월 건너뛰기를 따른다.
+// 폴백(fallback)은 3D 층의 대체 화면이다: 미도착 구역 보충이 아니고 화면 단위로 전부 또는 없음이며 3D 층과 함께 그리지 않는다.
 // 원칙: 도착한 것만 그린다. 수준은 교체(누적 아님)이고 추월당한 수준은 건너뛴다. 메우지 않는다.
 
 /** 모듈 한 개 = client/tower/<module>/index.mjs 의 함수 한 개. */
@@ -22,10 +26,14 @@ export const CONTROLVIEW_METHOD_MAP = Object.freeze([
 ]);
 
 /** 모듈 경로(client/tower/<module>/index.mjs). */
-export const controlviewModulePath = (module) => `client/tower/${module}/index.mjs`;
+export const controlviewModulePath = (module) => {
+  if (!CONTROLVIEW_METHOD_MAP.some((r) => r.module === module)) throw new RangeError(`unknown controlview module: ${String(module)}`);
+  return `client/tower/${module}/index.mjs`;
+};
 
 /** 번들·대역폭 문턱(TASKS T15.10, SPEC). */
-export const CONTROLVIEW_LIMITS = Object.freeze({ bundleBytes: 300_000, initialBytes: 15_000_000 });
+// 번들은 gzip, KB = 1000 B(SPEC), 구간당 3 MB(SPEC S6).
+export const CONTROLVIEW_LIMITS = Object.freeze({ bundleBytes: 300_000, initialBytes: 15_000_000, segmentBytes: 3_000_000 });
 export const CONTROLVIEW_TERRAIN_MIN_SSIM = 0.95;
 export const CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M = 0.01;
 
@@ -38,6 +46,8 @@ export const CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M = 0.01;
  * @returns {boolean}
  */
 export function isDrapeAligned(measure, tolPx) {
-  if (!measure || !(measure.unmeasuredLocalBlocks === 0)) return false;
-  return measure.maxMisalignPx <= tolPx;
+  // 입력을 강제 변환하지 않는다: null·문자열·음수·비유한(JSON 이 NaN 을 null 로 바꾼 값 포함)은 모두 통과가 아니다(F-392 ①).
+  if (!measure || typeof measure.maxMisalignPx !== 'number' || !Number.isFinite(measure.maxMisalignPx) || measure.maxMisalignPx < 0) return false;
+  if (typeof tolPx !== 'number' || !(tolPx >= 0)) return false;
+  return measure.unmeasuredLocalBlocks === 0 && measure.maxMisalignPx <= tolPx;
 }
