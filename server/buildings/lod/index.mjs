@@ -98,51 +98,114 @@ function fold90(a) {
 // 방향 있는 선분 [x1,y1,x2,y2,채널] 묶음(평탄화, 5개씩)이 이루는 고리들의 감김수가 0 이 아닌 영역의 넓이.
 // 채널(0 또는 1)마다 감김수를 따로 세고, 어느 한 채널이라도 0 이 아닌 영역의 합집합 넓이를 낸다(F-355: 삼각형 쪽 +1 과 벽 쪽 −1 이 서로 지우지 않게).
 // x 구간 [l, r] 마다 걸치는 선분(활성 집합)을 가운데 x 에서 y 로 정렬해 아래에서부터 감김수를 누적하고, 0 이 아닌 사이 간격의 사다리꼴 넓이를 더한다.
+// F-367: 선분당 객체와 구간당 배열·정렬 객체를 없애고 Float64Array/Int32Array 만 쓴다. 활성 집합은 선분 번호 배열로 두고 이전 구간의 y 순서를
+// 이어받아 삽입 정렬한다(이웃 구간에서 순서가 거의 안 바뀌므로 거의 선형). 한 구간에서 이동이 많으면(선분이 많이 교차) 비교 정렬로 넘어간다.
 // 구간 수와 활성 선분 수의 곱(구간별 정렬 작업량)이 WINDING_WORK_CAP 을 넘으면 검사하지 않고 null(알 수 없음)을 돌려준다(F-360):
-// 호출자는 그 건물을 원본으로 유지한다. 정렬된 끝점 위 스위프라 선분 수 T 에 대해 작업량 계산이 O(T log T) 다.
+// 호출자는 그 건물을 원본으로 유지한다.
+// 상한 값 40만의 근거: 측정으로 정한 값이 아니라 F-360 때 잡은 임의의 값을 그대로 둔 것이다(임의).
+// 측정(F-367, Node 22, 4코어 컨테이너, 최소 5회): 위 개선 전에는 변이 격자 지붕(삼각형 800개, 정점 xy 를 0.3 m 흔든 것) 200동 5000 m 가 4180 ms 였다.
+// 개선(타입 배열 + 직전 구간 순서 삽입 정렬 + 메시 안쪽 공유 변 상쇄) 뒤에는 같은 입력이 약 570 ms, 흔들지 않은 격자는 약 330 ms 다.
+// 공유 변 상쇄 뒤에는 격자·부채꼴처럼 안쪽 변이 많은 지붕은 활성 선분이 경계 쪽만 남아 상한에 걸리지 않는다(삼각형 12800개 한 동 73 ms).
+// 상한에 걸리는 것은 서로 겹쳐 쌓인 층(경계가 많이 겹치는 입력)이다. 같은 모양 직사각 지붕 2장씩 160층 이상(roof_area.test.mjs)이 걸리고,
+// 상한 바로 아래 150층 한 동은 약 3 ms 라 상한을 낮출 이유가 측정으로는 없었다.
 const WINDING_WORK_CAP = 400000;
+const HK = new Float64Array(4), HU = new Uint32Array(HK.buffer);
 function windingArea(segs) {
   const n = segs.length / 5;
-  const ss = [];
-  const xs = [];
+  // 수평이 아닌(x1 !== x2) 선분만, x 가 증가하는 방향으로 정규화해 SoA 로 담는다.
+  const sx = new Float64Array(n), sx2 = new Float64Array(n), sy2 = new Float64Array(n), sy = new Float64Array(n), sm = new Float64Array(n);
+  const sdir = new Int8Array(n), sch = new Uint8Array(n);
+  let c = 0;
   for (let i = 0; i < n; i++) {
     let x1 = segs[i * 5], y1 = segs[i * 5 + 1], x2 = segs[i * 5 + 2], y2 = segs[i * 5 + 3];
     if (x1 === x2) continue;
-    const dir = x2 > x1 ? 1 : -1;
-    if (dir < 0) { [x1, y1, x2, y2] = [x2, y2, x1, y1]; }
-    ss.push({ x1, y1, x2, y2, dir, ch: segs[i * 5 + 4], m: (y2 - y1) / (x2 - x1) });
-    xs.push(x1, x2);
+    let dir = 1;
+    if (x2 < x1) { dir = -1; const tx = x1, ty = y1; x1 = x2; y1 = y2; x2 = tx; y2 = ty; }
+    sx[c] = x1; sx2[c] = x2; sy2[c] = y2; sy[c] = y1; sm[c] = (y2 - y1) / (x2 - x1); sdir[c] = dir; sch[c] = segs[i * 5 + 4];
+    c++;
   }
-  xs.sort((a, b) => a - b);
+  // 같은 채널에서 같은 선분이 반대 방향으로 한 쌍 있으면 감김수 기여가 서로 정확히 지워지므로(메시 안쪽 공유 변) 미리 뺀다.
+  // 결과는 그대로이고 활성 선분이 경계 쪽으로만 남는다(격자 지붕에서 약 3분의 2 감소). 정점은 float32 에서 온 값이라 좌표가 정확히 같다.
+  if (c > 1) {
+    let cap = 16;
+    while (cap < c * 2) cap <<= 1;
+    const tab = new Int32Array(cap).fill(-1); // -1 빈칸, -2 지운 칸, 그 외 선분 번호
+    const dead = new Uint8Array(c);
+    for (let s = 0; s < c; s++) {
+      HK[0] = sx[s]; HK[1] = sy[s]; HK[2] = sx2[s]; HK[3] = sy2[s];
+      let h = Math.imul(sch[s] + 1, 0x9e3779b1);
+      for (let q = 0; q < 8; q++) h = Math.imul(h ^ HU[q], 0x85ebca6b) ^ (h >>> 13);
+      let p = h & (cap - 1);
+      let placed = false;
+      for (; tab[p] !== -1; p = (p + 1) & (cap - 1)) {
+        const o = tab[p];
+        if (o < 0) continue;
+        if (sdir[o] === -sdir[s] && sch[o] === sch[s] && sx[o] === sx[s] && sx2[o] === sx2[s] && sy[o] === sy[s] && sy2[o] === sy2[s]) {
+          dead[o] = 1; dead[s] = 1; tab[p] = -2; placed = true; break;
+        }
+      }
+      if (!placed) tab[p] = s;
+    }
+    let w = 0;
+    for (let s = 0; s < c; s++) {
+      if (dead[s]) continue;
+      if (w !== s) { sx[w] = sx[s]; sx2[w] = sx2[s]; sy2[w] = sy2[s]; sy[w] = sy[s]; sm[w] = sm[s]; sdir[w] = sdir[s]; sch[w] = sch[s]; }
+      w++;
+    }
+    c = w;
+  }
+  if (c === 0) return 0;
+  const ex = new Float64Array(c * 2);
+  for (let s = 0; s < c; s++) { ex[2 * s] = sx[s]; ex[2 * s + 1] = sx2[s]; }
+  const xs = ex.sort(); // Float64Array 기본 정렬은 수치순
   let k = 0;
   for (let i = 0; i < xs.length; i++) if (i === 0 || xs[i] !== xs[i - 1]) xs[k++] = xs[i];
-  xs.length = k;
-  const slot = (x) => { let lo = 0, hi = xs.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] < x) lo = m + 1; else hi = m; } return lo; };
-  // 구간 i = [xs[i], xs[i+1]] 마다 걸치는 선분 수를 차분 배열로 센다.
-  const diff = new Int32Array(xs.length + 1);
-  for (const s of ss) { s.a = slot(s.x1); s.b = slot(s.x2); diff[s.a]++; diff[s.b]--; }
+  const nx = k;
+  const slot = (x) => { let lo = 0, hi = nx - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] < x) lo = m + 1; else hi = m; } return lo; };
+  // 구간 i = [xs[i], xs[i+1]] 마다 걸치는 선분 수를 차분 배열로 센다. 시작 칸별 선분 목록은 계수 정렬(head/next 연결)로 만든다.
+  const sa = new Int32Array(c), sb = new Int32Array(c), diff = new Int32Array(nx + 1);
+  const head = new Int32Array(nx).fill(-1), next = new Int32Array(c);
+  for (let s = c - 1; s >= 0; s--) {
+    const a = slot(sx[s]), b = slot(sx2[s]);
+    sa[s] = a; sb[s] = b; diff[a]++; diff[b]--;
+    next[s] = head[a]; head[a] = s;
+  }
   let act = 0, work = 0;
-  for (let i = 0; i + 1 < xs.length; i++) {
+  for (let i = 0; i + 1 < nx; i++) {
     act += diff[i];
     work += act * (Math.log2(act + 1) + 1);
     if (work > WINDING_WORK_CAP) return null;
   }
-  const starts = Array.from({ length: xs.length }, () => []);
-  for (const s of ss) starts[s.a].push(s);
-  let active = [];
+  const cur = new Int32Array(c); // 활성 선분 번호, 직전 구간의 y 순서
+  const yk = new Float64Array(c); // 선분 번호 → 이번 구간 가운데 x 에서의 y
+  let cnt = 0;
   let area = 0;
-  for (let i = 0; i + 1 < xs.length; i++) {
+  for (let i = 0; i + 1 < nx; i++) {
     const l = xs[i], r = xs[i + 1], mid = (l + r) / 2;
-    active = active.filter((s) => s.b > i);
-    for (const s of starts[i]) active.push(s);
-    const cut = active.map((s) => ({ s, y: s.y1 + s.m * (mid - s.x1) }));
-    cut.sort((a, b) => a.y - b.y);
-    const w = [0, 0];
-    for (let j = 0; j + 1 < cut.length; j++) {
-      w[cut[j].s.ch] += cut[j].s.dir;
-      if (w[0] === 0 && w[1] === 0) continue;
-      const a = cut[j].s, b = cut[j + 1].s;
-      area += (r - l) * ((b.y1 + b.m * (l - b.x1) - a.y1 - a.m * (l - a.x1)) + (b.y1 + b.m * (r - b.x1) - a.y1 - a.m * (r - a.x1))) / 2;
+    let w = 0;
+    for (let j = 0; j < cnt; j++) { const s = cur[j]; if (sb[s] > i) cur[w++] = s; }
+    cnt = w;
+    for (let s = head[i]; s !== -1; s = next[s]) cur[cnt++] = s;
+    for (let j = 0; j < cnt; j++) { const s = cur[j]; yk[s] = sy[s] + sm[s] * (mid - sx[s]); }
+    // 삽입 정렬(안정). 이동 횟수가 예산을 넘으면 비교 정렬로 바꾼다.
+    let moves = 0;
+    const budget = 8 * cnt + 64;
+    let slow = false;
+    for (let j = 1; j < cnt && !slow; j++) {
+      const s = cur[j], y = yk[s];
+      let p = j - 1;
+      while (p >= 0 && yk[cur[p]] > y) { cur[p + 1] = cur[p]; p--; moves++; }
+      cur[p + 1] = s;
+      if (moves > budget) slow = true;
+    }
+    if (slow) cur.subarray(0, cnt).sort((a, b) => yk[a] - yk[b] || a - b);
+    let w0 = 0, w1 = 0;
+    for (let j = 0; j + 1 < cnt; j++) {
+      const a = cur[j];
+      if (sch[a] === 0) w0 += sdir[a]; else w1 += sdir[a];
+      if (w0 === 0 && w1 === 0) continue;
+      const b = cur[j + 1];
+      area += (r - l) * ((sy[b] + sm[b] * (l - sx[b]) - sy[a] - sm[a] * (l - sx[a])) + (sy[b] + sm[b] * (r - sx[b]) - sy[a] - sm[a] * (r - sx[a]))) / 2;
     }
   }
   return area;
