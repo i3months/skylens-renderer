@@ -50,6 +50,7 @@ export function createPoseState(opts = {}) {
       pos[1] += Math.cos(yaw) * move * c.speedMps * d;
       pos[2] = Math.min(c.maxAltM, Math.max(c.minAltM, pos[2] + climb * c.altRateMps * d));
       yaw += turn * c.yawRateRad * d;
+      return { pos: pos.slice(), yaw, pitch: c.pitchRad };
     },
     pose() {
       return { pos: pos.slice(), yaw, pitch: c.pitchRad };
