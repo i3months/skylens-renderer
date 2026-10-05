@@ -131,6 +131,10 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 클라이언트 래스터 기반 관제탑 건물 그리기. 계약 `contracts/controlview/buildings.mjs`, 구현 `client/tower/buildings/`. 표시 옵션 3종: points·black(기본)·aerial. 옵션 전환 시 네트워크 요청 없음.
 
+### 관제탑 입력 (T15.4)
+
+방향키 조향·Q/E 고도를 서버 왕복 없이 로컬에서 처리한다. 계약 `contracts/controlview/input.mjs`, 구현 `client/tower/input/`(자세 적분·눌림 추적·카메라 변환). ←/→ 방위, ↑/↓ 앞뒤, E/Q 고도 ±. 방위 0 은 북이고 시계 방향이 +이며 좌표는 GeoAnchor 기준 ENU, 1 unit = 1 m. 키 배치와 속도는 원본 대조 전 추정값이다. 이 층은 네트워크·타이머를 쓰지 않으며 keyDown → step → camera 가 한 동기 호출 안에서 갱신된다. 시험: `node --test "client/tower/input/*.test.mjs"`.
+
 ## English
 
 Server-side renderer for SkyLens. Work in progress.
@@ -262,3 +266,6 @@ The 8-viewpoint SSIM is a composite approximation of SPEC S9, with resolution 16
 
 Client rasterization-based control tower building drawing. Contract: `contracts/controlview/buildings.mjs`; implementation: `client/tower/buildings/`. Three display options: points, black (default), aerial. No network requests when switching options.
 
+### Control tower input (T15.4)
+
+Arrow-key steering and Q/E altitude are handled locally with no server round trip. Contract: `contracts/controlview/input.mjs`; implementation: `client/tower/input/` (pose integration, key tracking, camera conversion). Left/Right yaw, Up/Down forward/back, E/Q altitude. Yaw 0 is north, clockwise positive; coordinates are GeoAnchor-based ENU, 1 unit = 1 m. Key layout and speeds are estimates until compared with the original. The layer uses no network or timers, and keyDown → step → camera updates within one synchronous call. Tests: `node --test "client/tower/input/*.test.mjs"`.
