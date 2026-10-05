@@ -254,3 +254,17 @@ test('store: 복잡한 중첩 구조의 깊은 복사가 제대로 된다', () =
   assert.deepEqual(checked.points[0], [1.1, 2.2, 3.3]);
   assert.deepEqual(checked.points[1], [4.4, 5.5, 6.6]);
 });
+
+test('store: Raw 읽기는 복사 없이 같은 값을 주고 공개 접근자는 여전히 복사본이다', () => {
+  const store = createOverlayStore();
+  store.setDrones([{ id: 'd', enu: [1, 2, 3] }]);
+  store.setPath({ id: 'p', points: [[0, 0, 0], [1, 1, 1]] });
+  assert.equal(store.dronesRaw(), store.dronesRaw());
+  assert.notEqual(store.drones(), store.dronesRaw());
+  assert.deepEqual(store.pathsRaw(), store.paths());
+  const out = store.paths();
+  out[0].points[0][0] = 99;
+  assert.equal(store.pathsRaw()[0].points[0][0], 0);
+  assert.equal(store.hasPath('p'), true);
+  assert.equal(store.hasPath('q'), false);
+});

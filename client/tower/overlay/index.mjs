@@ -5,6 +5,7 @@ import { createOverlayStore } from './store.mjs';
 import { poseToView } from './view.mjs';
 import { projectPoints, unprojectPoint } from './project.mjs';
 import { clipPolyline } from './clip.mjs';
+import { TOWER_OVERLAY_LIMITS } from '../../../contracts/controlview/overlay.mjs';
 
 export function createTowerOverlay(opts) {
   const { nearM } = checkOpts(opts);
@@ -12,15 +13,22 @@ export function createTowerOverlay(opts) {
   return {
     setDrones(list) { store.setDrones(checkDrones(list)); },
     setDetections(list) { store.setDetections(checkDetections(list)); },
-    setPath(path) { store.setPath(checkPath(path)); },
+    setPath(path) {
+      const checked = checkPath(path);
+      // 새 id 인데 이미 한도만큼 있으면 상태를 건드리지 않고 던진다. 같은 id 교체는 허용.
+      if (!store.hasPath(checked.id) && store.counts().paths >= TOWER_OVERLAY_LIMITS.maxPaths) {
+        throw new RangeError(`경로는 ${TOWER_OVERLAY_LIMITS.maxPaths} 개 이하여야 한다`);
+      }
+      store.setPath(checked);
+    },
     removePath(id) { return store.removePath(id); },
     clear() { store.clear(); },
     counts() { return store.counts(); },
     project(pose, size) {
       const sz = checkSize(size);
       const view = poseToView(pose, sz);
-      const drones = store.drones();
-      const detections = store.detections();
+      const drones = store.dronesRaw();
+      const detections = store.detectionsRaw();
       const pd = projectPoints(view, drones).map((r, i) => (drones[i].yaw === undefined ? r : { ...r, yaw: drones[i].yaw }));
       const pt = projectPoints(view, detections).map((r, i) => {
         const d = detections[i];
@@ -28,7 +36,7 @@ export function createTowerOverlay(opts) {
         if (d.confidence !== undefined) o.confidence = d.confidence;
         return o;
       });
-      const paths = store.paths().map((p) => ({ id: p.id, polylines: clipPolyline(view, p.points, nearM) }));
+      const paths = store.pathsRaw().map((p) => ({ id: p.id, polylines: clipPolyline(view, p.points, nearM) }));
       return { drones: pd, detections: pt, paths };
     },
     unproject(pose, size, u, v, depth) {
