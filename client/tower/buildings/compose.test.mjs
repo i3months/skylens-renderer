@@ -171,3 +171,63 @@ test('무작위 500 장면: 독립 구현과 바이트 동일', () => {
     assertSameBytes(got, reference(a, b));
   }
 });
+
+// into 버퍼 공유 거절(.buffer 비교). 기대값은 숫자로 박았다.
+function sharedFixture() {
+  const base = emptyResult(2, 2);
+  const over = emptyResult(2, 2);
+  base.depth.set([1, 1, 0, 0]);
+  over.depth.set([2, 0, 2, 0]);
+  return { base, over };
+}
+
+test('into.depth 가 base.depth 와 같은 버퍼(전체 view)면 RangeError, 입력 불변', () => {
+  const { base, over } = sharedFixture();
+  const into = emptyResult(2, 2);
+  into.depth = new Float32Array(base.depth.buffer);
+  assert.throws(() => composeLayers(base, over, into), RangeError);
+  assert.deepEqual([...base.depth], [1, 1, 0, 0]);
+  assert.deepEqual([...over.depth], [2, 0, 2, 0]);
+});
+
+test('into.depth 가 base 보다 큰 버퍼의 4바이트 오프셋 view 여도 RangeError, base·over 불변', () => {
+  const { base, over } = sharedFixture();
+  const big = new ArrayBuffer(32);
+  const baseBig = new Float32Array(big, 0, 4); baseBig.set([1, 1, 0, 0]);
+  const shared = { ...base, depth: baseBig };
+  const into = emptyResult(2, 2);
+  into.depth = new Float32Array(big, 4, 4);
+  assert.throws(() => composeLayers(shared, over, into), RangeError);
+  assert.deepEqual([...baseBig], [1, 1, 0, 0]);
+  assert.deepEqual([...over.depth], [2, 0, 2, 0]);
+});
+
+test('into.color 가 over.depth 버퍼를 공유(종류가 달라도)하면 RangeError, over 불변', () => {
+  const { base, over } = sharedFixture();
+  const into = emptyResult(2, 2);
+  into.color = new Uint8Array(over.depth.buffer, 0, 12);
+  assert.throws(() => composeLayers(base, over, into), RangeError);
+  assert.deepEqual([...over.depth], [2, 0, 2, 0]);
+  assert.deepEqual([...base.depth], [1, 1, 0, 0]);
+});
+
+test('into 내부 color·depth·index 가 버퍼를 공유하면 RangeError', () => {
+  const { base, over } = sharedFixture();
+  const into = emptyResult(2, 2);
+  into.index = new Int32Array(into.depth.buffer);
+  assert.throws(() => composeLayers(base, over, into), RangeError);
+  const into2 = emptyResult(2, 2);
+  into2.color = new Uint8Array(into2.depth.buffer, 0, 12);
+  assert.throws(() => composeLayers(base, over, into2), RangeError);
+  assert.deepEqual([...base.depth], [1, 1, 0, 0]);
+});
+
+test('다른 버퍼의 into 는 통과하고 결과는 depth [1,1,2,0]', () => {
+  const { base, over } = sharedFixture();
+  const into = emptyResult(2, 2);
+  const out = composeLayers(base, over, into);
+  assert.equal(out, into);
+  assert.deepEqual([...out.depth], [1, 1, 2, 0]);
+  assert.deepEqual([...base.depth], [1, 1, 0, 0]);
+  assert.deepEqual([...over.depth], [2, 0, 2, 0]);
+});

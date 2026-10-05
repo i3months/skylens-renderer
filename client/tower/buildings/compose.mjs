@@ -55,8 +55,14 @@ export function composeLayers(base, over, into) {
     checkShape(into, 'into');
     if (into.width !== width || into.height !== height) throw new RangeError('compose: into 크기가 다름');
     for (const src of [base, over]) {
-      if (into === src || into.color === src.color || into.depth === src.depth || into.index === src.index) {
-        throw new RangeError('compose: into 는 base·over 와 배열을 공유할 수 없음');
+      if (into === src) throw new RangeError('compose: into 는 base·over 와 같은 객체일 수 없음');
+    }
+    // 같은 객체뿐 아니라 .buffer 를 공유하는 view(오프셋 포함)도 fill 이 입력을 망가뜨리므로 fill 전에 던진다.
+    const intoBufs = [into.color.buffer, into.depth.buffer, into.index.buffer];
+    if (new Set(intoBufs).size !== intoBufs.length) throw new RangeError('compose: into 의 color·depth·index 가 버퍼를 공유함');
+    for (const src of [base, over]) {
+      for (const sb of [src.color.buffer, src.depth.buffer, src.index.buffer]) {
+        if (intoBufs.includes(sb)) throw new RangeError('compose: into 는 base·over 와 버퍼를 공유할 수 없음');
       }
     }
     ({ color, depth, index } = into);
