@@ -272,9 +272,9 @@ test('가파른 경사면(법선 z 비율 < 0.5, 위 향)은 지붕이 아니다
   assert.ok(nz !== 0);
   const { wallMask } = buildAerialUv({ positions: steep, indices: new Uint32Array(idx) }, img);
   assert.deepEqual([...wallMask], [1, 1, 1]);
-  // y 방향 경사도 같다: (1,1,0) (5,1,0) (1,5,8) → 법선 ∝ (0, -2, 1) (순서 뒤집어 위 향), z 비율 0.447
+  // y 방향 경사도 같다: (1,1,0) (5,1,0) (1,5,8) 순서 (0,1,2) → 법선 (0, -32, 16): 위 향, z 비율 0.447 (< 0.5)
   const steepY = new Float32Array([1, 1, 0, 5, 1, 0, 1, 5, 8]);
-  const { wallMask: my } = buildAerialUv({ positions: steepY, indices: new Uint32Array([0, 2, 1]) }, img);
+  const { wallMask: my } = buildAerialUv({ positions: steepY, indices: new Uint32Array([0, 1, 2]) }, img);
   assert.deepEqual([...my], [1, 1, 1]);
   // 완만한 경사(z 비율 > 0.5)는 지붕
   const gentle = new Float32Array([1, 1, 0, 1, 5, 0, 5, 1, 2]);
