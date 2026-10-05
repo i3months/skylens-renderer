@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { EMPTY_INDEX } from '../../../contracts/raster/index.mjs';
-import { makeAerialImage } from './fixtures.mjs';
+import { makeAerialImage } from './test_support/fixtures.mjs';
 
 const W = 1280, H = 720;
 const RUNS = 5;
