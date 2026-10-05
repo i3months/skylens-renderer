@@ -19,7 +19,7 @@ export const BUILDINGS_LAYER_API = Object.freeze({
   accept: 'layer.accept(level:0..3, bundle:BuildingBundle) -> "first"|"replace"|"skip"   skip 이면 상태를 바꾸지 않는다. 잘못된 묶음이면 던지고 상태는 그대로. 한 수준 = 전체 묶음 단위',
   setMode: 'layer.setMode(mode) -> void   DISPLAY_MODES 가 아니면 RangeError(상태 그대로). 네트워크·accept 없이 로컬로 바꾼다',
   mode: 'layer.mode() -> "points"|"black"|"aerial"',
-  render: 'layer.render(camera, out?) -> RenderResult(contracts/raster)   out(같은 크기 RenderResult)을 주면 그 버퍼를 지우고 다시 써서 돌려준다(새 typed array 할당 0). 크기가 다르면 던진다. 현재 옵션 한 가지만 그린다. depth = 카메라 z(m) 또는 0, index = 그 화소를 차지한 묶음 번호(accept 한 묶음 목록 순서) 또는 −1. points 는 점 하나 = 한 화소(깊이 시험)',
+  render: 'layer.render(camera, out?) -> RenderResult(contracts/raster)   out(같은 크기 RenderResult)을 주면 그 버퍼를 지우고 다시 써서 돌려준다(새 typed array 할당 0). 크기가 다르면 던진다. out 의 color·depth·index 는 서로 겹치지 않는 배열(같은 ArrayBuffer 의 view 금지, 겹치면 RangeError). 컬링 효과는 서버 묶음 크기(묶음 분할)에 달려 있다(1묶음이면 컬링 무효). 현재 옵션 한 가지만 그린다. depth = 카메라 z(m) 또는 0, index = 그 화소를 차지한 묶음 번호(accept 한 묶음 목록 순서) 또는 −1. points 는 점 하나 = 한 화소(깊이 시험)',
   state: 'layer.state() -> { level:-1|0..3, groupCount:number, buildingCount:number, mode:string }   level −1 = 아직 아무것도 도착하지 않음(render 는 전부 빈 화소)',
 });
 
@@ -31,7 +31,7 @@ export const BUILDINGS_MODULES = Object.freeze({
   raster_tex: { file: 'raster_tex.mjs', fn: 'rasterizeTextured(camera, groups, image, out) -> void  uv 를 원근 보정 보간해 image 이중선형 표본. wallMask=1 정점이 하나라도 있는 삼각형이거나 image 가 null 이면 검정(0,0,0 이 아니라 black 옵션의 면 색 BUILDINGS_DEFAULTS.faceRgb)' },
   lines: { file: 'lines.mjs', fn: 'rasterizeLines(camera, groups, rgb, out, opts?) -> void  edgeLines 선분을 근평면에서 잘라 화소로 그린다. 깊이 시험: 빈 화소이거나 선 중복이면 bias 없음, 아니면(면) opts.depthBias(m, 기본 BUILDINGS_DEFAULTS.lineDepthBiasM) 적용. 기록은 segment depth(bias 없음), Math.fround 후 float32 유한 범위 밖이면 그리지 않음. out 의 깊이를 갱신한다' },
   points: { file: 'points.mjs', fn: 'rasterizePoints(camera, groups, rgb, out) -> void  표본점 한 개 = 한 화소(round 가 아니라 floor 칸), 깊이 시험' },
-  compose: { file: 'compose.mjs', fn: 'composeLayers(base:RenderResult, over:RenderResult) -> RenderResult  화소마다 깊이가 더 가까운 쪽(0 은 없음)의 color·depth·index 를 취한 새 결과. 같은 깊이는 base 유지. 크기가 다르면 던진다. 입력은 바꾸지 않는다' },
+  compose: { file: 'compose.mjs', fn: 'composeLayers(base:RenderResult, over:RenderResult, into?:RenderResult) -> RenderResult  화소마다 깊이가 더 가까운 쪽(0 은 없음)의 color·depth·index 를 취한 새 결과. 같은 깊이는 base 유지. 크기가 다르면 던진다. into 를 주면 그 버퍼에 쓰고 돌려준다(새 typed array 할당 0, 호출 간 재사용). 입력은 바꾸지 않는다' },
   mode: { file: 'mode.mjs', fn: 'createModeState(initial?) -> { get(), set(mode) }  DISPLAY_MODES 검증, 기본 DEFAULT_DISPLAY_MODE' },
   index: { file: 'index.mjs', fn: 'createBuildingsLayer(opts?) 조립 (작업자가 한다)' },
 });

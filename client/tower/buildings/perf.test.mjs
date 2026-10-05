@@ -1,6 +1,6 @@
 // 건물 층 성능 시험. 3000개 건물 묶음을 세 카메라(위에서 내려다봄 + 비스듬 2종)로 세 옵션 각각 렌더(RUNS=5회 중앙값).
 // 시간 문턱은 CPU 잡음 여유: 참조 구현의 거친 상한.
-// 렌더 문턱 1500 ms 는 CPU 래스터의 회귀 감시용일 뿐이다. SPEC S1 의 33 ms 와는 무관하며, 실기기 fps 는 T17 [local] 에서 잰다.
+// 렌더 문턱 300 ms 는 CPU 래스터의 회귀 감시용일 뿐이다. SPEC S1 의 33 ms 와는 무관하며, 실기기 fps 는 T17 [local] 에서 잰다.
 // 각 모드·카메라 조합은 덮인 화소가 0보다 커야 한다(빈 결과를 내는 변이가 빠른 채 통과하지 못하게 한다).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,7 +10,17 @@ import { makeAerialImage } from './test_support/fixtures.mjs';
 
 const W = 1280, H = 720;
 const RUNS = 5;
-const RENDER_THRESHOLD_MS = 1500;
+// 합성 항공영상 범위(ENU m): 건물 격자(약 ±1400 m) 전체를 덮는다.
+const AERIAL_BOUNDS_M = { minX: -1500, minY: -1500, maxX: 1500, maxY: 1500 };
+const RENDER_THRESHOLD_MS = 300; // 실측 최대(~86 ms)의 3~4배
+// 모드·카메라(위/남동/북서)별 덮인 화소 하한: 원본 결과(black 261789/398769/415587, points 1348/4268/3995, aerial 251783/383930/400922)의 약 90%
+const MIN_COVERED = {
+  black: [235600, 358800, 374000],
+  points: [1213, 3841, 3595],
+  aerial: [226600, 345500, 360800],
+};
+// aerial 카메라별 서로 다른 색 수 하한: 원본 결과(19230/51954/48890)의 약 90%. 1×1 단색 영상이면 몇 가지뿐이다.
+const MIN_AERIAL_COLORS = [17300, 46700, 44000];
 const MODE_SWITCH_THRESHOLD_MS = 1;
 const MODE_SWITCH_CALLS = 1000;
 
@@ -133,19 +143,17 @@ function createSyntheticBundle() {
     vertexOffset += 8;
   }
 
-  // uv와 wallMask 생성
+  // uv 와 wallMask 생성: uv 는 서버 규약대로 지상 좌표를 영상 범위에 대응(u 동쪽, v 남쪽으로 증가).
+  // 지붕(정점 4~7)만 wallMask 0 이라 영상을 표본하고, 하층(정점 0~3)이 낀 벽 삼각형은 면 색이다.
   const vertexCount = buildingCount * 8;
   const uv = new Float32Array(vertexCount * 2);
   const wallMask = new Uint8Array(vertexCount);
-
-  // 간단한 uv 매핑: 각 정점에 대해 0..1 범위로 매핑
-  let uvIdx = 0, maskIdx = 0;
-  for (let b = 0; b < buildingCount; b++) {
-    for (let v = 0; v < 8; v++) {
-      uv[uvIdx++] = (v % 2);
-      uv[uvIdx++] = ((v >> 1) % 2);
-      wallMask[maskIdx++] = v < 4 ? 0 : 1; // 하층은 검정, 상층은 색
-    }
+  const bnd = AERIAL_BOUNDS_M;
+  for (let i = 0; i < vertexCount; i++) {
+    const x = positions[3 * i], y = positions[3 * i + 1];
+    uv[2 * i] = (x - bnd.minX) / (bnd.maxX - bnd.minX);
+    uv[2 * i + 1] = (bnd.maxY - y) / (bnd.maxY - bnd.minY);
+    wallMask[i] = i % 8 < 4 ? 1 : 0;
   }
 
   const groups = [{
@@ -160,7 +168,7 @@ function createSyntheticBundle() {
     points: new Float32Array(points),
   }];
 
-  return { groups, image: makeAerialImage() };
+  return { groups, image: makeAerialImage({ width: 256, height: 256, bounds: AERIAL_BOUNDS_M }) };
 }
 
 /** 시점(eye)에서 목표(target)를 보는 카메라. OpenCV 축(x 오른쪽, y 아래, z 앞), X_c = R·X_w + t. */
@@ -193,6 +201,17 @@ function coveredPixels(result) {
   return n;
 }
 
+/** 덮인 화소의 서로 다른 색 수(rgb 24비트 묶음 기준) */
+function distinctCoveredColors(result) {
+  const seen = new Set();
+  const { index, color } = result;
+  for (let i = 0; i < index.length; i++) {
+    if (index[i] === EMPTY_INDEX) continue;
+    seen.add((color[3 * i] << 16) | (color[3 * i + 1] << 8) | color[3 * i + 2]);
+  }
+  return seen.size;
+}
+
 /** RUNS회 호출해서 중앙값 얻기 */
 function medianMs(fn) {
   const times = [];
@@ -205,7 +224,7 @@ function medianMs(fn) {
   return median(times);
 }
 
-test('buildings layer 성능: 렌더 ≤ 1500ms, setMode ≤ 1ms (평균)', async () => {
+test('buildings layer 성능: 렌더 ≤ 300ms, setMode ≤ 1ms (평균)', async () => {
   const { createBuildingsLayer } = await import('./index.mjs');
   const layer = createBuildingsLayer({ mode: 'black' });
 
@@ -226,9 +245,16 @@ test('buildings layer 성능: 렌더 ≤ 1500ms, setMode ≤ 1ms (평균)', asyn
     // 세 카메라로 렌더
     const modeTimes = [];
     for (const [ci, camera] of cameras.entries()) {
-      const covered = coveredPixels(layer.render(camera));
+      const res = layer.render(camera);
+      const covered = coveredPixels(res);
       console.log(`  ${mode} 카메라 ${ci}: 덮인 화소 ${covered}`);
-      assert.ok(covered > 0, `${mode} 카메라 ${ci}: 덮인 화소 0`);
+      assert.ok(covered >= MIN_COVERED[mode][ci], `${mode} 카메라 ${ci}: 덮인 화소 ${covered} < 하한 ${MIN_COVERED[mode][ci]}`);
+      if (mode === 'aerial') {
+        // 영상을 실제로 표본했다면 벽 화소 색이 다양해야 한다(1×1 단색 영상이면 몇 가지뿐).
+        const colors = distinctCoveredColors(res);
+        console.log(`  aerial 카메라 ${ci}: 서로 다른 색 ${colors}`);
+        assert.ok(colors >= MIN_AERIAL_COLORS[ci], `aerial 카메라 ${ci}: 서로 다른 색 ${colors} < 하한 ${MIN_AERIAL_COLORS[ci]}`);
+      }
       const medianT = medianMs(() => {
         layer.render(camera);
       });
