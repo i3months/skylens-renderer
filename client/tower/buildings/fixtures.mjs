@@ -44,7 +44,7 @@ export function mulberry32(seed) {
   };
 }
 
-/** 서버 uv(v = 0 이 북) → 계약 uv(v 는 북쪽으로 증가). 새 배열을 돌려준다. */
+/** v 를 1 − v 로 뒤집는다(뒤집기 변이 시험용; 계약 규약은 서버와 같은 v = 0 이 북). 새 배열을 돌려준다. */
 export function flipV(uv) {
   const out = new Float32Array(uv.length);
   for (let i = 0; i < uv.length; i += 2) { out[i] = uv[i]; out[i + 1] = 1 - uv[i + 1]; }
