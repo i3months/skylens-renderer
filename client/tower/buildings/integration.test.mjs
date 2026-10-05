@@ -7,7 +7,7 @@ import { BUILDINGS_DEFAULTS } from '../../../contracts/controlview/buildings.mjs
 import { emptyResult } from '../../../contracts/raster/index.mjs';
 import { rasterizeFlat } from './raster_flat.mjs';
 import { DISPLAY_MODES, buildingHeightM } from '../../../contracts/tower_assets/index.mjs';
-import { buildRealBundle, makeFootprints, BUILDING_COUNT, IMAGE_BOUNDS } from './test_support/integration_bundle.mjs';
+import { buildRealBundle, makeFootprints, makeAerialImage, BUILDING_COUNT, IMAGE_BOUNDS } from './test_support/integration_bundle.mjs';
 import { installNetworkSpies } from './network_spies.mjs';
 
 // 네트워크 감시자(F-409): 이 파일의 모든 시험 동안 걸어 두고, 끝에 호출이 0 인지 확인한다.
@@ -220,15 +220,26 @@ test('(d) 높이 규칙이 지붕 깊이에 반영된다(floors 3 → 카메라 
   const a = layer.render(CAM);
   const px0 = pixelOf(fps[0].probe[0], fps[0].probe[1], 9);
   assert.ok(Math.abs(a.depth[px0] - 191) < 1e-3);
-  // aerial 지붕 화소는 makeAerialImage 기울기 색이다: r = 60 + 150·(동쪽 비율), g = 60 + 150·(북쪽 비율), 표본·보간 오차 ±8.
+  // aerial 지붕 화소 기대값: makeAerialImage(SEED) 의 r = 60+floor(i/W·150), g = 60+floor(j/H·150)(행 0 = 북)를
+  // 화소 중심 기준(col = u·W−0.5, row = v·H−0.5) 이중선형(가장자리 클램프)으로 직접 계산한다. 허용 ±3(반올림·부동소수 여유).
   const B = IMAGE_BOUNDS;
+  const img = makeAerialImage(SEED);
+  const clamp = (n, hi) => (n < 0 ? 0 : n > hi ? hi : n);
+  const expectedRgb = (u, v, k) => {
+    const col = u * img.width - 0.5, row = v * img.height - 0.5;
+    const c0 = Math.floor(col), r0 = Math.floor(row);
+    const ax = col - c0, ay = row - r0;
+    const at = (r, c) => img.rgb[3 * (clamp(r, img.height - 1) * img.width + clamp(c, img.width - 1)) + k];
+    return (1 - ax) * (1 - ay) * at(r0, c0) + ax * (1 - ay) * at(r0, c0 + 1) + (1 - ax) * ay * at(r0 + 1, c0) + ax * ay * at(r0 + 1, c0 + 1);
+  };
   for (let i = 0; i < fps.length; i++) {
     const px = pixelOf(fps[i].probe[0], fps[i].probe[1], expectH(fps[i]));
     assert.equal(a.index[px], i, `aerial 동 ${i}: 묶음 번호`);
-    const east = (fps[i].probe[0] - B.minX) / (B.maxX - B.minX);
-    const north = (B.maxY - fps[i].probe[1]) / (B.maxY - B.minY);
-    assert.ok(Math.abs(a.color[3 * px] - (60 + 150 * east)) <= 8, `aerial 동 ${i}: r ${a.color[3 * px]}`);
-    assert.ok(Math.abs(a.color[3 * px + 1] - (60 + 150 * north)) <= 8, `aerial 동 ${i}: g ${a.color[3 * px + 1]}`);
+    const u = (fps[i].probe[0] - B.minX) / (B.maxX - B.minX);
+    // v = 남쪽 비율(영상 행 0 = 북, 남쪽으로 증가).
+    const south = (B.maxY - fps[i].probe[1]) / (B.maxY - B.minY);
+    assert.ok(Math.abs(a.color[3 * px] - expectedRgb(u, south, 0)) <= 3, `aerial 동 ${i}: r ${a.color[3 * px]}`);
+    assert.ok(Math.abs(a.color[3 * px + 1] - expectedRgb(u, south, 1)) <= 3, `aerial 동 ${i}: g ${a.color[3 * px + 1]}`);
   }
 });
 
