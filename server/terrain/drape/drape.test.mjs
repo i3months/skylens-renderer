@@ -779,7 +779,8 @@ const F359_DEFICIT = [...F359_OLD.slice(0, 3), ...F359_WARP1, ...F359_WARP2];
 // 보고가 이 값 − 1/32(다듬기 한 걸음) 아래면 측정한 최소보다 작게 보고하는 회귀다(F-374: 짝 검정 경로에서 |dx| 를 1.0001 로
 // 자르는 변이가 '보고 > 1' 단언을 통과했다).
 const F359_DEFICIT_COSTMIN = [1.1875, 1.1875, 1.34375];
-// warpedTile ±1·±2 DN 고정 시드 입력(F359_WARP1·F359_WARP2 순서)의 블록 다듬은 자기 최소 |dx|(T14.R10 측정). 짝 검정 경로 local
+// warpedTile ±1·±2 DN 고정 시드 입력(F359_WARP1·F359_WARP2 순서)의 블록 다듬은 자기 최소 |dx|(T14.R10 에서 한 번 측정해 굳힌 값).
+// 이 시험이 비용 최소를 다시 구하는 것은 아니다 — 출력 스냅샷이라 측정 코드가 바뀌어 최소가 달라지면 값을 다시 재야 한다. 짝 검정 경로 local
 // 블록의 보고가 이 값 − 1/32 아래면 자기 최소보다 작게 보고하는 회귀다 — |dx| 를 1.0001 로 자르는 변이가 위 shiftedTile 단언만
 // 아니라 잡음 입력에서도 직접 실패하게 한다(F-374 잔여).
 const F359_WARP_COSTMIN = [1.125, 1.125, 1.3125, 1.21875, 1.15625, 1.1875, 1.40625, 1.3125];
@@ -1042,6 +1043,10 @@ test('F-383 ⑨ 축 평평 불확정 경로: 사인 1.5 DN ±1 DN seed 2007922, 
   const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
   const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise: 1, seed: 2007922 }));
   assert.equal(m.status, 'measured');
-  assert.ok(m.undecidedBlocks > 0 || m.maxMisalignPx > ALIGN_TOLERANCE_PX, `정합 통과: 불확정 ${m.undecidedBlocks}, 보고 ${m.maxMisalignPx}`);
+  // 아래 보고 단언이 이미 정합 통과를 막으므로, 여기서는 이 경로(축 평평 불확정)만 따로 지킨다: 불확정 블록이 있고 그 블록이 한 축만 쟀다.
+  // drape_noise.test.mjs 의 F-380 시험과 같은 seed 2007922 입력이라 불확정 블록 존재 단언은 겹친다(이 시험은 한 축만 잰 점을 더한다).
+  assert.ok(m.undecidedBlocks > 0, `불확정 블록 없음, 보고 ${m.maxMisalignPx}`);
+  const und = m.blocks.filter((b) => b.undecided);
+  assert.ok(und.length >= 1 && und.every((b) => b.axes !== 'xy') && m.axisFlatBlocks >= 1, `한 축만 잰 불확정 블록 아님: ${und.map((b) => b.axes)}, axisFlatBlocks ${m.axisFlatBlocks}`);
   assert.ok(m.maxMisalignPx > ALIGN_TOLERANCE_PX, `보고 ${m.maxMisalignPx} ≤ 1 px`);
 });
