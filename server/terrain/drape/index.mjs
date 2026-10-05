@@ -636,13 +636,22 @@ export function measureDrapeAlignment(image, tile) {
     fit = robustAffine(affineBlocks, minBlocks);
     if (!fit) return unmeasurable('블록 이동량이 한 아핀 모형으로 모이지 않거나 블록 중심이 한 직선 위');
     // 다시 맞춘 모형의 이상치: 예측 ±OUTLIER_PX(축마다) 안에서만 다시 찾는다. 그 안의 최소가 자기 최소보다 뚜렷이 나쁘거나,
-    // 그 값으로도 잔차가 OUTLIER_PX 를 넘거나, 예측 근처를 못 재면 모형으로 설명되지 않는 국소 어긋남이다 → 블록 자기 실측
-    // 최소(own)를 되살려 local. 이전에는 ±1.94 px 탐색 범위 안에 실제 1~1.6 px 이동이 들어가 비용이 같으면(near == own)
-    // local 도 적합도 아닌 채 버렸다(F-357). 잡음 블록은 예측 ±0.5 px 의 최소가 자기 최소와 유의하게 다르지 않아 local 이 아니다.
+    // 그 값으로도 잔차가 OUTLIER_PX 를 넘으면서 예측 위치의 비용이 자기 최소보다 유의하게 나쁘거나, 예측 근처를 못 재면 모형으로
+    // 설명되지 않는 국소 어긋남이다 → 블록 자기 실측 최소(own)를 되살려 local. 이전에는 ±1.94 px 탐색 범위 안에 실제 1~1.6 px
+    // 이동이 들어가 비용이 같으면(near == own) local 도 적합도 아닌 채 버렸다(F-357).
     for (const b of affineBlocks) {
       if (fit.inlier.has(b)) continue;
-      // 예측 ±OUTLIER_PX 탐색의 최소가 경계에 닿으면 잔차가 정확히 OUTLIER_PX 다 — 실제 이동은 그 밖일 수 있으므로 local(F-359).
-      if (settle(b, fit.at, false, OUTLIER_PX) !== false || residual(b, fit.at) >= OUTLIER_PX - 1e-9) markLocal(b);
+      // 예측 ±OUTLIER_PX 탐색의 최소가 경계에 닿으면 잔차가 정확히 OUTLIER_PX 다 — 실제 이동은 그 밖일 수 있다(F-359).
+      // 다만 잔차만으로는 local 이 아니다: 저대비 블록에 잡음이 있으면 잡음 최소가 예측에서 0.5 px 넘게 떨어지기도 한다(F-363,
+      // ±3 DN 잡음·이동 0 에서 거짓 local 1.41 px). 예측 위치의 비용이 자기 최소보다 유의하게(localSignificant) 나쁠 때만 local.
+      // 측정(F-363): 실제 1~1.5 px 어긋남(F-359 입력)은 예측 비용 − 자기 최소 0.025~0.055 > 문턱 0.017, 이동 없는 ±2·±3 DN
+      // 잡음 블록은 ≤ 0.04 < 문턱 0.29~0.66. 예측 ±0.5 px 최소(경계값)와의 차는 실제 어긋남에서도 0.004~0.016 이라 문턱을 못 넘는다.
+      const out = settle(b, fit.at, false, OUTLIER_PX);
+      if (out === false && residual(b, fit.at) >= OUTLIER_PX - 1e-9) {
+        const [px, py] = fit.at(b.di, b.dj);
+        const c = cost(b.xs, b.ys, px, py);
+        if (c.n < b.minN || localSignificant(c.mse, b.own.mse, b.own.n)) markLocal(b);
+      } else if (out !== false) markLocal(b);
     }
     // 평평한 축의 값은 모형 예측으로 둔다(그 축은 잴 수 없었다).
     for (const b of blocks) {
