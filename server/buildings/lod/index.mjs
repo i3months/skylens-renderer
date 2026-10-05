@@ -145,8 +145,9 @@ function summarize(b, index) {
   const theta = wallAngles.length ? fold90(Math.atan2(ss, sc) / 4) : 0;
   // 윗면 최저 높이: 위를 향한(xy 투영이 반시계, 넓이 있는) 삼각형 꼭짓점 z 의 최솟값. 상자 지붕은 maxZ 이므로
   // 한 메시 안의 높이 차(낮은 기단 위 탑, 경사 지붕)도 수직 오차 maxZ − roofMin 으로 잡힌다.
-  // 위를 향한 삼각형이 없으면(벽만 있는 퇴화 입력) 지붕이 낮아지는 곳이 없으므로 maxZ 로 둔다.
-  // 감김이 계약과 반대면 바닥이 위를 향한 것으로 보여 오차가 커지고 원본이 유지된다(보수적).
+  // 위를 향한 삼각형이 없으면(벽만 있는 퇴화 입력, 또는 계약과 반대인 시계 방향 감김) 지붕 높이를 알 수 없다.
+  // maxZ 로 두면 계단 0 으로 보여 없는 지붕을 만들어 내므로(F-327) -Infinity 로 두어 수직 오차를 무한대로 만들고
+  // 그 건물은 원본을 유지한다(계약의 오류 관례: 해석할 수 없는 입력은 바꾸지 않고 그대로 돌려준다).
   let roofMin = Infinity;
   for (let t = 0; t < idx.length / 3; t++) {
     const o = t * 6;
@@ -154,7 +155,7 @@ function summarize(b, index) {
     if (area <= 1e-6) continue;
     for (let k = 0; k < 3; k++) roofMin = Math.min(roofMin, p[idx[t * 3 + k] * 3 + 2]);
   }
-  if (roofMin === Infinity) roofMin = maxZ;
+  if (roofMin === Infinity) roofMin = -Infinity;
   let wallDev = 0;
   for (const a of wallAngles) wallDev = Math.max(wallDev, Math.abs(fold90(a - theta)));
   return {
