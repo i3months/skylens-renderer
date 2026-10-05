@@ -10,37 +10,57 @@ const rect = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 const tris = (out) => out.reduce((t, g) => t + g.mesh.indices.length / 3, 0);
 const resetStats = () => { for (const k of Object.keys(agglomerateStats)) agglomerateStats[k] = 0; };
 
-// F-372: 높이 z 인 납작한 10×10 상자 두 개(틈 1 m), 카메라 1500 m. 칸 번호 floor(z/B) 가 2^53 을 넘으면 예전 조회 반복이 끝나지 않았다.
+// F-372: 높이 z 인 납작한 10×10 상자 N×N 개(틈 1 m), 카메라 1500 m. 칸 번호 floor(z/B) 가 2^53 을 넘으면 예전 조회 반복이 끝나지 않았다.
+// 상자가 두 개뿐이면 범위 칸 수가 격자 군집 수보다 많아 칸 반복에 닿지 못한다(F-375). 상자 64 개(8 × 8)면 격자 군집이 충분해 칸 조회 경로에 닿는다.
 // 동기 함수라 같은 스레드의 시험 timeout 은 멈춘 반복을 끊지 못한다. 작업자 스레드에서 돌리고 상한이 지나면 작업자를 끝내고 실패로 본다.
-// 기대값: hideTol = 1500 × (π/3/1080) × 0.25 ≈ 0.364 m < 틈 1 m 라 합쳐지지 않고, 같은 64 m 칸이라 한 그룹에 상자 2개(삼각형 20개)다.
-// (0b9ea51, 색인 이전 판도 z = 3e15·3e16·1e17·1e20·3e38 에서 그룹 1개 ids [1, 2] 를 돌려준다.)
+// 작업자는 결과와 함께 agglomerateStats 를 돌려줘 어느 경로를 탔는지 단언한다.
+// 기대값: hideTol = 1500 × (π/3/1080) × 0.25 ≈ 0.364 m < 틈 1 m 라 하나도 합쳐지지 않는다(상자 64 개, 삼각형 640 개). 칸 크기 B = hideTol 이라 칸 번호 상한 2^40 은 z ≈ 4e11 m 이다.
+//  - z ≤ 3e11(번호 약 8e11 < 2^40): big 0, cells > 0(칸 조회 경로).
+//  - z ≥ 1e12(번호가 2^40 초과): 전부 big 목록(big = 64), cells 0, visited > 0(전쌍 비교 경로). 가드를 없애면 번호 2^53 초과에서 반복이 끝나지 않는다.
+const N_BOX = 8;
 const WORKER_SRC = `
 import { parentPort, workerData } from 'node:worker_threads';
-const { buildBuildingLod } = await import(workerData.url);
-const box = (id, x, z) => {
-  const p = [x, 0, z, x + 10, 0, z, x + 10, 10, z, x, 10, z, x, 0, z, x + 10, 0, z, x + 10, 10, z, x, 10, z];
+const { buildBuildingLod, agglomerateStats } = await import(workerData.url);
+const box = (id, x, y, z) => {
+  const p = [x, y, z, x + 10, y, z, x + 10, y + 10, z, x, y + 10, z, x, y, z, x + 10, y, z, x + 10, y + 10, z, x, y + 10, z];
   const idx = [0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7, 4, 5, 6, 4, 6, 7];
   return { id, mesh: { positions: Float32Array.from(p), indices: Uint32Array.from(idx) } };
 };
-const out = buildBuildingLod([box(1, 0, workerData.z), box(2, 11, workerData.z)], 1500);
-parentPort.postMessage(out.map((g) => ({ ids: g.ids, tris: g.mesh.indices.length / 3 })));
+const bs = [];
+for (let i = 0; i < workerData.n * workerData.n; i++) bs.push(box(i + 1, (i % workerData.n) * 11, Math.floor(i / workerData.n) * 11, workerData.z));
+const out = buildBuildingLod(bs, 1500);
+parentPort.postMessage({
+  ids: out.reduce((t, g) => t + g.ids.length, 0),
+  tris: out.reduce((t, g) => t + g.mesh.indices.length / 3, 0),
+  stats: { ...agglomerateStats },
+});
 `;
-const LIMIT_MS = 1000;
+// 상한은 작업자 기동·모듈 적재를 포함한다. 병렬 부하에서도 정상 코드가 실패하지 않도록 넉넉히 잡는다(멈춘 반복은 상한이 얼마든 걸린다).
+const LIMIT_MS = 15000;
 function runInWorker(z) {
   return new Promise((resolve, reject) => {
     const w = new Worker(new URL(`data:text/javascript,${encodeURIComponent(WORKER_SRC)}`), {
-      workerData: { url: new URL('./index.mjs', import.meta.url).href, z },
+      workerData: { url: new URL('./index.mjs', import.meta.url).href, z, n: N_BOX },
     });
-    // 상한은 작업자 시작·모듈 적재까지 포함한 1 s 다(적재는 수십 ms, 끝나지 않는 반복은 상한이 얼마든 걸린다).
     const timer = setTimeout(() => { w.terminate(); reject(new Error(`z=${z}: ${LIMIT_MS} ms 안에 끝나지 않음`)); }, LIMIT_MS);
     w.once('message', (m) => { clearTimeout(timer); w.terminate(); resolve(m); });
     w.once('error', (e) => { clearTimeout(timer); reject(e); });
   });
 }
-for (const z of [3e16, 1e17, 1e20, 3e38]) {
-  test(`F-372: 높이 ${z} 의 상자 두 개가 1 s 안에 끝나고 결과는 그룹 1개 ids [1, 2] 상자 2개`, { timeout: 5000 }, async () => {
-    const out = await runInWorker(z);
-    assert.deepEqual(out, [{ ids: [1, 2], tris: 20 }]);
+for (const z of [3e11, 1e12, 3e16, 1e17, 1e20, 3e38]) {
+  test(`F-372: 높이 ${z} 의 상자 ${N_BOX * N_BOX}개가 끝나고 합쳐지지 않으며 기대한 경로(${z <= 3e11 ? '칸 조회' : '전쌍 비교'})를 탄다`, { timeout: 2 * LIMIT_MS }, async () => {
+    const { ids, tris: t, stats } = await runInWorker(z);
+    assert.equal(ids, N_BOX * N_BOX);
+    assert.equal(t, 10 * N_BOX * N_BOX);
+    assert.ok(stats.visited > 0, `visited ${stats.visited}`);
+    if (z <= 3e11) {
+      assert.equal(stats.big, 0);
+      assert.ok(stats.cells > 0 && stats.regs > 0 && stats.hits > 0, `칸 조회 경로를 타야 한다: ${JSON.stringify(stats)}`);
+    } else {
+      assert.equal(stats.big, N_BOX * N_BOX, '칸 번호가 상한을 넘는 군집은 모두 big 목록');
+      assert.equal(stats.cells, 0);
+      assert.equal(stats.regs, 0);
+    }
   });
 }
 
@@ -117,6 +137,8 @@ for (const bands of [false, true]) {
       assert.ok(agglomerateStats.visited <= 11 * n, `n=${n}: visited ${agglomerateStats.visited}`);
       return { n, ...agglomerateStats };
     });
+    // 계수가 0 이면 0/0 = NaN 비교가 우연히 통과하므로 먼저 모두 0 보다 큼을 단언한다(양성 대조).
+    for (const r of runs) for (const key of ['visited', 'cells', 'hits', 'regs']) assert.ok(r[key] > 0, `n=${r.n}: ${key} ${r[key]} 는 0 보다 커야 한다`);
     for (const key of ['visited', 'cells', 'hits', 'regs']) {
       for (let i = 1; i < runs.length; i++) {
         const r = runs[i][key] / runs[i - 1][key];

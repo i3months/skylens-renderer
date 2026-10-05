@@ -315,12 +315,17 @@ function strideFor(w, h, budget) {
  *    자체 최소보다 1.5배 넘게, 그리고 표본 수·잡음 기준으로 유의하게(차 > 4·max(자기 최소, 1/12)·√(2/(3n))) 나쁜 블록은 아핀으로
  *    설명되지 않는 국소 어긋남(local)으로 실측 이동량을 유지한다. 다시 맞춘 모형의 이상치는 예측 ±0.5 px 안에서만 다시 찾고,
  *    그 값으로도 잔차가 0.5 px 이상이고(탐색 경계에 닿음 포함) 예측 위치가 자기 최소보다 같은 표본 픽셀 짝 검정으로 유의하게 나쁘면
- *    (t > DRAPE_PAIRED_K, 귀무 분포 측정으로 정함) local 이다.
+ *    (t > DRAPE_PAIRED_K, 귀무 분포 측정으로 정함) local 이다. 같은 경로에서 t ≤ DRAPE_PAIRED_K 인 블록과, 한 축만 평평한 블록 중
+ *    평평한 축의 자기 최소가 예측에서 0.5 px 이상 떨어진 블록은 불확정(undecided)이다 — 정합 증거로 세지 않고 배제 못 한 이동량 크기를
+ *    undecidedMaxPx 로 maxMisalignPx 에 넣는다(DRAPE_PAIRED_K 는 local 표시와 배제 범위 끝을 가르는 진단값).
  *    local 블록의 이동량은 자기 최소에서 1/32 px 까지 다듬는다.
  *    전역 가설이 여럿이면 아핀 변위장 아래 타일 전체 평균 제곱 차가 가장 작은 가설을 고른다.
  * 4) edgeMaxPx = 피복 범위(타일 ∩ coverage.mask 완전 피복(255) 픽셀을 감싸는 사각형 ∩ coverage.bounds, 둘 다 없으면 타일 전체) 네 모서리의 모형 변위
  *    최댓값(아핀 변위장의 크기는 볼록이라 사각형 안 최댓값은 모서리; 영상 자료가 없는 곳까지 외삽하지 않음),
- *    localMaxPx = local 블록 실측 이동량 크기 최댓값, maxMisalignPx = max(edgeMaxPx, localMaxPx).
+ *    localMaxPx = local 블록 실측 이동량 크기 최댓값, undecidedMaxPx = 불확정 블록이 배제하지 못한 이동량 크기 최댓값,
+ *    unexcludedMaxPx = 짝 검정 경로 local 블록이 배제하지 못한 이동량 크기 최댓값(둘 다 자기 최소에서 예측 반대쪽으로 1 px 까지
+ *    0.25 px 씩 나가며 짝 검정 t ≤ DRAPE_PAIRED_K 인 점까지; 없으면 0),
+ *    maxMisalignPx = max(edgeMaxPx, localMaxPx, undecidedMaxPx, unexcludedMaxPx).
  *    다음이면 status = 'unmeasurable' 이고 maxMisalignPx·edgeMaxPx·축척 등은 NaN 이다(0 으로 보고하지 않는다; NaN 은 어떤
  *    `<= 허용` 판정도 통과하지 못한다): 전역 비용면이 ±1 px 이동에 평평함(균일한 색 등), 아핀에 여분이 없음(블록 6개 미만이면서
  *    2×2 이상 블록 격자 전체 피복도 아님 — 3~5블록 정확 적합은 잡음을 모서리 외삽으로 부풀림), 블록 중심이 한 직선 위,
@@ -332,11 +337,13 @@ function strideFor(w, h, budget) {
  *    완전 피복(mask 255) 픽셀이 없는 타일도 unmeasurable 이 아니라 TowerAssetError(bounds 유무와 무관하게 같은 메시지).
  * @returns {{status:'measured'|'unmeasurable', reason?:string, maxMisalignPx:number, dxPx:number, dyPx:number, rms:number,
  *   samples:number, globalDxPx:number, globalDyPx:number, blockMaxPx:number, residualMaxPx:number, edgeMaxPx:number,
- *   localMaxPx:number, scaleX:number, scaleY:number, rotationRad:number,
+ *   localMaxPx:number, undecidedBlocks:number, undecidedMaxPx:number, unexcludedMaxPx:number, scaleX:number, scaleY:number, rotationRad:number,
  *   affine:{ax:number,kxx:number,kxy:number,ay:number,kyx:number,kyy:number}|null,
  *   blockPx:{width:number,height:number}, flatBlocks:number, flatAreaFraction:number, axisFlatBlocks:number,
- *   blocks:Array<{i0:number,j0:number,dx:number,dy:number,n:number,local:boolean,axes:'xy'|'x'|'y',pairedT:number}>}}
+ *   blocks:Array<{i0:number,j0:number,dx:number,dy:number,n:number,local:boolean,undecided:boolean,axes:'xy'|'x'|'y',pairedT:number}>}}
  *   pairedT = 재적합 이상치 잔차 경로 짝 검정의 t(그 검정을 하지 않았거나 예측 위치를 못 잰 블록은 NaN).
+ *   undecided = 불확정 블록(위 3), undecidedBlocks = 그 수(측정 불가면 NaN). 불확정 블록의 dx·dy 는 local 이 아닌 블록과 같은
+ *   예측 근처 값이고, 크기 보고는 undecidedMaxPx 로 한다.
  *   flatBlocks = 두 축 모두 평평해 뺀 블록 수, flatAreaFraction = 그 면적 / 피복 블록 면적, axisFlatBlocks = 한 축만 잰 블록 수,
  *   axes = 그 블록에서 잰 축.
  *   dxPx·dyPx·rms·samples 는 타일 전체 단일 이동량(1 의 첫 가설) 기준(타일 픽셀 단위), dx 는 동쪽, dy 는 남쪽(행 증가) 방향.
@@ -644,12 +651,12 @@ export function measureDrapeAlignment(image, tile) {
       blockPx,
       flatBlocks, flatAreaFraction: coveredArea > 0 ? flatArea / coveredArea : 0,
       axisFlatBlocks: blocks.filter((b) => !(b.ix && b.iy)).length,
-      blocks: blocks.map(({ i0, j0, dx, dy, n, local, ix, iy, pairedT = NaN }) => ({
-        i0, j0, dx, dy, n, local, axes: (ix ? 'x' : '') + (iy ? 'y' : ''), pairedT,
+      blocks: blocks.map(({ i0, j0, dx, dy, n, local, undecided = false, ix, iy, pairedT = NaN }) => ({
+        i0, j0, dx, dy, n, local, undecided, axes: (ix ? 'x' : '') + (iy ? 'y' : ''), pairedT,
       })),
     });
     const unmeasurable = (reason) => finish('unmeasurable', {
-      reason, maxMisalignPx: NaN, residualMaxPx: NaN, edgeMaxPx: NaN, localMaxPx: NaN,
+      reason, maxMisalignPx: NaN, residualMaxPx: NaN, edgeMaxPx: NaN, localMaxPx: NaN, undecidedBlocks: NaN, undecidedMaxPx: NaN, unexcludedMaxPx: NaN,
       scaleX: NaN, scaleY: NaN, rotationRad: NaN, affine: null, tileMse: Infinity,
     });
 
@@ -683,7 +690,7 @@ export function measureDrapeAlignment(image, tile) {
       return true;
     };
     // local 블록은 자기 실측 최소(첫 탐색은 1/4 px 까지)를 그 자리에서 1/32 px 까지 다듬어 보고한다.
-    // 짝 검정(pairedWorse)의 기준도 이 다듬은 최소다: 블록이 local 이면 보고할 값과 같은 위치에서 비교한다.
+    // 짝 검정(pairedT)의 기준도 이 다듬은 최소다: 블록이 local 이면 보고할 값과 같은 위치에서 비교한다.
     const ownFine = (b) => {
       if (!b.fine) {
         const r = search(b.xs, b.ys, b.own.dx, b.own.dy, REFINE_STAGES.slice(BLOCK_COARSE_STAGES.length), b.minN);
@@ -695,6 +702,30 @@ export function measureDrapeAlignment(image, tile) {
       const o = ownFine(b);
       b.dx = o.dx; b.dy = o.dy; b.mse = o.mse; b.n = o.n;
       b.local = true;
+    };
+    // 배제하지 못한 이동량의 크기: 자기 다듬은 최소 o 에서 예측 → o 방향으로 UNDECIDED_STEP_PX 씩 UNDECIDED_REACH_PX 까지 나가며,
+    // 짝 검정으로 o 보다 유의하게 나쁘지 않은(t ≤ PAIRED_K, 잴 수 없으면 멈춤) 점의 크기 최댓값(o 자신 포함). 자기 최소만 쓰면
+    // 저대비 블록의 박스 평균 MSE 최소가 0 쪽으로 치우쳐(실제 1.5 px 에서 자기 최소 0.78~1.0 px) 실제 어긋남을 1 px 이하로
+    // 보고했다(F-359 검토 #4 측정: 사인 2 DN ±1·±2 DN 시드 30개 중 불확정 15·15회, local 2회).
+    const unexcludedPx = (b, [px, py]) => {
+      const o = ownFine(b);
+      let far = Math.hypot(o.dx, o.dy);
+      const len = Math.hypot(o.dx - px, o.dy - py);
+      if (len > 0) {
+        const ux = (o.dx - px) / len, uy = (o.dy - py) / len;
+        for (let s = UNDECIDED_STEP_PX; s <= UNDECIDED_REACH_PX + 1e-9; s += UNDECIDED_STEP_PX) {
+          const cx = o.dx + s * ux, cy = o.dy + s * uy;
+          const t = pairedT(b, cx, cy, o);
+          if (t === null || t > PAIRED_K) break;
+          far = Math.max(far, Math.hypot(cx, cy));
+        }
+      }
+      return far;
+    };
+    // 불확정(undecided): 정합 증거로 세지 않는 블록. 보고 dx·dy 는 그대로 두고, 배제하지 못한 이동량 크기를 undecidedMaxPx 에 넣는다.
+    const markUndecided = (b, p) => {
+      b.undecided = true;
+      b.undecidedPx = unexcludedPx(b, p);
     };
     for (const b of blocks) if (settle(b, fit.at, fit.inlier.has(b))) markLocal(b);
     const affineBlocks = blocks.filter((b) => !b.local);
@@ -716,8 +747,22 @@ export function measureDrapeAlignment(image, tile) {
         const [px, py] = fit.at(b.di, b.dj);
         const t = pairedT(b, px, py, ownFine(b));
         b.pairedT = t ?? NaN;
-        if (t === null || t > PAIRED_K) markLocal(b);
+        // t ≤ PAIRED_K 는 '정합' 이 아니라 '판정 못 함'(불확정)이다: 탐색 창 경계에 닿은 블록의 실제 이동은 창 밖일 수 있고,
+        // 같은 조건 실제 1.5 px 어긋남의 t 분포가 귀무와 겹친다(F-359 검토 #4). 불확정 블록도 배제하지 못한 이동량을
+        // maxMisalignPx 에 넣으므로, local/불확정 갈림은 local 표시만 바꾸고 정합 통과 여부는 PAIRED_K 하나에 기대지 않는다.
+        // local 블록도 보고는 자기 최소지만, 배제하지 못한 이동량은 unexcludedMaxPx 로 maxMisalignPx 에 넣는다(같은 치우침).
+        if (t === null || t > PAIRED_K) { markLocal(b); b.unexcludedPx = t === null ? 0 : unexcludedPx(b, [px, py]); }
+        else markUndecided(b, [px, py]);
       } else if (out !== false) markLocal(b);
+    }
+    // 한 축만 평평한 블록: 평평한 축은 모형 예측으로 채우지만(아래), 그 축의 자기 최소가 예측에서 OUTLIER_PX 이상 떨어져 있으면
+    // 그 축은 정합 증거가 아니다 — 저대비 블록은 비용 곡률이 평평 문턱 아래여도 실제 1.3~1.5 px 이동 쪽에 최소가 있을 수 있다
+    // (F-359 검토 #4, 사인 1.5 DN ±1 DN seed 2007922: x 평평, 자기 최소 −1.28 px, 예측 −0.125 px 로 정합 통과 보고). 불확정.
+    for (const b of blocks) {
+      if (b.local || b.undecided || (b.ix && b.iy)) continue;
+      const o = ownFine(b);
+      const [px, py] = fit.at(b.di, b.dj);
+      if (Math.hypot(b.ix ? 0 : o.dx - px, b.iy ? 0 : o.dy - py) >= OUTLIER_PX - 1e-9) markUndecided(b, [px, py]);
     }
     // 평평한 축의 값은 모형 예측으로 둔다(그 축은 잴 수 없었다).
     for (const b of blocks) {
@@ -730,15 +775,19 @@ export function measureDrapeAlignment(image, tile) {
     //    블록(local)의 실측 이동량 크기. 영상 자료가 없는 곳까지 외삽하지 않는다(완전 피복 타일이면 타일 네 모서리).
     let edgeMaxPx = 0;
     for (const ci of [ei0, ei1]) for (const cj of [ej0, ej1]) edgeMaxPx = Math.max(edgeMaxPx, Math.hypot(...fit.at(ci, cj)));
-    let residualMaxPx = 0, localMaxPx = 0;
+    let residualMaxPx = 0, localMaxPx = 0, undecidedMaxPx = 0, undecidedBlocks = 0, unexcludedMaxPx = 0;
     for (const b of blocks) {
       residualMaxPx = Math.max(residualMaxPx, residual(b, fit.at));
       if (b.local) localMaxPx = Math.max(localMaxPx, Math.hypot(b.dx, b.dy));
+      if (b.undecided) { undecidedBlocks++; undecidedMaxPx = Math.max(undecidedMaxPx, b.undecidedPx); }
+      if (b.local && b.unexcludedPx) unexcludedMaxPx = Math.max(unexcludedMaxPx, b.unexcludedPx);
     }
     const { fx, fy } = fit;
     return finish('measured', {
-      maxMisalignPx: Math.max(edgeMaxPx, localMaxPx),
-      residualMaxPx, edgeMaxPx, localMaxPx,
+      // 불확정 블록과 짝 검정 경로 local 블록이 배제하지 못한 이동량도 넣는다(보수적): 판정 못 한 블록을 정합 증거로 세거나
+      // 치우친 자기 최소만 보고하면 실제 1.5 px 를 ≤ 1 px 로 보고한다.
+      maxMisalignPx: Math.max(edgeMaxPx, localMaxPx, undecidedMaxPx, unexcludedMaxPx),
+      residualMaxPx, edgeMaxPx, localMaxPx, undecidedBlocks, undecidedMaxPx, unexcludedMaxPx,
       scaleX: fx.ki, scaleY: fy.kj, rotationRad: (fx.kj - fy.ki) / 2,
       affine: { ax: fx.a, kxx: fx.ki, kxy: fx.kj, ay: fy.a, kyx: fy.ki, kyy: fy.kj },
       tileMse: costAffine(gxs, gys, fit.at),
@@ -777,6 +826,9 @@ const LOCAL_SIGNIFICANCE_K = 4;
  * 통계로는 이 둘을 가를 정보가 없다. 다시 볼 조건: 귀무 표본에서 2.75 를 넘는 t 가 나오거나, 블록 통계를 바꿀 때.
  */
 const PAIRED_K = 2.75;
+// 불확정 블록의 배제 못 한 이동량을 찾는 걸음과 범위(자기 최소에서, 타일 픽셀). 1 px 허용 판정에 쓰는 값이라 1 px 까지 본다.
+const UNDECIDED_STEP_PX = 0.25;
+const UNDECIDED_REACH_PX = 1;
 export const DRAPE_PAIRED_K = PAIRED_K;
 function localSignificant(nearMse, ownMse, n) {
   return nearMse - ownMse > LOCAL_SIGNIFICANCE_K * Math.max(ownMse, FLAT_MSE) * Math.sqrt(2 / (3 * n));
