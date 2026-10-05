@@ -118,12 +118,22 @@ test('F-345: staggered row of 4 at 5 km (every empty cell an open 1.2 m notch) m
 });
 
 test('F-345: the same staggered row with 32 buildings gives at most 2 boxes', () => {
-  // 위 배치를 32동으로 늘린다(i = 0..31, 홀수 i 가 y +1.2 m). 이어받은 홈 재측정이 예산을 나눠 쓰면 상자 17개였다.
+  // 위 배치를 32동으로 늘린다(i = 0..31, 홀수 i 가 y +1.2 m). 상자 17개는 '이어받은 칸 전부 재측정 + 공유 예산' 변이에서만 나온다.
+  // 정상 구현의 상자 2개째는 예산 때문이 아니라, 96 m 줄이 64 m 공간 칸(BUILDING_LOD_CELL_M)의 경계에서 나뉘기 때문이다.
   const list = [];
   for (let i = 0; i < 32; i++) list.push(rect(i + 1, 3 * i, (i % 2) * 1.2, 3 * i + 3, (i % 2) * 1.2 + 3));
   const out = buildBuildingLod(list, 5000);
   assert.equal(out.flatMap((g) => g.ids).length, 32);
   assert.ok(boxCount(out) <= 2, `${boxCount(out)} boxes`);
+});
+
+test('F-345: the same staggered row with 20 buildings (60 m, inside one spatial cell) gives exactly 1 box', () => {
+  // 20동 × 3 m = 60 m < 64 m(BUILDING_LOD_CELL_M) 라 칸 경계에서 나뉘지 않는다. 실제로 1개로 합쳐진다(21동도 1개, 22동부터 2개).
+  const list = [];
+  for (let i = 0; i < 20; i++) list.push(rect(i + 1, 3 * i, (i % 2) * 1.2, 3 * i + 3, (i % 2) * 1.2 + 3));
+  const out = buildBuildingLod(list, 5000);
+  assert.equal(out.flatMap((g) => g.ids).length, 20);
+  assert.equal(boxCount(out), 1);
 });
 
 test('F-338/F-345: the same chained trapped gap along y (box grows in y) is not roofed over', () => {
@@ -153,20 +163,26 @@ test('F-345: inherited-cell re-measure has its own cell budget (open 1.2 m notch
   assert.equal(boxCount(out), 1);
 });
 
-test('F-347: 끼인 틈 폭 = 한도: 수용 (등호 수용은 축 정렬에서만)', () => {
-  // hideTol 1.212 m 와 정확히 같은 폭의 축 정렬 틈은 합쳐진다.
-  const out = buildBuildingLod([rect(1, 8, 0, 10, 2), rect(2, 10 + 1.2120, 0, 12 + 1.2120, 2)], 5000);
-  assert.equal(boxCount(out), 1, 'axis-aligned gap width = hideTol merges');
+// 시험에서 직접 계산하는 한도: 5 km 에서 hideTol = 5000 × REF_PIXEL_RAD × MAX_GAP_PX = 1.21203 m.
+const HIDE_TOL_5KM = 5000 * BUILDING_LOD_REF_PIXEL_RAD * BUILDING_LOD_MAX_GAP_PX;
+
+test('F-347: 축 정렬 끼인 틈 폭 0.99·hideTol 은 수용, 폭 = hideTol 부터는 거부', () => {
+  // 등호 수용은 축 정렬에서만 의미가 있고, 반환 e 는 칸 단위의 느슨한 상한이다. 실제로 돌려 본 결과 폭 = hideTol 은 거부(상자 2개)였다.
+  const pair = (w) => buildBuildingLod([rect(1, 8, 0, 10, 2), rect(2, 10 + w, 0, 12 + w, 2)], 5000);
+  assert.equal(boxCount(pair(0.9 * HIDE_TOL_5KM)), 1, '0.9 hideTol');
+  assert.equal(boxCount(pair(0.99 * HIDE_TOL_5KM)), 1, '0.99 hideTol');
+  assert.equal(boxCount(pair(HIDE_TOL_5KM)), 2, '1.0 hideTol');
+  assert.equal(boxCount(pair(1.01 * HIDE_TOL_5KM)), 2, '1.01 hideTol');
 });
 
-test('F-347: 45° 대각 틈 폭 = 한도 (현재 반올림으로 거부됨, 기록)', () => {
-  // 45° 대각선 방향으로 1.414 m(= sqrt(2) * 1.0) 떨어진 두 2×2 m 건물. 틈의 대각 폭이
-  // 축 정렬일 때와 같지만, 반올림으로 거부된다. 이 동작을 변경하지 않고 기록한다.
-  const offset = 1.0;
-  const out = buildBuildingLod(
-    [rect(1, 0, 0, 2, 2), rect(2, 2 + offset * Math.sqrt(2), 2 + offset * Math.sqrt(2), 4 + offset * Math.sqrt(2), 4 + offset * Math.sqrt(2))],
-    5000
-  );
-  // Current behavior: 45-degree diagonal gap is rejected (2 boxes)
-  assert.equal(boxCount(out), 2, '45-degree diagonal gap width = limit currently rejected by rounding');
+test('F-347: 45° 회전한 긴 건물 두 동 사이 수직 폭 0.99·hideTol 은 수용, 1.0 부터는 거부', () => {
+  // 2 × 50 m 건물 둘을 45° 돌려 빈 모서리가 생기지 않게 하고, 둘 사이 수직 폭 w 를 바꾼다(반환 e 는 칸 단위 상한이라 등호 수용은 기대하지 않는다).
+  const c = Math.SQRT1_2;
+  const rot = (x, y) => [x * c - y * c, x * c + y * c];
+  const bar = (id, y0) => ({ id, mesh: prism([[0, y0], [50, y0], [50, y0 + 2], [0, y0 + 2]].map(([x, y]) => rot(x, y)), 1) });
+  const pair = (w) => buildBuildingLod([bar(1, 0), bar(2, 2 + w)], 5000);
+  assert.equal(boxCount(pair(0.5 * HIDE_TOL_5KM)), 1, '0.5 hideTol');
+  assert.equal(boxCount(pair(0.99 * HIDE_TOL_5KM)), 1, '0.99 hideTol');
+  assert.equal(boxCount(pair(HIDE_TOL_5KM)), 2, '1.0 hideTol');
+  assert.equal(boxCount(pair(1.01 * HIDE_TOL_5KM)), 2, '1.01 hideTol');
 });
