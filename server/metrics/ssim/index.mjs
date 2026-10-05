@@ -44,7 +44,48 @@ function filterValid(src, w, h, tmp, out) {
   return out;
 }
 
+// 창 단위 채움 판정용: 창 11x11 안에 0 이 아닌 화소(어느 채널이든)가 하나라도 있으면 그 영상의 창은 '채워짐'.
+// 값 0(전 채널)은 빈 화소(배경)로 본다. 반환: ow·oh 길이 Uint8Array(1=채워짐).
+function filledWindows(v, width, height, channels) {
+  const ow = width - WIN + 1;
+  const oh = height - WIN + 1;
+  const W1 = width + 1;
+  const acc = new Int32Array(W1 * (height + 1)); // 적분 영상
+  for (let y = 0; y < height; y++) {
+    let run = 0;
+    for (let x = 0; x < width; x++) {
+      let nz = 0;
+      for (let c = 0; c < channels; c++) if (v[(y * width + x) * channels + c] !== 0) nz = 1;
+      run += nz;
+      acc[(y + 1) * W1 + x + 1] = acc[y * W1 + x + 1] + run;
+    }
+  }
+  const out = new Uint8Array(ow * oh);
+  for (let y = 0; y < oh; y++) {
+    for (let x = 0; x < ow; x++) {
+      const n = acc[(y + WIN) * W1 + x + WIN] - acc[y * W1 + x + WIN] - acc[(y + WIN) * W1 + x] + acc[y * W1 + x];
+      out[y * ow + x] = n > 0 ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+// 기존 ssim 과 같은 값(result)에 더해, 두 영상이 모두 채워진 창만 평균한 값을 함께 돌려준다.
+// 둘 다 빈 창은 SSIM=1 이라 전체 평균을 부풀리므로(F-396 ⑥) 별도 지표로 분리한다.
+//  - ssim: ssim() 과 비트 단위로 동일한 전체 창 평균
+//  - ssimFilled: '양쪽 모두 채워진' 창만의 평균(채널 평균). 해당 창이 없으면 null
+//  - filledWindowRatio: 양쪽 모두 채워진 창 수 / 전체 창 수
+//  - anyFilledWindowRatio: 한쪽이라도 채워진 창 비율(참고용)
+//  - filledWindows, totalWindows: 위 비율의 분자·분모
+export function ssimDetailed(a, b, width, height, channels) {
+  return compute(a, b, width, height, channels, true);
+}
+
 export function ssim(a, b, width, height, channels) {
+  return compute(a, b, width, height, channels, false).ssim;
+}
+
+function compute(a, b, width, height, channels, detailed) {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
     throw new Error(`ssim: 폭·높이는 양의 정수여야 함 (${width}x${height})`);
   }
@@ -77,6 +118,23 @@ export function ssim(a, b, width, height, channels) {
   const ebb = new Float64Array(ow * oh);
   const eab = new Float64Array(ow * oh);
   let total = 0;
+  let maskBoth = null;
+  let maskAny = null;
+  let nBoth = 0;
+  let nAny = 0;
+  let totalFilled = 0;
+  if (detailed) {
+    const fa = filledWindows(a, width, height, channels);
+    const fb = filledWindows(b, width, height, channels);
+    maskBoth = new Uint8Array(fa.length);
+    maskAny = new Uint8Array(fa.length);
+    for (let i = 0; i < fa.length; i++) {
+      maskBoth[i] = fa[i] & fb[i];
+      maskAny[i] = fa[i] | fb[i];
+      nBoth += maskBoth[i];
+      nAny += maskAny[i];
+    }
+  }
   for (let c = 0; c < channels; c++) {
     for (let i = 0; i < pix; i++) {
       const x = a[i * channels + c];
@@ -89,15 +147,28 @@ export function ssim(a, b, width, height, channels) {
     filterValid(pbb, width, height, tmp, ebb);
     filterValid(pab, width, height, tmp, eab);
     let sum = 0;
+    let sumFilled = 0;
     for (let i = 0; i < ma.length; i++) {
       const sa = eaa[i] - ma[i] * ma[i];
       const sb = ebb[i] - mb[i] * mb[i];
       const sab = eab[i] - ma[i] * mb[i];
-      sum += ((2 * ma[i] * mb[i] + C1) * (2 * sab + C2)) / ((ma[i] * ma[i] + mb[i] * mb[i] + C1) * (sa + sb + C2));
+      const v = ((2 * ma[i] * mb[i] + C1) * (2 * sab + C2)) / ((ma[i] * ma[i] + mb[i] * mb[i] + C1) * (sa + sb + C2));
+      sum += v;
+      if (maskBoth !== null && maskBoth[i] === 1) sumFilled += v;
     }
     total += sum / ma.length;
+    if (nBoth > 0) totalFilled += sumFilled / nBoth;
   }
   const result = total / channels;
   if (Number.isNaN(result)) throw new Error('ssim: 결과가 NaN');
-  return result;
+  if (!detailed) return { ssim: result };
+  const nWin = ow * oh;
+  return {
+    ssim: result,
+    ssimFilled: nBoth > 0 ? totalFilled / channels : null,
+    filledWindowRatio: nBoth / nWin,
+    anyFilledWindowRatio: nAny / nWin,
+    filledWindows: nBoth,
+    totalWindows: nWin,
+  };
 }
