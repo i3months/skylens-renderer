@@ -160,7 +160,9 @@ function viewRows(city, t, tag = '') {
 // 40 m 필지 장면은 이 시점 거리(≤ 약 3 km)에서 합칠 이웃이 없어 감소율이 0 이다. 감소율은 진단 기록만 하고,
 // 단언은 SSIM 퇴행 없음뿐이다. 감소율 단언은 아래 20 m 필지 다중 시드 장면에서 한다.
 test(`진단: 40 m 필지 혼합 도시 8시점 건물 영역 SSIM ≥ ${BUILDING_LOD_MIN_SSIM} (감소율은 기록만)`, (t) => {
-  viewRows(CITY, t);
+  const rows = viewRows(CITY, t);
+  // 출력이 원본과 같으면 SSIM 은 항상 1 이라 단언이 의미가 없다. 삼각형 수가 같음을 직접 확인한다(F-321).
+  for (const r of rows) assert.equal(r.lodTris, r.origTris, `${r.view}: 40 m 필지 장면인데 면 수가 달라짐`);
 });
 
 // 고정 회귀 시드(F-333): 감소율·SSIM 여유가 작았던 시드를 항상 본다. 180 은 F-326 때 top-high 가 0.9496 이었던 시드
@@ -412,6 +414,12 @@ test('한 메시 안 높이 차(기단 위 탑)는 수직 오차로 잡혀 hideT
     assert.equal(out.length, 1);
     assert.equal(out[0].mesh, b.mesh, `${d} m 에서 기단+탑이 상자로 바뀜`);
   }
+  // 경계: hideTol = 90 m 인 거리 ≈ 371,277 m. 0.99 배는 원본, 1.01 배는 상자(삼각형 10).
+  assert.ok(Math.abs(hideTolDist - 371277) < 1, `hideTolDist ${hideTolDist}`);
+  assert.equal(buildBuildingLod([b], hideTolDist * 0.99)[0].mesh, b.mesh);
+  const boxed = buildBuildingLod([b], hideTolDist * 1.01)[0].mesh;
+  assert.notEqual(boxed, b.mesh);
+  assert.equal(boxed.indices.length / 3, 10);
   // 이웃 같은 높이 건물과 붙어 있어도 원본 유지, 이웃만 상자.
   const n = { id: 12, mesh: rectPrism(40, 0, 60, 40, 10 / 3) };
   const out = buildBuildingLod([b, n], 5000);
@@ -430,7 +438,10 @@ test('퇴화 입력: 넓이 0 인 외곽(벽 한 장)은 오차 0 이지만 상�
   const set = [{ id: 1, mesh }, { id: 2, mesh: rectPrism(0, 5, 20, 25, 4) }];
   const out = buildBuildingLod(set, 5000);
   assert.deepEqual(allIds(out).sort(), [1, 2]);
-  assert.ok(triCount(out.map((g) => g.mesh)) <= triCount(set.map((b) => b.mesh)));
+  // 벽 한 장은 합쳐지지 않고 원본 그대로, 이웃 상자는 이미 상자라 면 수가 정확히 같다(<= 는 줄어들기만 해도 통과하는 약한 단언).
+  assert.equal(out.length, 2);
+  assert.equal(out[0].mesh, mesh);
+  assert.equal(triCount(out.map((g) => g.mesh)), triCount(set.map((b) => b.mesh)));
 });
 
 // (cx, cy) 둘레로 deg 돌린 프리즘. 기본 중심 (32, 32) 은 64 m 칸 [0,64]² 의 가운데라 돌려도 같은 칸에 남는다.
