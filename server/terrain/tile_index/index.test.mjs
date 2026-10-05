@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTileIndex, TILE_INDEX_MAX_TILES } from './index.mjs';
+import { buildTileIndex, TILE_INDEX_MAX_TILES, TILE_INDEX_MAX_TOTAL_CELLS } from './index.mjs';
 import { TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 
 // 시드 고정 PRNG(mulberry32)
@@ -145,4 +145,35 @@ test('항목 합산 셀 수 상한: 65536 타일짜리 300개는 1초 안에 Tow
   const t0 = Date.now();
   assert.throws(() => buildTileIndex({ minX: 0, minY: 0, maxX: side, maxY: side }, items), TowerAssetError);
   assert.ok(Date.now() - t0 < 1000);
+});
+
+// F-329 ①: 상한 정확히/상한+1. `>`→`>=`, 상한 값 변경, 한 변 검사 변이를 모두 잡는다.
+test('타일 수 상한 경계: 65536 개 통과, 65537 개 거부(가는 띠·정사각·항목)', () => {
+  const W = 64 * 70000;
+  const root = { minX: 0, minY: 0, maxX: W, maxY: W };
+  const idx = buildTileIndex(root, []);
+  const box = (nx, ny) => ({ minX: 0, minY: 0, maxX: 64 * nx - 1, maxY: 64 * ny - 1 });
+  for (const [nx, ny] of [[65536, 1], [1, 65536], [256, 256], [8192, 8], [2, 32768]]) {
+    assert.equal(idx.tilesIn(box(nx, ny)).length, 65536, `${nx}x${ny}`);
+    assert.doesNotThrow(() => buildTileIndex(root, [{ id: 1, bounds: box(nx, ny) }]), `${nx}x${ny} 항목`);
+  }
+  for (const [nx, ny] of [[65537, 1], [1, 65537], [8193, 8], [257, 256]]) {
+    assert.throws(() => idx.tilesIn(box(nx, ny)), TowerAssetError, `${nx}x${ny}`);
+    assert.throws(() => buildTileIndex(root, [{ id: 1, bounds: box(nx, ny) }]), TowerAssetError, `${nx}x${ny} 항목`);
+  }
+});
+
+// F-319 ⑦ / F-329: 합산 셀 상한 경계. 정확히 1,000,000 은 통과, 1,000,001 은 거부.
+test('항목 합산 셀 수 상한 경계: 1,000,000 통과, 1,000,001 거부', () => {
+  assert.equal(TILE_INDEX_MAX_TOTAL_CELLS, 1_000_000);
+  const root = { minX: 0, minY: 0, maxX: 64 * 200, maxY: 64 * 200 };
+  const sq = (n) => ({ minX: 0, minY: 0, maxX: 64 * n - 1, maxY: 64 * n - 1 });
+  const make = (extra) => {
+    const items = [];
+    for (let i = 0; i < 100; i++) items.push({ id: i, bounds: sq(100) }); // 100×100 = 10000 개씩
+    if (extra) items.push({ id: 1000, bounds: sq(1) });
+    return items;
+  };
+  assert.doesNotThrow(() => buildTileIndex(root, make(false)));
+  assert.throws(() => buildTileIndex(root, make(true)), /상한/);
 });
