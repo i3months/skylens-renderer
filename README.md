@@ -135,6 +135,10 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 방향키 조향·Q/E 고도를 서버 왕복 없이 로컬에서 처리한다. 계약 `contracts/controlview/input.mjs`, 구현 `client/tower/input/`(자세 적분·눌림 추적·카메라 변환). ←/→ 방위, ↑/↓ 앞뒤, E/Q 고도 ±. 방위 0 은 북이고 시계 방향이 +이며 좌표는 GeoAnchor 기준 ENU, 1 unit = 1 m. 키 배치와 속도는 원본 대조 전 추정값이다. 이 층은 네트워크·타이머를 쓰지 않으며 keyDown → step → camera 가 한 동기 호출 안에서 갱신된다. 시험: `node --test "client/tower/input/*.test.mjs"`.
 
+### 관제탑 추적 카메라 (T15.5)
+
+드론 목표를 지수 감쇠로 따라가는 카메라. 계약 `contracts/controlview/chase.mjs`, 구현 `client/tower/chase/`(감쇠 수학·카메라 배치·상태·조립). a = 1 − exp(−dt/tau) 라서 프레임 길이와 무관하고, 방위는 ±π 경계에서도 최단 호로 돈다. 목표가 없으면 `camera()` 는 null 이다. 기본값(tau 0.35 s, 뒤 30 m, 위 10 m)과 감쇠 의미는 원본 대조 전 추정이다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/chase/*.test.mjs"`.
+
 ## English
 
 Server-side renderer for SkyLens. Work in progress.
@@ -269,3 +273,7 @@ Client rasterization-based control tower building drawing. Contract: `contracts/
 ### Control tower input (T15.4)
 
 Arrow-key steering and Q/E altitude are handled locally with no server round trip. Contract: `contracts/controlview/input.mjs`; implementation: `client/tower/input/` (pose integration, key tracking, camera conversion). Left/Right yaw, Up/Down forward/back, E/Q altitude. Yaw 0 is north, clockwise positive; coordinates are GeoAnchor-based ENU, 1 unit = 1 m. Key layout and speeds are estimates until compared with the original. The layer uses no network or timers, and keyDown → step → camera updates within one synchronous call. Tests: `node --test "client/tower/input/*.test.mjs"`.
+
+### Tower chase camera (T15.5)
+
+A camera that follows the drone target with exponential damping. Contract: `contracts/controlview/chase.mjs`; implementation: `client/tower/chase/` (damping math, camera rig, state, assembly). The factor a = 1 − exp(−dt/tau) is frame-rate independent, and yaw takes the shortest arc across the ±π boundary. `camera()` returns null until a target exists. Defaults (tau 0.35 s, 30 m behind, 10 m above) and the damping semantics are estimates until compared with the original. No network or timers. Tests: `node --test "client/tower/chase/*.test.mjs"`.
