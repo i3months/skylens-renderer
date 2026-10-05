@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { ssim } from './index.mjs';
+import { ssim, ssimDetailed } from './index.mjs';
 
 function rng(seed) {
   let a = seed >>> 0;
@@ -157,4 +157,84 @@ test('입력 범위 밖 거부와 NaN 결과 오류', () => {
   // 경계값 0 과 255 는 허용
   const z = new Float64Array(121); const f = new Float64Array(121).fill(255);
   assert.ok(Number.isFinite(ssim(z, f, 11, 11, 1)));
+});
+
+// ---- F-396 ⑥: 채워진 창만 평균(ssimFilled) ----
+// '채워짐' = 11x11 창 안에 0 이 아닌 값(어느 채널이든)이 하나라도 있음. 양쪽 모두 채워진 창만 센다.
+
+// 손으로 푼 값: 폭 12·높이 11 이면 창이 2개(x0=0,1). 11번째 열(x=11)만 값이 있으면 창 1 의 가우시안 가중치는
+// 그 열 전체에서 k10 (1차원 커널의 마지막 원소, 세로 가중합은 1) 이고 창 0 은 비어 있다.
+test('ssimDetailed: 한 열만 채워진 쌍의 손계산 값', () => {
+  const w = 12, h = 11;
+  const e = Math.exp;
+  const k = [];
+  for (let i = 0; i < 11; i++) k.push(e(-((i - 5) ** 2) / (2 * 1.5 * 1.5)));
+  const k10 = k[10] / k.reduce((p, q) => p + q, 0);
+  const C1 = 6.5025, C2 = 58.5225;
+  for (const ch of [1, 3]) {
+    const a = new Uint8Array(w * h * ch), b = new Uint8Array(w * h * ch);
+    for (let y = 0; y < h; y++) for (let c = 0; c < ch; c++) {
+      a[(y * w + 11) * ch + c] = 200;
+      b[(y * w + 11) * ch + c] = 100;
+    }
+    const ma = k10 * 200, mb = k10 * 100;
+    const va = k10 * 40000 - ma * ma, vb = k10 * 10000 - mb * mb, cab = k10 * 20000 - ma * mb;
+    const s1 = ((2 * ma * mb + C1) * (2 * cab + C2)) / ((ma * ma + mb * mb + C1) * (va + vb + C2));
+    const r = ssimDetailed(a, b, w, h, ch);
+    assert.ok(s1 > 0.9 && s1 < 1, `s1=${s1}`);
+    assert.ok(Math.abs(r.ssimFilled - s1) <= 1e-12, `ch=${ch}`);
+    assert.ok(Math.abs(r.ssim - (1 + s1) / 2) <= 1e-12, `ch=${ch}`);
+    assert.equal(r.filledWindowRatio, 0.5);
+    assert.equal(r.anyFilledWindowRatio, 0.5);
+    assert.equal(r.filledWindows, 1);
+    assert.equal(r.totalWindows, 2);
+    assert.equal(r.ssim, ssim(a, b, w, h, ch)); // 기존 값은 비트 단위로 그대로
+  }
+});
+
+// 폭 14(창 4개, x0=0..3). a 는 x=13 한 열만, b 는 x=0..2 와 x=13. 양쪽 모두 채워진 창은 창 3 하나뿐이고
+// 그 창에서 두 영상은 같으므로 ssimFilled = 1. 창 0~2 는 a 가 비어 있어 SSIM<1 이다.
+test('ssimDetailed: 한쪽만 채워진 창은 제외하고 한쪽이라도 채워진 창은 별도 비율', () => {
+  const w = 14, h = 11;
+  const a = new Uint8Array(w * h), b = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    a[y * w + 13] = 100;
+    b[y * w + 13] = 100;
+    for (let x = 0; x < 3; x++) b[y * w + x] = 150;
+  }
+  const r = ssimDetailed(a, b, w, h, 1);
+  assert.equal(r.filledWindows, 1);
+  assert.equal(r.totalWindows, 4);
+  assert.equal(r.filledWindowRatio, 0.25);
+  assert.equal(r.anyFilledWindowRatio, 1);
+  assert.ok(Math.abs(r.ssimFilled - 1) <= 1e-12);
+  assert.ok(r.ssim < 1 - 1e-6);
+});
+
+test('ssimDetailed: 모두 빈 영상은 ssim 1 이지만 ssimFilled null·비율 0', () => {
+  const z = new Uint8Array(15 * 12 * 3);
+  const r = ssimDetailed(z, z, 15, 12, 3);
+  assert.ok(Math.abs(r.ssim - 1) <= 1e-12);
+  assert.equal(r.ssimFilled, null);
+  assert.equal(r.filledWindowRatio, 0);
+  assert.equal(r.anyFilledWindowRatio, 0);
+  assert.equal(r.filledWindows, 0);
+  assert.equal(r.totalWindows, 5 * 2);
+});
+
+test('ssimDetailed: 모두 채워진 상수 영상은 ssimFilled = ssim = 해석해, 비율 1', () => {
+  const want = 30006.5025 / 32506.5025;
+  const a = new Uint8Array(13 * 11 * 3).fill(100), b = new Uint8Array(13 * 11 * 3).fill(150);
+  const r = ssimDetailed(a, b, 13, 11, 3);
+  assert.ok(Math.abs(r.ssimFilled - want) <= 1e-12);
+  assert.ok(Math.abs(r.ssim - want) <= 1e-12);
+  assert.equal(r.filledWindowRatio, 1);
+});
+
+test('ssimDetailed: 잡음 쌍에서 ssim 은 기존 값·기준 구현과 같다', () => {
+  const a = noisy(24, 20, 3, 5), b = noisy(24, 20, 3, 6);
+  const r = ssimDetailed(a, b, 24, 20, 3);
+  assert.equal(r.ssim, ssim(a, b, 24, 20, 3));
+  assert.ok(Math.abs(r.ssimFilled - naive(a, b, 24, 20, 3)) <= 1e-9); // 0 이 거의 없어 전부 채워짐
+  assert.equal(r.filledWindowRatio, 1);
 });

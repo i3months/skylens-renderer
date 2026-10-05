@@ -591,7 +591,7 @@ export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
   // 예산을 넘긴 마지막 칸(거부)은 세지 않는다.
   // 진입 예산이 음수면 한 칸도 못 쓰니 0, NaN·undefined 도 0 으로 바꿔(비교가 모두 거짓이라 그대로 두면 무제한으로 돈다) 바로 거부한다.
   // 무제한은 Infinity 만 뜻한다. 예산 없음(undefined)은 무제한이 아니라 거부다.
-  // 의도: NaN·undefined·음수 예산은 호출 뒤에도 0 으로 남는다(거부 후 소진 상태). finally 는 Infinity 만 되돌린다.
+  // 의도: 음수·NaN·undefined 예산은 호출 뒤에도 0 또는 음수로 남는다(거부 후 음수 유지 또는 소진 상태). Infinity 만 finally 에서 복원된다.
   // Infinity 면 뺄셈이 NaN 이 되므로 큰 유한값으로 바꿔 돌린 뒤 finally 에서 되돌린다.
   const orig = budget.cells;
   const inf = orig === Infinity;
