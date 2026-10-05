@@ -52,7 +52,7 @@ function outsideFrustum(b, camera, near, corners) {
   const wR = width - cx + CULL_PAD_PX, hB = height - cy + CULL_PAD_PX, wL = cx + CULL_PAD_PX, hT = cy + CULL_PAD_PX;
   for (let i = 0; i < 24; i += 3) {
     const x = corners[i], y = corners[i + 1], z = corners[i + 2];
-    if (z > near) behind = false;
+    if (z >= near) behind = false; // lines.mjs 근평면 버림(az < near && bz < near)과 같은 경계: z == near 는 앞쪽
     if (fx * x + wL * z >= 0) left = false;
     if (wR * z - fx * x >= 0) right = false;
     if (fy * y + hT * z >= 0) top = false;
@@ -108,6 +108,10 @@ export function createBuildingsLayer(opts) {
           || !(outArg.color instanceof Uint8Array) || !(outArg.depth instanceof Float32Array) || !(outArg.index instanceof Int32Array)
           || outArg.color.length !== 3 * n || outArg.depth.length !== n || outArg.index.length !== n) {
           throw new RangeError('buildings: out 은 카메라와 같은 크기의 RenderResult 여야 함');
+        }
+        // color·depth·index 가 같은 ArrayBuffer 를 공유하면 서로 덮어쓰므로 거절한다.
+        if (outArg.color.buffer === outArg.depth.buffer || outArg.color.buffer === outArg.index.buffer || outArg.depth.buffer === outArg.index.buffer) {
+          throw new RangeError('buildings: out 의 color·depth·index 는 ArrayBuffer 를 공유할 수 없음');
         }
         out = outArg;
         out.color.fill(0); out.depth.fill(EMPTY_DEPTH); out.index.fill(EMPTY_INDEX);

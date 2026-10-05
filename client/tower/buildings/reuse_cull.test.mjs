@@ -118,19 +118,46 @@ test('① out 재사용: 반환이 같은 객체이고 color·depth·index 가 =
   assert.notEqual(l.render(CAM_TENTH), l.render(CAM_TENTH));
 });
 
-test('① 연속 render 사이 새 ArrayBuffer 할당이 없다(points·aerial, out 재사용)', () => {
-  // black 은 lines.mjs 가 호출마다 lineMark(W·H 바이트)를 만든다. 그 파일은 이 작업의 소유가 아니라 notes 에 보고한다.
-  for (const mode of ['points', 'aerial']) {
+/** 측정 구간 동안 형식 배열·ArrayBuffer 생성자 호출 수를 센다(생성자를 Proxy 로 감싼다). fn 이 끝나면 원래대로 되돌린다. */
+function countTypedArrayAllocs(fn) {
+  const names = ['Uint8Array', 'Float32Array', 'Int32Array', 'ArrayBuffer'];
+  const originals = {};
+  const counts = { total: 0 };
+  for (const name of names) {
+    const target = globalThis[name];
+    originals[name] = target;
+    globalThis[name] = new Proxy(target, {
+      construct(t, args, newTarget) {
+        counts.total += 1;
+        counts[name] = (counts[name] ?? 0) + 1;
+        return Reflect.construct(t, args, newTarget === globalThis[name] ? t : newTarget);
+      },
+    });
+  }
+  try { fn(); } finally { for (const name of names) globalThis[name] = originals[name]; }
+  return counts;
+}
+
+test('① 연속 render 사이 새 형식 배열 생성이 없다(points·black·aerial, out 재사용)', () => {
+  for (const mode of ['points', 'black', 'aerial']) {
     const l = layer(mode, true);
     const out = l.render(CAM_TENTH);
     l.render(CAM_TENTH, out);
-    global.gc?.();
-    const before = process.memoryUsage().arrayBuffers;
-    for (let i = 0; i < 10; i += 1) l.render(i % 2 ? CAM_TENTH : CAM_ALL, out);
-    const grown = process.memoryUsage().arrayBuffers - before;
-    // 예전 방식이면 10회 × (W·H·8 B = 7.4 MB) ≈ 74 MB 가 늘어난다.
-    assert.ok(grown < 2 * 1024 * 1024, `${mode}: arrayBuffers +${grown} B`);
+    l.render(CAM_ALL, out); // 예열: 호출 사이 재사용 버퍼(선 표시 버퍼 등)는 여기서 한 번 만들어진다
+    const counts = countTypedArrayAllocs(() => {
+      for (let i = 0; i < 10; i += 1) l.render(i % 2 ? CAM_TENTH : CAM_ALL, out);
+    });
+    assert.equal(counts.total, 0, `${mode}: 측정 구간 배열 생성 ${JSON.stringify(counts)}`);
   }
+});
+
+test('① 생성 횟수 측정기가 실제 생성을 센다(양성 대조)', () => {
+  const c = countTypedArrayAllocs(() => { new Uint8Array(4); new Float32Array(2); new Int32Array(1); Float32Array.from([1]); });
+  assert.equal(c.Uint8Array, 1);
+  assert.equal(c.Float32Array, 2);
+  assert.equal(c.Int32Array, 1);
+  assert.equal(typeof Uint8Array, 'function');
+  assert.ok(new Uint8Array(1) instanceof Uint8Array);
 });
 
 test('② 컬링을 켠 결과 = 끈 결과(화소 동일): 전체/1/10/몇 동/비스듬/뒤', () => {
@@ -184,4 +211,33 @@ test('③ 도시 1/10 만 보면 래스터에 넘어간 묶음 수 ≤ 1/3, blac
   const tTenth = time(CAM_EDGE);
   console.log(`# black 1280x720 3000동: 전체 ${tAll.toFixed(1)} ms, 1/10 ${tTenth.toFixed(1)} ms, 묶음 ${drawn}/100`);
   assert.ok(tTenth <= tAll / 3, `1/10 ${tTenth.toFixed(1)} ms > 전체 ${tAll.toFixed(1)} ms / 3`);
+});
+
+test('② 근평면 경계: 끝점이 정확히 z=nearM 인 선은 컬링 켬·끔 화소가 같다', () => {
+  const cam = { width: 64, height: 64, K: { fx: 100, fy: 100, cx: 32, cy: 32 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0.01] };
+  const line = new Float32Array([-0.001, -0.0005, 0, 0.001, 0.0005, 0]); // 카메라 공간 z = 0 + 0.01 = nearM
+  const one = { ids: [0], mesh: { positions: new Float32Array(0), indices: new Uint32Array(0) }, edgeLines: line, uv: new Float32Array(0), wallMask: new Uint8Array(0), points: new Float32Array(0) };
+  const results = [true, false].map((cull) => {
+    const l = createBuildingsLayer({ mode: 'black', cull });
+    l.accept(0, { groups: [one], image: makeAerialImage() });
+    return l.render(cam);
+  });
+  assert.ok(covered(results[1]) > 0, '컬링 끔에서 선이 그려져야 함');
+  assert.equal(covered(results[0]), covered(results[1]));
+  sameResult(results[0], results[1]);
+});
+
+test('① out 의 color·depth·index 가 ArrayBuffer 를 공유하면 던진다', () => {
+  const l = layer('black', true);
+  const n = 64 * 36;
+  const cam = { ...CAM_TENTH, width: 64, height: 36, K: { fx: 100, fy: 100, cx: 32, cy: 18 } };
+  const buf = new ArrayBuffer(n * 12);
+  const mk = (color, depth, index) => ({ width: 64, height: 36, color, depth, index });
+  // 색(3n B) 과 깊이(4n B)·색과 index(4n B)·깊이와 index 가 한 버퍼를 겹쳐 쓰는 경우
+  assert.throws(() => l.render(cam, mk(new Uint8Array(buf, 0, 3 * n), new Float32Array(buf, 0, n), new Int32Array(new ArrayBuffer(n * 4)))), RangeError);
+  assert.throws(() => l.render(cam, mk(new Uint8Array(buf, 0, 3 * n), new Float32Array(new ArrayBuffer(n * 4)), new Int32Array(buf, 4 * n, n))), RangeError);
+  assert.throws(() => l.render(cam, mk(new Uint8Array(new ArrayBuffer(3 * n)), new Float32Array(buf, 0, n), new Int32Array(buf, 4 * n, n))), RangeError);
+  assert.throws(() => l.render(cam, mk(new Uint8Array(buf, 0, 3 * n), new Float32Array(buf, 4 * n, n), new Int32Array(buf, 8 * n, n))), RangeError); // 같은 버퍼의 겹치지 않는 구간도 거절
+  // 서로 다른 버퍼면 통과
+  assert.doesNotThrow(() => l.render(cam, mk(new Uint8Array(3 * n), new Float32Array(n), new Int32Array(n))));
 });
