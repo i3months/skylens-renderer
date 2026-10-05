@@ -2,7 +2,7 @@
 // 규칙: 깊이 > 0 인 쪽 중 더 가까운(작은) 쪽의 color·depth·index 를 취한다. 한쪽만 0 이면 다른 쪽,
 //       둘 다 0 이면 빈 화소(color 0, depth 0, index −1). 같은 깊이는 base 유지.
 // 깊이 0 은 "없음"이다. NaN·음수·무한대 깊이는 "없음"이 아니라 입력 오류라 던진다(조용히 무시하지 않는다).
-// 입력은 바꾸지 않고, 결과는 새 배열을 쓴다(별칭 없음).
+// 입력은 바꾸지 않고, 결과는 새 배열을 쓴다(별칭 없음). 세 번째 인자 into 를 주면 그 버퍼를 재사용한다.
 import { EMPTY_DEPTH, EMPTY_INDEX } from '../../../contracts/raster/index.mjs';
 
 /** 결과 한 장의 형태(크기·배열 종류·길이)를 검사한다. */
@@ -33,9 +33,10 @@ function checkDepths(depth, name) {
  * 두 렌더 결과를 깊이로 합친다.
  * @param {import('../../../contracts/raster/index.mjs').RenderResult} base 같은 깊이에서 이기는 쪽
  * @param {import('../../../contracts/raster/index.mjs').RenderResult} over
- * @returns {import('../../../contracts/raster/index.mjs').RenderResult} 새 결과
+ * @param {import('../../../contracts/raster/index.mjs').RenderResult} [into] 주면 이 버퍼를 지우고 다시 써서 돌려준다(새 배열 0). base·over 와 같은 객체·같은 배열이면 던진다.
+ * @returns {import('../../../contracts/raster/index.mjs').RenderResult} into 또는 새 결과
  */
-export function composeLayers(base, over) {
+export function composeLayers(base, over, into) {
   checkShape(base, 'base');
   checkShape(over, 'over');
   if (base.width !== over.width || base.height !== over.height) {
@@ -45,9 +46,22 @@ export function composeLayers(base, over) {
   checkDepths(over.depth, 'over');
   const { width, height } = base;
   const n = width * height;
-  const color = new Uint8Array(3 * n);
-  const depth = new Float32Array(n).fill(EMPTY_DEPTH);
-  const index = new Int32Array(n).fill(EMPTY_INDEX);
+  let color; let depth; let index;
+  if (into === undefined || into === null) {
+    color = new Uint8Array(3 * n);
+    depth = new Float32Array(n).fill(EMPTY_DEPTH);
+    index = new Int32Array(n).fill(EMPTY_INDEX);
+  } else {
+    checkShape(into, 'into');
+    if (into.width !== width || into.height !== height) throw new RangeError('compose: into 크기가 다름');
+    for (const src of [base, over]) {
+      if (into === src || into.color === src.color || into.depth === src.depth || into.index === src.index) {
+        throw new RangeError('compose: into 는 base·over 와 배열을 공유할 수 없음');
+      }
+    }
+    ({ color, depth, index } = into);
+    color.fill(0); depth.fill(EMPTY_DEPTH); index.fill(EMPTY_INDEX);
+  }
   for (let i = 0; i < n; i += 1) {
     const dBase = base.depth[i];
     const dOver = over.depth[i];
@@ -62,5 +76,5 @@ export function composeLayers(base, over) {
     depth[i] = src.depth[i];
     index[i] = src.index[i];
   }
-  return { width, height, color, depth, index };
+  return into === undefined || into === null ? { width, height, color, depth, index } : into;
 }
