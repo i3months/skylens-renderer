@@ -10,7 +10,7 @@ export const TOWER_CHASE_DEFAULTS = Object.freeze({
   tauSec: 0.35, distM: 30, heightM: 10, lookAheadM: 0, fovYRad: 0.9, maxDtSec: 0.25,
 });
 
-/** 감쇠 계수. a = 1 − exp(−dt/tau), tau = 0 이면 a = 1. 같은 목표에서 dt 를 둘로 나눠 두 번 걸어도 한 번과 같다(프레임 길이 무관). */
+/** 감쇠 계수. a = 1 − exp(−dt/tau), tau = 0 이면 a = 1. 같은 목표에서 dt 를 둘로 나눠 두 번 걸어도 한 번과 같다(dt ≤ maxDtSec 일 때 프레임 길이 무관. 더 긴 dt 는 maxDtSec 로 잘려 분할과 같지 않다). */
 export const TOWER_CHASE_FORMULA = Object.freeze({
   factor: 'a = 1 − exp(−dt/tau)   (tau = 0 이면 1)',
   position: 'p ← p + (target − p)·a   (각 성분)',
@@ -20,9 +20,10 @@ export const TOWER_CHASE_FORMULA = Object.freeze({
 
 /** 추적 카메라 서명. */
 export const TOWER_CHASE_API = Object.freeze({
-  create: 'createChaseCamera(opts?) -> ChaseCamera   opts: TOWER_CHASE_DEFAULTS 의 키. 형식 위반 TypeError, 알 수 없는 키·범위 위반(비유한, tauSec<0, distM<0, 0<fovY<π 위반, maxDtSec≤0) RangeError',
-  target: 'chase.setTarget(pos:[x,y,z] 유한, yaw:number 유한) -> void   첫 호출은 감쇠 없이 그 자리로 놓는다(원점에서 날아오지 않는다). 이후 호출은 목표만 바꾼다',
-  step: 'chase.step(dtSec:number) -> {pos:[x,y,z], yaw:number}|null   dt 는 유한 ≥ 0, maxDtSec 로 상한. 목표가 없으면 null. dt = 0 이면 변화 없음. 감쇠된 목표 상태를 돌려준다(복사본)',
+  create: 'createChaseCamera(opts?) -> ChaseCamera   opts: TOWER_CHASE_DEFAULTS 의 키. 형식 위반 TypeError, 알 수 없는 키·범위 위반(비유한, tauSec<0, distM<0, 0<fovY<π 위반, maxDtSec≤0, distM·heightM·lookAheadM 이 float32 유한이 아님 또는 |distM|+|heightM| 가 float32 최댓값 초과) RangeError. lookAheadM 은 목표 움직임의 예측이 아니라 시선 지점을 yaw 방향 앞으로 옮기는 조준 오프셋(m)이다',
+  target: 'chase.setTarget(pos:[x,y,z] 유한, yaw:number 유한) -> void   pos 는 float32 유한(Math.fround 유한)이고 |pos 성분| + |distM| + |heightM| ≤ float32 최댓값이어야 하며(카메라 위치가 float32 안), 위반은 그 자리에서 RangeError(통과한 입력으로 camera()·step() 은 던지지 않는다). 첫 호출은 감쇠 없이 그 자리로 놓는다(원점에서 날아오지 않는다). 이후 호출은 목표만 바꾼다',
+  step: 'chase.step(dtSec:number) -> {pos:[x,y,z], yaw:number}|null   dt 는 number(아니면 TypeError)이고 유한 ≥ 0(아니면 RangeError), maxDtSec 로 상한. 목표가 없으면 null. dt = 0 이면 변화 없음. 감쇠된 목표 상태를 돌려준다(복사본)',
+  clear: 'chase.clearTarget() -> void   목표를 해제한다: 이후 camera()·step() 은 null(마지막 자세를 그리지 않는다). 목표 상실은 호출자가 알아 처리하고, 목표가 다시 나타나면 setTarget 뒤 snap() 으로 컷 전환한다(감쇠로 옛 자리에서 날아오지 않게)',
   snap: 'chase.snap() -> void   감쇠 없이 현재 목표로 즉시 놓는다(컷 전환). 목표가 없으면 아무것도 안 한다',
   camera: 'chase.camera() -> CameraPose|null   감쇠된 상태에서 rig 공식으로 계산(contracts/statusview {pos, quat, fovY}). 목표가 없으면 null',
 });

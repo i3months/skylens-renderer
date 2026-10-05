@@ -90,3 +90,16 @@ test('건물 층 계약: 모듈 파일 이름이 겹치지 않고 기본값은 �
   assert.deepEqual(Object.keys(m.BUILDINGS_LAYER_API), ['create', 'accept', 'setMode', 'mode', 'render', 'state']);
   assert.deepEqual([...m.BUILDINGS_DEFAULTS.faceRgb], [0, 0, 0]);
 });
+
+test('추적 카메라 계약: clearTarget·float32 조건·조준 오프셋·dt 조건이 명시돼 있다', async () => {
+  const m = await import('./chase.mjs');
+  assert.deepEqual(Object.keys(m.TOWER_CHASE_API), ['create', 'target', 'step', 'clear', 'snap', 'camera']);
+  assert.match(m.TOWER_CHASE_API.clear, /clearTarget\(\)/);
+  assert.match(m.TOWER_CHASE_API.clear, /snap\(\)/);
+  assert.match(m.TOWER_CHASE_API.target, /float32/);
+  assert.match(m.TOWER_CHASE_API.create, /float32/);
+  assert.match(m.TOWER_CHASE_API.create, /조준 오프셋/);
+  assert.match(m.TOWER_CHASE_API.step, /TypeError/);
+  const src = (await import('node:fs')).readFileSync(new URL('./chase.mjs', import.meta.url), 'utf8');
+  assert.match(src, /dt ≤ maxDtSec 일 때 프레임 길이 무관/);
+});

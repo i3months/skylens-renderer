@@ -26,7 +26,8 @@ export function dampFactor(dt, tau) {
 export function wrapPi(rad) {
   num(rad, 'rad');
   if (rad > -Math.PI && rad <= Math.PI) return rad;
-  const r = rad - TWO_PI * Math.floor((rad + Math.PI) / TWO_PI);
+  // |rad| 가 매우 크면 2π 곱 뺄셈이 정밀도를 잃어 범위를 벗어나므로, 삼각함수의 인수 축약에 맡긴다.
+  const r = Math.abs(rad) > 1e9 ? Math.atan2(Math.sin(rad), Math.cos(rad)) : rad - TWO_PI * Math.floor((rad + Math.PI) / TWO_PI);
   return r <= -Math.PI ? Math.PI : r;
 }
 
@@ -35,7 +36,9 @@ export function dampScalar(cur, target, a) {
   num(cur, 'cur');
   num(target, 'target');
   num(a, 'a');
-  return cur + (target - cur) * a;
+  const d = target - cur;
+  // 차이가 배정밀도를 넘치면 두 값의 가중합으로 계산한다(결과는 cur·target 사이라 유한하다).
+  return Number.isFinite(d) ? cur + d * a : cur * (1 - a) + target * a;
 }
 
 // 각도 감쇠: cur + wrapPi(target − cur)·a (최단 호). 결과는 접지 않는다.
