@@ -221,7 +221,7 @@ test('(d) 높이 규칙이 지붕 깊이에 반영된다(floors 3 → 카메라 
   const px0 = pixelOf(fps[0].probe[0], fps[0].probe[1], 9);
   assert.ok(Math.abs(a.depth[px0] - 191) < 1e-3);
   // aerial 지붕 화소 기대값: makeAerialImage(SEED) 의 r = 60+floor(i/W·150), g = 60+floor(j/H·150)(행 0 = 북)를
-  // 화소 중심 기준(col = u·W−0.5, row = v·H−0.5) 이중선형(가장자리 클램프)으로 직접 계산한다. 허용 ±3(반올림·부동소수 여유).
+  // 화소 중심 기준(col = u·W−0.5, row = v·H−0.5) 이중선형(가장자리 클램프)으로 직접 계산한다. 허용 ±1. 0.5 오프셋은 raster_tex 단위 시험 담당.
   const B = IMAGE_BOUNDS;
   const img = makeAerialImage(SEED);
   const clamp = (n, hi) => (n < 0 ? 0 : n > hi ? hi : n);
@@ -238,8 +238,8 @@ test('(d) 높이 규칙이 지붕 깊이에 반영된다(floors 3 → 카메라 
     const u = (fps[i].probe[0] - B.minX) / (B.maxX - B.minX);
     // v = 남쪽 비율(영상 행 0 = 북, 남쪽으로 증가).
     const south = (B.maxY - fps[i].probe[1]) / (B.maxY - B.minY);
-    assert.ok(Math.abs(a.color[3 * px] - expectedRgb(u, south, 0)) <= 3, `aerial 동 ${i}: r ${a.color[3 * px]}`);
-    assert.ok(Math.abs(a.color[3 * px + 1] - expectedRgb(u, south, 1)) <= 3, `aerial 동 ${i}: g ${a.color[3 * px + 1]}`);
+    assert.ok(Math.abs(a.color[3 * px] - expectedRgb(u, south, 0)) <= 1, `aerial 동 ${i}: r ${a.color[3 * px]}`);
+    assert.ok(Math.abs(a.color[3 * px + 1] - expectedRgb(u, south, 1)) <= 1, `aerial 동 ${i}: g ${a.color[3 * px + 1]}`);
   }
 });
 
