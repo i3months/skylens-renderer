@@ -42,7 +42,9 @@ export function createTowerStreaming(opts, deps = DEFAULT_DEPS) {
       snap.pos = rawPos.slice();
       snap.quat = rawQuat.slice();
     }
-    const view = checkView(snap, size);
+    // size 도 한 번만 읽어 복사한다(접근자가 읽을 때마다 값을 바꿔도 검사값과 사용값이 같다). 비객체는 그대로 넘겨 checkView 가 TypeError 로 던진다.
+    const sz = size !== null && typeof size === 'object' ? { width: size.width, height: size.height, devicePixelRatio: size.devicePixelRatio } : size;
+    const view = checkView(snap, sz);
     checkCoordRange(snap.pos, o.maxDistM);
     const needed = d.tilesInView(view, o);
     if (needed.length > maxTiles) throw new RangeError(`needed ${needed.length} 개가 maxTilesPerUpdate(${maxTiles}) 를 넘는다`);

@@ -55,7 +55,7 @@ test('계약 상한이 validate 의 TILE_INDEX_MAX 와 같다', () => {
 });
 
 for (const x of [6.5e7, 1e8, 6e17, 1e18, 1e20]) {
-  test(`x=${x} 는 행 순회 없이 RangeError, 상태 불변`, () => {
+  test(`x=${x} 는 진입 검사(checkCoordRange)에서 RangeError 로 끝나 행·칸 순회 0, 상태 불변`, () => {
     const g = workGuard();
     const s = createTowerStreaming(undefined, g.deps);
     const before = s.state();
@@ -260,8 +260,9 @@ for (const dir of DIRS) {
   });
 }
 
-test('tilesInView 직접 호출: 경계 한 칸 넘침(−IMAX−1)은 −IMAX 로 자르고, 두 칸 이상은 루프 전에 던진다', () => {
+test('tilesInView 직접 호출: 경계 한 칸 넘침(−IMAX−1)은 −IMAX 로 자르고, 번호가 두 칸 이상 넘는 행은 루프 전에 던진다', () => {
   // clampIdx 는 ±(IMAX+1) 까지만 허용한다(경계 맞닿음 여유). 진입 검사를 거치지 않는 직접 호출에서도 번호는 ±IMAX 안.
+  // 단 범위가 비는 입력(z 판이 구 밖 등)은 조기 반환으로 clampIdx 에 닿기 전에 [] 로 끝나므로, 아래는 범위가 남는 입력만 쓴다.
   const edge = L.maxCoordM; // = IMAX·64
   const o = checkOpts({});
   const mk = (x, y, yaw) => poseToViewOf(pose([x, y, 100], yaw));
