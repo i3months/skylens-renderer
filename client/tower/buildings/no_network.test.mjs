@@ -7,6 +7,7 @@ import http from 'node:http';
 import net from 'node:net';
 import http2 from 'node:http2';
 import dns, { lookup as namedLookup } from 'node:dns';
+import { setInterval as namedSetInterval } from 'node:timers';
 import { installNetworkSpies } from './network_spies.mjs';
 import {
   createFetchOnSetModeFake, createReacceptOnSetModeFake, createCleanFake,
@@ -178,4 +179,22 @@ test('음성 M5: 1000 ms 뒤로 미룬 fetch 도 mock 타이머 runAll 로 잡�
   const r = await runNoNetworkCheck(createSlowDelayedFetchFake);
   assert.equal(r.ok, false);
   assert.ok(r.networkCalls.includes('fetch'), r.networkCalls.join(','));
+});
+
+test('음성 M6: node:timers 에서 이름으로 가져온 setInterval(600000 ms, unref)로 미룬 fetch 도 실제 층 사본에서 잡혀 검사에서 실패한다', async () => {
+  const mod = await import('./index.mjs');
+  // 실제 층의 사본: setMode 에서 이름으로 가져온 setInterval 로 600000 ms·unref 타이머를 걸고, 그 안에서 fetch 한다.
+  const r = await runNoNetworkCheck(async () => {
+    const layer = await mod.createBuildingsLayer();
+    const origSetMode = layer.setMode;
+    layer.setMode = function mutatedSetMode(m) {
+      const out = origSetMode.call(this, m);
+      namedSetInterval(() => { globalThis.fetch('http://127.0.0.1:1/aerial.png'); }, 600000).unref();
+      return out;
+    };
+    return layer;
+  });
+  assert.equal(r.ok, false);
+  assert.ok(r.networkCalls.includes('fetch'), r.networkCalls.join(','));
+  assert.ok(r.problems.some((p) => p.includes('네트워크 감시자 호출') && p.includes('fetch')), r.problems.join('|'));
 });
