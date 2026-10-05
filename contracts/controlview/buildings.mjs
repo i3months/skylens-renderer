@@ -19,7 +19,7 @@ export const BUILDINGS_LAYER_API = Object.freeze({
   accept: 'layer.accept(level:0..3, bundle:BuildingBundle) -> "first"|"replace"|"skip"   skip 이면 상태를 바꾸지 않는다. 잘못된 묶음이면 던지고 상태는 그대로. 한 수준 = 전체 묶음 단위',
   setMode: 'layer.setMode(mode) -> void   DISPLAY_MODES 가 아니면 RangeError(상태 그대로). 네트워크·accept 없이 로컬로 바꾼다',
   mode: 'layer.mode() -> "points"|"black"|"aerial"',
-  render: 'layer.render(camera) -> RenderResult(contracts/raster)   현재 옵션 한 가지만 그린다. depth = 카메라 z(m) 또는 0, index = 그 화소를 차지한 묶음 번호(accept 한 묶음 목록 순서) 또는 −1. points 는 점 하나 = 한 화소(깊이 시험)',
+  render: 'layer.render(camera, out?) -> RenderResult(contracts/raster)   out(같은 크기 RenderResult)을 주면 그 버퍼를 지우고 다시 써서 돌려준다(새 typed array 할당 0). 크기가 다르면 던진다. 현재 옵션 한 가지만 그린다. depth = 카메라 z(m) 또는 0, index = 그 화소를 차지한 묶음 번호(accept 한 묶음 목록 순서) 또는 −1. points 는 점 하나 = 한 화소(깊이 시험)',
   state: 'layer.state() -> { level:-1|0..3, groupCount:number, buildingCount:number, mode:string }   level −1 = 아직 아무것도 도착하지 않음(render 는 전부 빈 화소)',
 });
 
