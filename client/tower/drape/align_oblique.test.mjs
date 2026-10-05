@@ -62,26 +62,29 @@ function parseSeedsEnv() {
   const parts = env.split(',');
 
   for (const part of parts) {
-    if (part.includes('-')) {
-      const [start, end] = part.split('-').map(s => parseInt(s.trim(), 10));
-      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < 1) {
-        throw new Error(`Invalid DRAPE_SEEDS range: "${part}" (must be valid integers >= 1)`);
-      }
+    // 토큰은 /^\s*\d+\s*$/ 또는 /^\s*(\d+)\s*-\s*(\d+)\s*$/ 로만 받는다
+    const rangeMatch = part.match(/^\s*(\d+)\s*-\s*(\d+)\s*$/);
+    if (rangeMatch) {
+      const start = parseInt(rangeMatch[1], 10);
+      const end = parseInt(rangeMatch[2], 10);
       if (start > end) {
-        throw new Error(`Invalid DRAPE_SEEDS range: "${part}" (start > end)`);
+        throw new Error(`범위 오류: "${part}" (시작 > 끝)`);
       }
       for (let i = start; i <= end; i++) seeds.push(i);
+    } else if (/^\s*\d+\s*$/.test(part)) {
+      // 단일 숫자
+      seeds.push(parseInt(part.trim(), 10));
+    } else if (part.trim() === '') {
+      // 빈 문자열은 오류
+      throw new Error(`토큰 오류: 빈 문자열`);
     } else {
-      const num = parseInt(part.trim(), 10);
-      if (!Number.isInteger(num) || num < 1) {
-        throw new Error(`Invalid DRAPE_SEEDS value: "${part}" (must be integer >= 1)`);
-      }
-      seeds.push(num);
+      // 그 외는 모두 오류
+      throw new Error(`토큰 오류: "${part}"`);
     }
   }
 
   if (seeds.length === 0) {
-    throw new Error('DRAPE_SEEDS parsed to empty list');
+    throw new Error('시드 목록이 비었음');
   }
 
   return seeds;
@@ -618,5 +621,34 @@ test('tileKey 는 contracts tileBounds 규약과 같다', () => {
     const [tx, ty] = tileKey(x, y).split(',').map(Number);
     const b = tileBounds(tx, ty);
     assert.ok(x >= b.minX && x < b.maxX && y >= b.minY && y < b.maxY, `${x},${y} → ${tx},${ty}`);
+  }
+});
+
+// parseSeedsEnv 엄격 검증: 잘못된 형식 5가지는 모두 Error 던진다
+test('parseSeedsEnv: 잘못된 5가지 형식(7..12, 7.5, 7abc, 1e3, 빈 문자열)은 모두 Error', () => {
+  const oldEnv = process.env.DRAPE_SEEDS;
+  try {
+    // 1. 이중 점 형식 '7..12'
+    process.env.DRAPE_SEEDS = '7..12';
+    assert.throws(() => parseSeedsEnv(), Error);
+
+    // 2. 소수점 형식 '7.5'
+    process.env.DRAPE_SEEDS = '7.5';
+    assert.throws(() => parseSeedsEnv(), Error);
+
+    // 3. 문자 섞임 형식 '7abc'
+    process.env.DRAPE_SEEDS = '7abc';
+    assert.throws(() => parseSeedsEnv(), Error);
+
+    // 4. 과학 표기법 형식 '1e3'
+    process.env.DRAPE_SEEDS = '1e3';
+    assert.throws(() => parseSeedsEnv(), Error);
+
+    // 5. 빈 문자열(쉼표만 있는 경우)
+    process.env.DRAPE_SEEDS = ',';
+    assert.throws(() => parseSeedsEnv(), Error);
+  } finally {
+    if (oldEnv === undefined) delete process.env.DRAPE_SEEDS;
+    else process.env.DRAPE_SEEDS = oldEnv;
   }
 });

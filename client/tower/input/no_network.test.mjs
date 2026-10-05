@@ -5,6 +5,17 @@ import { installNetworkSpies } from '../buildings/network_spies.mjs';
 
 test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocket 호출 0', async () => {
   const spies = installNetworkSpies();
+  // 타이머 생성 자체를 센다: 감시자가 가짜로 바꾼 전역 타이머 위에 계수 래퍼를 얹는다.
+  const timerCreated = [];
+  const timerOrig = {};
+  for (const name of ['setTimeout', 'setInterval', 'setImmediate']) {
+    timerOrig[name] = globalThis[name];
+    globalThis[name] = function countedTimer(...args) {
+      timerCreated.push(name);
+      return timerOrig[name].apply(this, args);
+    };
+  }
+  const unwrapTimers = () => { for (const name of Object.keys(timerOrig)) globalThis[name] = timerOrig[name]; };
   try {
     // 동적 import 로 index.mjs 불러오기. 아직 없으면 실패한다.
     let mod;
@@ -44,12 +55,28 @@ test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocke
     // releaseAll() 호출
     input.releaseAll();
 
-    // 감시자가 아무 호출도 잡지 못했는지 확인
-    assert.deepEqual(spies.calls, [], `네트워크 감시자가 호출을 기록했음: ${spies.calls.join(',')}`);
+    // 입력 층이 타이머를 만들지 않았는지 확인(생성 자체가 위반)
+    assert.deepEqual(timerCreated, [], `입력 층이 타이머를 만들었음: ${timerCreated.join(',')}`);
   } finally {
+    unwrapTimers();
+    // 지연 호출까지 비운 뒤에 calls 를 읽는다(건물 층 시험과 같은 순서).
     await spies.restore();
   }
+  assert.deepEqual(spies.calls, [], `네트워크 감시자가 호출을 기록했음: ${spies.calls.join(',')}`);
 });
+
+for (const [label, defer] of [
+  ['queueMicrotask', (fn) => queueMicrotask(fn)],
+  ['setTimeout 5000', (fn) => setTimeout(fn, 5000)],
+  ['setImmediate', (fn) => setImmediate(fn)],
+]) {
+  test(`no_network: ${label} 로 미룬 fetch 는 restore 뒤 calls 에 기록된다(양성 대조)`, async () => {
+    const spies = installNetworkSpies();
+    defer(() => { globalThis.fetch('http://127.0.0.1:1/x').catch(() => {}); });
+    await spies.restore();
+    assert.ok(spies.calls.includes('fetch'), `${label} 지연 fetch 가 기록돼야 함`);
+  });
+}
 
 test('no_network: 감시자가 실제로 호출을 센다(양성 대조)', async (t) => {
   const spies = installNetworkSpies();

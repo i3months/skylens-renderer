@@ -4,6 +4,9 @@ import { TOWER_INPUT_DEFAULTS } from '../../../contracts/controlview/input.mjs';
 
 const NUM_KEYS = ['yawRateRad', 'speedMps', 'altRateMps', 'minAltM', 'maxAltM', 'pitchRad', 'fovYRad', 'maxDtSec'];
 
+// 속도·회전율·dt 상한의 허용 최댓값.
+const MAX_RATE = 1e6;
+
 function finiteNum(v, name) {
   if (typeof v !== 'number') throw new TypeError(`${name} 는 숫자여야 한다`);
   if (!Number.isFinite(v)) throw new RangeError(`${name} 는 유한해야 한다`);
@@ -18,11 +21,24 @@ function checkOpts(opts) {
   if (c.yawRateRad < 0) throw new RangeError('yawRateRad 는 0 이상이어야 한다');
   if (c.altRateMps < 0) throw new RangeError('altRateMps 는 0 이상이어야 한다');
   if (c.maxDtSec <= 0) throw new RangeError('maxDtSec 는 0 보다 커야 한다');
+  // 극단 값(1e308)이 적분 중 무한대로 번지지 않게 상한을 둔다.
+  for (const k of ['speedMps', 'yawRateRad', 'altRateMps', 'maxDtSec']) {
+    if (c[k] > MAX_RATE) throw new RangeError(`${k} 는 ${MAX_RATE} 이하여야 한다`);
+  }
+  // 시야각과 피치는 camera.mjs 와 같은 규칙으로 생성 때 검사한다(float32 반올림 뒤에도 0<fovY<π).
+  const f32Fov = Math.fround(c.fovYRad);
+  if (!(c.fovYRad > 0 && c.fovYRad < Math.PI) || !(f32Fov > 0 && f32Fov < Math.PI)) {
+    throw new RangeError(`fovYRad 는 0<fovY<π 여야 한다(float32 반올림 후에도): ${c.fovYRad}`);
+  }
+  if (c.pitchRad < -Math.PI / 2 || c.pitchRad > Math.PI / 2) throw new RangeError('pitchRad 는 [-π/2, π/2] 안이어야 한다');
   if (c.minAltM > c.maxAltM) throw new RangeError('minAltM 은 maxAltM 이하여야 한다');
   let pos = [0, 0, c.minAltM];
   if (opts.pos !== undefined) {
     if (!Array.isArray(opts.pos) || opts.pos.length !== 3) throw new TypeError('pos 는 길이 3 배열이어야 한다');
     pos = opts.pos.map((v, i) => finiteNum(v, `pos[${i}]`));
+    pos.forEach((v, i) => {
+      if (!Number.isFinite(Math.fround(v))) throw new RangeError(`pos[${i}] 는 float32 로도 유한해야 한다`);
+    });
     if (pos[2] < c.minAltM || pos[2] > c.maxAltM) throw new RangeError('pos[2] 는 [minAltM, maxAltM] 안이어야 한다');
   }
   const yaw = opts.yaw === undefined ? 0 : finiteNum(opts.yaw, 'yaw');
@@ -40,14 +56,16 @@ export function createPoseState(opts = {}) {
       if (typeof dt !== 'number') throw new TypeError('dt 는 숫자여야 한다');
       if (!Number.isFinite(dt) || dt < 0) throw new RangeError('dt 는 유한 0 이상이어야 한다');
       if (held === null || typeof held !== 'object') throw new TypeError('held 는 객체여야 한다');
+      // dt 상한은 index.mjs 에도 있다. 두 층이 각자 독립으로 지키려는 의도적 중복이다.
       const d = Math.min(dt, c.maxDtSec);
       // 반대 키 쌍이 둘 다 눌리면 0 으로 상쇄한다.
       const turn = (held.yawRight ? 1 : 0) - (held.yawLeft ? 1 : 0);
       const move = (held.forward ? 1 : 0) - (held.back ? 1 : 0);
       const climb = (held.altUp ? 1 : 0) - (held.altDown ? 1 : 0);
-      // 방위는 이동 전에 갱신하지 않고, 이번 스텝 시작 방위로 이동한 뒤 회전한다.
-      pos[0] += Math.sin(yaw) * move * c.speedMps * d;
-      pos[1] += Math.cos(yaw) * move * c.speedMps * d;
+      // 스텝 중간 방위(yaw + turn·yawRate·d/2)로 이동한 뒤 yaw 를 turn·yawRate·d 만큼 갱신한다(중점 적분).
+      const yawMid = yaw + turn * c.yawRateRad * d / 2;
+      pos[0] += Math.sin(yawMid) * move * c.speedMps * d;
+      pos[1] += Math.cos(yawMid) * move * c.speedMps * d;
       pos[2] = Math.min(c.maxAltM, Math.max(c.minAltM, pos[2] + climb * c.altRateMps * d));
       yaw += turn * c.yawRateRad * d;
       return { pos: pos.slice(), yaw, pitch: c.pitchRad };

@@ -50,7 +50,7 @@ export function createTowerInput(opts) {
     releaseAll: () => keys.releaseAll(),
     step(dtSec) {
       if (!isFiniteNum(dtSec) || dtSec < 0) throw new RangeError('dt 는 유한 ≥ 0 이어야 한다');
-      // 긴 정지 뒤 순간이동을 막기 위해 상한을 둔다.
+      // 긴 정지 뒤 순간이동을 막기 위해 상한을 둔다. state.mjs 에도 같은 상한이 있다(의도적 중복).
       return state.step(Math.min(dtSec, cfg.maxDtSec), keys.held());
     },
     pose: () => state.pose(),

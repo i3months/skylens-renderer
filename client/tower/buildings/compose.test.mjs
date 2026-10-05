@@ -211,6 +211,20 @@ test('into.color 가 over.depth 버퍼를 공유(종류가 달라도)하면 Rang
   assert.deepEqual([...base.depth], [1, 1, 0, 0]);
 });
 
+test('into.depth 가 같은 ArrayBuffer 의 겹치지 않는 view 면 RangeError, 입력 불변', () => {
+  const { base, over } = sharedFixture();
+  const shared = new ArrayBuffer(32);
+  const baseBig = new Float32Array(shared, 0, 4);
+  baseBig.set([1, 1, 0, 0]);
+  const baseObj = { ...base, depth: baseBig };
+  const intoDepth = new Float32Array(shared, 16, 4);
+  const into = emptyResult(2, 2);
+  into.depth = intoDepth;
+  assert.throws(() => composeLayers(baseObj, over, into), RangeError);
+  assert.deepEqual([...baseBig], [1, 1, 0, 0]);
+  assert.deepEqual([...over.depth], [2, 0, 2, 0]);
+});
+
 test('into 내부 color·depth·index 가 버퍼를 공유하면 RangeError', () => {
   const { base, over } = sharedFixture();
   const into = emptyResult(2, 2);

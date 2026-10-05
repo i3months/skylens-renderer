@@ -8,7 +8,6 @@ test('keys: 반복 keyDown 은 무시되고 keyUp 한 번으로 뗀다', () => {
   const k = createKeyTracker();
   assert.equal(k.down('ArrowUp'), true);
   assert.equal(k.down('ArrowUp'), true);
-  assert.equal(k.down('ArrowUp'), true);
   assert.deepEqual(k.held(), { ...NONE, forward: true });
   assert.equal(k.up('ArrowUp'), true);
   assert.deepEqual(k.held(), NONE);

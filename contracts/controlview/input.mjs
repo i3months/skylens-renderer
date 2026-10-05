@@ -26,8 +26,8 @@ export const TOWER_INPUT_API = Object.freeze({
 
 /** 모듈 파일(client/tower/input/). */
 export const TOWER_INPUT_MODULES = Object.freeze({
-  state: { file: 'state.mjs', fn: 'createPoseState(opts) -> { step(dt, held), pose() }   held = {yawLeft,yawRight,forward,back,altUp,altDown} 불리언. forward = (sin yaw, cos yaw, 0)·speed·dt, yaw += (right − left)·yawRate·dt, z 는 [minAltM, maxAltM] 로 자른다' },
-  keys: { file: 'keys.mjs', fn: 'createKeyTracker() -> { down(code), up(code), releaseAll(), held() -> held 객체 }   반대 키 상쇄는 state 가 아니라 여기서 axis 로 계산하지 않고 held 에 둘 다 true 로 두며 state 가 상쇄한다' },
+  state: { file: 'state.mjs', fn: 'createPoseState(opts) -> { step(dt, held), pose() }   held = {yawLeft,yawRight,forward,back,altUp,altDown} 불리언. 순서: 스텝 중간 방위 yawMid = yaw + (right − left)·yawRate·dt/2 로 이동한 뒤 yaw 를 (right − left)·yawRate·dt 만큼 갱신한다. forward = (sin yawMid, cos yawMid, 0)·speed·dt, z 는 [minAltM, maxAltM] 로 자른다' },
+  keys: { file: 'keys.mjs', fn: 'createKeyTracker() -> { down(code), up(code), releaseAll(), held() -> held 객체 }   keys 는 상쇄하지 않고 held 에 둘 다 true 로 둔다. 상쇄는 state 가 한다' },
   camera: { file: 'camera.mjs', fn: 'poseToCameraPose(pose, fovYRad) -> CameraPose   카메라 축 OpenCV(x 오른쪽, y 아래, z 앞). yaw=0,pitch=0 이면 앞(z)=북(+y), 오른쪽(x)=동(+x), 아래(y)=−z(ENU 아래). pitch 는 위가 +' },
   index: { file: 'index.mjs', fn: 'createTowerInput(opts?) 조립' },
 });

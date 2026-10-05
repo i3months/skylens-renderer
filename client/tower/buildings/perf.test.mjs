@@ -1,6 +1,6 @@
 // 건물 층 성능 시험. 3000개 건물 묶음을 세 카메라(위에서 내려다봄 + 비스듬 2종)로 세 옵션 각각 렌더(RUNS=5회 중앙값).
 // 시간 문턱은 CPU 잡음 여유: 참조 구현의 거친 상한.
-// 렌더 문턱 300 ms 는 CPU 래스터의 회귀 감시용일 뿐 S1 판정이 아니다. black 최대가 S1 의 33 ms 를 넘을 수 있다(재측정 최대 70 ms, 묶음 6). 실기기 fps 는 T17 [local] 에서 잰다.
+// 렌더 문턱 300 ms 는 CPU 래스터의 회귀 감시용일 뿐 S1 판정이 아니다. black 최대가 S1 의 33 ms 를 넘을 수 있다(black 최대 64 ms·전체(aerial) 최대 70 ms). 실기기 fps 는 T17 [local] 에서 잰다.
 // 각 모드·카메라 조합의 덮인 화소 수는 측정값과 ±0.1% 안이어야 한다(일부만 그리거나 비우는 변이가 통과하지 못하게 한다).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,7 +13,7 @@ const RUNS = 5;
 const GROUP_COUNT = 6; // 합성 장면을 나눌 묶음 수(3000개 건물을 500개씩)
 // 합성 항공영상 범위(ENU m): 건물 격자(약 ±1400 m) 전체를 덮는다.
 const AERIAL_BOUNDS_M = { minX: -1500, minY: -1500, maxX: 1500, maxY: 1500 };
-const RENDER_THRESHOLD_MS = 300; // 재측정 최대(~85 ms, black)의 3배 남짓
+const RENDER_THRESHOLD_MS = 300; // 전체 최대 70 ms(aerial), 300 ms 는 약 4배
 // 모드·카메라(위/남동/북서)별 덮인 화소 수의 측정값. 래스터는 결정적이라 3회 실행이 같았고(묶음 1개·6개 모두), 측정값과 ±0.1% 안이어야 한다.
 const EXPECTED_COVERED = {
   black: [261789, 398769, 415587],

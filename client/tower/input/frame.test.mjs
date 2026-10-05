@@ -87,6 +87,9 @@ test('ArrowUp → step(0.2) → render 가 같은 프레임에서 step 이전 re
   // 실제로 2 m 만큼 변했다(0 이 아님).
   const len = Math.hypot(...j.dt);
   assert.ok(len > 1.99 && len < 2.01, `|Δt| = ${len}`);
+  // 앞으로 다가감(Δt[2] < 0), 동서 이동 없음(|Δt[0]| ≈ 0)
+  assert.ok(j.dt[2] < 0, `Δt[2] = ${j.dt[2]} 는 음수여야 함(앞으로 다가감)`);
+  assert.ok(Math.abs(j.dt[0]) <= EPS, `|Δt[0]| = ${Math.abs(j.dt[0])} 는 거의 0이어야 함`);
 });
 
 test('변이: step 을 render 뒤에 호출하면 (1)의 판정이 실패한다(영상 동일, t 불변)', () => {

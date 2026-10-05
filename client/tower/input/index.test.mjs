@@ -24,9 +24,11 @@ test('index: keyDown → step → camera 가 한 프레임 안 동기 호출에�
 });
 
 test('index: 네트워크·타이머를 쓰지 않는다', () => {
-  const src = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
-  for (const w of ['fetch', 'setTimeout', 'setInterval', 'XMLHttpRequest', 'WebSocket']) {
-    assert.equal(src.includes(w), false, w);
+  for (const f of ['index.mjs', 'state.mjs', 'keys.mjs', 'camera.mjs']) {
+    const src = readFileSync(new URL(`./${f}`, import.meta.url), 'utf8');
+    for (const w of ['fetch', 'setTimeout', 'setInterval', 'XMLHttpRequest', 'WebSocket']) {
+      assert.equal(src.includes(w), false, `${f}: ${w}`);
+    }
   }
 });
 
@@ -41,4 +43,26 @@ test('index: dt 상한과 반대 키 상쇄', () => {
   b.keyDown('ArrowRight');
   near(b.step(0.1).yaw, 0.3);
   near(b.pose().yaw, 0.3);
+});
+
+test('index: 앞뒤·고도 반대 키는 keys 경유로 상쇄된다', () => {
+  const a = createTowerInput({ pos: [0, 0, 10], yaw: 0 });
+  a.keyDown('ArrowUp');
+  a.keyDown('ArrowDown');
+  const pa = a.step(0.1).pos;
+  near(pa[0], 0); near(pa[1], 0); near(pa[2], 10);
+  const b = createTowerInput({ pos: [0, 0, 10], yaw: 0 });
+  b.keyDown('KeyE');
+  b.keyDown('KeyQ');
+  const pb = b.step(0.1).pos;
+  near(pb[0], 0); near(pb[1], 0); near(pb[2], 10);
+});
+
+test('index: keyDown → releaseAll → step 뒤 위치 불변', () => {
+  const inp = createTowerInput({ pos: [0, 0, 10], yaw: 0 });
+  inp.keyDown('ArrowUp');
+  inp.releaseAll();
+  const p = inp.step(0.1);
+  assert.deepEqual(p.pos, [0, 0, 10]);
+  assert.deepEqual(inp.pose().pos, [0, 0, 10]);
 });

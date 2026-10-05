@@ -97,3 +97,74 @@ test('state: step 은 갱신된 pose 를 돌려준다(계약 TOWER_INPUT_API.ste
   assert.deepEqual(p.pos, [0, 10, 10]);
   assert.deepEqual(p, s.pose());
 });
+
+test('state: 이동과 회전 동시 입력은 스텝 중간 방위로 이동한 뒤 yaw 를 갱신한다', () => {
+  const s = createPoseState({ pos: [0, 0, 50], yaw: 0, yawRateRad: 1, speedMps: 10, maxDtSec: 10 });
+  const p = s.step(1, hold({ forward: true, yawRight: true }));
+  near(p.pos[0], 10 * Math.sin(0.5));
+  near(p.pos[1], 10 * Math.cos(0.5));
+  near(p.pos[0], 4.794255386042030);
+  near(p.pos[1], 8.775825618903728);
+  near(p.yaw, 1);
+});
+
+test('state: 사분원(ArrowUp+ArrowRight, π/2 s) 끝점은 dt 1/60 과 0.25 에서 0.2 m 이하로 같다', () => {
+  const run = (dt) => {
+    const s = createPoseState({ pos: [0, 0, 50], yaw: 0, yawRateRad: 1, speedMps: 10, maxDtSec: 1 });
+    let left = Math.PI / 2;
+    while (left > 1e-12) {
+      const d = Math.min(dt, left);
+      s.step(d, hold({ forward: true, yawRight: true }));
+      left -= d;
+    }
+    return s.pose();
+  };
+  const a = run(1 / 60);
+  const b = run(0.25);
+  assert.ok(Math.hypot(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1]) <= 0.2, `차이 ${Math.hypot(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1])}`);
+  // 이론 끝점은 반지름 10 m 원호의 (10, 10).
+  near(a.pos[0], 10, 0.05);
+  near(a.pos[1], 10, 0.05);
+  near(b.pos[0], 10, 0.2);
+  near(b.pos[1], 10, 0.2);
+  near(a.yaw, Math.PI / 2);
+  near(b.yaw, Math.PI / 2);
+});
+
+test('state: speedMps·altRateMps 등이 1e6 을 넘으면 RangeError 이고 1e6 은 통과', () => {
+  for (const k of ['speedMps', 'altRateMps', 'yawRateRad', 'maxDtSec']) {
+    assert.throws(() => createPoseState({ [k]: 1e308 }), RangeError, k);
+    assert.throws(() => createPoseState({ [k]: 1e6 + 1 }), RangeError, k);
+  }
+  const s = createPoseState({ speedMps: 1e6, altRateMps: 1e6, yawRateRad: 1e6, maxDtSec: 1e6 });
+  const p = s.step(1e6, hold({ forward: true, yawRight: true, altUp: true }));
+  assert.ok(p.pos.every(Number.isFinite) && Number.isFinite(p.yaw));
+});
+
+test('state: fovYRad·pitchRad·pos float32 검사', () => {
+  for (const bad of [0, -0.1, Math.PI, 4, 1e-50]) assert.throws(() => createPoseState({ fovYRad: bad }), RangeError, String(bad));
+  assert.throws(() => createPoseState({ fovYRad: Math.PI - 1e-9 }), RangeError);
+  createPoseState({ fovYRad: 1 });
+  assert.throws(() => createPoseState({ pitchRad: Math.PI / 2 + 1e-6 }), RangeError);
+  assert.throws(() => createPoseState({ pitchRad: -Math.PI / 2 - 1e-6 }), RangeError);
+  createPoseState({ pitchRad: Math.PI / 2 });
+  createPoseState({ pitchRad: -Math.PI / 2 });
+  assert.throws(() => createPoseState({ pos: [1e39, 0, 5] }), RangeError);
+  assert.throws(() => createPoseState({ pos: [0, -1e39, 5] }), RangeError);
+  createPoseState({ pos: [3e38, 0, 5] });
+});
+
+test('index: 생성 때 극단 opts 를 거부하고 1e308 속도에서 camera() 가 던지지 않는다', async () => {
+  const { createTowerInput } = await import('./index.mjs');
+  assert.throws(() => createTowerInput({ fovYRad: 4 }), RangeError);
+  assert.throws(() => createTowerInput({ fovYRad: Math.PI }), RangeError);
+  assert.throws(() => createTowerInput({ pitchRad: 2 }), RangeError);
+  assert.throws(() => createTowerInput({ pos: [1e39, 0, 5] }), RangeError);
+  assert.throws(() => createTowerInput({ speedMps: 1e308 }), RangeError);
+  assert.throws(() => createTowerInput({ altRateMps: 1e308 }), RangeError);
+  const t = createTowerInput({ speedMps: 1e6, altRateMps: 1e6, maxDtSec: 1e6 });
+  t.keyDown('ArrowUp');
+  t.keyDown('KeyE');
+  t.step(1e6);
+  t.camera();
+});
