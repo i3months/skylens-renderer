@@ -806,7 +806,7 @@ test('F-359 정보 한계 입력(잡음 없는 1·2 DN 사인): 블록 local, �
   assert.deepEqual(bad, []);
 });
 
-test('F-359·F-366·F-374 측정 부족 입력(2.5·1.5 DN shiftedTile, warpedTile ±1·±2 DN 시드 두 쌍): 정합 통과 없음, 보고 ≥ |g+e| − 0.5', () => {
+test('F-359·F-366·F-374 측정 부족 입력(2.5·1.5 DN shiftedTile, warpedTile ±1·±2 DN 시드 두 쌍; 사인 2.5 ±2 DN seed 31676 은 제외 — 아래 todo): 정합 통과 없음, 보고 ≥ |g+e| − 0.5', () => {
   // 수정 전: shiftedTile 은 local 아님·보고 0.125~0.5 px, warpedTile ±2 DN 은 짝 검정 t 2.92~3.49 < k = 4 라 local 아님·dx 가
   // 예측 ± 0.5 경계값(−0.75·−0.625)·보고 0.125~0.25 px 로 정합 통과(F-359 검토 #3). F-359 검토 #4: 짝 검정이 결정을 못 내린
   // 블록(t ≤ PAIRED_K)은 불확정 — local 이 아니어도 배제 못 한 이동량을 maxMisalignPx 에 넣어 정합 통과를 내지 않는다.
@@ -1034,4 +1034,14 @@ const HASHES = ['0fae29d8703f8e5e', '5fdc0825c64459be', '175a0aba3df4db8c', '00f
 test('F-359 측정 부족 시험의 다른 시드(사인 2.5 DN ±2 DN seed 31676)도 정합 통과가 아니어야 한다', { todo: '블록 자기 최소가 예측 ±0.5 px 안(약 −0.7 px)이라 정합 블록으로 남아 약 0.27 px 로 보고한다(T14.R9 미해결, 정보 부족 영역)' }, () => {
   const bad = f359Failures(F359_WARP_ALT_ALL.filter(F359_KNOWN_FAIL), (m, blk, g, e) => (m.maxMisalignPx > 1 ? null : `정합 통과로 보고(${m.maxMisalignPx})`));
   assert.deepEqual(bad, []);
+});
+
+test('F-383 ⑨ 축 평평 불확정 경로: 사인 1.5 DN ±1 DN seed 2007922, warpedTile 실제 −1.5 px — 정합 통과가 아니다', () => {
+  const [g, e] = [-0.125, -1.375];
+  const img = lowContrastImage(LOW.sine(1.5));
+  const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
+  const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise: 1, seed: 2007922 }));
+  assert.equal(m.status, 'measured');
+  assert.ok(m.undecidedBlocks > 0 || m.maxMisalignPx > ALIGN_TOLERANCE_PX, `정합 통과: 불확정 ${m.undecidedBlocks}, 보고 ${m.maxMisalignPx}`);
+  assert.ok(m.maxMisalignPx > ALIGN_TOLERANCE_PX, `보고 ${m.maxMisalignPx} ≤ 1 px`);
 });

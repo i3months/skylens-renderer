@@ -116,6 +116,10 @@ function nullViolation(m) {
   const local = m.blocks.filter((b) => b.local).map(({ i0, j0, dx, dy }) => [i0, j0, dx, dy]);
   if (local.length) return `거짓 local ${JSON.stringify(local)}`;
   if (m.undecidedBlocks !== m.blocks.filter((b) => b.undecided).length) return '불확정 수 불일치';
+  // 실제 이동 0 이므로 불확정 블록의 배제 못 한 이동량 = 자기 최소 크기 |o| + 걸어 나간 거리다. 코드가 블록 탐색을 전역 가설 g 둘레
+  // BLOCK_SEARCH_PX(4 px, 정사각 창이라 모서리 4√2)로, 걸음을 UNDECIDED_REACH_PX(1 px)로 묶으므로 상한은 |g| + 4√2 + 1 이다
+  // (상한은 코드 상수에서 정했고 측정값에 맞춰 조정하지 않는다. 처음 쓴 0.5 + 1 과 g 없는 4 + 1 은 |o| 가정이 틀려 원본이 실패했다).
+  if (m.undecidedBlocks && !(m.undecidedMaxPx <= Math.hypot(m.globalDxPx, m.globalDyPx) + 4 * Math.SQRT2 + 1 + 1e-9)) return `불확정 상한 초과 ${m.undecidedMaxPx}`;
   if (!m.undecidedBlocks && !(m.maxMisalignPx < ALIGN_TOLERANCE_PX)) return `불확정 없이 보고 ${m.maxMisalignPx}`;
   return null;
 }
