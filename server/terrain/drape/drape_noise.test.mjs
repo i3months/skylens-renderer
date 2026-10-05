@@ -243,26 +243,81 @@ test('F-376 채널 상관 잡음(세 채널에 같은 ±3 DN) 귀무: 사인 2 D
 });
 
 // F-359 검토 #4 양성: 블록 x 32..40·y 40..48 m 만 g+e, 나머지 g 만큼 동쪽(실제 블록 이동 |g+e| = 1.5 px).
-const POS_CASES = [[1.5, -0.125, -1.375], [2, -0.25, -1.25], [2.5, -0.25, -1.25]];
+const POS_CASES = [[1.5, -0.125, -1.375], [2, -0.25, -1.25], [2.5, -0.25, -1.25], [2, -0.375, -1.125]];
 const POS_SEEDS = Array.from({ length: 30 }, (_, i) => 2000003 + i * 7919);
 
-// ±2 DN 은 미해결(todo): 블록 (64,32) 의 자기 최소가 예측에서 0.5 px 안(−0.7 px 근처)이라 재적합 이상치도 불확정도 아닌 정합 블록으로
-// 남는 경우가 180회 중 6회(사인 2 DN 4회 — 시드 2079193·2142545·2174221 등, 사인 2.5 DN 2126707·2134626; 보고 0.27 px).
-// 모든 블록에 '배제 못 한 이동량 > 1 px 이면 불확정' 을 적용하면 이 6회는 잡히지만 이동 0 귀무에서 거짓 불확정이 사인 1.5 DN ±2·±3
-// 40/60·49/60, 같은 채널 잡음 54/60·60/60 으로 정합 판정 자체가 무의미해져 채택하지 않았다. 허용을 넓히지 않고 todo 로 남긴다.
-const POS_TODO = { 2: '±2 DN 에서 정합 블록으로 남는 실제 1.5 px 블록 6/180 (자기 최소가 예측 ±0.5 px 안) — 미해결, 위 주석' };
-for (const noise of [1, 2]) {
-  test(`F-359 검토 #4 양성: warpedTile 사인 1.5·2·2.5 DN ±${noise} DN, 시드 30개, 실제 1.5 px — 'measured 이면서 maxMisalignPx ≤ 1' 0건`, { todo: POS_TODO[noise] }, () => {
-    // 수정 전(PAIRED_K 2.75 로만 가름): 시드 10개에서 ±2 DN 5~7/10, ±1 DN 사인 2 DN 7/10 이 정합 통과(거짓 통과).
-    const bad = [];
-    for (const [amp, g, e] of POS_CASES) {
-      const img = lowContrastImage(LOW.sine(amp));
-      const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
-      for (const seed of POS_SEEDS) {
-        const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise, seed }));
-        if (m.status === 'measured' && m.maxMisalignPx <= ALIGN_TOLERANCE_PX) bad.push([amp, seed, m.maxMisalignPx, m.undecidedBlocks]);
-      }
+// 알려진 실패(미해결): [잡음 DN, 사인 진폭, g, seed]. 이 목록 밖의 입력은 아래 일반 시험이 단언한다 — todo 는 이 목록에만 건다(F-379).
+// T14.R10: 재적합 이상치의 자기 최소–예측 거리 판정(F-359 (A)) 뒤 남은 경우 — 적합(inlier) 블록의 자기 최소가 예측에서 0.5 px 안
+// (−0.63~−0.89 px, 비용 함수가 0 쪽으로 치우침)이라 정합 블록으로 남는다(보고 0.15~0.40 px). 적합 블록 불확정 규칙(F-359 (B))은
+// 거리 0.35·배제 못 한 이동량 1.25 px 에서 이 목록을 3건으로 줄이고 귀무 거짓 불확정 52/360 이었지만, 고대비 회전·축척 시험(F-317)의
+// 보고를 4.5~4.9 px 로 부풀리고 불확정 기록값(F-363 11→20, 검토 #2 8→10)을 넘겨 채택하지 않았다 — 미해결.
+const POS_KNOWN_FAIL = [
+  [2, 2, -0.25, 2079193],
+  [2, 2, -0.25, 2142545],
+  [2, 2, -0.25, 2174221],
+  [2, 2, -0.25, 2205897],
+  [2, 2.5, -0.25, 2126707],
+  [2, 2.5, -0.25, 2134626],
+  [1, 2, -0.375, 2007922],
+  [1, 2, -0.375, 2142545],
+  [1, 2, -0.375, 2205897],
+  [2, 2, -0.375, 2007922],
+  [2, 2, -0.375, 2015841],
+  [2, 2, -0.375, 2023760],
+  [2, 2, -0.375, 2031679],
+  [2, 2, -0.375, 2071274],
+  [2, 2, -0.375, 2079193],
+  [2, 2, -0.375, 2134626],
+  [2, 2, -0.375, 2142545],
+  [2, 2, -0.375, 2150464],
+  [2, 2, -0.375, 2166302],
+  [2, 2, -0.375, 2174221],
+  [2, 2, -0.375, 2205897],
+];
+const posKey = (noise, amp, g, seed) => `${noise}|${amp}|${g}|${seed}`;
+const POS_KNOWN = new Set(POS_KNOWN_FAIL.map((k) => posKey(...k)));
+/** 양성 입력에서 'measured 이면서 maxMisalignPx ≤ 1' 인 [진폭, g, seed, 보고, 불확정 수] 목록. pick 으로 알려진 실패 포함 여부를 고른다. */
+function posFailures(noise, pick) {
+  const bad = [];
+  for (const [amp, g, e] of POS_CASES) {
+    const img = lowContrastImage(LOW.sine(amp));
+    const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
+    for (const seed of POS_SEEDS) {
+      if (!pick(POS_KNOWN.has(posKey(noise, amp, g, seed)))) continue;
+      const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise, seed }));
+      if (m.status === 'measured' && m.maxMisalignPx <= ALIGN_TOLERANCE_PX) bad.push([amp, g, seed, m.maxMisalignPx, m.undecidedBlocks]);
     }
-    assert.deepEqual(bad, []);
+  }
+  return bad;
+}
+for (const noise of [1, 2]) {
+  test(`F-359 검토 #4 양성: warpedTile 사인 1.5·2·2.5 DN(g −0.125·−0.25·−0.375) ±${noise} DN, 시드 30개, 실제 1.5 px — 알려진 실패 밖 'measured 이면서 maxMisalignPx ≤ 1' 0건`, () => {
+    // 수정 전(PAIRED_K 2.75 로만 가름): 시드 10개에서 ±2 DN 5~7/10, ±1 DN 사인 2 DN 7/10 이 정합 통과(거짓 통과).
+    assert.deepEqual(posFailures(noise, (known) => !known), []);
   });
 }
+const posKnownFor = (noise) => POS_KNOWN_FAIL.filter((k) => k[0] === noise);
+for (const noise of [1, 2]) {
+  if (posKnownFor(noise).length === 0) continue;
+  test(`F-359 양성 알려진 실패 ±${noise} DN ${posKnownFor(noise).length}건도 정합 통과가 아니어야 한다`, {
+    todo: '적합 블록의 자기 최소가 예측 ±0.5 px 안이라 정합 블록으로 남는다(비용 함수 치우침, F-359 (B) 미채택) — 미해결',
+  }, () => {
+    assert.deepEqual(posFailures(noise, (known) => known), []);
+  });
+}
+
+test('F-380 불확정 블록은 측정값처럼 읽히지 않는다: 사인 1.5 DN ±1 DN seed 2007922 — dx·dy NaN, blockMaxPx·residualMaxPx ≥ undecidedMaxPx', () => {
+  // 수정 전: x 평평·자기 최소 −1.28 px·예측 −0.125 px 인 블록이 blocks[].dx ≈ −0.125, blockMaxPx 작음 — maxMisalignPx 만 컸다.
+  const [amp, g, e] = POS_CASES[0];
+  const img = lowContrastImage(LOW.sine(amp));
+  const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
+  const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise: 1, seed: 2007922 }));
+  assert.equal(m.status, 'measured');
+  const und = m.blocks.filter((b) => b.undecided);
+  assert.ok(und.length >= 1 && m.undecidedBlocks === und.length, `불확정 블록 ${und.length}`);
+  for (const b of und) assert.ok(Number.isNaN(b.dx) && Number.isNaN(b.dy), `불확정 블록 (${b.i0},${b.j0}) dx ${b.dx} dy ${b.dy}`);
+  for (const b of m.blocks.filter((q) => !q.undecided)) assert.ok(Number.isFinite(b.dx) && Number.isFinite(b.dy));
+  assert.ok(m.undecidedMaxPx > ALIGN_TOLERANCE_PX, `undecidedMaxPx ${m.undecidedMaxPx}`);
+  assert.ok(m.blockMaxPx >= m.undecidedMaxPx, `blockMaxPx ${m.blockMaxPx} < undecidedMaxPx ${m.undecidedMaxPx}`);
+  assert.ok(m.residualMaxPx >= m.undecidedMaxPx, `residualMaxPx ${m.residualMaxPx} < undecidedMaxPx ${m.undecidedMaxPx}`);
+});
