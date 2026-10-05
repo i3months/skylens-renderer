@@ -413,7 +413,6 @@ const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8].map((k) => k * 7919);
 test('F-328 구석 피복 ±20 잡음: 4·5블록은 측정 불가, 6블록(2×3·3×2·L 자)은 측정, 시드 8개 모두 보고 ≤ 실제 + 0.3 px', () => {
   // 실제(해석값) = 타일 네 모서리 최대 변위: 왜곡 없음 0 px, 0.3° 회전 0.239 px(F-323 시험의 해석식).
   const warps = [['왜곡 없음', (p) => p], ['0.3°', rotationWarp(0.3)]];
-  let excess = -Infinity;
   for (const [name, { keep, blocks }] of Object.entries(CORNER)) {
     for (const [wn, warp] of warps) {
       for (const seed of SEEDS) {
@@ -432,17 +431,13 @@ test('F-328 구석 피복 ±20 잡음: 4·5블록은 측정 불가, 6블록(2×3
           assert.equal(m.status, 'measured', `${at}: ${m.reason}`);
           // 수정 전(타일 반대편 모서리까지 외삽): 2×3 왜곡 없음 0.437 px, 0.3° 0.618 px.
           assert.ok(m.maxMisalignPx <= truth + 0.3, `${at}: 보고 ${m.maxMisalignPx} > 실제 ${truth} + 0.3`);
-          excess = Math.max(excess, m.maxMisalignPx - truth);
         }
       }
     }
   }
-  // 측정 기록(회귀용): 6블록 피복 48 경우의 초과분(보고 − 실제) 최댓값 0.1346 px(L 자·왜곡 없음·seed 7919; b4876f6 도 같은 값).
-  // 0.3 px 는 합격 여유이고, 이 단언은 그 여유가 실제로 얼마나 쓰이는지 고정한다.
-  assert.ok(excess <= EXCESS_MAX, `초과분 최댓값 ${excess}`);
+  // 측정 기록(단언 아님): 6블록 피복 48 경우의 초과분(보고 − 실제) 최댓값은 0.1346 px(L 자·왜곡 없음·seed 7919; b4876f6 도 같은 값).
+  // 합격 기준은 위의 미리 정한 여유 0.3 px 하나다. 측정값에 맞춘 더 촘촘한 문턱은 이론 근거가 없어 두지 않는다.
 });
-// 측정 기록: F-328 구석 피복 시험의 초과분 최댓값(px).
-const EXCESS_MAX = 0.135;
 
 test('F-328 평평 블록 제외: 서쪽 절반이 균일한 색이면 그 블록은 빼고 동쪽 32블록으로 잰다', () => {
   // 타일 격자와 맞물린 0.5 m/px 영상. x < 32 m 는 균일, 그 밖은 영상 A 의 무늬.
@@ -636,6 +631,25 @@ test('F-353 한 축이 1 px 에서 평평한 블록: 블록을 통째로 빼지 
   for (const m of [mg, me]) assert.deepEqual([m.flatBlocks, m.flatAreaFraction, m.blocks.length], [0, 0, 64]);
 });
 
+test('F-353 평평한 축의 값은 모형 예측: 1° 회전 타일에서 y 가 평평한 블록의 dy = 아핀 예측(≠ 0)', () => {
+  // 회전 1° 의 예측 변위는 블록 중심에서 멀수록 크다. y 가 어느 거리에서도 평평한 영상 부분(LOW.edgeOnly)의 블록은
+  // y 를 잴 수 없어 dy 를 모형 예측으로 둔다. 그 대입이 없으면 dy 는 실측(평평한 곳의 임의의 최소, 여기서는 0)이다.
+  const img = lowContrastImage(LOW.edgeOnly);
+  const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, rotationWarp(1)));
+  assert.equal(m.status, 'measured');
+  const a = m.affine;
+  const flatY = m.blocks.filter((b) => b.axes === 'x');
+  assert.ok(flatY.length >= 1, `y 평평 블록 ${flatY.length}개`);
+  let maxPred = 0;
+  for (const b of flatY) {
+    const di = b.i0 + m.blockPx.width / 2 - 64, dj = b.j0 + m.blockPx.height / 2 - 64;
+    const pred = a.ay + a.kyx * di + a.kyy * dj;
+    maxPred = Math.max(maxPred, Math.abs(pred));
+    assert.ok(Math.abs(b.dy - pred) < 1e-6, `블록 (${b.i0},${b.j0}): dy ${b.dy} != 예측 ${pred}`);
+  }
+  assert.ok(maxPred > 0.1, `예측 dy 가 0 에 가까워 구별 못 함: ${maxPred}`);
+});
+
 test('F-357 무늬 있는 영상에서 블록 하나를 1.0·1.2·1.5 px(박스 평균 보간) 옮김: 보고 ≥ 실제 − 0.15, 해당 블록 local', () => {
   // 수정 전: 재적합 뒤 이상치를 ±1.94 px 예측 근처 탐색으로 다시 판정해 near == 자기 최소이면 local 도 적합도 아닌 채 버려 0 px.
   // 타일 픽셀 (i, j) 의 내용 = 영상 A 의 박스 [(i + S)·0.5, (i + S + 1)·0.5] × 타일 픽셀 행(밉 0, 0.5 m/px).
@@ -676,6 +690,138 @@ test('F-352 local 유의성은 표본 수·잡음 기준: ±1·±2 DN 해시 블
     assert.equal(m.blocks.filter((b) => b.local).length, 0, `seed ${seed}`);
     assert.ok(m.maxMisalignPx < 0.3, `seed ${seed}: ${m.maxMisalignPx}`);
   }
+});
+
+test('F-358 잡음 없는 1·1.5 DN 사인 블록의 2~4 px 국소 이동: 평평 판정에 유의성 → 보고 ≥ S − 0.3, 블록 local', () => {
+  // 수정 전(블록 축 평평 = 상승 ≤ 1/12 만): 6경우 모두 measured 0 px, 블록 (64,32) 는 axes 'y'·local 아님.
+  // 축 상승 0.04~0.08 은 1/12 이하지만 자기 최소 0·n 256 의 유의성 문턱(약 0.017)보다 크다.
+  for (const amp of [1, 1.5]) {
+    const img = lowContrastImage(LOW.sine(amp));
+    for (const S of [2, 3, 4]) {
+      const at = `사인 ${amp} DN S=${S}`;
+      const m = measureDrapeAlignment(img, shiftBlock(img, S));
+      // 이 입력은 측정되어야 한다(측정 불가로 빠지면 회귀).
+      assert.equal(m.status, 'measured', `${at}: ${m.status} ${m.reason}`);
+      assertLocalBlock(m, at);
+      assert.ok(m.maxMisalignPx >= S - 0.3, `${at}: 보고 ${m.maxMisalignPx}`);
+      assert.ok(m.maxMisalignPx > ALIGN_TOLERANCE_PX, at);
+    }
+  }
+});
+
+/**
+ * 영상 img 의 밉 0 타일 (0,0)(0.5 m/px, 맞물림) 전체 내용을 동쪽으로 g px, 블록 (64,32)(x 32..40, y 40..48 m) 만 g + e px
+ * 옮긴다(박스 평균 보간, 반올림). 블록의 실제 이동량 = g + e.
+ */
+function shiftedTile(img, g, e) {
+  const t = buildDrapeTile(img, 0, 0, 0);
+  const acc = new Float64Array(3);
+  for (let j = 0; j < 128; j++) {
+    for (let i = 0; i < 128; i++) {
+      const S = i >= 64 && i < 80 && j >= 32 && j < 48 ? g + e : g;
+      const x0 = (i + S) * 0.5, y1 = 64 - j * 0.5;
+      assert.ok(boxMean(img, x0, x0 + 0.5, y1 - 0.5, y1, acc));
+      for (let k = 0; k < 3; k++) t.rgb[(j * 128 + i) * 3 + k] = Math.round(acc[k]);
+    }
+  }
+  return t;
+}
+
+// F-359 검토 #2 입력: [이름, 사인 진폭, g, e, 타일 생성]. 블록 (64,32) 의 실제 이동량 = g + e.
+const F359_OLD = [[2.5, -0.25, -1.25], [2.5, -0.5, -1], [1.5, -0.125, -1.375], [2, 0.125, 1]]
+  .map(([amp, g, e]) => [`F-359 shiftedTile 사인 ${amp} DN g=${g} e=${e}`, amp, g, e, (img) => shiftedTile(img, g, e)]);
+const F359_SHIFT = [[1, -0.25, -1.25], [1, -0.125, -1.375], [1, 0.125, 1.25], [1, -0.375, -1.125], [2, -0.375, -1.125]]
+  .map(([amp, g, e]) => [`shiftedTile 사인 ${amp} DN g=${g} e=${e}`, amp, g, e, (img) => shiftedTile(img, g, e)]);
+/** 블록 x 32..40·y 40..48 m 만 g+e, 나머지 g 만큼 동쪽으로 옮긴 밉 0 타일 (0,0) + ±noise 잡음. */
+const f359Warp = (noise) => {
+  const out = [];
+  for (const [amp, g, e] of [[2.5, -0.25, -1.25], [1.5, -0.125, -1.375]]) {
+    const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
+    for (const seed of [7919, 15838]) {
+      out.push([`warpedTile 사인 ${amp} DN g=${g} e=${e} ±${noise} seed ${seed}`, amp, g, e, (img) => warpedTile(img, 0, 0, 0, warp, { noise, seed })]);
+    }
+  }
+  return out;
+};
+const F359_WARP1 = f359Warp(1), F359_WARP2 = f359Warp(2);
+/** 입력마다 measure 결과와 블록 (64,32) 로 check(m, blk, g, e, img) 가 돌려준 실패 문구를 모은다. */
+function f359Failures(inputs, check) {
+  const bad = [];
+  for (const [at, amp, g, e, make] of inputs) {
+    const img = lowContrastImage(LOW.sine(amp));
+    const m = measureDrapeAlignment(img, make(img));
+    const blk = m.blocks.find((b) => b.i0 === 64 && b.j0 === 32);
+    const why = m.status !== 'measured' ? `${m.status} ${m.reason}` : check(m, blk, g, e, img);
+    if (why) bad.push(`${at}: ${why} (보고 ${m.maxMisalignPx}, 블록 ${blk && [blk.dx, blk.dy, blk.local, blk.pairedT]}, 실제 ${g + e})`);
+  }
+  return bad;
+}
+const TRUTH_TOL = 0.15; // F-357 시험과 같은 값(미리 정한 값). 완화하지 않는다.
+// 측정 부족 입력의 하한 여유: 재적합 이상치는 예측 ±OUTLIER_PX(0.5) 창에서 다시 찾으므로, local 로 자기 최소를 되살리지 못한
+// 회귀는 보고가 실제보다 0.5 px 넘게 작아진다(검토 #2 확인 기준 '보고 ≥ 실제 − 0.5' 와 같은 값, 측정값에서 정하지 않음).
+const WINDOW_TOL = 0.5;
+
+// 입력 분류(F-359 검토 #3).
+// 정보 한계: 잡음 없는 1·2 DN 사인 shiftedTile. 계단(반올림) 사인이라 블록의 1.125~1.5 px 이동 타일이 정수 1 px 이동 타일과
+// 픽셀마다 같다(아래 시험이 직접 확인) → 비용 0 인 이동량이 [1, |g+e|] 전체라 보고는 그 식별 가능 집합 안이어야 한다.
+const F359_INFO = [...F359_SHIFT, F359_OLD[3]];
+// 측정 부족: 2.5·1.5 DN shiftedTile 과 warpedTile(±1·±2 DN). 박스 평균 MSE 의 최소 자체가 실제 이동에서 벗어나 있다
+// (잡음 없는 2.5 DN g−0.25 e−1.25 블록 비용: −1.5 px 0.0260, −1.1875 px 0.0167 최소; 1.5 DN: −1.5 px 0.0156, −1.3125 px 0.0139 최소 —
+// uint8 반올림된 저진폭 사인에서 MSE 추정이 0 쪽으로 치우침). 탐색·판정이 아니라 비용 함수의 한계라 정답 ±0.15 는 todo.
+const F359_DEFICIT = [...F359_OLD.slice(0, 3), ...F359_WARP1, ...F359_WARP2];
+
+test('F-359 정보 한계 입력(잡음 없는 1·2 DN 사인): 블록 local, 보고는 식별 가능 집합 [1, |g+e|] 안', () => {
+  // 사인 1 DN 입력의 짝 검정 t 는 4.04(측정)로 이전 k = 4 바로 위였다(여유 0.04 — 1 DN 은 블록 비용 차 자체가 작다).
+  // PAIRED_K 2.75 기준 여유는 1.29 지만, 문턱을 다시 올리면 이 입력이 먼저 떨어진다.
+  // 수정 전(잔차 경로 유의성 = localSignificant): 모두 local 아님, 보고 0.125~0.384 px.
+  const bad = f359Failures(F359_INFO, (m, blk, g, e, img) => {
+    const s = Math.sign(g + e);
+    // 식별 가능 집합 근거: 블록을 정수 1 px(같은 방향) 옮긴 타일과 픽셀마다 같다.
+    const t = shiftedTile(img, g, s - g), u = shiftedTile(img, g, e);
+    for (let j = 32; j < 48; j++) {
+      for (let i = 64; i < 80; i++) {
+        for (let k = 0; k < 3; k++) if (t.rgb[(j * 128 + i) * 3 + k] !== u.rgb[(j * 128 + i) * 3 + k]) return `정수 1 px 타일과 (${i},${j}) 다름 — 정보 한계 아님`;
+      }
+    }
+    if (!blk?.local) return '블록 local 아님';
+    if (!(Math.sign(blk.dx) === s && Math.abs(blk.dx) >= 1 - 1e-9 && Math.abs(blk.dx) <= Math.abs(g + e) + 1e-9)) return '블록 dx 가 [1, |g+e|] 밖';
+    if (!(Math.abs(blk.dy) <= TRUTH_TOL)) return '블록 dy';
+    if (!(m.maxMisalignPx >= 1 - 1e-9)) return '보고 < 1 px';
+    return null;
+  });
+  assert.deepEqual(bad, []);
+});
+
+test('F-359·F-366 측정 부족 입력(2.5·1.5 DN shiftedTile, warpedTile ±1·±2 DN): 블록 local, 보고 > 1 px·≥ |g+e| − 0.5', () => {
+  // 수정 전: shiftedTile 은 local 아님·보고 0.125~0.5 px, warpedTile ±2 DN 은 짝 검정 t 2.92~3.49 < k = 4 라 local 아님·dx 가
+  // 예측 ± 0.5 경계값(−0.75·−0.625)·보고 0.125~0.25 px 로 정합 통과(F-359 검토 #3). PAIRED_K 를 귀무 측정으로 2.75 로 정한 뒤
+  // local — 이 네 입력의 t(2.92~3.49)와 PAIRED_K 의 여유는 0.17 로 얇고, 같은 조건 시드 30개씩에서는 t ≤ 2.75 인 경우가
+  // 사인 1.5 DN 9/30·2.5 DN 16/30(+짝 검정 경로에 오지 않은 1회)이라 여전히 정합 통과로 보고된다(index.mjs PAIRED_K 주석의 대가).
+  const bad = f359Failures(F359_DEFICIT, (m, blk, g, e) => {
+    if (!blk?.local) return '블록 local 아님';
+    if (!(m.maxMisalignPx > ALIGN_TOLERANCE_PX)) return '보고 ≤ 1 px';
+    if (!(m.maxMisalignPx >= Math.abs(g + e) - WINDOW_TOL)) return '보고 < 실제 − 0.5';
+    if (!(Math.sign(blk.dx) === Math.sign(g + e) && Math.abs(blk.dx) <= Math.abs(g + e) + TRUTH_TOL)) return '블록 dx 가 실제보다 큼·반대 방향';
+    // dy(실제 0)도 dx 하한과 같은 창 여유 0.5: ±2 DN 잡음 입력은 0.19~0.22 로 0.15 를 넘는다(정답 ±0.15 는 아래 todo 시험).
+    if (!(Math.abs(blk.dy) <= WINDOW_TOL)) return '블록 dy';
+    return null;
+  });
+  for (const [at, amp, , , make] of F359_OLD.slice(0, 3)) {
+    const img = lowContrastImage(LOW.sine(amp));
+    assertLocalBlock(measureDrapeAlignment(img, make(img)), at);
+  }
+  assert.deepEqual(bad, []);
+});
+
+test('F-359·F-366 정답 비교(측정 부족 입력): 보고 ≥ |g+e| − 0.15, |블록 dx − (g+e)| ≤ 0.15', {
+  todo: '측정 부족(정보 한계·k 보수성 아님): 2.5·1.5 DN shiftedTile 보고 1.188·1.344 는 박스 평균 MSE 최소 자체가 실제 1.5 px 에서 0 쪽으로 0.16~0.31 px 치우친 곳(반올림된 저진폭 사인; 같은 warp 의 잡음 없는 warpedTile 도 1.188·1.344), warpedTile ±1·±2 DN 은 그 위에 잡음이 더해 1.13~1.42(±2 DN 은 dy 도 0.19~0.22) — 비용 함수를 바꾸기 전에는 못 맞춘다',
+}, () => {
+  const bad = f359Failures(F359_DEFICIT, (m, blk, g, e) => {
+    if (!(m.maxMisalignPx >= Math.abs(g + e) - TRUTH_TOL)) return '보고 < 실제 − 0.15';
+    if (!(Math.abs(blk.dx - (g + e)) <= TRUTH_TOL && Math.abs(blk.dy) <= TRUTH_TOL)) return '블록 이동량이 실제와 0.15 px 넘게 다름';
+    return null;
+  });
+  assert.deepEqual(bad, []);
 });
 
 test('F-353 평평 블록 과반: 피복 블록의 절반 넘게 두 축 모두 평평하면 측정 불가, 제외 블록 수·면적 비를 보고', () => {
@@ -779,6 +925,20 @@ test('F-356 ③ coverage 검사: mask 형식·bounds 형식·타일과 안 겹�
   };
   for (const [name, coverage] of Object.entries(bad)) {
     assert.throws(() => measureDrapeAlignment(imgB, { ...t, coverage }), TowerAssetError, name);
+  }
+});
+
+test('F-362 ② 완전 피복 픽셀이 없는 타일(mask 전부 0·부분 피복만): bounds 유무와 무관하게 같은 TowerAssetError', () => {
+  const t = buildDrapeTile(imgB, 0, 0, 0);
+  const { bounds } = t.coverage;
+  const zero = new Uint8Array(t.width * t.height);
+  const part = t.coverage.mask.map((v) => (v ? 128 : 0));
+  const want = { name: 'TowerAssetError', message: 'drape: 정합을 잴 완전 피복 픽셀이 없다' };
+  for (const [name, coverage] of Object.entries({
+    'mask 0, bounds 없음': { mask: zero }, 'mask 0, bounds 있음': { mask: zero, bounds },
+    '부분 피복만, bounds 없음': { mask: part }, '부분 피복만, bounds 있음': { mask: part, bounds },
+  })) {
+    assert.throws(() => measureDrapeAlignment(imgB, { ...t, coverage }), want, name);
   }
 });
 

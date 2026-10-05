@@ -41,6 +41,12 @@ const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 const MIXED = {
   cwBaseTopCcwTower: () => join([column(0, 0, 40, 40, 0, 6, false), column(10, 10, 30, 30, 6, 110, true)]),
   wallOnlyBaseCcwTower: () => join([column(0, 0, 40, 40, 0, 6, true, false), column(10, 10, 30, 30, 6, 110, true)]),
+  // F-355 다시 열림: 안쪽 법선 기단 벽(−1 고리) + z=0 아래 향한 바닥(뒤집으면 +1) 은 한 감김수로 합치면 서로 지워진다. 위 향한 지붕은 탑 위에만 있다.
+  innerWallFloorBaseCcwTower: () => {
+    const wall = column(0, 0, 40, 40, 0, 6, false, false);
+    const floor = { pos: wall.pos, idx: [0, 2, 1, 0, 3, 2] }; // z=0 4정점, 아래를 향함(xy 투영 시계)
+    return join([wall, floor, column(10, 10, 30, 30, 6, 110, true)]);
+  },
   // 3000 m 에서도 변경 전 코드가 상자로 바꾸는 작은 크기(귀퉁이 거리 2.8 m < tol 5.8 m)
   smallCwBase: () => join([column(0, 0, 12, 12, 0, 6, false), column(2, 2, 10, 10, 6, 110, true)]),
   smallWallOnlyBase: () => join([column(0, 0, 12, 12, 0, 6, true, false), column(2, 2, 10, 10, 6, 110, true)]),
@@ -64,6 +70,7 @@ test('정상 반시계 기둥은 지붕을 덮으므로 상자 10삼각형이 �
 });
 
 for (const dist of [3000, 5000]) {
+  // 대조용: 이 3000 m 벽만 경우는 감김 합산을 되돌린 변이에서도 통과하므로 F-355 를 지키지 않는다. 지키는 시험은 위 MIXED 의 innerWallFloorBaseCcwTower 다.
   test(`${dist} m: 윗면 없는 벽 14삼각형 메시(3x3 m)는 원본 유지`, () => {
     // 3 x 3 m 기둥의 벽 8삼각형 + 같은 벽 면 6삼각형 = 14삼각형, 윗면 0. 변경 전 코드에서는 상자 10삼각형이 된다.
     const w = column(0, 0, 3, 3, 0, 3, true, false);

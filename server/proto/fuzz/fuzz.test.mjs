@@ -2,6 +2,7 @@
 // 모듈이 없으면 이 파일이 로드에서 실패하므로 skip 으로 녹색이 되지 않는다. 퍼저 자체는 기준 코덱(reference-codec.mjs)과
 // 일부러 깨뜨린 복호기로 검증하고, 제품 복호는 기준 코덱과 차등 비교한다.
 import test from 'node:test';
+import { performance } from 'node:perf_hooks';
 import assert from 'node:assert/strict';
 import { runFuzz, checkOne } from './index.mjs';
 import * as serverCodec from '../codec/index.mjs';
@@ -58,16 +59,6 @@ test('깨진 복호기 3: count 를 믿고 힙 배열을 먼저 할당 -> alloc 
   globalThis.__sink = null;
 });
 
-// 시드가 고정이라 같은 입력 열이 재생된다. 부하로 한 번 튄 위반(GC·스케줄링 정지로 time 이 200 ms 를 넘는 등)은 두 번째
-// 실행에서 같은 (index, kind) 로 다시 나오지 않고, 코덱이 실제로 느리거나 선할당하면 입력이 같으므로 매번 다시 나온다.
-// 벽시계 한 번의 관측으로 판정하지 않으려고 두 실행에서 모두 나온 위반만 돌려준다.
-function reproducibleViolations(codec, opts) {
-  const first = runFuzz(codec, opts).violations;
-  if (first.length === 0) return [];
-  const again = new Set(runFuzz(codec, opts).violations.map((v) => `${v.index}:${v.kind}`));
-  return first.filter((v) => again.has(`${v.index}:${v.kind}`));
-}
-
 // typed array·Buffer 선할당은 힙(used_heap_size) 밖이라 arrayBuffers 증가분으로만 보인다.
 const preallocDecoders = {
   'new Uint8Array(count*4096)': (b) => { if (b.length >= 14 && b[0] === 3) globalThis.__sink = new Uint8Array((b[12] | (b[13] << 8)) * 4096); },
@@ -83,8 +74,9 @@ for (const [name, pre] of Object.entries(preallocDecoders)) {
       globalThis.__sink = null;
       assert.ok(r.violations.length >= 1, `${dir} 위반 0`);
       assert.ok(r.violations.some((v) => v.kind === 'alloc'), JSON.stringify(r.violations.slice(0, 2)));
-      const stable = reproducibleViolations(refCodec(dir), { iterations: 20000, seed: SEED });
-      assert.equal(stable.length, 0, JSON.stringify(stable.slice(0, 2)));
+      // 원 코덱은 time 재현 판정(index.mjs)을 거쳐도 위반 0 이어야 한다.
+      const clean = runFuzz(refCodec(dir), { iterations: 20000, seed: SEED });
+      assert.equal(clean.violations.length, 0, JSON.stringify(clean.violations.slice(0, 2)));
     }
   });
 }
@@ -96,6 +88,46 @@ test('깨진 복호기 4: 느린 복호 -> time 검출(checkOne)', () => {
   const v = checkOne({ decode: slow, encode: refEncode }, frame, { timeLimitMs: 10 });
   assert.equal(v?.kind, 'time');
   assert.equal(checkOne({ decode: ok, encode: refEncode }, frame), null);
+});
+
+const spin = (ms) => { const t = performance.now(); while (performance.now() - t < ms) { /* spin */ } };
+
+// 계측 진입(checkOne 안의 decode)인지 호출 스택으로 판별한다. runFuzz 는 stackTraceLimit 을 0 으로 두므로 잠시 올려서 읽는다.
+const inCheckOne = (marker = 'checkOne') => {
+  const saved = Error.stackTraceLimit; Error.stackTraceLimit = 8;
+  const stack = new Error().stack ?? ''; Error.stackTraceLimit = saved;
+  return stack.includes(marker);
+};
+
+test('time 주입 1: 첫 계측 decode 에서 250 ms 1회 정지는 재현되지 않아 위반 0(일회성 정지는 오탐 아님)', () => {
+  const ok = makeDecoder('c2s');
+  let stalls = 0, instrumented = 0, stalledInput = null, reran = false, ranAfter = 0;
+  const hiccup = (b) => {
+    if (inCheckOne()) {
+      instrumented++;
+      if (stalledInput && !reran) { ranAfter++; if (ranAfter === 1) reran = Buffer.from(b).equals(stalledInput); }
+      if (stalls === 0) { stalls++; stalledInput = Buffer.from(b); spin(250); }
+    }
+    return ok(b);
+  };
+  const r = runFuzz({ ...refCodec('c2s'), decode: hiccup }, { iterations: 2000, seed: SEED });
+  assert.equal(stalls, 1, `정지는 계측 decode 에서 정확히 한 번 주입되어야 한다: ${stalls}`);
+  assert.ok(instrumented >= 2000, `계측 decode 가 반복마다 불려야 한다(재실행 포함): ${instrumented}`);
+  // 정지가 시간 판정에 반영됐다는 증거: 정지 직후 첫 계측 decode 가 같은 입력의 재실행이다(250 ms 가 한도를 넘어 time 으로 읽혀 한 번 더 돌았다).
+  // 정지가 판정에 안 잡혔다면 다음 계측 호출은 다음 입력이다.
+  assert.equal(reran, true, '정지된 입력이 곧바로 다시 복호되어야 한다(time 재실행)');
+  // 재실행 계수: 주입한 정지 한 번에 재실행도 정확히 한 번(정지가 판정에 반영되고, 재현되지 않아 한 번으로 끝났다).
+  assert.equal(r.timeRetries, 1, `time 재실행 횟수: ${r.timeRetries}`);
+  assert.equal(r.violations.length, 0, JSON.stringify(r.violations.slice(0, 2)));
+});
+
+test('time 주입 2: 매번 250 ms 느린 복호는 재현되어 time 위반 검출', () => {
+  const ok = makeDecoder('c2s');
+  const slow = (b) => { spin(250); return ok(b); };
+  const r = runFuzz({ ...refCodec('c2s'), decode: slow }, { iterations: 3, seed: SEED });
+  assert.equal(r.timeRetries, 3, '입력마다 한 번씩 재실행');
+  assert.equal(r.violations.length, 3, JSON.stringify(r.violations.slice(0, 2)));
+  assert.ok(r.violations.every((v) => v.kind === 'time'), JSON.stringify(r.violations.slice(0, 2)));
 });
 
 test('깨진 복호기 5: 입력 바이트를 바꿈 -> mutated-input 검출', () => {

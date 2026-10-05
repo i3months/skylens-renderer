@@ -2,7 +2,7 @@
 // Expected values are literal numbers worked out by hand from the geometry below, not read back from the implementation.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBuildingLod, BUILDING_LOD_REF_PIXEL_RAD, BUILDING_LOD_MAX_GAP_PX } from './index.mjs';
+import { buildBuildingLod, distStats, BUILDING_LOD_REF_PIXEL_RAD, BUILDING_LOD_MAX_GAP_PX } from './index.mjs';
 import { prism } from './scene.mjs';
 
 // One floor = 3 m, so every building below has the same height and no height step.
@@ -79,15 +79,21 @@ test('open corner keeps the old limit: staggered pair with an 8 m empty corner s
   assert.equal(boxCount(buildBuildingLod(pair, 33415)), 1);
 });
 
-test('long gap check stays fast: 20 pairs of 300 m buildings at 5 km in under 1 s', () => {
+// F-370 검토 #3: 벽시계(`ms < 1000`)는 병렬 부하에서 실패해서 계수로 바꿨다. distStats.segs 는 표본점-선분 거리 계산 수다(결정적).
+// 예산 근거(정직하게): 이 값은 이론 상한이 아니라 회귀 예산이다. 작성 때 이 입력의 계수를 한 번 재서(약 3.4 M) 그 약 1.75 배로 올림해 정했고,
+// 계수가 결정적이라(병렬 부하·JIT 무관) 같은 코드면 같은 값이 나온다. 의미: 길이 방향 표본을 더 촘촘히 깔거나 거리 가지치기를 잃는 변경은
+// 한 자릿수 배로 넘고(F-335 이전 129 표본 격자의 반대 방향 회귀는 오히려 병합 실패로 위 boxCount 단언이 잡는다), 계수 3.4 M 근처의 작은 변동은 허용한다.
+// 양성 대조: 계수가 0 이면 예산 단언이 비므로 > 0 을 먼저 단언한다.
+const GAP_SEG_BUDGET = 6_000_000;
+test('long gap check stays cheap: 20 pairs of 300 m buildings at 5 km merge into one box within the distance-computation budget', () => {
   const list = [];
   for (let i = 0; i < 20; i++) list.push(rect(2 * i + 1, 0, i * 3, 300, i * 3 + 2.4));
-  const t0 = performance.now();
+  Object.assign(distStats, { segs: 0, frameSegs: 0, addCalls: 0, probes: 0 });
   const out = buildBuildingLod(list, 5000);
-  const ms = performance.now() - t0;
   // Rows 2.4 m deep with 0.6 m gaps (≤ 1.212 m) merge into one box.
   assert.equal(boxCount(out), 1);
-  assert.ok(ms < 1000, `${ms.toFixed(0)} ms`);
+  assert.ok(distStats.segs > 0, '거리 계수가 돌아야 한다(양성 대조)');
+  assert.ok(distStats.segs <= GAP_SEG_BUDGET, `거리 계산 ${distStats.segs} > ${GAP_SEG_BUDGET}`);
 });
 
 test('F-338: chained merge re-measures the earlier cluster gap, 1.8 m trapped gap at 5 km is not roofed over', () => {
