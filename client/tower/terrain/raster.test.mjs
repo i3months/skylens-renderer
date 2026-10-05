@@ -35,6 +35,34 @@ function countFilled(out) {
   return n;
 }
 
+// 화면 평면 삼각형(화소 좌표)의 덮인 화소 수를 화소 중심(x+.5, y+.5) 포함 검사로 직접 센다.
+// 구현과 코드를 공유하지 않는 해석값이다. 변 위 표본은 기하로 정의한 top(수평이고 삼각형이 아래쪽) 또는
+// left(삼각형이 변의 오른쪽) 변일 때만 포함한다. 화면(0..w-1, 0..h-1) 밖은 세지 않는다.
+function bruteCount(p, w, h) {
+  const e = (a, b, x, y) => (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+  const area = e(p[0], p[1], p[2][0], p[2][1]);
+  const owns = (a, b, c) => {
+    if (a[1] === b[1]) return c[1] > a[1]; // top
+    const xAtC = a[0] + (b[0] - a[0]) * (c[1] - a[1]) / (b[1] - a[1]);
+    return c[0] > xAtC; // left
+  };
+  const own = [owns(p[1], p[2], p[0]), owns(p[2], p[0], p[1]), owns(p[0], p[1], p[2])];
+  let n = 0;
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const cx = x + 0.5; const cy = y + 0.5;
+      const ws = [e(p[1], p[2], cx, cy), e(p[2], p[0], cx, cy), e(p[0], p[1], cx, cy)];
+      let inside = true;
+      for (let k = 0; k < 3; k += 1) {
+        const v = ws[k] * Math.sign(area);
+        if (v < 0 || (v === 0 && !own[k])) inside = false;
+      }
+      if (inside) n += 1;
+    }
+  }
+  return n;
+}
+
 // ① 정면 삼각형 하나: 꼭짓점이 정수 화소 (20,20)·(60,20)·(20,61) 가 되게 z=10 에 둔다.
 //    수직·수평 변은 x.5 표본과 겹치지 않고, 빗변 41u+40v=3260 도 어떤 화소 중심도 지나지 않는다(합이 .5).
 //    포함 영역 u≥20, v≥20, 41u+40v≤3260 의 화소 중심 수는 손으로 센 820 개. 깊이는 모두 10.
@@ -161,7 +189,13 @@ test('A2_offscreen_degenerate_nonfinite', () => {
   rasterizeTriangles(cam100(), partial, () => [1, 2, 3], o2);
   // 화면 안(x≥0)만 그려지고, 삼각형이 닿지 않는 오른쪽 아래는 비어 있다. 출력 배열 길이는 그대로.
   assert.equal(o2.index.length, 100 * 100);
-  assert.equal(countFilled(o2), 1466, '경계로 잘려 화면 안쪽만 그려짐');
+  // 화소 좌표 (-50,20)·(60,20)·(20,60) 삼각형의 화면(0..99) 안쪽 화소 수를 직접 센 값 + 독립 추적기 대조
+  const expected = bruteCount([[-50, 20], [60, 20], [20, 60]], 100, 100);
+  assert.equal(countFilled(o2), expected, '경계로 잘려 화면 안쪽만 그려짐(직접 센 값)');
+  const ref2 = traceMesh(cam100(), partial, () => [1, 2, 3]);
+  // 추적기는 변 위 표본을 top-left 로 가르지 않고 포함하므로 빗변(대각선) 위 화소 수만큼 더 셀 수 있다(40 이내).
+  const dRef = countFilled(ref2) - countFilled(o2);
+  assert.ok(dRef >= 0 && dRef <= 40, `독립 추적기와 화소 수 차이 ${dRef}`);
   assert.equal(o2.index[0], -1, '삼각형 밖 화소는 비어 있음');
   assert.equal(o2.index[30 * 100 + 0], 0, '왼쪽 화면 경계 화소(0,30)는 그려짐');
 
@@ -293,15 +327,17 @@ test('A2_top_left_rule_shared_edges_on_pixel_centers', () => {
 //    ㉠ 꼭짓점 하나가 뒤(절단 결과 4각형) ㉡ 꼭짓점 둘이 뒤(절단 결과 3각형).
 test('A2_near_plane_clip_interpolation_matches_reference', () => {
   const cases = [
-    { name: '한 꼭짓점 뒤', tri: [[-3, -3, 10], [3, -3, 10], [0, 3, -5]], count: 7619, maxMismatch: 2 },
-    { name: '두 꼭짓점 뒤', tri: [[-2, -1, 6], [4, -2, -3], [-5, 3, -2]], count: 1286, maxMismatch: 0 },
+    { name: '한 꼭짓점 뒤', tri: [[-3, -3, 10], [3, -3, 10], [0, 3, -5]], maxMismatch: 2 },
+    { name: '두 꼭짓점 뒤', tri: [[-2, -1, 6], [4, -2, -3], [-5, 3, -2]], maxMismatch: 0 },
   ];
-  for (const { name, tri, count, maxMismatch } of cases) {
+  for (const { name, tri, maxMismatch } of cases) {
     const mesh = makeMesh([tri], [0]);
     const out = emptyResult(100, 100);
     rasterizeTriangles(cam100(), mesh, () => [1, 1, 1], out);
     const ref = traceMesh(cam100(), mesh, () => [1, 1, 1]);
-    assert.equal(countFilled(out), count, `${name}: 덮인 화소 수`);
+    // 덮인 화소 수는 독립 추적기와 불일치 화소 수 이내로 같아야 한다(스냅숏 상수 금지).
+    assert.ok(Math.abs(countFilled(out) - countFilled(ref)) <= maxMismatch, `${name}: 덮인 화소 수 ${countFilled(out)} vs 참조 ${countFilled(ref)}`);
+    assert.ok(countFilled(ref) > 100, `${name}: 참조가 충분히 그림`);
     let mismatch = 0;
     for (let i = 0; i < out.index.length; i += 1) {
       if (out.index[i] !== ref.index[i]) mismatch += 1;
@@ -309,4 +345,29 @@ test('A2_near_plane_clip_interpolation_matches_reference', () => {
     }
     assert.ok(mismatch <= maxMismatch, `${name}: 참조와 다른 화소 ${mismatch}`);
   }
+});
+
+// ⑤ opts.lambert 직접 전달: 광원 방향은 단위화되고 ambient 는 [0,1] 이어야 한다.
+function flatNormalMesh(nz) {
+  const mesh = makeMesh([[[-3, -3, 10], [1, -3, 10], [-3, 1, 10]]], [0]);
+  mesh.normals = new Float32Array([0, 0, nz, 0, 0, nz, 0, 0, nz]);
+  return mesh;
+}
+function renderLambert(lambert, nz) {
+  const out = emptyResult(100, 100);
+  rasterizeTriangles(cam100(), flatNormalMesh(nz), () => [0, 0, 0], out, { lambert });
+  return out;
+}
+test('A2_direct_lambert_light_is_normalized_and_ambient_checked', () => {
+  const base = [100, 100, 100];
+  // 법선 방향과 같은 광원이면 I=1 → 100. 부호가 맞는 쪽을 고른다.
+  const nz = -1;
+  const a = renderLambert({ l: [0, 0, -1], baseRgb: base, ambient: 0.2 }, nz);
+  const b = renderLambert({ l: [0, 0, -2], baseRgb: base, ambient: 0.2 }, nz);
+  const px = (20 * 100 + 20) * 3;
+  assert.equal(a.color[px], 100, '단위 광원 + 평지 = 기저색');
+  assert.deepEqual(Array.from(b.color), Array.from(a.color), 'l=[0,0,2] 는 l=[0,0,1] 과 같은 색');
+  assert.throws(() => renderLambert({ l: [0, 0, 0], baseRgb: base, ambient: 0.2 }, nz), RangeError);
+  assert.throws(() => renderLambert({ l: [0, 0, -1], baseRgb: base, ambient: 1.5 }, nz), RangeError);
+  assert.throws(() => renderLambert({ l: [0, 0, -1], baseRgb: base, ambient: -0.1 }, nz), RangeError);
 });
