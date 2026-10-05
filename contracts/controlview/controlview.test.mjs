@@ -12,8 +12,14 @@ test('대응표 자기 일관성: 모듈 9개, 모듈·fn 중복 없음', () => 
   assert.equal(new Set(CONTROLVIEW_METHOD_MAP.map((r) => r.fn)).size, 9);
   for (const bad of ['nope', undefined, '../x', Object.create(null)]) assert.throws(() => controlviewModulePath(bad), RangeError);
   assert.equal(controlviewModulePath('drape'), 'client/tower/drape/index.mjs');
-  // 모든 모듈에 대해 controlviewModulePath 가 올바른 경로를 반환하는지 확인
-  assert.ok(CONTROLVIEW_METHOD_MAP.every((r) => controlviewModulePath(r.module) === `client/tower/${r.module}/index.mjs`));
+  // 모든 모듈의 경로를 구현 템플릿과 무관한 독립 표로 대조한다.
+  const EXPECTED_PATHS = {
+    buildings: 'client/tower/buildings/index.mjs', chase: 'client/tower/chase/index.mjs', drape: 'client/tower/drape/index.mjs',
+    e2e: 'client/tower/e2e/index.mjs', fallback: 'client/tower/fallback/index.mjs', input: 'client/tower/input/index.mjs',
+    overlay: 'client/tower/overlay/index.mjs', streaming: 'client/tower/streaming/index.mjs', terrain: 'client/tower/terrain/index.mjs',
+  };
+  assert.deepEqual(Object.keys(EXPECTED_PATHS).sort(), mods);
+  for (const [m, path] of Object.entries(EXPECTED_PATHS)) assert.equal(controlviewModulePath(m), path);
   // CONTROLVIEW_LIMITS 는 동결됨
   assert.equal(Object.isFrozen(CONTROLVIEW_LIMITS), true);
   assert.deepEqual({ ...CONTROLVIEW_LIMITS }, { bundleBytes: 300_000, initialBytes: 15_000_000, segmentBytes: 3_000_000 });

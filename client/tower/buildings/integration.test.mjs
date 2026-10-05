@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { DISPLAY_MODES, buildingHeightM } from '../../../contracts/tower_assets/index.mjs';
-import { buildRealBundle, makeFootprints, BUILDING_COUNT } from './integration_bundle.mjs';
+import { buildRealBundle, makeFootprints, BUILDING_COUNT, IMAGE_BOUNDS } from './integration_bundle.mjs';
 
 const SEED = 20260;
 // 위에서 내려다보는 카메라(contracts/raster 규약, X_c = R·X_w + t, OpenCV 축).
@@ -175,7 +175,7 @@ test('(d) 높이 규칙이 지붕 깊이에 반영된다(floors 3 → 카메라 
   for (let i = 0; i < fps.length; i++) {
     const h = expectH(fps[i]);
     const px = pixelOf(fps[i].probe[0], fps[i].probe[1], h);
-    assert.ok(r.index[px] >= 0, `동 ${i} 지붕 화소가 비어 있음`);
+    assert.equal(r.index[px], i, `동 ${i}: 지붕 화소의 묶음 번호`);
     assert.ok(Math.abs(r.depth[px] - (CAM_H - h)) < 1e-3, `동 ${i}: 깊이 ${r.depth[px]} 기대 ${CAM_H - h}`);
   }
   assert.ok(Math.abs(r.depth[pixelOf(fps[0].probe[0], fps[0].probe[1], 9)] - 191) < 1e-3);
@@ -185,6 +185,16 @@ test('(d) 높이 규칙이 지붕 깊이에 반영된다(floors 3 → 카메라 
   const a = layer.render(CAM);
   const px0 = pixelOf(fps[0].probe[0], fps[0].probe[1], 9);
   assert.ok(Math.abs(a.depth[px0] - 191) < 1e-3);
+  // aerial 지붕 화소는 makeAerialImage 기울기 색이다: r = 60 + 150·(동쪽 비율), g = 60 + 150·(북쪽 비율), 표본·보간 오차 ±8.
+  const B = IMAGE_BOUNDS;
+  for (let i = 0; i < fps.length; i++) {
+    const px = pixelOf(fps[i].probe[0], fps[i].probe[1], expectH(fps[i]));
+    assert.equal(a.index[px], i, `aerial 동 ${i}: 묶음 번호`);
+    const east = (fps[i].probe[0] - B.minX) / (B.maxX - B.minX);
+    const north = (B.maxY - fps[i].probe[1]) / (B.maxY - B.minY);
+    assert.ok(Math.abs(a.color[3 * px] - (60 + 150 * east)) <= 8, `aerial 동 ${i}: r ${a.color[3 * px]}`);
+    assert.ok(Math.abs(a.color[3 * px + 1] - (60 + 150 * north)) <= 8, `aerial 동 ${i}: g ${a.color[3 * px + 1]}`);
+  }
 });
 
 test('(e) 도착하지 않은 곳은 빈 화소(accept 전 render 는 전부 depth 0, index −1)', async () => {
