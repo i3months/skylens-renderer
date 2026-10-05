@@ -22,6 +22,16 @@
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { TERRAIN_DEFAULTS } from '../../../contracts/controlview/terrain.mjs';
 
+// 직접 전달된 음영 서술을 검증하고 광원 방향을 단위화한다(원본은 바꾸지 않는다).
+function normalizeLambert(m) {
+  const l = m.l;
+  if (!l || l.length < 3) throw new TypeError('raster: lambert.l 은 길이 3 이상의 배열');
+  const len = Math.hypot(l[0], l[1], l[2]);
+  if (!Number.isFinite(len) || len === 0) throw new RangeError(`raster: lambert.l 길이가 0 이거나 유한하지 않음: [${l[0]}, ${l[1]}, ${l[2]}]`);
+  if (!(m.ambient >= 0 && m.ambient <= 1)) throw new RangeError(`raster: lambert.ambient 는 [0,1]: ${String(m.ambient)}`);
+  return { l: [l[0] / len, l[1] / len, l[2] / len], baseRgb: m.baseRgb, ambient: m.ambient };
+}
+
 /**
  * 삼각형 메시를 z-버퍼로 그려 out 을 채운다.
  * @param {import('../../../contracts/raster/index.mjs').Camera} camera
@@ -52,7 +62,7 @@ export function rasterizeTriangles(camera, mesh, shadeTriangle, out, opts = unde
   if (vNormals !== null && (typeof vNormals.length !== 'number' || vNormals.length !== positions.length)) {
     throw new TypeError(`raster: normals 길이 ${vNormals.length} 가 positions 길이 ${positions.length} 와 다름`);
   }
-  const fixedModel = opts && opts.lambert ? opts.lambert : null;
+  const fixedModel = opts && opts.lambert ? normalizeLambert(opts.lambert) : null;
   const color = out.color;
   const depth = out.depth;
   const index = out.index;
