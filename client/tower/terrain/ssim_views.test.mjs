@@ -5,9 +5,11 @@
 // 1부: ref_trace 자체 검증(해석값·무차별 대조) — 래스터와 무관하게 통과해야 한다.
 // 2부: createTerrainLayer 대 기준 영상. 합성 DEM 시드 1..12 × 높이 잡음 {0, 0.015} 의 24 장면 × LOD 1..3 × 8시점 최소값으로 판정한다.
 //   0.95 에 못 미치는 조건이 생기면 KNOWN_SHORTFALL 에 수치·하한과 함께 따로 단언한다(기준은 낮추지 않는다). 지금은 비어 있다.
-// 기준 수치(SSIM 0.95·0.99, 해상도 160×90, 시드 범위)는 측정값에 맞춰 바꾸지 않고 미리 정한 값이다.
-// 측정에서 정한 값은 KNOWN_SHORTFALL 퇴행 하한, LOD3_EQ_LOD2_SCENES(현재 측정 14 장면), NEAR_*·FACE_SHADING_NOISY_MAX 의 측정 근거 수치다.
-// MASK_MISMATCH_MAX_RATIO 가 0 인 근거: 층 래스터와 기준 추적이 같은 변 규칙(화소 중심 포함 판정)을 쓰는 결정적 계산이라 빈/채움 판정이 어긋날 이유가 없다.
+// 미리 정한 값(측정에 맞춰 바꾸지 않음): SSIM 하한 0.95(계약)·0.99, 해상도 160×90, 시드 범위 1..12, 잡음 {0, 0.015}.
+// 측정 후에 정해 넣은 값(측정 결과를 보고 조인 값): KNOWN_SHORTFALL 퇴행 하한, LOD3_EQ_LOD2_SCENES(측정으로 얻은 장면 목록),
+//   NEAR_VTX_MIN·NEAR_FACE_MAX·FACE_SHADING_NOISY_MAX(측정값에서 여유를 두고 잡은 경계).
+// MASK_MISMATCH_MAX_RATIO 0 은 측정값이 아니라 근거로 정했다: 층 래스터와 기준 추적이 같은 변 규칙(화소 중심 포함 판정)을 쓰는 결정적 계산이라
+//   빈/채움 판정이 어긋날 이유가 없다(참고 측정도 0).
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { traceMesh, createTracer } from './ref_trace.mjs';
@@ -23,8 +25,9 @@ import { rasterizeTriangles } from './raster.mjs';
 const SSIM_LOD0_MIN = 0.99; // LOD 0 을 layer 로 그린 것 대 기준(래스터 정확성)
 const MASK_MISMATCH_MAX_RATIO = 0; // 빈/채움이 다른 화소 비율 상한. 근거: 변 규칙 결정성(위 8행 주석). 참고 측정: LOD 0 24 장면 8시점·부분 메시 8시점 모두 0
 // LOD 3 타일 메시가 LOD 2 와 똑같은(정점·삼각형 동일) 장면 수. 근거: 결정 0046 의 LOD 3 오차 상한이 [0,0.5,1,1] 이라 LOD 2 와 LOD 3 이 같은 상한(1 m)이고,
-//   그 상한에서 간격이 같게 정해지는 DEM 은 두 단계가 같은 메시가 된다. 곧 이 장면들의 LOD 3 SSIM 은 LOD 2 와 같아 LOD 3 을 따로 검증하지 못한다. 현재 측정 14 장면.
-const LOD3_EQ_LOD2_SCENES = 14;
+//   그 상한에서 간격이 같게 정해지는 DEM 은 두 단계가 같은 메시가 된다. 곧 이 장면들의 LOD 3 SSIM 은 LOD 2 와 같아 LOD 3 을 따로 검증하지 못한다. 측정 후 고정한 값: 개수가 아니라 장면 목록('시드/잡음')이다 —
+//   상한(TERRAIN_LOD_MAX_ERROR_M)이 바뀌면 목록이 달라져 (2a) 가 실패한다(시드 5..10·12 의 두 잡음 = 14 장면).
+const LOD3_EQ_LOD2_SCENES = Object.freeze(['5/0', '6/0', '7/0', '8/0', '9/0', '10/0', '12/0', '5/0.015', '6/0.015', '7/0.015', '8/0.015', '9/0.015', '10/0.015', '12/0.015']);
 const TRACE_TOTAL_MS_MAX = 20000; // 한 장면 8시점 기준 영상 합계 시간 상한
 const VIEWS = 8;
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
@@ -425,11 +428,11 @@ describe('지형 층 8시점 SSIM(시드 1..12 × 잡음 {0, 0.015})', () => {
     console.log(`[ssim_views] 알려진 미달 ${rep.length}건: ${rep.join(' ')}`);
   });
 
-  test('(2a) LOD3=LOD2 장면 수: LOD 3 이 LOD 2 와 같은 메시인 장면 수가 측정값과 같다', () => {
+  test('(2a) LOD3=LOD2 장면 목록: LOD 3 이 LOD 2 와 같은 메시인 장면이 측정한 목록(시드/잡음)과 같다', () => {
     const eq = scenes.filter((s) => s.lod3EqLod2);
     // 같은 메시면 삼각형 수도 같고, 다르면 LOD 3 이 더 성기다(삼각형 수가 늘지 않는다).
     for (const s of scenes) assert.ok(s.tri3 <= s.tri2, `시드 ${s.seed} 잡음 ${s.noise}: LOD3 삼각형 ${s.tri3} > LOD2 ${s.tri2}`);
-    assert.equal(eq.length, LOD3_EQ_LOD2_SCENES, `LOD3=LOD2 장면 ${eq.length} (기대 ${LOD3_EQ_LOD2_SCENES}): ${eq.map((s) => `${s.seed}/${s.noise}`).join(' ')}`);
+    assert.deepEqual(eq.map((s) => `${s.seed}/${s.noise}`).sort(), [...LOD3_EQ_LOD2_SCENES].sort(), `LOD3=LOD2 장면 ${eq.length} (기대 ${LOD3_EQ_LOD2_SCENES.length}): 장면 목록이 측정과 다르다`);
     console.log(`[ssim_views] LOD3=LOD2 장면 ${eq.length}`);
   });
 
@@ -467,6 +470,7 @@ describe('지형 층 8시점 SSIM(시드 1..12 × 잡음 {0, 0.015})', () => {
     const out = emptyResult(cams[0].width, cams[0].height);
     rasterizeTriangles(cams[0], m1, shade(m1), out);
     const lay = layer.render(cams[0]);
+    // 주의: 같은 제품 코드(rasterizeTriangles)끼리 층 경로와 직접 호출 경로가 같은 색을 내는지(경로 동일성)만 확인한다. 정답 대조가 아니다(정답 대조는 아래 추적 기준).
     assert.deepEqual(lay.color, out.color);
     // 해석적 기대: 같은 메시를 독립 광선 추적(server 램버트, 정점 법선)으로 그린 색과 층 색이 화소별로 거의 같고, 면 음영 색과는 눈에 띄게 다르다.
     const vtxRef = traceMesh(cams[0], buildLayerMesh(main.lodTiles[1]), shadeFnDefault(), VTX);

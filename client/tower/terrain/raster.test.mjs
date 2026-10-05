@@ -366,6 +366,12 @@ test('A2_direct_lambert_light_is_normalized_and_ambient_checked', () => {
   const px = (20 * 100 + 20) * 3;
   assert.equal(a.color[px], 100, '단위 광원 + 평지 = 기저색');
   assert.deepEqual(Array.from(b.color), Array.from(a.color), 'l=[0,0,-2] 는 l=[0,0,-1] 과 같은 색');
+  // 광원 반대 법선(n·l = -1 → I = ambient): 색은 round(100·ambient). ambient 를 상수로 고정한 변이를 잡는다.
+  for (const amb of [0.2, 0.7]) {
+    const o = renderLambert({ l: [0, 0, -1], baseRgb: base, ambient: amb }, 1);
+    assert.ok(o.index[20 * 100 + 20] >= 0, '반대 법선 화소가 그려짐');
+    assert.equal(o.color[px], Math.round(100 * amb), `ambient ${amb}: 광원 반대 화소 = round(100·ambient)`);
+  }
   assert.throws(() => renderLambert({ l: [0, 0, 0], baseRgb: base, ambient: 0.2 }, nz), RangeError);
   assert.throws(() => renderLambert({ l: [0, 0, -1], baseRgb: base, ambient: 1.5 }, nz), RangeError);
   assert.throws(() => renderLambert({ l: [0, 0, -1], baseRgb: base, ambient: -0.1 }, nz), RangeError);
@@ -389,23 +395,32 @@ test('A2_direct_lambert_base_rgb_is_validated_before_drawing', () => {
   }
 });
 
-// F-400 ④: 층은 늘 opts.lambert 를 넘기므로 주입 shade 의 색은 화소 음영 경로에서 무시된다(면 음영일 때만 반영).
+// F-400 ④: 층은 늘 opts.lambert 를 넘기므로 주입 shade 의 색은 화소 음영 경로에서 무시된다(계약: contracts/controlview/terrain.mjs raster 항목).
+// 따라서 주입 shade 층과 기본 층의 결과는 화소 하나까지 같아야 하고, 면 음영(normals:'face')에서만 주입 색이 반영된다.
 test('A2_injected_shade_color_is_ignored_on_per_pixel_path_but_used_on_face_path', async () => {
   const { createTerrainLayer } = await import('./index.mjs');
   const heights = new Float32Array(25);
   for (let j = 0; j < 5; j += 1) for (let i = 0; i < 5; i += 1) heights[j * 5 + i] = (20 * i) / 4;
   const camera = { width: 64, height: 64, K: { fx: 60, fy: 60, cx: 32, cy: 32 }, R: [1, 0, 0, 0, -1, 0, 0, 0, -1], t: [-32, 32, 80] };
+  const tiles = [{ tx: 0, ty: 0, lod: 0, cells: 5, heights }];
   const L = createTerrainLayer({ shade: () => [255, 0, 0] });
-  L.accept(0, [{ tx: 0, ty: 0, lod: 0, cells: 5, heights }]);
+  L.accept(0, tiles);
+  const D = createTerrainLayer();
+  D.accept(0, tiles);
   const red = (o) => {
     let n = 0;
     for (let i = 0; i < o.index.length; i += 1) if (o.index[i] >= 0 && o.color[3 * i] === 255 && o.color[3 * i + 1] === 0 && o.color[3 * i + 2] === 0) n += 1;
     return n;
   };
   const out = L.render(camera);
+  const ref = D.render(camera);
   assert.ok(countFilled(out) > 1000, '지형이 그려짐');
   assert.equal(red(out), 0, '화소 음영 경로: 주입 shade 의 빨강은 무시');
-  // 같은 메시를 면 음영(normals:'face')으로 그리면 주입 색이 그대로 반영된다.
+  // 주입 색이 음영 비율로 줄어 섞여 들어가는 변이도 잡도록 색 배열 전체를 기본 층과 비교한다.
+  assert.deepEqual(out.color, ref.color, '주입 shade 층의 color 는 기본 층과 같다');
+  assert.deepEqual(out.index, ref.index);
+  assert.deepEqual(out.depth, ref.depth);
+  // 단일 삼각형 메시를 면 음영(normals:'face')으로 그리면 주입 색이 그대로 반영된다(위 층 메시와는 다른 메시).
   const mesh = makeMesh([[[-3, -3, 10], [1, -3, 10], [-3, 1, 10]]], [0]);
   const flat = emptyResult(100, 100);
   rasterizeTriangles(cam100(), mesh, () => [255, 0, 0], flat);
