@@ -52,21 +52,17 @@ test('rig: 퇴화는 yaw=state.yaw, pitch=0', () => {
 });
 
 test('rig: 결과를 poseToCameraPose 에 넣으면 카메라 앞이 (시선 − 위치) 방향이다', () => {
+  // 기대 위치·시선 방향은 손으로 계산한 숫자다(rig 와 같은 식을 되풀이하지 않는다).
   const cases = [
-    [P0, cfg], [{ pos: [0, 0, 0], yaw: Math.PI / 2 }, { ...cfg, lookAheadM: 5 }],
-    [{ pos: [100, -50, 20], yaw: 2.3 }, { distM: 12, heightM: 4, lookAheadM: 8 }],
-    [{ pos: [3, 4, 5], yaw: -2.9 }, { distM: 40, heightM: 0, lookAheadM: 15 }],
+    [P0, cfg, [0, -30, 10], [0, 0.9486832980505138, -0.3162277660168379]],
+    [{ pos: [0, 0, 0], yaw: Math.PI / 2 }, { ...cfg, lookAheadM: 5 }, [-30, 0, 10], [0.9615239476408232, 0, -0.274721127897378]],
+    [{ pos: [100, -50, 20], yaw: 2.3 }, { distM: 12, heightM: 4, lookAheadM: 8 }, [91.05153745387936, -42.00468774464211, 24], [0.7312241208224892, -0.653337391143228, -0.1961161351381841]],
+    [{ pos: [3, 4, 5], yaw: -2.9 }, { distM: 40, heightM: 0, lookAheadM: 15 }, [12.569973168559297, 42.838326605983625, 5], [-0.2392493292139824, -0.9709581651495904, 0]],
   ];
-  for (const [st, cf] of cases) {
-    const pose = rigPose(st, cf);
-    const cam = poseToCameraPose(pose, 0.9);
-    const s = Math.sin(st.yaw), c = Math.cos(st.yaw);
-    const eye = [st.pos[0] - cf.distM * s, st.pos[1] - cf.distM * c, st.pos[2] + cf.heightM];
-    const look = [st.pos[0] + cf.lookAheadM * s, st.pos[1] + cf.lookAheadM * c, st.pos[2]];
-    const d = look.map((v, i) => v - eye[i]);
-    const n = Math.hypot(...d);
+  for (const [st, cf, eye, dir] of cases) {
+    const cam = poseToCameraPose(rigPose(st, cf), 0.9);
     near(cam.pos, eye, '카메라 위치');
-    near(forward(cam.quat), d.map((v) => v / n), `앞 ${JSON.stringify(st)}`);
+    near(forward(cam.quat), dir, `앞 ${JSON.stringify(st)}`);
   }
 });
 

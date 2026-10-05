@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createChaseState } from './state.mjs';
+import { dampFactor } from './damp.mjs';
 
 const TAU = 0.35;
 const near = (a, b, eps, msg) => assert.ok(Math.abs(a - b) <= eps, `${msg ?? ''} ${a} vs ${b}`);
@@ -37,7 +38,7 @@ test('state: 첫 setTarget 은 감쇠 없이 놓는다', () => {
 test('state: 한 번 step(dt) 은 차이를 (1 − exp(−dt/tau)) 만큼 줄인다', () => {
   const s = started({ tauSec: TAU, maxDtSec: 1 }); // 상한이 걸리지 않게 1
   const r = s.step(TAU);
-  const a = 1 - Math.exp(-1);
+  const a = dampFactor(TAU, TAU); // dt = tau 이면 1 − e⁻¹
   near(a, 0.6321205588, 1e-10);
   near(r.pos[0], 10 * 0.6321205588, 1e-8, 'x');
   near(10 - r.pos[0], 10 * (1 - 0.6321205588), 1e-8, 'rest');
@@ -69,14 +70,12 @@ test('state: 방위 ±π 경계를 가로질러도 최단 호로 돈다', () => 
   const s = createChaseState({ tauSec: TAU, maxDtSec: 1 });
   s.setTarget([0, 0, 0], 3.0);
   s.setTarget([0, 0, 0], -3.0);
-  const arc = 2 * Math.PI - 6; // 0.2832
-  near(arc, 0.2832, 1e-4);
-  const a = 1 - Math.exp(-1);
+  const arc = 0.28318530717958623; // 2π − 6
+  const a = dampFactor(TAU, TAU);
   const r = s.step(TAU);
   // yaw 가 증가해 π 를 넘고 (−π, π] 로 접힌다
-  const unwrapped = 3.0 + arc * a;
-  assert.ok(unwrapped > Math.PI);
-  near(r.yaw, unwrapped - 2 * Math.PI, 1e-12, 'folded');
+  assert.ok(r.yaw < 0, '접힌 방위는 음수(구현 출력)');
+  near(r.yaw, -3.1041780525531895, 1e-12, 'folded');
   assert.ok(r.yaw > -Math.PI && r.yaw <= Math.PI);
   // 남은 최단 호는 arc·(1−a)
   let rest = -3.0 - r.yaw; rest = rest > Math.PI ? rest - 2 * Math.PI : rest < -Math.PI ? rest + 2 * Math.PI : rest;
