@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildAerialUv, aerialUvOf } from './index.mjs';
+import { buildBuildingLod } from '../lod/index.mjs';
+import { prism as sharedPrism } from '../lod/scene.mjs';
 import { TowerAssetError, ALIGN_TOLERANCE_PX, buildingHeightM } from '../../../contracts/tower_assets/index.mjs';
 
 // 시험 전용 프리즘 생성기(다른 하위 작업 코드를 쓰지 않는다).
@@ -320,4 +322,31 @@ test('음수·비정수 인덱스는 TowerAssetError', () => {
   assert.throws(() => buildAerialUv({ positions, indices: new Float32Array([0, 1, -2]) }, img), TowerAssetError);
   assert.throws(() => buildAerialUv({ positions, indices: [0, 1, Infinity] }, img), TowerAssetError);
   assert.doesNotThrow(() => buildAerialUv({ positions, indices: [0, 1, 2] }, img));
+});
+
+// F-312: LOD 상자 메시는 벽 정점과 지붕 정점을 나누므로 벽 삼각형이 mask 0(영상 UV 사용) 정점을 갖지 않는다.
+test('LOD 상자 메시(6×6 프리즘 36동, 20 km): mask 0 정점을 가진 벽 삼각형 0개, 지붕 삼각형은 모두 mask 0', () => {
+  const city = [];
+  for (let i = 0; i < 36; i++) {
+    const x0 = (i % 6) * 12, y0 = Math.floor(i / 6) * 12;
+    city.push({ id: i + 1, mesh: sharedPrism([[x0, y0], [x0 + 10, y0], [x0 + 10, y0 + 10], [x0, y0 + 10]], 3) });
+  }
+  const groups = buildBuildingLod(city, 20000);
+  let walls = 0, roofs = 0, boxes = 0;
+  for (const g of groups) {
+    const m = g.mesh;
+    if (m.indices.length === 10 * 3 * (m.positions.length / 3 / 12) && m.positions.length / 3 % 12 === 0) boxes += m.positions.length / 36;
+    const { wallMask } = buildAerialUv(m, { width: 2, height: 2, rgb: new Uint8Array(12), bounds: { minX: -10, minY: -10, maxX: 100, maxY: 100 } });
+    const p = m.positions;
+    for (let t = 0; t < m.indices.length; t += 3) {
+      const [a, b, c] = [m.indices[t], m.indices[t + 1], m.indices[t + 2]];
+      const up = (p[b * 3] - p[a * 3]) * (p[c * 3 + 1] - p[a * 3 + 1]) - (p[c * 3] - p[a * 3]) * (p[b * 3 + 1] - p[a * 3 + 1]) > 1e-6;
+      const masked = [a, b, c].filter((i) => wallMask[i] === 0).length;
+      if (up) { roofs++; assert.equal(masked, 3, '지붕 삼각형 정점은 모두 mask 0'); }
+      else if (masked > 0) walls++;
+    }
+  }
+  assert.ok(boxes >= 1, '상자 메시가 만들어져야 한다');
+  assert.ok(roofs >= 2);
+  assert.equal(walls, 0, 'mask 0 정점을 가진 벽 삼각형');
 });

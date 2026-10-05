@@ -286,7 +286,7 @@ function boxErrors(group, byId) {
   const p = group.mesh.positions;
   if (group.ids.length === 1 && group.mesh === byId.get(group.ids[0])) return []; // 원본 유지 그룹
   const errs = [];
-  for (let o = 0; o < p.length; o += 24) {
+  for (let o = 0; o < p.length; o += 36) {
     const box = readBox(p, o);
     const inside = group.ids.map((id) => byId.get(id)).filter((b) => {
       for (let i = 0; i < b.positions.length; i += 3) {
@@ -368,7 +368,7 @@ test('F-326 대각 쌍: 5 × 5 × 10 m 두 동이 대각으로 0.5 m 떨어져 �
   assert.equal(triCount(out.map((g) => g.mesh)), 20, '대각 쌍이 한 상자로 합쳐짐');
   // 상자마다 자기 건물만 덮는다(빈 사분면이 지붕이 되지 않는다).
   const p = out[0].mesh.positions;
-  for (let o = 0; o < p.length; o += 24) {
+  for (let o = 0; o < p.length; o += 36) {
     const box = readBox(p, o);
     assert.ok(box.lu <= 5 + 1e-3 && box.lv <= 5 + 1e-3, `상자 ${box.lu} × ${box.lv}`);
   }
@@ -471,7 +471,7 @@ test('회전이 다른 쌍: 차이가 작으면(0.01°~1°) 5 km 에서 합쳐�
     assert.equal(triCount(out.map((g) => g.mesh)), 20, `${dist} m: 0° 와 30° 상자가 합쳐짐`);
     // 각 상자의 벽 방향은 자기 원본과 같다(축 정렬 상자 하나는 0°, 다른 하나는 30°).
     const p = out[0].mesh.positions;
-    const dirs = [0, 24].map((o) => (Math.atan2(p[o + 4] - p[o + 1], p[o + 3] - p[o]) * 180) / Math.PI).map((d) => ((d % 90) + 90) % 90);
+    const dirs = [0, 36].map((o) => (Math.atan2(p[o + 4] - p[o + 1], p[o + 3] - p[o]) * 180) / Math.PI).map((d) => ((d % 90) + 90) % 90);
     assert.ok(dirs.some((d) => Math.min(d, 90 - d) < 1e-3) && dirs.some((d) => Math.abs(d - 30) < 1e-3), `방향 ${dirs}`);
   }
 });
@@ -494,7 +494,7 @@ test('θ 가 약간 다른 3동 연쇄 병합: own(0.4°) 좌표계 재측정이
   const p = out[0].mesh.positions;
   const deg = (o) => (Math.atan2(p[o + 4] - p[o + 1], p[o + 3] - p[o]) * 180) / Math.PI;
   assert.ok(Math.abs(deg(0) - -2.1) < 0.01, `군집 상자 방향 ${deg(0)}° (기대 −2.1°)`);
-  assert.ok(Math.abs(deg(24) - -5) < 0.01, `4 번 상자 방향 ${deg(24)}° (기대 −5°)`);
+  assert.ok(Math.abs(deg(36) - -5) < 0.01, `4 번 상자 방향 ${deg(36)}° (기대 −5°)`);
 });
 
 test('상자 면 감김: 모든 상자 삼각형의 법선이 상자 바깥을 향한다(회전 상자 포함)', () => {
@@ -510,7 +510,7 @@ test('상자 면 감김: 모든 상자 삼각형의 법선이 상자 바깥을 �
       const p = g.mesh.positions, idx = g.mesh.indices;
       assert.equal(idx.length % 30, 0);
       for (let t = 0; t < idx.length; t += 3) {
-        const box = Math.floor(idx[t] / 8) * 8; // 이 삼각형이 속한 상자의 첫 정점
+        const box = Math.floor(idx[t] / 12) * 12; // 이 삼각형이 속한 상자의 첫 정점(벽 정점 8 + 지붕 전용 4, 중심은 앞 8개로)
         let cx = 0, cy = 0, cz = 0;
         for (let k = 0; k < 8; k++) { cx += p[(box + k) * 3] / 8; cy += p[(box + k) * 3 + 1] / 8; cz += p[(box + k) * 3 + 2] / 8; }
         const [a, b, c] = [idx[t] * 3, idx[t + 1] * 3, idx[t + 2] * 3];

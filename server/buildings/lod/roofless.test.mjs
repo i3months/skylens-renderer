@@ -37,10 +37,36 @@ function upCount(m) {
 }
 const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 
+// F-355: 부분 지붕·감김 혼재 입력. 기단 위 6 m 에 없는 110 m 지붕이 생기면 안 된다.
+const MIXED = {
+  cwBaseTopCcwTower: () => join([column(0, 0, 40, 40, 0, 6, false), column(10, 10, 30, 30, 6, 110, true)]),
+  wallOnlyBaseCcwTower: () => join([column(0, 0, 40, 40, 0, 6, true, false), column(10, 10, 30, 30, 6, 110, true)]),
+  // 3000 m 에서도 변경 전 코드가 상자로 바꾸는 작은 크기(귀퉁이 거리 2.8 m < tol 5.8 m)
+  smallCwBase: () => join([column(0, 0, 12, 12, 0, 6, false), column(2, 2, 10, 10, 6, 110, true)]),
+  smallWallOnlyBase: () => join([column(0, 0, 12, 12, 0, 6, true, false), column(2, 2, 10, 10, 6, 110, true)]),
+};
+
+for (const dist of [3000, 5000, 20000]) {
+  for (const [name, make] of Object.entries(MIXED)) {
+    test(`${dist} m: ${name} 는 원본 유지`, () => {
+      const mesh = make();
+      const out = buildBuildingLod([{ id: 7, mesh }], dist);
+      assert.equal(out.length, 1);
+      assert.ok(same(out[0].mesh.indices, mesh.indices) && same(out[0].mesh.positions, mesh.positions));
+    });
+  }
+}
+
+test('정상 반시계 기둥은 지붕을 덮으므로 상자 10삼각형이 된다(막지 않는다)', () => {
+  const mesh = join([column(0, 0, 40, 40, 0, 6, true)]);
+  const out = buildBuildingLod([{ id: 1, mesh }], 5000);
+  assert.equal(out[0].mesh.indices.length / 3, 10);
+});
+
 for (const dist of [3000, 5000]) {
-  test(`${dist} m: 윗면 없는 벽 14삼각형 메시는 원본 유지`, () => {
-    // 10 x 10 m 기둥의 벽 8삼각형 + 같은 벽 면 6삼각형 = 14삼각형, 윗면 0.
-    const w = column(0, 0, 10, 10, 0, 30, true, false);
+  test(`${dist} m: 윗면 없는 벽 14삼각형 메시(3x3 m)는 원본 유지`, () => {
+    // 3 x 3 m 기둥의 벽 8삼각형 + 같은 벽 면 6삼각형 = 14삼각형, 윗면 0. 변경 전 코드에서는 상자 10삼각형이 된다.
+    const w = column(0, 0, 3, 3, 0, 3, true, false);
     const mesh = join([w]);
     mesh.indices = new Uint32Array([...w.idx, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6]);
     assert.equal(mesh.indices.length / 3, 14);
@@ -48,7 +74,6 @@ for (const dist of [3000, 5000]) {
     const out = buildBuildingLod([{ id: 1, mesh }], dist);
     assert.equal(out.length, 1);
     assert.ok(same(out[0].mesh.indices, mesh.indices) && same(out[0].mesh.positions, mesh.positions));
-    assert.equal(upCount(out[0].mesh), 0);
   });
 
   test(`${dist} m: 시계 방향 기단+탑은 원본 유지`, () => {
@@ -57,6 +82,17 @@ for (const dist of [3000, 5000]) {
     const out = buildBuildingLod([{ id: 7, mesh }], dist);
     assert.equal(out.length, 1);
     assert.ok(same(out[0].mesh.indices, mesh.indices) && same(out[0].mesh.positions, mesh.positions));
-    assert.ok(upCount(out[0].mesh) <= upCount(mesh));
+  });
+
+  test(`${dist} m: 부분 지붕(지붕 삼각형 하나만 반시계, 하나는 시계)은 원본 유지`, () => {
+    const c = column(0, 0, 40, 40, 0, 20, true);
+    const n = c.idx.length;
+    // 지붕 두 삼각형 중 둘째의 감김을 뒤집는다: 위를 향한 삼각형은 있으나 외곽 절반만 덮는다.
+    const idx = c.idx.slice();
+    [idx[n - 2], idx[n - 1]] = [idx[n - 1], idx[n - 2]];
+    const mesh = join([{ pos: c.pos, idx }]);
+    assert.equal(upCount(mesh), 1);
+    const out = buildBuildingLod([{ id: 3, mesh }], dist);
+    assert.ok(same(out[0].mesh.indices, mesh.indices) && same(out[0].mesh.positions, mesh.positions));
   });
 }
