@@ -111,6 +111,13 @@ test('형식 위반', () => {
   assert.throws(() => run({ needed: 'x' }), TypeError);
   assert.throws(() => run({ held: [] }), TypeError);
   assert.throws(() => run({ center: [0] }), TypeError);
+  for (const bad of ['a,b', '1', '1,2,3', '01,2', '-0,1', '1.5,2', ' 1,2', '1,']) {
+    assert.throws(() => run({ held: new Set([bad]) }), TypeError, `held ${bad}`);
+    assert.throws(() => run({ inflight: new Set([bad]) }), TypeError, `inflight ${bad}`);
+  }
+  assert.throws(() => run({ held: new Set([5]) }), TypeError);
+  assert.throws(() => run({ inflight: new Set([null]) }), TypeError);
+  assert.doesNotThrow(() => run({ held: new Set(['-12,0', '0,-7']) }));
   assert.throws(() => run({ opts: { ...base, maxHeld: -1 } }), RangeError);
 });
 

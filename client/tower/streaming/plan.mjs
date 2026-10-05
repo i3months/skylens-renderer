@@ -19,8 +19,13 @@ function checkInt(v, name) {
   if (!Number.isInteger(v)) throw new TypeError(`${name} 는 정수여야 한다`);
 }
 
+const KEY_RE = /^(0|-?[1-9]\d*),(0|-?[1-9]\d*)$/; // tileKey 가 만드는 정수 키 형식
+
 function checkSet(v, name) {
   if (!(v instanceof Set)) throw new TypeError(`${name} 는 Set 이어야 한다`);
+  for (const k of v) {
+    if (typeof k !== 'string' || !KEY_RE.test(k)) throw new TypeError(`${name} 원소는 정수 키 'tx,ty' 문자열이어야 한다: ${String(k)}`);
+  }
 }
 
 /**
@@ -54,19 +59,54 @@ export function planRequests({ needed, held, inflight, opts, center }) {
     neededOut.push({ tx: t.tx, ty: t.ty });
   }
 
-  // retain: needed 를 retainMargin 타일(체비쇼프)만큼 팽창.
-  const retain = new Set();
+  // retain: needed 를 retainMargin 타일(체비쇼프)만큼 팽창. 행(ty)별로 tx 구간(±margin)을 병합해 두고 질의 때 확인한다.
+  const rows = new Map();
   for (const t of neededOut) {
-    for (let dx = -retainMargin; dx <= retainMargin; dx++) {
-      for (let dy = -retainMargin; dy <= retainMargin; dy++) retain.add(tileKey(t.tx + dx, t.ty + dy));
-    }
+    const r = rows.get(t.ty);
+    if (r) r.push(t.tx);
+    else rows.set(t.ty, [t.tx]);
   }
+  for (const [ty, xs] of rows) {
+    xs.sort((a, b) => a - b);
+    const iv = []; // [lo0, hi0, lo1, hi1, ...] 서로 겹치지 않는 오름차순 구간
+    for (const x of xs) {
+      const lo = x - retainMargin;
+      const hi = x + retainMargin;
+      const n = iv.length;
+      if (n && lo <= iv[n - 1]) iv[n - 1] = Math.max(iv[n - 1], hi);
+      else iv.push(lo, hi);
+    }
+    rows.set(ty, iv);
+  }
+  const inRetain = (key) => {
+    const { tx, ty } = parseKey(key);
+    const probe = (iv) => {
+      let lo = 0;
+      let hi = (iv.length >> 1) - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (tx < iv[2 * mid]) hi = mid - 1;
+        else if (tx > iv[2 * mid + 1]) lo = mid + 1;
+        else return true;
+      }
+      return false;
+    };
+    if (2 * retainMargin + 1 > rows.size) {
+      for (const [r, iv] of rows) if (Math.abs(r - ty) <= retainMargin && probe(iv)) return true;
+      return false;
+    }
+    for (let r = ty - retainMargin; r <= ty + retainMargin; r++) {
+      const iv = rows.get(r);
+      if (iv && probe(iv)) return true;
+    }
+    return false;
+  };
 
   // 취소: retain 밖 inflight.
   const cancel = [];
   const newInflight = new Set();
   for (const k of inflight) {
-    if (retain.has(k)) newInflight.add(k);
+    if (inRetain(k)) newInflight.add(k);
     else cancel.push(parseKey(k));
   }
   cancel.sort(cmpTile);
@@ -91,7 +131,7 @@ export function planRequests({ needed, held, inflight, opts, center }) {
   const evict = [];
   const newHeld = new Set();
   for (const k of held) {
-    if (retain.has(k)) newHeld.add(k);
+    if (inRetain(k)) newHeld.add(k);
     else evict.push(parseKey(k));
   }
   if (newHeld.size > maxHeld) {
