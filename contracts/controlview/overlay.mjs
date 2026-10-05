@@ -18,7 +18,7 @@ export const TOWER_OVERLAY_KINDS = Object.freeze(['detection', 'alert']);
 export const TOWER_OVERLAY_FORMULA = Object.freeze({
   project: 'X_c = R·X_w + t;  d = X_c.z;  d ≤ 0 이거나 u·v·d 가 유한하지 않으면 visible=false, u=v=0;  그 밖에는 u = fx·X_c.x/d + cx, v = fy·X_c.y/d + cy, visible = 0 ≤ u < width 이고 0 ≤ v < height',
   unproject: 'X_c = d·K⁻¹[u,v,1]ᵀ;  X_w = R⁻¹(X_c − t)',
-  pathClip: '선분 (A,B) 의 깊이 dA, dB 가 nearM 을 가로지르면 교점 P = A + (B−A)·(nearM−dA)/(dB−dA) 에서 자른다. nearM 앞(깊이 < nearM)인 조각은 버리고 이어진 조각마다 polyline 하나. 화면 밖 자르기는 하지 않는다(그리기가 한다)',
+  pathClip: '선분 (A,B) 의 깊이 dA, dB 가 nearM 을 가로지르면 교점 P = A + (B−A)·(nearM−dA)/(dB−dA) 에서 자른다. nearM 앞(깊이 < nearM)인 조각은 버리고 이어진 조각마다 polyline 하나. 화면 밖 자르기는 하지 않는다(그리기가 한다). 깊이 ≥ nearM 인 점은 앞쪽으로 본다(nearM 위 정확히 있는 점 포함). 점 1개짜리 조각은 버린다. 투영 결과가 비유한(넘침)이 되는 점에서는 polyline 을 끊는다(던지지 않는다)',
   enuMatch: 'unproject(project(p)) 의 각 성분이 p 와 1 cm(CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M) 이내. 조건: |p| ≤ 1e4 m, 깊이 ≥ nearM',
 });
 
@@ -27,7 +27,7 @@ export const TOWER_OVERLAY_FORMULA = Object.freeze({
  * Drone     {id:string, enu:[e,n,u], yaw?:number}      id 는 1..maxIdChars 자, 같은 목록에서 중복 불가. yaw 는 방위(0=북, 시계 방향 +, rad)이고 그대로 돌려준다
  * Detection {id:string, enu:[e,n,u], kind?:'detection'|'alert', confidence?:number}   confidence 는 [0,1]
  * Path      {id:string, points:[[e,n,u],...]}           points 는 2개 이상
- * Size      {width:int>0, height:int>0}                 CSS 픽셀
+ * Size      {width:int>0, height:int>0}                 CSS 픽셀(devicePixelRatio 는 view 계산에 쓰이지 않아 poseToView 가 1 로 채운다)
  * 투영 결과 한 점 {id, u, v, depth, visible}, 경로 {id, polylines:[[ {u,v,depth}, ... ], ...]}
  */
 export const TOWER_OVERLAY_API = Object.freeze({
@@ -38,7 +38,7 @@ export const TOWER_OVERLAY_API = Object.freeze({
   clear: 'overlay.clear() -> void   드론·탐지·경로 전부 지운다',
   counts: 'overlay.counts() -> {drones, detections, paths}',
   project: 'overlay.project(pose:CameraPose, size:Size) -> {drones:[{id,u,v,depth,visible,yaw?}], detections:[{id,u,v,depth,visible,kind,confidence?}], paths:[{id,polylines}]}   입력 순서·개수를 지킨다. 결과는 새 객체다. 상태를 바꾸지 않는다',
-  unproject: 'overlay.unproject(pose:CameraPose, size:Size, u:number, v:number, depth:number) -> [e,n,u]   depth 는 양의 유한 수. 결과가 넘치면 RangeError',
+  unproject: 'overlay.unproject(pose:CameraPose, size:Size, u:number, v:number, depth:number) -> [e,n,u]   u·v·depth 가 유한 수가 아니면 TypeError, depth ≤ 0 이거나 결과가 넘치면 RangeError',
 });
 
 /** 모듈 파일(client/tower/overlay/). */
