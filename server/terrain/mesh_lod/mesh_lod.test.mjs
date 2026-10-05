@@ -99,8 +99,8 @@ const EXPECTED = {
   // 1.5 m 계단(16 m 마다): 간격 2 → 0.75(>0.5) 라 LOD1 은 원본, LOD2 는 간격 2(0.75 ≤ 1).
   // LOD3: 상한 2 m 였을 때는 간격 8(1.3125 ≤ 2). T15.1c 에서 상한이 1 m 로 줄어 간격 8(1.3125)·4(1.5·3/4 = 1.125) 가 모두 넘으므로
   // 간격 2(0.75) 로 내려가 LOD2 와 같은 타일이 된다(해시도 LOD2 와 같다). 간격 8 의 정답은 아래 '알려진 정답' 시험이 직접 만든 타일로 지킨다.
-  // max 는 해석 근거로 식을 쓴다(실측 고정 아님): 간격 2 는 계단 턱 한 칸이 절반 어긋나 1.5/2,
-  // 간격 8 은 턱 직전 표본에서 1.5·7/8 (아래 '알려진 정답' 시험과 같은 값).
+  // max 는 해석 근거로 식을 쓴다(실측 고정 아님): 간격 2 는 계단 턱 한 칸이 절반 어긋나 1.5/2 (LOD2·LOD3 이 이 값).
+  // 간격 8(1.5·7/8 = 1.3125)·간격 4(1.5·3/4 = 1.125)는 여기 max 에 나오지 않는다 — 두 값은 아래 '알려진 정답' 시험이 직접 만든 타일로 단언한다.
   steps: { cells: [65, 65, 33, 33], max: [0, 0, 1.5 / 2, 1.5 / 2] },
   // 0.4 m 폭 잡음 + 경사: 모든 LOD 가 명목 간격으로 상한 안.
   // F-305 메시 표면 기준으로 LOD2 max 가 0.3806000351905823 → 0.3891999423503876 로 바뀌었다. 간격·해시는 그대로.
@@ -164,6 +164,10 @@ test('알려진 정답: 계단 간격 8 타일 (0,0) 은 x=0,8,..,64 표본, 오
   for (let j = 0; j < 9; j++) for (let i = 0; i < 9; i++) t.heights[j * 9 + i] = dem.heights[j * 8 * N + i * 8];
   assert.deepEqual([...t.heights.subarray(0, 9)], [0, 0, 1.5, 1.5, 3, 3, 4.5, 4.5, 6]);
   assert.equal(measureTerrainError(dem, t).maxErrorM, 1.3125);
+  // 간격 4 타일도 직접 만든다: 턱 직전 표본에서 1.5·3/4 = 1.125 (계단 턱 간격 16 / 4 = 4 칸 중 3/4 지점).
+  const t4 = { tx: 0, ty: 0, lod: 3, cells: 17, heights: new Float32Array(17 * 17) };
+  for (let j = 0; j < 17; j++) for (let i = 0; i < 17; i++) t4.heights[j * 17 + i] = dem.heights[j * 4 * N + i * 4];
+  assert.equal(measureTerrainError(dem, t4).maxErrorM, 1.125);
   // 1.3125 > 1 이고 간격 4 도 1.125 > 1 이라 LOD3 은 간격 2(오차 0.75).
   assert.equal(terrainLodStride(dem, 3), 2);
   assert.equal(measureTerrainError(dem, buildTerrainTile(dem, 0, 0, 3)).maxErrorM, 0.75);
@@ -171,6 +175,22 @@ test('알려진 정답: 계단 간격 8 타일 (0,0) 은 x=0,8,..,64 표본, 오
   const t0 = buildTerrainTile(dem, 1, 0, 0);
   assert.equal(t0.heights[15], 6); // x = 64 + 15 = 79 → floor(79/16) = 4 → 4·1.5 = 6
   assert.equal(t0.heights[16], 7.5); // x = 80 → 5·1.5
+});
+
+test('해석값 대조: 경사 평면 z = 0.1x + 0.05y + 10 의 제품 LOD3(간격 8) 타일 첫 행·열이 해석값과 같다', () => {
+  const dem = DEMS.slope();
+  assert.equal(terrainLodStride(dem, 3), 8);
+  for (const [tx, ty] of [[0, 0], [2, 1]]) {
+    const t = buildTerrainTile(dem, tx, ty, 3);
+    assert.equal(t.cells, 9);
+    // 표본 i 는 DEM 셀 x = tx·64 + 8i, y = ty·64 + 8j 의 해석값(DEM 이 Float32 라 fround).
+    for (let i = 0; i < 9; i++) {
+      assert.equal(t.heights[i], Math.fround(0.1 * (tx * 64 + 8 * i) + 0.05 * (ty * 64) + 10), `첫 행 i=${i}`);
+    }
+    for (let j = 0; j < 9; j++) {
+      assert.equal(t.heights[j * 9], Math.fround(0.1 * (tx * 64) + 0.05 * (ty * 64 + 8 * j) + 10), `첫 열 j=${j}`);
+    }
+  }
 });
 
 test('가장자리 일치: 같은 LOD 이웃 타일의 공유 가장자리 높이·좌표가 비트 단위로 같다', () => {

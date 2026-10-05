@@ -56,7 +56,7 @@ test('applyRatio: 하한 0 으로 클램프', () => {
 });
 
 test('applyRatio: 반올림 테스트', () => {
-  // 2.4 → 2, 2.5 → 2 (은행원 반올림), 2.6 → 3
+  // Math.round: 2.4 → 2, 2.5 → 3 (0.5 는 +∞ 쪽으로, 은행원 반올림 아님), 2.6 → 3
   assert.deepEqual(applyRatio([5, 5, 5], 0.5), [3, 3, 3]); // 2.5 각각
   assert.deepEqual(applyRatio([3, 3, 3], 1), [3, 3, 3]);
 });
@@ -88,6 +88,11 @@ test('입력 검증: 범위 밖이면 RangeError', () => {
 test('입력 검증: 문자열 등 숫자가 아니면 RangeError', () => {
   assert.throws(() => shadeRatio(['100', '100', '100'], [100, 100, 100]), RangeError);
   assert.throws(() => shadeRatio([100, 100, 100], [100, '100', 100]), RangeError);
+});
+
+test('채널 평균의 비율이지 채널별 비율의 평균이 아니다', () => {
+  // 채널 평균 50 ÷ 100 = 0.5. 채널별 비율의 평균이면 (150/50 + 0/100 + 0/150) / 3 = 1.0 이 된다.
+  assert.equal(shadeRatio([150, 0, 0], [50, 100, 150]), 0.5);
 });
 
 test('경계값: 0 과 255', () => {
