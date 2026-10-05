@@ -8,6 +8,9 @@ import { syncBuiltinESMExports } from 'node:module';
 import { installNetworkSpies } from '../buildings/network_spies.mjs';
 
 const TIMER_NAMES = ['setTimeout', 'setInterval', 'setImmediate'];
+const SCHEDULER_NAMES = ['wait', 'yield'];
+// 래퍼 설치 전에 잡아 둔 진짜 setImmediate(계수 대상이 아닌 비우기 전용).
+const realSetImmediate = setImmediate;
 
 /** 타이머 생성 자체를 세는 래퍼를 건다: 전역, node:timers(이름 가져오기 포함), node:timers/promises. */
 function installTimerCounters() {
@@ -27,12 +30,31 @@ function installTimerCounters() {
   wrap(globalThis, '');
   wrap(timersCjs, 'node:timers.');
   wrap(timersPromises, 'node:timers/promises.');
+  // timers/promises.scheduler.wait·yield 도 센다(내부적으로 타이머를 만든다).
+  const sched = timersPromises.scheduler;
+  for (const name of SCHEDULER_NAMES) {
+    const orig = sched[name];
+    if (typeof orig !== 'function') continue;
+    sched[name] = function countedScheduler(...args) {
+      created.push(`node:timers/promises.scheduler.${name}`);
+      return orig.apply(this, args);
+    };
+    restores.push(() => { sched[name] = orig; });
+  }
   syncBuiltinESMExports();
   const restore = () => {
     for (const r of restores.reverse()) r();
     syncBuiltinESMExports();
   };
-  return { created, restore };
+  // 마이크로태스크·setImmediate 를 몇 바퀴 비워 queueMicrotask 등으로 미룬 타이머 생성까지 기록한 뒤 푼다.
+  const release = async () => {
+    for (let i = 0; i < 3; i += 1) {
+      await Promise.resolve();
+      await new Promise((r) => realSetImmediate(r));
+    }
+    restore();
+  };
+  return { created, restore, release };
 }
 
 const POSE = { pos: [0, 0, 100], quat: [0, 0, 0, 1], fovY: 1 };
@@ -74,7 +96,8 @@ test('index: 네트워크·타이머를 쓰지 않는다', async () => {
     overlay.clear();
     assert.deepEqual(overlay.counts(), { drones: 0, detections: 0, paths: 0 });
   } finally {
-    timers.restore();
+    // 미룬 타이머 생성이 기록되도록 마이크로태스크·setImmediate 를 비운 뒤에 계수기를 푼다.
+    await timers.release();
     // 지연 호출까지 비운 뒤에 calls 를 읽는다(건물 층 시험과 같은 순서).
     await spies.restore();
   }
@@ -94,6 +117,8 @@ test('no_network: 타이머 계수기가 전역·node:timers·timers/promises �
     handles.push(timersCjs.setImmediate(() => {}));
     await timersPromises.setTimeout(0);
     await timersPromises.setImmediate();
+    await timersPromises.scheduler.wait(0);
+    await timersPromises.scheduler.yield();
   } finally {
     timers.restore();
     for (const h of handles) { clearTimeout(h); clearInterval(h); clearImmediate(h); }
@@ -102,6 +127,7 @@ test('no_network: 타이머 계수기가 전역·node:timers·timers/promises �
     'setTimeout', 'setInterval', 'setImmediate',
     'node:timers.setTimeout', 'node:timers.setImmediate',
     'node:timers/promises.setTimeout', 'node:timers/promises.setImmediate',
+    'node:timers/promises.scheduler.wait', 'node:timers/promises.scheduler.yield',
   ]) {
     assert.ok(timers.created.includes(want), `${want} 호출이 기록돼야 함: ${timers.created.join(',')}`);
   }
@@ -118,6 +144,18 @@ test('no_network: node:timers 이름 가져오기도 계수기에 잡힌다(양�
     clearTimeout(h);
   }
   assert.ok(timers.created.includes('node:timers.setTimeout'), `이름 가져오기 호출이 기록돼야 함: ${timers.created.join(',')}`);
+});
+
+test('no_network: queueMicrotask 로 미룬 타이머 생성도 release 뒤 기록된다(양성 대조)', async () => {
+  const spies = installNetworkSpies();
+  const timers = installTimerCounters();
+  try {
+    queueMicrotask(() => { setTimeout(() => {}, 5000); });
+    await timers.release();
+  } finally {
+    await spies.restore();
+  }
+  assert.ok(timers.created.includes('setTimeout'), `미룬 setTimeout 이 기록돼야 함: ${timers.created.join(',')}`);
 });
 
 for (const [label, defer] of [

@@ -6,9 +6,11 @@ import timersPromises from 'node:timers/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { installNetworkSpies } from '../buildings/network_spies.mjs';
 
-test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocket 호출 0', async () => {
-  const spies = installNetworkSpies();
-  // 타이머 생성 자체를 센다: 감시자가 가짜로 바꾼 전역 타이머 위에 계수 래퍼를 얹는다.
+// 래퍼 설치 전에 잡아 둔 진짜 setImmediate(계수 대상이 아닌 비우기 전용).
+const realSetImmediate = setImmediate;
+
+/** 타이머 생성 자체를 세는 래퍼를 건다(본 감시와 양성 대조가 함께 쓴다). release() 는 미룬 작업을 비운 뒤 푼다. */
+function installTimerCounters() {
   const timerCreated = [];
   const timerOrig = {};
   for (const name of ['setTimeout', 'setInterval', 'setImmediate']) {
@@ -52,6 +54,21 @@ test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocke
     for (const name of Object.keys(schedOrig)) timersPromises.scheduler[name] = schedOrig[name];
     syncBuiltinESMExports();
   };
+  // 마이크로태스크·setImmediate 를 몇 바퀴 비워 queueMicrotask 등으로 미룬 타이머 생성까지 기록한 뒤 푼다.
+  const release = async () => {
+    for (let i = 0; i < 3; i += 1) {
+      await Promise.resolve();
+      await new Promise((r) => realSetImmediate(r));
+    }
+    unwrapTimers();
+  };
+  return { created: timerCreated, release };
+}
+
+test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocket 호출 0', async () => {
+  const spies = installNetworkSpies();
+  const timers = installTimerCounters();
+  const timerCreated = timers.created;
   try {
     // 동적 import 로 index.mjs 불러오기. 아직 없으면 실패한다.
     let mod;
@@ -92,7 +109,8 @@ test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocke
     input.releaseAll();
 
   } finally {
-    unwrapTimers();
+    // 미룬 타이머 생성이 기록되도록 마이크로태스크·setImmediate 를 비운 뒤에 계수기를 푼다.
+    await timers.release();
     // 지연 호출까지 비운 뒤에 calls 를 읽는다(건물 층 시험과 같은 순서).
     await spies.restore();
   }
@@ -123,26 +141,33 @@ test('no_network: 감시자가 실제로 호출을 센다(양성 대조)', async
   assert.ok(spies.calls.includes('fetch'), '감시자가 fetch 호출을 기록해야 함');
 });
 
-// 양성 대조: node:timers/promises 경유 타이머 생성이 감시자에 잡히는지(래퍼 계수 방식 그대로)를 직접 확인한다.
-for (const [label, call] of [
-  ['setTimeout', (T) => T.setTimeout(0)],
-  ['setImmediate', (T) => T.setImmediate()],
-  ['setInterval', (T) => T.setInterval(1000)[Symbol.asyncIterator]().return()],
-  ['scheduler.wait', (T) => T.scheduler.wait(0)],
-  ['scheduler.yield', (T) => T.scheduler.yield()],
+// 양성 대조: 본 감시와 같은 installTimerCounters 로, 각 진입점 호출이 실제로 기록되는지 확인한다.
+for (const [label, want, call] of [
+  ['setTimeout', 'node:timers/promises.setTimeout', (T) => T.setTimeout(0)],
+  ['setImmediate', 'node:timers/promises.setImmediate', (T) => T.setImmediate()],
+  ['setInterval', 'node:timers/promises.setInterval', (T) => T.setInterval(1000)[Symbol.asyncIterator]().return()],
+  ['scheduler.wait', 'node:timers/promises.scheduler.wait', (T) => T.scheduler.wait(0)],
+  ['scheduler.yield', 'node:timers/promises.scheduler.yield', (T) => T.scheduler.yield()],
 ]) {
-  test(`no_network: node:timers/promises ${label} 호출을 계수 래퍼가 센다(양성 대조)`, async () => {
-    const orig = {};
-    const created = [];
-    const target = label.startsWith('scheduler.') ? timersPromises.scheduler : timersPromises;
-    const key = label.replace('scheduler.', '');
-    orig[key] = target[key];
-    target[key] = function counted(...args) { created.push(key); return orig[key].apply(this, args); };
+  test(`no_network: node:timers/promises ${label} 호출을 본 감시 계수기가 센다(양성 대조)`, async () => {
+    const timers = installTimerCounters();
     try {
       await call(timersPromises);
     } finally {
-      target[key] = orig[key];
+      await timers.release();
     }
-    assert.deepEqual(created, [key]);
+    assert.ok(timers.created.includes(want), `${want} 가 기록돼야 함: ${timers.created.join(',')}`);
   });
 }
+
+test('no_network: queueMicrotask 로 미룬 타이머 생성도 release 뒤 기록된다(양성 대조)', async () => {
+  const spies = installNetworkSpies();
+  const timers = installTimerCounters();
+  try {
+    queueMicrotask(() => { setTimeout(() => {}, 5000); });
+    await timers.release();
+  } finally {
+    await spies.restore();
+  }
+  assert.ok(timers.created.includes('setTimeout'), `미룬 setTimeout 이 기록돼야 함: ${timers.created.join(',')}`);
+});

@@ -306,3 +306,47 @@ test('project: 같은 입력을 두 번 넣으면 같은 결과이고 매번 새
   assert.notEqual(p, q);
   [0, 0, 0].forEach((x, i) => near(p[i], x, 1e-9, `enu[${i}]`));
 });
+
+// enuMatch 조건(계약): fovY ≤ 3.1 rad, |pos| ≤ 1e6 m, |p| ≤ 1e4 m. 경계에서 실제로 1 cm 이내인지 잰다.
+/** 시점 pos·fovY·크기에서 무작위 점 n*60 개의 왕복 최대 성분 오차(m). 깊이 ≥ nearM 인 점만 센다. */
+function roundTripMax(seed, n, mkPos, fovY, width, height) {
+  const rnd = mulberry32(seed);
+  let m = 0;
+  for (let k = 0; k < n; k += 1) {
+    const pos = mkPos(rnd);
+    const view = viewOf(pos, (rnd() * 2 - 1) * Math.PI, (rnd() * 2 - 1) * (Math.PI / 2), fovY, width, height);
+    const items = [];
+    for (let i = 0; i < 60; i += 1) {
+      let p;
+      do p = [0, 1, 2].map(() => (rnd() * 2 - 1) * 1e4); while (Math.hypot(...p) > 1e4);
+      items.push({ id: 'p', enu: p });
+    }
+    projectPoints(view, items).forEach((r, i) => {
+      if (!(r.depth >= TOWER_OVERLAY_LIMITS.nearM)) return;
+      const q = unprojectPoint(view, r.u, r.v, r.depth);
+      for (let j = 0; j < 3; j += 1) m = Math.max(m, Math.abs(q[j] - items[i].enu[j]));
+    });
+  }
+  return m;
+}
+
+test('project: enuMatch 경계(fovY ≤ 3.1, |pos| ≤ 1e6) 안에서는 어떤 크기에서도 1 cm 이내', () => {
+  const at = (z) => () => [0, 0, z];
+  let worst = 0;
+  for (const [w, h] of [[65535, 1], [65535, 65535], [1, 1], [1280, 720]]) {
+    for (const mk of [at(1e6), at(-1e6), (r) => [0, 1, 2].map(() => (r() * 2 - 1) * 5e5)]) {
+      worst = Math.max(worst, roundTripMax(0xe1a7, 150, mk, 3.1, w, h));
+    }
+  }
+  assert.ok(worst <= CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M, `경계 안 최대 오차 ${worst} m`);
+  console.log(`# enuMatch 경계 안 최대 오차 ${worst.toExponential(3)} m`);
+});
+
+test('project: enuMatch 경계 밖(fovY ≈ π·최소 높이, |pos| = 1e15)은 오차가 1 cm 를 넘는다(측정치)', () => {
+  // 경계 밖은 보장하지 않는다. 계약 문구의 실측 수치가 사라지지 않게 박는다(seed 고정, 실측 0.430 m·0.303 m).
+  const fovNear = roundTripMax(0xe1a7, 300, () => [0, 0, 0], 3.1415925, 65535, 1);
+  const farPos = roundTripMax(0xe1a7, 200, () => [0, 0, -1e15], 0.9, 1280, 720);
+  assert.ok(fovNear > CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M, `fovY 3.1415925: ${fovNear} m`);
+  assert.ok(farPos > CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M, `pos z −1e15: ${farPos} m`);
+  console.log(`# enuMatch 경계 밖 오차: fovY 3.1415925 ${fovNear.toFixed(3)} m, pos z −1e15 ${farPos.toFixed(3)} m`);
+});

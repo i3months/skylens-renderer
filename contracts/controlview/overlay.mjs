@@ -19,7 +19,7 @@ export const TOWER_OVERLAY_FORMULA = Object.freeze({
   project: 'X_c = R·X_w + t;  d = X_c.z;  d ≤ 0 이거나 u·v·d 가 유한하지 않으면 visible=false, u=v=0;  그 밖에는 u = fx·X_c.x/d + cx, v = fy·X_c.y/d + cy, visible = 0 ≤ u < width 이고 0 ≤ v < height',
   unproject: 'X_c = d·K⁻¹[u,v,1]ᵀ;  X_w = R⁻¹(X_c − t)',
   pathClip: '선분 (A,B) 의 깊이 dA, dB 가 nearM 을 가로지르면 교점 P = A + (B−A)·(nearM−dA)/(dB−dA) 에서 자른다. nearM 앞(깊이 < nearM)인 조각은 버리고 이어진 조각마다 polyline 하나. 화면 밖 자르기는 하지 않는다(그리기가 한다). 깊이 ≥ nearM 인 점은 앞쪽으로 본다(nearM 위 정확히 있는 점 포함). 점 1개짜리 조각은 버린다. 투영 결과가 비유한(넘침)이 되는 점에서는 polyline 을 끊는다(던지지 않는다)',
-  enuMatch: 'unproject(project(p)) 의 각 성분이 p 와 1 cm(CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M) 이내. 조건: |p| ≤ 1e4 m, 깊이 ≥ nearM',
+  enuMatch: 'unproject(project(p)) 의 각 성분이 p 와 1 cm(CONTROLVIEW_OVERLAY_MAX_ENU_ERR_M) 이내. 조건: |p| ≤ 1e4 m, 깊이 ≥ nearM, 카메라 fovY ≤ 3.1 rad, 카메라 |pos| ≤ 1e6 m(크기 1×1..65535×65535 어디서나 실측 최대 오차 0.2 mm). 이 밖에서는 보장하지 않는다(실측: fovY 3.1415925·폭 65535·높이 1 에서 0.43 m, pos z = −1e15 에서 0.30 m)',
 });
 
 /**
@@ -34,7 +34,7 @@ export const TOWER_OVERLAY_API = Object.freeze({
   create: 'createTowerOverlay(opts?) -> TowerOverlay   opts: {nearM?}(TOWER_OVERLAY_LIMITS.nearM 기본). 형식 위반 TypeError, 알 수 없는 키·범위 위반 RangeError',
   drones: 'overlay.setDrones(list:Drone[]) -> void   목록 전체를 교체한다(누적하지 않는다). 빈 배열은 모두 지운다. 검사는 전부 끝난 뒤에만 반영한다(던지면 이전 상태 그대로)',
   detections: 'overlay.setDetections(list:Detection[]) -> void   setDrones 와 같은 규칙',
-  paths: 'overlay.setPath(path:Path) -> void   같은 id 가 있으면 그 경로를 교체한다.  overlay.removePath(id) -> boolean   있었으면 true',
+  paths: 'overlay.setPath(path:Path) -> void   같은 id 가 있으면 그 경로를 교체한다(이미 maxPaths 개여도 허용). 새 id 이고 이미 maxPaths 개면 RangeError 이고 상태는 그대로다.  overlay.removePath(id) -> boolean   있었으면 true',
   clear: 'overlay.clear() -> void   드론·탐지·경로 전부 지운다',
   counts: 'overlay.counts() -> {drones, detections, paths}',
   project: 'overlay.project(pose:CameraPose, size:Size) -> {drones:[{id,u,v,depth,visible,yaw?}], detections:[{id,u,v,depth,visible,kind,confidence?}], paths:[{id,polylines}]}   입력 순서·개수를 지킨다. 결과는 새 객체다. 상태를 바꾸지 않는다',
@@ -47,7 +47,7 @@ export const TOWER_OVERLAY_MODULES = Object.freeze({
   validate: { file: 'validate.mjs', fn: 'checkDrones(list)·checkDetections(list)·checkPath(path)·checkSize(size)·checkOpts(opts) -> 정규화된 복사본   TOWER_OVERLAY_API 의 검사 규칙' },
   project: { file: 'project.mjs', fn: 'projectPoints(view, items) -> {id,u,v,depth,visible}[];  unprojectPoint(view, u, v, depth) -> [e,n,u]' },
   clip: { file: 'clip.mjs', fn: 'clipPolyline(view, points, nearM) -> polylines   TOWER_OVERLAY_FORMULA.pathClip' },
-  store: { file: 'store.mjs', fn: 'createOverlayStore() -> {setDrones, setDetections, setPath, removePath, clear, counts, drones(), detections(), paths()}   상태만. 투영 없음. 이미 validate 를 거친 값을 받는다(검사 안 함). drones()·detections()·paths() 는 깊은 복사를 돌려준다(밖에서 고쳐도 상태 불변)' },
+  store: { file: 'store.mjs', fn: 'createOverlayStore() -> {setDrones, setDetections, setPath, removePath, clear, counts, hasPath, drones(), detections(), paths(), dronesRaw(), detectionsRaw(), pathsRaw()}   상태만. 투영 없음. 이미 validate 를 거친 값을 받는다(검사 안 함). drones()·detections()·paths() 는 깊은 복사를 돌려준다(밖에서 고쳐도 상태 불변). dronesRaw()·detectionsRaw()·pathsRaw() 는 복사 없이 안쪽 배열을 돌려주는 읽기 전용 경로이며 호출자는 고치지 않는다(프레임 경로용)' },
   index: { file: 'index.mjs', fn: 'createTowerOverlay(opts?) 조립' },
 });
 

@@ -141,7 +141,11 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 ### 관제탑 드론·경로·탐지 마커 (T15.6)
 
-드론·경로·탐지 마커의 ENU 위치를 화면(CSS 픽셀) 좌표 목록으로 바꾸는 계산 전용 모듈. 계약 `contracts/controlview/overlay.mjs`, 구현 `client/tower/overlay/`(검사·저장·투영·근평면 자르기·조립). 목록은 호출마다 교체되고 받지 않은 위치는 보간·외삽하지 않는다. 경로는 근평면(0.1 m)에서 잘라 카메라 뒤 조각을 버린다. ENU 왕복 오차는 시험에서 1 cm 이내(측정 최대 4.2e-9 m)다. 원본 대조 전 추정이다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/overlay/*.test.mjs"`.
+드론·경로·탐지 마커의 ENU 위치를 화면(CSS 픽셀) 좌표 목록으로 바꾸는 계산 전용 모듈. 계약 `contracts/controlview/overlay.mjs`, 구현 `client/tower/overlay/`(검사·저장·투영·근평면 자르기·조립·view(카메라 자세→화면)). 목록은 호출마다 교체되고 받지 않은 위치는 보간·외삽하지 않는다. 경로는 근평면(0.1 m)에서 잘라 카메라 뒤 조각을 버린다. ENU 왕복 오차는 시험에서 1 cm 이내(측정 최대 4.2e-9 m)다. 원본 대조 전 추정이다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/overlay/*.test.mjs"`.
+
+### 관제탑 조각 요청 (streaming)
+
+시점에서 보이는 지형 타일을 보수적으로 구해 요청·취소·내보내기 목록을 돌려주는 계산 전용 모듈. 계약 `contracts/controlview/streaming.mjs`, 구현 `client/tower/streaming/`(검사·보이는 타일·요청 계획·조립). 도착하지 않은 타일은 메우지 않으며 64 m 타일이다. 네트워크·타이머를 쓰지 않는다. 시험: `node --test "client/tower/streaming/*.test.mjs"`.
 
 ## English
 
@@ -284,5 +288,9 @@ A camera that follows the drone target with exponential damping. Contract: `cont
 
 ### Tower drone, path and detection markers (T15.6)
 
-A compute-only module that turns the ENU positions of drones, paths and detection markers into screen (CSS pixel) coordinates. Contract: `contracts/controlview/overlay.mjs`; implementation: `client/tower/overlay/` (validation, store, projection, near-plane clipping, assembly). Lists are replaced on every call and positions that were not received are never interpolated or extrapolated. Paths are cut at the near plane (0.1 m) and the part behind the camera is dropped. The ENU round trip stays within 1 cm in tests (measured maximum 4.2e-9 m). Estimated until compared with the original. No network or timers. Tests: `node --test "client/tower/overlay/*.test.mjs"`.
+A compute-only module that turns the ENU positions of drones, paths and detection markers into screen (CSS pixel) coordinates. Contract: `contracts/controlview/overlay.mjs`; implementation: `client/tower/overlay/` (validation, store, projection, near-plane clipping, assembly, view (camera pose → screen)). Lists are replaced on every call and positions that were not received are never interpolated or extrapolated. Paths are cut at the near plane (0.1 m) and the part behind the camera is dropped. The ENU round trip stays within 1 cm in tests (measured maximum 4.2e-9 m). Estimated until compared with the original. No network or timers. Tests: `node --test "client/tower/overlay/*.test.mjs"`.
+
+### Control tower piece request (streaming)
+
+A compute-only module that conservatively computes terrain tiles visible from the viewpoint and returns lists of pieces to request, cancel and export. Contract: `contracts/controlview/streaming.mjs`; implementation: `client/tower/streaming/` (validation, visible tiles, request plan, assembly). Unreached tiles are not filled in; they are 64 m tiles. No network or timers. Tests: `node --test "client/tower/streaming/*.test.mjs"`.
 

@@ -17,6 +17,14 @@ function deepCopy(obj) {
   return obj;
 }
 
+/** 경로 한 개의 복사: id 와 점 배열을 한 번만 복사한다(점마다 slice 한 번, 중간 배열 없음). */
+function copyPath(path) {
+  const src = path.points;
+  const points = new Array(src.length);
+  for (let i = 0; i < src.length; i += 1) points[i] = src[i].slice();
+  return { id: path.id, points };
+}
+
 /** 드론·탐지·경로 저장소를 만든다. 이미 validate 를 거친 값을 받는다(검사 안 함). */
 export function createOverlayStore() {
   // 상태: 배열 또는 {id, ...} 객체들의 맵
@@ -38,7 +46,7 @@ export function createOverlayStore() {
     // 경로를 저장한다. 같은 id 가 있으면 교체하고 자리는 유지한다.
     // 순서는 처음 등록된 순서를 지킨다. 입력을 복사한다.
     setPath(path) {
-      const copy = deepCopy(path);
+      const copy = copyPath(path);
       pathsMap.set(copy.id, copy);
     },
 
@@ -72,6 +80,14 @@ export function createOverlayStore() {
     detections() {
       return deepCopy(detections);
     },
+
+    // 복사 없는 내부 읽기. project 처럼 읽기만 하는 안쪽 호출자 전용이며 돌려준 값을 고치면 안 된다.
+    dronesRaw() { return drones; },
+    detectionsRaw() { return detections; },
+    pathsRaw() { return Array.from(pathsMap.values()); },
+
+    // 해당 id 의 경로가 있는지.
+    hasPath(id) { return pathsMap.has(id); },
 
     // 현재 경로 목록의 깊은 복사를 돌려준다. 맵의 값들을 배열로 돌린다.
     // 순서는 맵의 삽입 순서를 지킨다(같은 id 교체 시 원래 자리 유지).
