@@ -152,12 +152,21 @@ test('① 연속 render 사이 새 형식 배열 생성이 없다(points·black�
 });
 
 test('① 생성 횟수 측정기가 실제 생성을 센다(양성 대조)', () => {
-  const c = countTypedArrayAllocs(() => { new Uint8Array(4); new Float32Array(2); new Int32Array(1); Float32Array.from([1]); });
+  const originals = {
+    Uint8Array: globalThis.Uint8Array,
+    Float32Array: globalThis.Float32Array,
+    Int32Array: globalThis.Int32Array,
+    ArrayBuffer: globalThis.ArrayBuffer,
+  };
+  const c = countTypedArrayAllocs(() => { new Uint8Array(4); new Float32Array(2); new Int32Array(1); Float32Array.from([1]); new ArrayBuffer(8); });
   assert.equal(c.Uint8Array, 1);
   assert.equal(c.Float32Array, 2);
   assert.equal(c.Int32Array, 1);
-  assert.equal(typeof Uint8Array, 'function');
-  assert.ok(new Uint8Array(1) instanceof Uint8Array);
+  assert.equal(c.ArrayBuffer, 1, 'ArrayBuffer(8) should be called once');
+  assert.equal(globalThis.Uint8Array, originals.Uint8Array, 'Uint8Array constructor should be restored');
+  assert.equal(globalThis.Float32Array, originals.Float32Array, 'Float32Array constructor should be restored');
+  assert.equal(globalThis.Int32Array, originals.Int32Array, 'Int32Array constructor should be restored');
+  assert.equal(globalThis.ArrayBuffer, originals.ArrayBuffer, 'ArrayBuffer constructor should be restored');
 });
 
 test('② 컬링을 켠 결과 = 끈 결과(화소 동일): 전체/1/10/몇 동/비스듬/뒤', () => {
