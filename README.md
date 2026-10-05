@@ -127,6 +127,10 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 8시점 SSIM은 SPEC S9의 합성 근사이며, 해상도 160×90, 3곳 눈 높이 17 m로 올림하고, 기준 영상은 같은 DEM의 LOD 0 메시(원본 점군 렌더가 아님)이다. LOD3은 높이 오차 상한을 1 m로 조여(T15.1c, 합성 장면 결과를 보고 고른 값) 합성 시드 1~12의 최소가 0.9645로 0.95를 넘는다(이전에는 시드 5·6·7·9·10이 미달). 기준 0.95는 낮추지 않았다.
 
+### 관제탑 건물 그리기 (T15.3)
+
+클라이언트 래스터 기반 관제탑 건물 그리기. 계약 `contracts/controlview/buildings.mjs`, 구현 `client/tower/buildings/`. 표시 옵션 3종: points·black(기본)·aerial. 옵션 전환 시 네트워크 요청 없음.
+
 ## English
 
 Server-side renderer for SkyLens. Work in progress.
@@ -253,4 +257,8 @@ The contract lives in `contracts/tower_assets/`. It covers terrain mesh LOD (`se
 Client rasterization-based control tower terrain drawing. Contract: `contracts/controlview/terrain.mjs`; implementation: `client/tower/terrain/` (boundary rendering, tile management, caching). Only arrived terrain tiles are CPU-rasterized. Missing areas are left empty. The four-level delay pattern (steps 250, 1,000, 3,500, 7,000) replaces the lower level of the same tile, and a lower or equal level arriving late is skipped. An unreached tile is shown as missing; state changes only on arrival events. Coordinates are local ENU anchored at the GeoAnchor, 1 unit = 1 m. Tests: `node --test client/tower/terrain/*.test.mjs`.
 
 The 8-viewpoint SSIM is a composite approximation of SPEC S9, with resolution 160×90 and eye height 17 m on 3 locations, and the reference image is LOD 0 mesh from the same DEM (not original point-cloud render). LOD3 now clears 0.95 (minimum 0.9645 over synthetic seeds 1-12) by tightening the height-error cap to 1 m (T15.1c, a value chosen after seeing the synthetic results); seeds 5, 6, 7, 9 and 10 previously fell short. The baseline 0.95 was not lowered.
+
+### Control tower building drawing (T15.3)
+
+Client rasterization-based control tower building drawing. Contract: `contracts/controlview/buildings.mjs`; implementation: `client/tower/buildings/`. Three display options: points, black (default), aerial. No network requests when switching options.
 
