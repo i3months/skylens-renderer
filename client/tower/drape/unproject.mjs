@@ -41,3 +41,40 @@ export function pixelToEnu(camera, i, j, depth) {
   }
   return { x, y, z };
 }
+
+/**
+ * 화소 루프용 역투영 준비. 카메라를 한 번 검사하고 계수(K·R·t)를 평평한 Float64Array 에 담는다.
+ * 계수 배치: [cx, cy, fx, fy, t0, t1, t2, R0..R8] (16개).
+ * pixelToEnuInto 는 pixelToEnu 와 같은 순서로 같은 연산을 하므로 결과가 비트 단위로 같다(K 역을 곱셈으로 바꾸지 않는 까닭).
+ * @param {import('../../../contracts/raster/index.mjs').Camera} camera
+ * @returns {Float64Array}
+ */
+export function prepareUnproject(camera) {
+  assertCamera(camera);
+  const { K, R, t } = camera;
+  const c = new Float64Array(16);
+  c[0] = K.cx; c[1] = K.cy; c[2] = K.fx; c[3] = K.fy;
+  c[4] = t[0]; c[5] = t[1]; c[6] = t[2];
+  for (let k = 0; k < 9; k++) c[7 + k] = R[k];
+  return c;
+}
+
+/**
+ * 검사 없는 역투영. coef 는 prepareUnproject 결과, depth 는 호출자가 양의 유한 수임을 보장한다.
+ * out[0..2] 에 (x, y, z) 를 쓰고 새 객체를 만들지 않는다. 넘침 검사도 하지 않으므로 호출자가 유한성을 본다.
+ * @param {Float64Array} coef
+ * @param {number} i
+ * @param {number} j
+ * @param {number} depth
+ * @param {Float64Array|number[]} out
+ */
+export function pixelToEnuInto(coef, i, j, depth, out) {
+  const u = i + 0.5;
+  const v = j + 0.5;
+  const a = (depth * (u - coef[0])) / coef[2] - coef[4];
+  const b = (depth * (v - coef[1])) / coef[3] - coef[5];
+  const c = depth - coef[6];
+  out[0] = coef[7] * a + coef[10] * b + coef[13] * c;
+  out[1] = coef[8] * a + coef[11] * b + coef[14] * c;
+  out[2] = coef[9] * a + coef[12] * b + coef[15] * c;
+}
