@@ -33,8 +33,10 @@ export function rasterizePoints(camera, groups, rgb, out) {
     for (let s = 0; s < P.length; s += 3) {
       const x = P[s], y = P[s + 1], z = P[s + 2];
       if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))) throw new TypeError(`points: groups[${g}].points[${s}..${s + 2}] 가 유한하지 않음`);
-      const d = R[6] * x + R[7] * y + R[8] * z + t[2];
-      if (!(d > near)) continue;
+      const d0 = R[6] * x + R[7] * y + R[8] * z + t[2];
+      if (!(d0 > near)) continue;
+      const d = Math.fround(d0);
+      if (!Number.isFinite(d)) continue; // float32 유한 범위 밖이면 그리지 않는다
       const xc = R[0] * x + R[1] * y + R[2] * z + t[0];
       const yc = R[3] * x + R[4] * y + R[5] * z + t[1];
       const i = Math.floor((fx * xc) / d + cx);

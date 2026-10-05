@@ -9,7 +9,8 @@
 //   칸 = (i, floor(v)). 두 끝점의 칸 (floor(u), floor(v)) 은 따로 반드시 칠한다(round 가 아니라 floor).
 //   그래서 수평선 한 줄의 화소 수 = floor(u1) − floor(u0) + 1 이다.
 // - 깊이: 화면에서 1/z 가 선분을 따라 선형이므로 화면 매개변수로 1/z 를 보간하고 z = 1/보간값(원근 보정).
-// - 깊이 시험: 빈 화소(깊이 0)이거나 (선분 깊이 − depthBias) < out.depth 일 때만 쓴다. 쓰면 깊이는 선분 깊이(편향 없음)로,
+// - 깊이 시험: 빈 화소(깊이 0)이거나, 선이 이미 쓴 화소면 선분 깊이 < out.depth, 아니면(면) (선분 깊이 − depthBias) < out.depth 일 때만 쓴다.
+//   깊이는 Math.fround 후 기록하고 float32 유한 범위 밖이면 그리지 않는다. 쓰면 깊이는 선분 깊이(편향 없음)로,
 //   index 는 묶음 번호로, 색은 rgb 로 갱신한다. depthBias > 0 이면 같은 깊이의 면 위 선이 보인다.
 // - 비유한 좌표는 건너뛰지 않고 TypeError 로 던진다(계약 위반을 숨기지 않는다. terrain/raster 와 같은 방침).
 import { assertCamera } from '../../../contracts/raster/index.mjs';
@@ -55,11 +56,16 @@ export function rasterizeLines(camera, groups, rgb, out, opts = {}) {
   const r0 = rgb[0], g0 = rgb[1], b0 = rgb[2];
 
   // 화소 하나를 깊이 시험 후 쓴다.
-  const plot = (i, j, d, g) => {
+  // 이 호출에서 선이 쓴 화소 표시: 선끼리는 편향 없이 비교하고 면(선이 쓰지 않은 화소)과만 편향을 둔다.
+  const lineMark = new Uint8Array(W * H);
+  const plot = (i, j, dRaw, g) => {
     if (i < 0 || j < 0 || i >= W || j >= H) return;
+    const d = Math.fround(dRaw);
+    if (!Number.isFinite(d)) return; // float32 유한 범위 밖이면 그리지 않는다
     const p = j * W + i;
     const old = depth[p];
-    if (old !== 0 && !(d - bias < old)) return;
+    if (old !== 0 && !(lineMark[p] === 1 ? d < old : d - bias < old)) return;
+    lineMark[p] = 1;
     depth[p] = d;
     index[p] = g;
     color[3 * p] = r0; color[3 * p + 1] = g0; color[3 * p + 2] = b0;
