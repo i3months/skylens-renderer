@@ -3,11 +3,11 @@
 // 번들은 서버 가공 함수(server/buildings/extrude·lod·black·aerial_uv·points)를 그대로 거쳐 만든다(시험·픽스처라 server/ 허용).
 //
 // 서명:
-//   makeBundle(seed, { count=6, image=true, uv='contract', lodDistM=100 }={}) -> BuildingBundle
+//   makeBundle(seed, { count=6, image=true, uv='server', lodDistM=100 }={}) -> BuildingBundle
 //     3×3 필지(간격 26 m, 중심 0) 중 count 개(1..9)를 시드로 골라 직사각형(임의 회전) 또는 L 자 건물을 세운다.
 //     층 수 1..6 또는 null(높이 6 m). id = 1000 + 필지 번호. 묶음은 buildBuildingLod(…, lodDistM) 결과(가까우면 한 동 한 묶음).
 //     image 가 false 면 bundle.image = null(aerial 은 전부 검정 면).
-//   bundleFromFootprints(footprints, { image=makeAerialImage(), uv='contract', lodDistM=100 }={}) -> BuildingBundle
+//   bundleFromFootprints(footprints, { image=makeAerialImage(), uv='server', lodDistM=100 }={}) -> BuildingBundle
 //     손 계산 시험용(상자 하나 등). image 에 null 을 주면 영상 없음.
 //   makeAerialImage({ width=96, height=96, bounds=AERIAL_BOUNDS }={}) -> { width, height, rgb, bounds }
 //     행 0 = 북. 화소 (col,row) 의 지상 좌표 x = minX + (col+0.5)·Δx/W, y = maxY − (row+0.5)·Δy/H.
@@ -16,9 +16,8 @@
 //     top: 눈 (0,0,120) 에서 수직으로 내려다봄(화면 위 = 북). oblique: 눈 (−60,−80,60) → (0,0,0).
 //     eye17: 눈 (0,−70,17) → (0,0,8)(눈높이 17 m). 수평 화각 60°, 주점 = 화면 중심.
 //
-// uv 관례 불일치(보고 대상): 계약 contracts/controlview/buildings.mjs 는 "uv (0,0) = 남서, v 는 북쪽으로 증가" 인데
-//   server/buildings/aerial_uv 는 v = 1 − (y − minY)/Δy(v = 0 이 북)이다. 계약을 고치지 않고, 여기서 uv='contract'(기본)면
-//   서버 v 를 1 − v 로 바꿔 계약 관례로 넣는다(serverUvToContract). uv='server' 면 서버 출력 그대로 둔다(뒤집기 변이 시험용).
+// uv 규약: 계약은 서버 aerial_uv 와 같다(v = 0 이 북). uv='server'(기본)면 서버 출력 그대로,
+//   uv='flipped' 면 v 를 1 − v 로 뒤집어(serverUvToContract) 넣는다(뒤집기 변이 시험용).
 
 import { extrudeBuilding } from '../../../server/buildings/extrude/index.mjs';
 import { buildBuildingLod } from '../../../server/buildings/lod/index.mjs';
@@ -101,8 +100,8 @@ export function makeFootprints(seed, count = 6) {
   });
 }
 
-export function bundleFromFootprints(footprints, { image, uv = 'contract', lodDistM = 100 } = {}) {
-  if (uv !== 'contract' && uv !== 'server') throw new RangeError(`fixtures: uv 는 'contract' | 'server': ${String(uv)}`);
+export function bundleFromFootprints(footprints, { image, uv = 'server', lodDistM = 100 } = {}) {
+  if (uv !== 'flipped' && uv !== 'server') throw new RangeError(`fixtures: uv 는 'server' | 'flipped': ${String(uv)}`);
   const img = image === undefined ? makeAerialImage() : image;
   // uv 는 영상 범위로 만든다. 영상이 없을 때도 형태(정점당 2)를 맞추려고 기본 범위의 빈 영상으로 계산한다.
   const uvImage = img ?? { width: 1, height: 1, rgb: new Uint8Array(3), bounds: { ...AERIAL_BOUNDS } };
@@ -116,7 +115,7 @@ export function bundleFromFootprints(footprints, { image, uv = 'contract', lodDi
       ids: [...ids],
       mesh: { positions: mesh.positions, indices: mesh.indices },
       edgeLines,
-      uv: uv === 'contract' ? serverUvToContract(a.uv) : a.uv,
+      uv: uv === 'flipped' ? serverUvToContract(a.uv) : a.uv,
       wallMask: a.wallMask,
       points,
     };
@@ -124,7 +123,7 @@ export function bundleFromFootprints(footprints, { image, uv = 'contract', lodDi
   return { groups, image: img };
 }
 
-export function makeBundle(seed, { count = 6, image = true, uv = 'contract', lodDistM = 100 } = {}) {
+export function makeBundle(seed, { count = 6, image = true, uv = 'server', lodDistM = 100 } = {}) {
   return bundleFromFootprints(makeFootprints(seed, count), { image: image ? makeAerialImage() : null, uv, lodDistM });
 }
 

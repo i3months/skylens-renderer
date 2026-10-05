@@ -215,12 +215,12 @@ test('aerial: 영상이 null 이면 모든 면이 검정(메우지 않음), 덮�
   }
 });
 
-test('sampleAerial: 화소 중심은 그 화소 색, 계약 v 는 북쪽 증가', () => {
+test('sampleAerial: 화소 중심은 그 화소 색, 계약 v = 0 이 북', () => {
   const im = makeAerialImage();
   const at = (c, r) => [...im.rgb.subarray(3 * (r * 96 + c), 3 * (r * 96 + c) + 3)];
-  assert.deepEqual(sampleAerial(im, 10.5 / 96, 1 - 3.5 / 96), at(10, 3));
-  assert.deepEqual(sampleAerial(im, 0, 1), at(0, 0)); // 북서 모서리
-  assert.deepEqual(sampleAerial(im, 1, 0), at(95, 95)); // 남동 모서리
+  assert.deepEqual(sampleAerial(im, 10.5 / 96, 3.5 / 96), at(10, 3));
+  assert.deepEqual(sampleAerial(im, 0, 0), at(0, 0)); // 북서 모서리
+  assert.deepEqual(sampleAerial(im, 1, 1), at(95, 95)); // 남동 모서리
 });
 
 test('points: 점 하나 = floor 칸 한 화소, 깊이 시험, 카메라 뒤 점은 버린다', () => {
@@ -341,7 +341,7 @@ test('변이 — 대각선: 올바른 뒤집기는 결과 불변, 한쪽만 뒤�
 test('변이 — uv 뒤집기: 서버 관례 uv(v = 0 이 북)를 그대로 넣으면 물리 정합 검사기가 잡는다', () => {
   const seed = 4;
   const fps = makeFootprints(seed, 6);
-  const flippedBundle = makeBundle(seed, { uv: 'server' });
+  const flippedBundle = makeBundle(seed, { uv: 'flipped' });
   for (const cam of CAMS) {
     const m = aerialMismatches(cam, flippedBundle, fps, refRenderBuildings(cam, flippedBundle, 'aerial'));
     assert.ok(m.bad > m.checked * 0.5, `${cam.name}: 어긋남 ${m.bad}/${m.checked}`);

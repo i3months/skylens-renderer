@@ -11,7 +11,7 @@
 //   선이 이긴다. 선끼리는 z 가 작은 것. 선 화소의 depth = z(치우침 없는 값), index = 묶음 번호, 색 lineRgb.
 //   주의: 선 화소 덮임 규칙은 계약이 정하지 않았으므로(래스터는 화소 걷기) 선이 있는 비교는 경계 화소 허용을 두어야 한다.
 // aerial: 교차점의 무게중심 (1−b1−b2, b1, b2)(월드 공간이라 원근 보정과 같다)로 uv 를 섞는다. 지붕은 평면이고 uv 가 xy 의
-//   아핀 함수이므로 이 선형 보간이 정답이다. 계약 관례: v 는 북쪽으로 증가, 영상 행 0 = 북 → 연속 좌표 (u·W, (1−v)·H).
+//   아핀 함수이므로 이 선형 보간이 정답이다. 계약 관례(서버 aerial_uv 와 같음): v = 0 이 북쪽, 영상 행 0 = 북 → 연속 좌표 (u·W, v·H).
 //   화소 중심(col+0.5, row+0.5) 기준 이중선형 표본, 가장자리는 가장자리 화소로 고정, 채널마다 반올림.
 //   삼각형의 세 정점 중 하나라도 wallMask = 1 이면 벽·바닥으로 보고 faceRgb. image 가 null 이면 모든 면이 faceRgb.
 // points: 점마다 X_c = R·X + t, d = X_c.z > nearM 이면 (floor(u), floor(v)) 칸 한 개. 깊이 시험(작은 d), 같은 d 는 먼저 온 점.
@@ -56,7 +56,7 @@ export function intersectTriangle(o, d, p0, p1, p2) {
 /** 영상 이중선형 표본(계약 uv 관례). 결과는 반올림한 [r,g,b]. */
 export function sampleAerial(image, u, v) {
   const { width: W, height: H, rgb } = image;
-  const fx = u * W - 0.5, fy = (1 - v) * H - 0.5;
+  const fx = u * W - 0.5, fy = v * H - 0.5;
   const i0 = Math.floor(fx), j0 = Math.floor(fy);
   const tx = fx - i0, ty = fy - j0;
   const ci = (i) => Math.min(W - 1, Math.max(0, i));

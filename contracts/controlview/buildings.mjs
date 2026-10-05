@@ -9,7 +9,7 @@
  * 건물 묶음 한 개(server buildBuildingLod 출력 + black·aerial_uv·points 가공 결과).
  * @typedef {{ ids:number[], mesh:{positions:Float32Array, indices:Uint32Array}, edgeLines:Float32Array, uv:Float32Array, wallMask:Uint8Array, points:Float32Array }} BuildingGroup
  *   mesh = 삼각형(반시계, 위에서 볼 때), edgeLines = xyz 쌍 연속(선분당 6 float), uv·wallMask = 정점당 2·1(wallMask 1 이면 검정), points = xyz 연속 표본.
- * @typedef {{ width:number, height:number, rgb:Uint8Array }} AerialImage  항공영상(행 0 = 북). uv (0,0) = 영상 왼쪽 아래(남서), (1,1) = 오른쪽 위(북동), v 는 북쪽으로 증가.
+ * @typedef {{ width:number, height:number, rgb:Uint8Array }} AerialImage  항공영상(행 0 = 북). uv (0,0) = 영상 왼쪽 위(북서), (1,1) = 오른쪽 아래(남동), v = 0 이 북쪽이고 남쪽으로 증가(server aerial_uv 와 같은 규약, 표본 row = v·height − 0.5).
  * @typedef {{ groups:BuildingGroup[], image:AerialImage|null }} BuildingBundle  image 가 null 이면 aerial 은 전부 검정 면(영상이 없는 것을 메우지 않음).
  */
 

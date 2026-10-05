@@ -21,7 +21,7 @@ const ERR = 'buildings/raster_tex:';
 export function sampleBilinear(image, u, v, dst, off) {
   const W = image.width; const H = image.height; const rgb = image.rgb;
   const col = u * W - 0.5;
-  const row = (1 - v) * H - 0.5;
+  const row = v * H - 0.5;
   const c0 = Math.floor(col); const r0 = Math.floor(row);
   const ax = col - c0; const ay = row - r0;
   const cA = c0 < 0 ? 0 : (c0 > W - 1 ? W - 1 : c0);

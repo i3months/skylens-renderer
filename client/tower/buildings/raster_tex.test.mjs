@@ -20,14 +20,14 @@ function lookCam(C, target, width = 160, height = 90, f = 100) {
   return { width, height, K: { fx: f, fy: f, cx: width / 2, cy: height / 2 }, R, t };
 }
 
-// 영상 범위 [X0,X1]×[Y0,Y1] 를 덮는 지붕(uv = 범위 안 상대 위치, 남서 (0,0)).
+// 영상 범위 [X0,X1]×[Y0,Y1] 를 덮는 지붕(u = 동쪽 상대 위치, v = 0 이 북쪽).
 function texRoof(X0, X1, Y0, Y1, z, wall = [0, 0, 0, 0]) {
   const verts = [[X0, Y0, z], [X1, Y0, z], [X1, Y1, z], [X0, Y1, z]];
   return {
     ids: [1],
     mesh: { positions: new Float32Array(verts.flat()), indices: new Uint32Array([0, 1, 2, 0, 2, 3]) },
     edgeLines: new Float32Array(0),
-    uv: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]),
+    uv: new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]), // 남서·남동·북동·북서 (v = 0 이 북)
     wallMask: new Uint8Array(wall),
     points: new Float32Array(0),
   };
@@ -40,7 +40,7 @@ const px = (out, i, j) => [...out.color.subarray(3 * (j * out.width + i), 3 * (j
 
 // 시험용 독립 이중선형(가장자리 클램프, 반올림).
 function refSample(image, u, v) {
-  const col = u * image.width - 0.5; const row = (1 - v) * image.height - 0.5;
+  const col = u * image.width - 0.5; const row = v * image.height - 0.5;
   const cl = (k, n) => Math.min(n - 1, Math.max(0, k));
   const c0 = Math.floor(col); const r0 = Math.floor(row); const ax = col - c0; const ay = row - r0;
   const at = (r, c, k) => image.rgb[3 * (cl(r, image.height) * image.width + cl(c, image.width)) + k];
@@ -53,7 +53,7 @@ function refSample(image, u, v) {
 // 경계 u ∈ (60.3, 100.7), v ∈ (30.4, 60.6) 가 화소 중심에서 먼 범위 → 41 × 31 화소.
 const X0 = 0.4 - 16.16; const X1 = 0.4 + 16.16; const Y0 = -0.4 - 12.08; const Y1 = -0.4 + 12.08;
 
-test('2×2 영상 지붕: 손 계산 이중선형 값과 일치(uv 북쪽 증가)', () => {
+test('2×2 영상 지붕: 손 계산 이중선형 값과 일치(v = 0 이 북)', () => {
   const out = emptyResult(160, 90);
   rasterizeTextured(topCam(), [texRoof(X0, X1, Y0, Y1, 20)], img2(), out);
   // 중심 화소 (80,45): u = v = 0.5 → col = row = 0.5 → 네 색 평균 = (220,120,60)/4.
@@ -79,7 +79,7 @@ test('2×2 영상 지붕: 손 계산 이중선형 값과 일치(uv 북쪽 증가
       if (!inside) continue;
       n += 1;
       assert.ok(Math.abs(out.depth[p] - 80) <= 1e-4);
-      assert.deepEqual(px(out, i, j), refSample(img2(), (x - X0) / (X1 - X0), (y - Y0) / (Y1 - Y0)), `화소 (${i},${j})`);
+      assert.deepEqual(px(out, i, j), refSample(img2(), (x - X0) / (X1 - X0), 1 - (y - Y0) / (Y1 - Y0)), `화소 (${i},${j})`);
     }
   }
   assert.equal(n, 41 * 31);
@@ -106,7 +106,7 @@ test('비스듬한 카메라: uv 는 원근 보정(1/z 보간 후 나눔)으로 
       const dw = [0, 1, 2].map((k) => R[k] * dc[0] + R[3 + k] * dc[1] + R[6 + k] * dc[2]);
       const s = -C[2] / dw[2];
       const y = C[1] + s * dw[1];
-      const ref = refSample(image, 0.5, (y - B0) / (B1 - B0));
+      const ref = refSample(image, 0.5, 1 - (y - B0) / (B1 - B0));
       worst = Math.max(worst, Math.abs(out.color[3 * p] - ref[0]));
       n += 1;
     }

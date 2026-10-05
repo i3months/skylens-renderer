@@ -64,17 +64,17 @@ test('makeBundle: 서버 가공 결과가 계약 형태(BuildingGroup)와 일치
   }
 });
 
-test('uv 관례: 기본은 계약(v 북쪽 증가), server 는 서버 출력 그대로(v = 0 이 북)', () => {
+test('uv 규약: 기본은 서버 출력 그대로(v = 0 이 북), flipped 는 v 를 뒤집음', () => {
   const b = makeBundle(3);
-  const s = makeBundle(3, { uv: 'server' });
+  const s = makeBundle(3, { uv: 'flipped' });
   const { minX, minY, maxX, maxY } = AERIAL_BOUNDS;
   b.groups.forEach((g, gi) => {
     const p = g.mesh.positions;
     for (let v = 0; v < p.length / 3; v++) {
       const ue = (p[3 * v] - minX) / (maxX - minX), ve = (p[3 * v + 1] - minY) / (maxY - minY);
       assert.ok(Math.abs(g.uv[2 * v] - ue) < 1e-6);
-      assert.ok(Math.abs(g.uv[2 * v + 1] - ve) < 1e-6, '계약: v 는 북쪽으로 증가');
-      assert.ok(Math.abs(s.groups[gi].uv[2 * v + 1] - (1 - ve)) < 1e-6, '서버: v = 1 − 북쪽 비율');
+      assert.ok(Math.abs(g.uv[2 * v + 1] - (1 - ve)) < 1e-6, '계약: v = 1 − 북쪽 비율(v = 0 이 북)');
+      assert.ok(Math.abs(s.groups[gi].uv[2 * v + 1] - ve) < 1e-6, 'flipped: v 는 북쪽으로 증가');
     }
   });
   assert.deepEqual([...serverUvToContract(Float32Array.of(0.25, 0.25, 1, 0))], [0.25, 0.75, 1, 1]);
