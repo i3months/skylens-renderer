@@ -14,9 +14,9 @@ export const TERRAIN_LAYER_API = Object.freeze({
 
 /** 모듈 파일(client/tower/terrain/). 각 파일의 export 이름이 기준이다. */
 export const TERRAIN_MODULES = Object.freeze({
-  mesh: { file: 'mesh.mjs', fn: 'buildLayerMesh(tiles) -> { positions:Float32Array, indices:Uint32Array, tileOfTriangle:Int32Array }  타일 메시를 이어 붙인다. 대각선 규약은 server terrainTileToMesh 와 같다((i,j)–(i+1,j+1), 위에서 볼 때 반시계)' },
-  raster: { file: 'raster.mjs', fn: 'rasterizeTriangles(camera, mesh, shadeTriangle, out) -> void  z-버퍼 삼각형 래스터. 근평면(z>0.01 m)에서 잘라낸다. 화소 중심 (x+0.5, y+0.5) 표본, 원근 보정 깊이, 같은 깊이는 앞선 삼각형 유지' },
-  shade: { file: 'shade.mjs', fn: 'faceNormalEnu(positions, indices, tri) -> [nx,ny,nz]  /  shadeLambert(normal, lightDir, baseRgb, ambient) -> [r,g,b]  (램버트 I = ambient + (1−ambient)·max(0, n·l))' },
+  mesh: { file: 'mesh.mjs', fn: 'buildLayerMesh(tiles) -> { positions:Float32Array, indices:Uint32Array, tileOfTriangle:Int32Array, normals:Float32Array }  타일 메시를 이어 붙인다. 대각선 규약은 server terrainTileToMesh 와 같다((i,j)–(i+1,j+1), 위에서 볼 때 반시계). normals 는 정점당 3개(단위, 면적 가중 법선): 타일 경계 정점은 같은 좌표(비트 단위)끼리 법선을 공유(음영 불연속 방지)' },
+  raster: { file: 'raster.mjs', fn: 'rasterizeTriangles(camera, mesh, shadeTriangle, out, opts?) -> void  z-버퍼 삼각형 래스터. 근평면(z>0.01 m)에서 잘라낸다. 화소 중심 (x+0.5, y+0.5) 표본, 원근 보정 깊이, 같은 깊이는 앞선 삼각형 유지. opts.normals 값이 \'face\' 면 메시의 정점 법선이 있어도 면 음영(flat shading), 아니면 화소마다 정점 법선 보간 음영(per-pixel perspective-correct vertex normal shading)' },
+  shade: { file: 'shade.mjs', fn: 'faceNormalEnu(positions, indices, tri) -> [nx,ny,nz]  /  shadeLambert(normal, lightDir, baseRgb, ambient) -> [r,g,b]  (램버트 I = ambient + (1−ambient)·max(0, n·l)). 결과 배열의 비열거 속성 lambert = {l:[단위 광원 방향], baseRgb, ambient} 로 음영 서술을 캐시' },
   levels: { file: 'levels.mjs', fn: 'createTerrainState() -> { accept(level, tiles) -> action, level(), tiles() }  decideArrival 로 교체·건너뛰기를 정한다' },
   index: { file: 'index.mjs', fn: 'createTerrainLayer(opts?) 조립' },
 });
@@ -29,5 +29,5 @@ export const TERRAIN_DEFAULTS = Object.freeze({
   nearM: 0.01,
 });
 
-/** 8시점 SSIM 하한(SPEC). 기준 영상은 같은 DEM 의 원본 해상도(LOD 0) 메시를 독립 광선-삼각형 교차로 그린 것이다. */
+/** SPEC S9 synthetic 8-viewpoint SSIM floor: reference = LOD 0 mesh (not original point cloud), 3 sites at eye height 17 m from synthetic.json, 160×90 resolution */
 export const TERRAIN_SSIM_MIN = 0.95;

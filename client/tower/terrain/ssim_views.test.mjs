@@ -1,9 +1,9 @@
-// 관제탑 지형 8시점 SSIM 시험(T15.1-A5). contracts/controlview TERRAIN_SSIM_MIN(0.95) 를 합성 장면으로 근사한다.
-// SPEC S9 와 다른 점(결정 0046): ① 해상도 160×90, ② 원본 시점 중 3곳(street_level·low_close_box·edge_far)의 눈 높이를 17 m 로 올림,
-//   ③ 기준 영상 = 같은 DEM 의 LOD 0 메시를 ref_trace(독립 광선-삼각형 교차)로 그린 것(SPEC 의 원본 점군 렌더가 아님).
-// 음영 모델: 층 래스터와 기준 영상 모두 화소별 정점 법선 보간 램버트(결정 0046 선택지 D). 래스터와 코드를 공유하지 않는다.
-// 1부: ref_trace 자체 검증(해석값·무차별 대조) — 래스터와 무관하게 통과해야 한다.
-// 2부: createTerrainLayer 대 기준 영상. 합성 DEM 시드 1..12 × 높이 잡음 {0, 0.015} 의 24 장면 × LOD 1..3 × 8시점 최소값으로 판정한다.
+// SPEC S9 synthetic 8-viewpoint SSIM test (T15.1-A5). Validates TERRAIN_SSIM_MIN (0.95) against synthetic scenes.
+// Differences from SPEC S9 (decision 0046): (1) resolution 160×90, (2) three viewpoints (street_level, low_close_box, edge_far) eye height raised to 17 m,
+//   (3) reference image = LOD 0 mesh of same DEM rendered via ref_trace (independent ray-triangle intersection), not original point cloud.
+// Shading model: both layer rasterizer and reference use per-pixel vertex normal interpolation Lambert (decision 0046 option D). Code not shared.
+// Part 1: ref_trace self-validation (numeric vs. brute force) — must pass independently of rasterizer.
+// Part 2: createTerrainLayer vs. reference. Evaluated by 24 synthetic DEM scenes (seeds 1..12 × height noise {0, 0.015}) × LOD 1..3 × 8-viewpoint minimum.
 //   0.95 에 못 미치는 조건은 KNOWN_SHORTFALL 에 수치·하한과 함께 따로 단언한다(T15.1 미완 표기, 기준은 낮추지 않는다).
 // 기준 수치는 아래 상수에 미리 박아 두었고 측정값에 맞춰 바꾸지 않는다(KNOWN_SHORTFALL 하한만 측정에서 정한 퇴행 하한이다).
 import { test, describe, before } from 'node:test';
