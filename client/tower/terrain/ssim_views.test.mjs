@@ -13,32 +13,36 @@ import { EMPTY_DEPTH, EMPTY_INDEX, emptyResult } from '../../../contracts/raster
 import { TERRAIN_SSIM_MIN, TERRAIN_DEFAULTS } from '../../../contracts/controlview/terrain.mjs';
 import { TERRAIN_LOD_MAX_ERROR_M } from '../../../contracts/tower_assets/index.mjs';
 import { faceNormalEnu, shadeLambert } from './shade.mjs';
+import { lambert as serverLambert } from '../../../server/raster_ref/shade/index.mjs';
 import { buildLayerMesh } from './mesh.mjs';
 import { rasterizeTriangles } from './raster.mjs';
 
 // ---- 미리 정한 기준 수치 ----
 const SSIM_LOD0_MIN = 0.99; // LOD 0 을 layer 로 그린 것 대 기준(래스터 정확성)
-const MASK_MISMATCH_MAX_RATIO = 0.001; // 빈/채움이 다른 화소 비율 상한(변 위 화소 표본 차이 허용)
+const MASK_MISMATCH_MAX_RATIO = 0; // 빈/채움이 다른 화소 비율 상한(측정: LOD 0 24 장면 8시점·부분 메시 8시점 모두 0)
 const TRACE_TOTAL_MS_MAX = 20000; // 한 장면 8시점 기준 영상 합계 시간 상한
 const VIEWS = 8;
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const NOISES = [0, 0.015]; // 높이 잡음 비율(진폭 10 m 의 ±1.5 % = ±0.15 m, fixtures 기본값)
 // 알려진 미달: 정점 법선 보간 음영으로도 LOD 3(오차 상한 2 m, 간격 16 m)에서 0.95 에 못 미치는 조건.
-// 키 'seed/noise/lod' → 하한(퇴행 하한). 하한 = 측정 최솟값을 소수 둘째 자리에서 내린 뒤 0.01 을 뺀 값.
+// 키 'seed/noise/lod' → 하한(퇴행 하한). 하한 = 측정 최솟값(소수 넷째 자리) − 0.005.
 // 측정(2026-10-05, 이 저장소 코드): 시드 5·6·7·9·10 의 LOD 3 만 미달, 잡음 0 → 0.9299 0.9233 0.8464 0.9419 0.9479,
 //   잡음 0.015 → 0.9246 0.9152 0.8407 0.9331 0.9382. 원인은 음영이 아니라 LOD 3 기하(파장 40 m 대의 언덕을 16 m 간격으로 표본):
 //   면 음영에서도 잡음 0 장면 LOD 3 이 같은 시드에서 미달이고, 높이 오차 상한 2 m 는 법선(기울기) 오차를 묶지 않는다.
 //   이 목록이 비어야 T15.1 '8시점 SSIM ≥ 0.95' 가 이 합성 근사에서 완료다. 아래 시험은 목록이 실제와 정확히 같음도 단언한다.
 const KNOWN_SHORTFALL = Object.freeze({
-  '5/0/3': 0.91, '6/0/3': 0.91, '7/0/3': 0.83, '9/0/3': 0.93, '10/0/3': 0.93,
-  '5/0.015/3': 0.91, '6/0.015/3': 0.90, '7/0.015/3': 0.83, '9/0.015/3': 0.92, '10/0.015/3': 0.92,
+  '5/0/3': 0.9249, '6/0/3': 0.9183, '7/0/3': 0.8414, '9/0/3': 0.9369, '10/0/3': 0.9429,
+  '5/0.015/3': 0.9196, '6/0.015/3': 0.9102, '7/0.015/3': 0.8357, '9/0.015/3': 0.9281, '10/0.015/3': 0.9332,
 });
 // 변이 확인: 층·기준을 모두 면 음영으로 그리면 잡음 장면 LOD 1~3 이 0.95 를 크게 밑돈다(측정 0.88 안팎). (2c) 의 상한.
 const FACE_SHADING_NOISY_MAX = 0.93;
+const NEAR_VTX_MIN = 0.99; // (2c) 층 색이 정점 법선 추적 색의 ±2 이내인 화소 비율 하한(측정 1.0000)
+const NEAR_FACE_MAX = 0.5; // (2c) 층 색이 면 음영 색과 완전 일치하는 화소 비율 상한(측정 0.131)
 
 // ---- 공용 도우미 ----
 function shadeFnDefault() {
-  return (normal) => shadeLambert(normal, TERRAIN_DEFAULTS.lightDirEnu, TERRAIN_DEFAULTS.baseRgb, TERRAIN_DEFAULTS.ambient);
+  // 기준 영상 쪽 음영은 서버 램버트(server/raster_ref/shade)를 쓴다. 클라이언트 shade.mjs·래스터 코드와 공유하지 않는다.
+  return (normal) => serverLambert(normal, TERRAIN_DEFAULTS.lightDirEnu, TERRAIN_DEFAULTS.baseRgb, { ambient: TERRAIN_DEFAULTS.ambient });
 }
 const VTX = { normals: 'vertex' };
 
@@ -412,8 +416,9 @@ describe('지형 층 8시점 SSIM(시드 1..12 × 잡음 {0, 0.015})', () => {
     console.log(`[ssim_views] 알려진 미달 ${rep.length}건: ${rep.join(' ')}`);
   });
 
-  test('(2c) 변이: 법선 보간을 없애면(면 음영) 잡음 장면에서 (1) 또는 (2) 가 실패한다', () => {
-    // 이 시험은 위 (1)·(2) 가 정점 법선 보간을 실제로 지키는지 보인다. 두 갈래다.
+  test('(2c) 민감도 확인: 면 음영 재현은 (1)·(2) 기준 아래로 떨어지고, 층은 보간 음영을 실제로 쓴다', () => {
+    // 주의: (a)(b) 는 면 음영을 이 시험이 직접 재현한 수치라 제품 변이와 무관하게 같다. 제품 쪽 변이는 맨 끝 단언이 잡는다.
+    // 이 시험은 위 (1)·(2) 의 기준 수치가 정점 법선 보간에 민감함을 보인다. 두 갈래다.
     //  (a) 층만 면 음영(기준은 정점 법선): LOD 0 이 SSIM_LOD0_MIN 아래 → (1) 실패.
     //  (b) 층·기준 모두 면 음영(옛 모델): LOD 1~3 이 0.95 를 크게 밑돎 → (2) 실패.
     // 사본에서 직접 확인(2026-10-05, 저장소 전체를 임시 디렉터리에 복사해 이 파일만 실행):
@@ -438,13 +443,28 @@ describe('지형 층 8시점 SSIM(시드 1..12 × 잡음 {0, 0.015})', () => {
     console.log(`[ssim_views] 변이(시드 1 잡음 0.015): (a) 층만 면 음영 LOD0 최소 ${a0.toFixed(4)} | (b) 양쪽 면 음영 LOD1..3 최소 ${fmt(mins)}`);
     assert.ok(a0 < SSIM_LOD0_MIN, `(a) 층만 면 음영인데 LOD0 ${a0.toFixed(4)} >= ${SSIM_LOD0_MIN}`);
     mins.forEach((m, i) => assert.ok(m < FACE_SHADING_NOISY_MAX, `(b) LOD ${i + 1} 면 음영인데 ${m.toFixed(4)} >= ${FACE_SHADING_NOISY_MAX}`));
-    // 같은 메시를 기본(정점 법선)으로 그리면 층과 같은 영상이다(층이 이 경로를 쓴다는 확인).
+    // 제품 변이 확인: 층(layer.render)이 보간 음영을 실제로 쓰는지 본다. 변이 A(화소별 음영 분기 끔)에서는 층 영상이 면 음영 영상과 같아져 실패한다.
     const layer = mods.createTerrainLayer();
     layer.accept(1, main.lodTiles[1]);
     const m1 = buildLayerMesh(main.lodTiles[1]);
     const out = emptyResult(cams[0].width, cams[0].height);
     rasterizeTriangles(cams[0], m1, shade(m1), out);
-    assert.deepEqual(layer.render(cams[0]).color, out.color);
+    const lay = layer.render(cams[0]);
+    assert.deepEqual(lay.color, out.color);
+    // 해석적 기대: 같은 메시를 독립 광선 추적(server 램버트, 정점 법선)으로 그린 색과 층 색이 화소별로 거의 같고, 면 음영 색과는 눈에 띄게 다르다.
+    const vtxRef = traceMesh(cams[0], buildLayerMesh(main.lodTiles[1]), shadeFnDefault(), VTX);
+    const faceImg = renderFace(1, 0);
+    let n = 0, nearVtx = 0, nearFace = 0;
+    for (let i = 0; i < lay.index.length; i++) {
+      if (lay.index[i] === EMPTY_INDEX || vtxRef.index[i] === EMPTY_INDEX) continue;
+      n++;
+      const d = (o) => Math.max(Math.abs(lay.color[3 * i] - o.color[3 * i]), Math.abs(lay.color[3 * i + 1] - o.color[3 * i + 1]), Math.abs(lay.color[3 * i + 2] - o.color[3 * i + 2]));
+      if (d(vtxRef) <= 2) nearVtx++;
+      if (d(faceImg) === 0) nearFace++;
+    }
+    console.log(`[ssim_views] (2c) 층 대 정점 법선 추적 ±2 이내 ${(nearVtx / n).toFixed(4)}, 층 대 면 음영 완전 일치 ${(nearFace / n).toFixed(4)} (화소 ${n})`);
+    assert.ok(nearVtx / n >= NEAR_VTX_MIN, `층이 정점 법선 보간 색과 다름: ${nearVtx / n}`);
+    assert.ok(nearFace / n <= NEAR_FACE_MAX, `층이 면 음영과 거의 같음(보간 꺼짐): ${nearFace / n}`);
   });
 
   test('(2d) 근평면 절단이 있는 가까운 시점: 층 래스터와 기준 영상의 화소별 색 차가 작다(원근 보정 법선 보간)', () => {
