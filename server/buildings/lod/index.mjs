@@ -589,14 +589,19 @@ const GAP_MAX_CELLS = 1 << 14;
 export function gapCellError(x0, y0, x1, y1, members, limit, box, budget) {
   // 칸 수 계수는 칸마다 올리지 않고 호출 끝에 예산 감소분으로 한 번 올린다(작은 입력의 핫 루프에서 계수 오버헤드를 뺀다, F-383).
   // 예산을 넘긴 마지막 칸(거부)은 세지 않는다.
-  // 진입 예산이 음수·NaN 이면 한 칸도 못 쓰니 0, Infinity 면 뺄셈이 NaN 이 되므로 큰 유한값으로 바꿔 돌린 뒤 되돌린다.
+  // 진입 예산이 음수면 한 칸도 못 쓰니 0, NaN 도 0 으로 바꿔(비교가 모두 거짓이라 그대로 두면 무제한으로 돈다) 바로 거부한다.
+  // Infinity 면 뺄셈이 NaN 이 되므로 큰 유한값으로 바꿔 돌린 뒤 finally 에서 되돌린다.
   const orig = budget.cells;
   const inf = orig === Infinity;
   const c0 = inf ? Number.MAX_SAFE_INTEGER : (orig > 0 ? orig : 0);
-  if (inf) budget.cells = c0;
-  const res = gapCellErrorImpl(x0, y0, x1, y1, members, limit, box, budget);
-  distStats.gapCells += c0 - (budget.cells > 0 ? budget.cells : 0);
-  if (inf) budget.cells = Infinity;
+  if (inf || orig !== orig) budget.cells = c0;
+  let res;
+  try {
+    res = gapCellErrorImpl(x0, y0, x1, y1, members, limit, box, budget);
+  } finally {
+    distStats.gapCells += c0 - (budget.cells > 0 ? budget.cells : 0);
+    if (inf) budget.cells = Infinity;
+  }
   return res;
 }
 function gapCellErrorImpl(x0, y0, x1, y1, members, limit, box, budget) {
