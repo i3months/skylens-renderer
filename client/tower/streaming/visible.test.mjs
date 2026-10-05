@@ -129,12 +129,44 @@ test('거리 구 경계: 타일 모서리까지 거리가 정확히 maxDistM(3-4
   assertSet(run(50.001), [[-1, 0], [0, 0], [0, 1], [1, 0], [1, 1]]);
 });
 
+test('거리 구 경계 z: 수평 40 m, dz 30 m 의 3-4-5 → 50 m 에서 갈리는 타일 (dz 를 무시하면 49.999 에서도 포함)', () => {
+  // 카메라 (40,32,40), 북쪽 수평, zRangeM [0,10] → 카메라가 판 위 30 m. 타일 (1,1) 의 가까운 모서리 (64,64,10): 수평 √(24²+32²)=40, dz=30 → 50.
+  // 타일 (−1,0) 의 가까운 모서리 (0,32,10): 수평 40, dz 30 → 50. 수평 거리만 보면 40 < 49.999 라 둘 다 들어와 버린다.
+  const v = poseToView(pose([40, 32, 40], 0, 0, 2.0), SQ);
+  const run = (D) => tilesInView(v, { maxDistM: D, zRangeM: [0, 10], nearM: 0.1 });
+  const base = [[0, 0], [1, 0], [0, 1]];
+  assertSet(run(49.999), base);
+  assertSet(run(50), [...base, [-1, 0], [1, 1]]);
+  assertSet(run(50.001), [...base, [-1, 0], [1, 1]]);
+  // 거리 판정을 정수로 반올림하면(50.32 → 50) D=50 에서 50.32 m 떨어진 타일이 들어온다: 모서리까지 수평 40.4, dz 30 → √2532.16 = 50.32
+  const v2 = poseToView(pose([64 - 24.24, 64 - 32.32, 40], 0, 0, 2.0), SQ);
+  const has = (D) => tilesInView(v2, { maxDistM: D, zRangeM: [0, 10], nearM: 0.1 }).some(({ tx, ty }) => tx === 1 && ty === 1);
+  assert.equal(has(50), false); // 50.32 > 50
+  assert.equal(has(50.3), false);
+  assert.equal(has(50.33), true);
+});
+
+test('큰 좌표에서 이론상 정확히 maxDistM 인 타일은 포함(거리 여유 rangeEps): D=50 결과 = D=50.001 결과', () => {
+  // 타일 모서리까지 수평 40(24,32)·dz 30 → 정확히 50 인 타일(위 시험과 같은 배치)을 좌표 6.4e3~6.4e7 m 로 옮기고 자세를 바꿔도
+  // 부동소수 오차(R·t 왕복)로 계산 거리가 50 을 아주 조금 넘는다. 여유가 있으면 D=50 결과가 50.001 결과와 같다(사이에 다른 타일 없음).
+  let cases = 0;
+  for (const N of [100, 1000, 10000, 100000, 1000000]) {
+    for (const yaw of [0, 0.3, 1, 2.5, -1.3]) {
+      for (const el of [0, 0.2, -0.4]) {
+        const Y = Math.round((64 * N * 0.7) / S) * S;
+        const v = poseToView(pose([S * N + 40, Y + 32, 40], yaw, el, 2.0), SQ);
+        const at = (D) => tilesInView(v, { maxDistM: D, zRangeM: [0, 10], nearM: 0.1 });
+        assertSet(at(50), pairs(at(50.001)));
+        cases += 1;
+      }
+    }
+  }
+  assert.equal(cases, 75);
+});
+
 test('최대 개수: 걸러낸 결과가 4096 을 넘으면 RangeError, 기본 한도 광각은 반경 정사각 이하', () => {
-  // 기본 한도(1500 m)에서는 결과가 반경 정사각 격자(49×49 = 2401) 이하라 광각에서도 한도에 닿지 않는다
-  const opts = { maxDistM: 1500, zRangeM: [-100, 600], nearM: 0.1 };
-  const at = (z, e) => poseToView(pose([0, 0, z], 0, e, 2.5), { width: 1600, height: 900 });
-  assert.equal(tilesInView(at(300, -0.3), opts).length, 894);
-  assert.equal(tilesInView(at(300, -0.8), opts).length, 1068);
+  // 기본 한도(1500 m)의 결과는 반경 정사각 격자(49×49 = 2401) 이하라 광각에서도 한도에 닿지 않는다.
+  // 개수 골든은 두지 않고 아래 '골든 대신 포함 관계' 시험이 오라클 ⊆ 결과 ⊆ 반경 정사각으로 본다.
   // 높이 1000 m 하향 정사각 시야, 발자국 반폭 h, 구 3100 m(발자국 모서리 ≈ 3057 m 를 덮는다):
   // h=2047.9 → tx,ty ∈ −32..31 = 64×64 = 정확히 4096(허용), h=2048.1 → −33..32 = 66×66(초과)
   const down = (h) => poseToView(pose([0, 0, 1000], 0, -Math.PI / 2, 2 * Math.atan(h / 1000)), SQ);
@@ -151,7 +183,7 @@ test('최대 개수: 걸러낸 결과가 4096 을 넘으면 RangeError, 기본 �
   assert.throws(() => tilesInView(off, { ...flat, maxDistM: 2611 }), (e) => e instanceof RangeError && e.message === 'maxTilesPerUpdate');
 });
 
-test('광각 fovY 2.4 rad, 고도 60~140 m, pitch −0.5~−0.1, 1500 m: 결과 수 ≤ 900', () => {
+test('광각 fovY 2.4 rad, 고도 60~140 m, pitch −0.5~−0.1, 1500 m: 결과 수 ≤ 이론 상한(원판)', () => {
   const opts = { maxDistM: 1500, zRangeM: [-100, 600], nearM: 0.1 };
   let max = 0;
   for (let h = 60; h <= 140; h += 20) {
@@ -162,7 +194,10 @@ test('광각 fovY 2.4 rad, 고도 60~140 m, pitch −0.5~−0.1, 1500 m: 결과 
       }
     }
   }
-  assert.ok(max > 0 && max <= 900, `최댓값 ${max}`);
+  // 상한 근거(측정값은 근거가 아니다): 카메라 z(60~140)가 zRangeM[-100,600] 안이라 dz=0 이므로 결과 타일은 모두 xy 로 반경 D 원판과 만난다.
+  // 그런 타일의 중심은 카메라로부터 D + S/√2 이내에 있고 타일 중심은 면적 S² 에 하나씩이므로 개수 ≤ π(D + S/√2)²/S².
+  const bound = Math.ceil(Math.PI * (1500 + S / Math.SQRT2) ** 2 / (S * S));
+  assert.ok(max > 0 && max <= bound, `최댓값 ${max}, 이론 상한 ${bound}`);
 });
 
 test('입력 검사·불변', () => {
@@ -242,6 +277,7 @@ test('오라클: 무작위 시점 200개에서 화소 광선이 지나는 타일
   let done = 0;
   let checked = 0;
   let tries = 0;
+  let skipped = 0; // maxTilesPerUpdate 로 건너뛴 시점 수
   while (done < 200) {
     tries += 1;
     assert.ok(tries < 2000, '시점 생성 실패');
@@ -258,7 +294,7 @@ test('오라클: 무작위 시점 200개에서 화소 광선이 지나는 타일
     try {
       r = tilesInView(view, opts);
     } catch (e) {
-      if (e instanceof RangeError && e.message === 'maxTilesPerUpdate') continue;
+      if (e instanceof RangeError && e.message === 'maxTilesPerUpdate') { skipped += 1; continue; }
       throw e;
     }
     const got = new Set(r.map(({ tx, ty }) => key(tx, ty)));
@@ -277,6 +313,31 @@ test('오라클: 무작위 시점 200개에서 화소 광선이 지나는 타일
     done += 1;
   }
   assert.ok(checked > 1000, `오라클 타일 수가 너무 적다: ${checked}`);
+  // 건너뜀 상한: maxDistM ≤ 1500 이면 결과가 반경 정사각 ≤ 49×49 = 2401 < 4096 이라 RangeError 는 이론상 나올 수 없다 → 0.
+  assert.equal(skipped, 0, `RangeError 로 건너뛴 시점 ${skipped} 개`);
+});
+
+test('골든 대신 포함 관계: 오라클 ⊆ 결과 ⊆ 반경 정사각 ∩ 구와 만나는 타일 (1500 m 광각)', () => {
+  const opts = { maxDistM: 1500, zRangeM: [-100, 600], nearM: 0.1 };
+  const D = opts.maxDistM;
+  const size = { width: 1600, height: 900 };
+  for (const e of [-0.3, -0.8]) {
+    const view = poseToView(pose([0, 0, 300], 0, e, 2.5), size);
+    const r = tilesInView(view, opts);
+    const got = new Set(r.map(({ tx, ty }) => key(tx, ty)));
+    assert.equal(got.size, r.length);
+    const want = oracle(view, opts, 64, 36);
+    assert.ok(want.size > 100);
+    for (const k of want) assert.ok(got.has(k), `누락 ${k}`);
+    const lo = Math.floor(-D / S); const hi = Math.floor(D / S); // 반경 정사각 |dx|,|dy| ≤ D (카메라 (0,0))
+    for (const { tx, ty } of r) {
+      assert.ok(tx >= lo && tx <= hi && ty >= lo && ty <= hi, `정사각 밖 ${tx},${ty}`);
+      // 구: 카메라 z=300 이 판 안이라 dz=0, 타일 사각형까지 xy 최소 거리 ≤ D
+      const dx = Math.max(tx * S, 0, -(tx + 1) * S); const dy = Math.max(ty * S, 0, -(ty + 1) * S);
+      assert.ok(Math.hypot(dx, dy) <= D + 1e-6, `구 밖 ${tx},${ty}`);
+    }
+    assert.ok(r.length >= want.size && r.length <= (hi - lo + 1) ** 2);
+  }
 });
 
 const EXPECT_WIDE = [
