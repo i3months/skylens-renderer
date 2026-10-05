@@ -13,7 +13,7 @@ export const DRAPE_LAYER_API = Object.freeze({
   create: 'createDrapeLayer(opts?) -> DrapeLayer   opts: { shade?: boolean(기본 true: 지형 음영 비율을 곱함) }',
   accept: 'layer.accept(level:0..3, tiles:DrapeTile[]) -> "first"|"replace"|"skip"   skip 이면 상태를 바꾸지 않는다. 같은 묶음 안 타일은 (tx,ty) 유일. 잘못된 타일이면 던지고 상태는 그대로. 한 수준 = 전체 묶음 단위로 판정하고, 보관 타일은 복사하지 않는다(호출자가 넘긴 뒤 타일을 바꾸지 않는다)',
   apply: 'layer.apply(camera, terrain:RenderResult, opts?:{ baseRgb?:[r,g,b] }) -> RenderResult   terrain 의 사본에서 지형 화소(depth>0)를 드레이프 색으로 바꾼다. depth·index 는 terrain 의 것을 복사 없이 그대로 공유해 돌려준다(color 만 새 배열), terrain 은 바꾸지 않는다',
-  state: 'layer.state() -> { level:-1|0..3, tileCount:number }   level −1 = 아직 아무것도 도착하지 않음(apply 는 terrain 사본을 그대로 돌려준다)',
+  state: 'layer.state() -> { level:-1|0..3, tileCount:number }   level −1 = 아직 아무것도 도착하지 않음(apply는 color 사본, depth·index는 terrain과 공유)',
 });
 
 /** 모듈 파일(client/tower/drape/). 각 파일의 export 이름이 기준이다. */
