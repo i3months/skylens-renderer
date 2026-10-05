@@ -95,36 +95,67 @@ function fold90(a) {
   return r - Math.PI / 4;
 }
 
-// 방향 있는 선분 [x1,y1,x2,y2,_] 묶음(평탄화, 5개씩)이 이루는 고리들의 감김수가 0 이 아닌 영역의 넓이.
-// x 좌표 구간마다 걸치는 선분을 가운데 x 에서 y 로 정렬해 아래에서부터 감김수를 누적하고, 0 이 아닌 사이 간격의 사다리꼴 넓이를 더한다.
+// 방향 있는 선분 [x1,y1,x2,y2,채널] 묶음(평탄화, 5개씩)이 이루는 고리들의 감김수가 0 이 아닌 영역의 넓이.
+// 채널(0 또는 1)마다 감김수를 따로 세고, 어느 한 채널이라도 0 이 아닌 영역의 합집합 넓이를 낸다(F-355: 삼각형 쪽 +1 과 벽 쪽 −1 이 서로 지우지 않게).
+// x 구간 [l, r] 마다 걸치는 선분(활성 집합)을 가운데 x 에서 y 로 정렬해 아래에서부터 감김수를 누적하고, 0 이 아닌 사이 간격의 사다리꼴 넓이를 더한다.
+// 구간 수와 활성 선분 수의 곱(구간별 정렬 작업량)이 WINDING_WORK_CAP 을 넘으면 검사하지 않고 null(알 수 없음)을 돌려준다(F-360):
+// 호출자는 그 건물을 원본으로 유지한다. 정렬된 끝점 위 스위프라 선분 수 T 에 대해 작업량 계산이 O(T log T) 다.
+const WINDING_WORK_CAP = 400000;
 function windingArea(segs) {
   const n = segs.length / 5;
-  const xsSet = new Set();
   const ss = [];
+  const xs = [];
   for (let i = 0; i < n; i++) {
     let x1 = segs[i * 5], y1 = segs[i * 5 + 1], x2 = segs[i * 5 + 2], y2 = segs[i * 5 + 3];
     if (x1 === x2) continue;
     const dir = x2 > x1 ? 1 : -1;
     if (dir < 0) { [x1, y1, x2, y2] = [x2, y2, x1, y1]; }
-    ss.push({ x1, y1, x2, y2, dir, m: (y2 - y1) / (x2 - x1) });
-    xsSet.add(x1); xsSet.add(x2);
+    ss.push({ x1, y1, x2, y2, dir, ch: segs[i * 5 + 4], m: (y2 - y1) / (x2 - x1) });
+    xs.push(x1, x2);
   }
-  const xs = [...xsSet].sort((a, b) => a - b);
+  xs.sort((a, b) => a - b);
+  let k = 0;
+  for (let i = 0; i < xs.length; i++) if (i === 0 || xs[i] !== xs[i - 1]) xs[k++] = xs[i];
+  xs.length = k;
+  const slot = (x) => { let lo = 0, hi = xs.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] < x) lo = m + 1; else hi = m; } return lo; };
+  // 구간 i = [xs[i], xs[i+1]] 마다 걸치는 선분 수를 차분 배열로 센다.
+  const diff = new Int32Array(xs.length + 1);
+  for (const s of ss) { s.a = slot(s.x1); s.b = slot(s.x2); diff[s.a]++; diff[s.b]--; }
+  let act = 0, work = 0;
+  for (let i = 0; i + 1 < xs.length; i++) {
+    act += diff[i];
+    work += act * (Math.log2(act + 1) + 1);
+    if (work > WINDING_WORK_CAP) return null;
+  }
+  const starts = Array.from({ length: xs.length }, () => []);
+  for (const s of ss) starts[s.a].push(s);
+  let active = [];
   let area = 0;
   for (let i = 0; i + 1 < xs.length; i++) {
     const l = xs[i], r = xs[i + 1], mid = (l + r) / 2;
-    const cut = [];
-    for (const s of ss) if (s.x1 <= l && s.x2 >= r) cut.push({ s, y: s.y1 + s.m * (mid - s.x1) });
+    active = active.filter((s) => s.b > i);
+    for (const s of starts[i]) active.push(s);
+    const cut = active.map((s) => ({ s, y: s.y1 + s.m * (mid - s.x1) }));
     cut.sort((a, b) => a.y - b.y);
-    let w = 0;
-    for (let k = 0; k + 1 < cut.length; k++) {
-      w += cut[k].s.dir;
-      if (w === 0) continue;
-      const a = cut[k].s, b = cut[k + 1].s;
+    const w = [0, 0];
+    for (let j = 0; j + 1 < cut.length; j++) {
+      w[cut[j].s.ch] += cut[j].s.dir;
+      if (w[0] === 0 && w[1] === 0) continue;
+      const a = cut[j].s, b = cut[j + 1].s;
       area += (r - l) * ((b.y1 + b.m * (l - b.x1) - a.y1 - a.m * (l - a.x1)) + (b.y1 + b.m * (r - b.x1) - a.y1 - a.m * (r - a.x1))) / 2;
     }
   }
   return area;
+}
+
+// 지붕 넓이 검사(summarize 가 모아 둔 선분으로, LOD 가 필요한 거리에서만 부른다). 위를 향한 삼각형 합집합 넓이가 외곽 투영 넓이에 못 미치거나
+// 작업량 상한을 넘어 확인할 수 없으면 roofMin = -Infinity(원본 유지).
+function resolveRoof(it) {
+  const chk = it.roofCheck;
+  if (!chk) return;
+  it.roofCheck = null;
+  const foot = windingArea(chk.footSegs), up = foot === null ? null : windingArea(chk.upSegs);
+  if (foot === null || up === null || up < foot - Math.max(1e-3, foot * 1e-4)) it.roofMin = -Infinity;
 }
 
 // 건물 하나의 요약: 월드 AABB, 꼭대기 높이, xy 투영 삼각형(평탄화 배열 [ax,ay,bx,by,cx,cy,...]), 벽 지배 방향.
@@ -182,7 +213,8 @@ function summarize(b, index) {
   // (계약의 오류 관례: 해석할 수 없는 입력은 바꾸지 않고 그대로 돌려준다). 상자는 지붕을 maxZ 에 새로 만들기 때문에(F-327, F-355):
   //  - 위를 향한 삼각형이 하나도 없다(벽만 있는 퇴화 입력, 또는 계약과 반대인 시계 방향 감김).
   //  - 바닥면(minZ)이 아닌 높이에 넓이 있는 시계 방향 삼각형이 있다(뒤집힌 윗면).
-  //  - 위를 향한 삼각형의 xy 합집합 넓이가 외곽 투영(벽 고리와 모든 넓이 있는 삼각형의 합집합) 넓이에 못 미친다
+  //  - 위를 향한 삼각형의 xy 합집합 넓이가 외곽 투영(벽 고리와 모든 넓이 있는 삼각형의 합집합; 삼각형 쪽과 벽 쪽 감김은 따로 세어 |w| 합집합으로 본다, F-355) 넓이에 못 미친다
+  //    작업량 상한을 넘어 확인할 수 없는 큰 메시도 원본을 유지한다(F-360). 이 비교는 LOD 가 필요한 거리에서만 한다(resolveRoof).
   //    (일부만 지붕이 있거나 감김이 섞인 메시: 지붕 없는 구역 위에 상자 지붕이 생긴다).
   let roofMin = Infinity, cwAbove = false;
   const upSegs = [], footSegs = [], wallSeen = new Set();
@@ -193,11 +225,11 @@ function summarize(b, index) {
     const v0 = idx[t * 3], v1 = idx[t * 3 + 1], v2 = idx[t * 3 + 2];
     if (area > 1e-6) {
       for (let k = 0; k < 3; k++) roofMin = Math.min(roofMin, p[idx[t * 3 + k] * 3 + 2]);
-      upSegs.push(ax, ay, bx, by, 1, bx, by, cx, cy, 1, cx, cy, ax, ay, 1);
-      footSegs.push(ax, ay, bx, by, 1, bx, by, cx, cy, 1, cx, cy, ax, ay, 1);
+      upSegs.push(ax, ay, bx, by, 0, bx, by, cx, cy, 0, cx, cy, ax, ay, 0);
+      footSegs.push(ax, ay, bx, by, 0, bx, by, cx, cy, 0, cx, cy, ax, ay, 0);
     } else if (area < -1e-6) {
       if (Math.min(p[v0 * 3 + 2], p[v1 * 3 + 2], p[v2 * 3 + 2]) > minZ + 1e-6) cwAbove = true;
-      footSegs.push(ax, ay, cx, cy, 1, cx, cy, bx, by, 1, bx, by, ax, ay, 1);
+      footSegs.push(ax, ay, cx, cy, 0, cx, cy, bx, by, 0, bx, by, ax, ay, 0);
     } else {
       // 벽 삼각형: 가장 먼 두 점이 이루는 선분을 바깥 법선이 오른쪽에 오는 방향(반시계 고리)으로 넣는다. 사각 벽의 두 삼각형은 같은 선분이라 한 번만.
       const e1x = p[v1 * 3] - p[v0 * 3], e1y = p[v1 * 3 + 1] - p[v0 * 3 + 1], e1z = p[v1 * 3 + 2] - p[v0 * 3 + 2];
@@ -213,18 +245,16 @@ function summarize(b, index) {
       const key = `${sx},${sy},${ex},${ey}`;
       if (wallSeen.has(key)) continue;
       wallSeen.add(key);
-      footSegs.push(sx, sy, ex, ey, 1);
+      footSegs.push(sx, sy, ex, ey, 1); // 채널 1: 벽 고리(삼각형 채널 0 과 따로 센다)
     }
   }
+  let roofCheck = null;
   if (roofMin === Infinity || cwAbove) roofMin = -Infinity;
-  else {
-    const foot = windingArea(footSegs), up = windingArea(upSegs);
-    if (up < foot - Math.max(1e-3, foot * 1e-4)) roofMin = -Infinity;
-  }
+  else roofCheck = { upSegs, footSegs }; // 넓이 비교는 resolveRoof 에서(근거리에서는 필요 없다)
   let wallDev = 0;
   for (const a of wallAngles) wallDev = Math.max(wallDev, Math.abs(fold90(a - theta)));
   return {
-    order: index, id, mesh, empty: idx.length === 0, minX, minY, minZ, maxX, maxY, maxZ, roofMin, tris, theta,
+    order: index, id, mesh, empty: idx.length === 0, minX, minY, minZ, maxX, maxY, maxZ, roofMin, roofCheck, tris, theta,
     dirOk: wallDev <= BUILDING_LOD_MAX_WALL_ANGLE_RAD,
   };
 }
@@ -703,6 +733,7 @@ export function buildBuildingLod(buildings, cameraDistM) {
   const cells = new Map(); // 칸 키 → 벽 방향 후보 목록(입력 순서)
   for (const it of items) {
     if (it.empty || !it.dirOk) { keepOriginal(it); continue; }
+    resolveRoof(it);
     const cx = Math.floor((it.minX + it.maxX) / 2 / BUILDING_LOD_CELL_M);
     const cy = Math.floor((it.minY + it.maxY) / 2 / BUILDING_LOD_CELL_M);
     const key = `${cx},${cy}`;
