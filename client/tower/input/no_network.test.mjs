@@ -1,6 +1,8 @@
 // 입력 층이 네트워크·타이머를 쓰지 않는지 검사(계약: '이 층은 네트워크·타이머를 쓰지 않는다').
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import timersCjs from 'node:timers';
+import { syncBuiltinESMExports } from 'node:module';
 import { installNetworkSpies } from '../buildings/network_spies.mjs';
 
 test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocket 호출 0', async () => {
@@ -15,7 +17,21 @@ test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocke
       return timerOrig[name].apply(this, args);
     };
   }
-  const unwrapTimers = () => { for (const name of Object.keys(timerOrig)) globalThis[name] = timerOrig[name]; };
+  // node:timers 모듈 경유 호출(import * as T from 'node:timers')도 센다: 모듈 객체를 감싸고 ESM 내보내기를 동기화한다.
+  const modOrig = {};
+  for (const name of ['setTimeout', 'setInterval', 'setImmediate']) {
+    modOrig[name] = timersCjs[name];
+    timersCjs[name] = function countedModTimer(...args) {
+      timerCreated.push(`node:timers.${name}`);
+      return modOrig[name].apply(this, args);
+    };
+  }
+  syncBuiltinESMExports();
+  const unwrapTimers = () => {
+    for (const name of Object.keys(timerOrig)) globalThis[name] = timerOrig[name];
+    for (const name of Object.keys(modOrig)) timersCjs[name] = modOrig[name];
+    syncBuiltinESMExports();
+  };
   try {
     // 동적 import 로 index.mjs 불러오기. 아직 없으면 실패한다.
     let mod;
@@ -55,13 +71,13 @@ test('no_network: 입력 층 전체 사용 중 전역 fetch·타이머·WebSocke
     // releaseAll() 호출
     input.releaseAll();
 
-    // 입력 층이 타이머를 만들지 않았는지 확인(생성 자체가 위반)
-    assert.deepEqual(timerCreated, [], `입력 층이 타이머를 만들었음: ${timerCreated.join(',')}`);
   } finally {
     unwrapTimers();
     // 지연 호출까지 비운 뒤에 calls 를 읽는다(건물 층 시험과 같은 순서).
     await spies.restore();
   }
+  // 복원 뒤에 호출 수를 단언한다(타이머 생성 자체가 위반).
+  assert.deepEqual(timerCreated, [], `입력 층이 타이머를 만들었음: ${timerCreated.join(',')}`);
   assert.deepEqual(spies.calls, [], `네트워크 감시자가 호출을 기록했음: ${spies.calls.join(',')}`);
 });
 
