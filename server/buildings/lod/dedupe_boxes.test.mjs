@@ -101,7 +101,7 @@ test('foldContained: minZ 가 mm 만 다른 상자도 접힌다', () => {
 
 test('foldContained: maxZ 가 mm 만 높으면 접히고 cm 넘게 높으면 남는다', () => {
   const rep = rectItem(0, 0, 20, 20, 0, 6, 0);
-  assert.equal(foldContained([rep, rectItem(0, 0, 20, 20, 0, 6.004, 1)]).length, 1);
+  assert.equal(foldContained([rep, rectItem(5, 5, 10, 10, 0, 6.004, 1)]).length, 1); // 안쪽 상자가 4 mm 더 높아도 접힘
   // 6.03 은 대표(6)보다 높아 정렬상 먼저 대표가 되므로, 대표 쪽을 낮게 둔 쌍으로 확인한다: 안쪽 상자가 3 cm 더 높다.
   const low = rectItem(0, 0, 20, 20, 0, 6, 0);
   const tall = rectItem(5, 5, 10, 10, 0, 6.03, 1);
