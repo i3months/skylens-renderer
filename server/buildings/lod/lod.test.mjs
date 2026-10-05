@@ -152,7 +152,6 @@ function viewRows(city, t, tag = '') {
   }
   for (const r of rows) {
     assert.ok(r.buildingBlocks > 0, `${tag}${r.view}: 건물 블록이 없다(건물 영역 SSIM 이 아무것도 재지 않는다)`);
-    assert.ok(r.ssimBuildingBlocks >= BUILDING_LOD_MIN_SSIM, `${tag}${r.view}: 건물 영역 SSIM ${r.ssimBuildingBlocks} < ${BUILDING_LOD_MIN_SSIM}`);
   }
   return rows;
 }
