@@ -231,7 +231,7 @@ describe('지형 층 8시점 SSIM', () => {
     const lod = await import('../../../server/terrain/mesh_lod/index.mjs');
     const ssimMod = await import('../../../server/metrics/ssim/index.mjs');
     mods = { ...fx, ...idx, ...lod, ssim: ssimMod.ssim };
-    // 장면은 높이 잡음 0(부드러운 언덕). 잡음 ±0.15 m 장면은 면 단위 음영에서 LOD 1~3 이 0.88~0.95 로 0.95 에 못 미친다(연구 노트 t15-1b, 결정 0045):
+    // 장면은 높이 잡음 0(부드러운 언덕). 잡음 ±0.15 m 장면은 면 단위 음영에서 LOD 1~3 이 0.88~0.95 로 0.95 에 못 미친다(연구 노트 t15-1b, 결정 0046):
     // 잡음이 LOD 오차 상한(0.5 m) 안이라 단순화가 잡음 질감을 지우는 것이 원인이며 기준을 낮추지 않고 장면 조건으로 분리해 기록한다.
     dem = fx.makeHillDem({ noiseRatio: 0 });
     cams = fx.towerViewpoints();

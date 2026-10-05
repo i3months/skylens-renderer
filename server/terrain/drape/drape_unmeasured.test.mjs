@@ -110,17 +110,17 @@ function lowContrastImage(low) {
 }
 
 
-test('F-390 집계: unexcludedPx NaN 인 local 블록은 수만 세고 상한은 오염시키지 않는다', () => {
+test('F-390 집계: unexcludedPx NaN·없음 인 local 블록은 수만 세고 상한은 오염시키지 않는다', () => {
   const blocks = [
     { local: true, unexcludedPx: NaN },
     { local: true, unexcludedPx: NaN },
     { local: true, unexcludedPx: 1.25 },
     { local: true, unexcludedPx: 0.5 },
-    { local: true }, // settle 경로 local: unexcludedPx 없음
+    { local: true }, // settle 경로 local: unexcludedPx 없음 → 미측정으로 센다(F-393 ①, 결정 0044 T15.R3)
     { local: false, undecided: true, unexcludedPx: NaN }, // local 이 아니면 세지 않는다
   ];
   const s = unexcludedSummary(blocks);
-  assert.equal(s.unmeasuredLocalBlocks, 2);
+  assert.equal(s.unmeasuredLocalBlocks, 3);
   assert.equal(s.unexcludedMaxPx, 1.25);
   assert.ok(Number.isFinite(s.unexcludedMaxPx));
 });
