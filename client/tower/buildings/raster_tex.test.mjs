@@ -115,6 +115,36 @@ test('비스듬한 카메라: uv 는 원근 보정(1/z 보간 후 나눔)으로 
   assert.ok(worst <= 1, `최대 차 ${worst}`);
 });
 
+test('요(yaw) 회전 카메라: 동서 기울기 영상에서 u 도 원근 보정(광선 교점 u 와 일치 ±1)', () => {
+  // 64×1 동서 기울기 영상: 열 c 값 = 4c. 한 행뿐이라 v 는 영향이 없고 u 만 결과를 정한다.
+  const W = 64;
+  const rgb = new Uint8Array(3 * W);
+  for (let c = 0; c < W; c += 1) rgb.set([4 * c, 4 * c, 4 * c], 3 * c);
+  const image = { width: W, height: 1, rgb };
+  // 북동쪽 위에서 남서쪽을 비스듬히 보는 카메라: 동서·남북 모두 깊이가 달라진다.
+  const cam = lookCam([60, 60, 35], [0, 0, 0]);
+  const A0 = -30; const A1 = 30;
+  const out = emptyResult(160, 90);
+  rasterizeTextured(cam, [texRoof(A0, A1, -30, 30, 0)], image, out);
+  const { fx, fy, cx, cy } = cam.K; const R = cam.R; const t = cam.t;
+  const C = [0, 1, 2].map((k) => -(R[k] * t[0] + R[3 + k] * t[1] + R[6 + k] * t[2]));
+  let n = 0; let worst = 0;
+  for (let j = 0; j < 90; j += 1) {
+    for (let i = 0; i < 160; i += 1) {
+      const p = j * 160 + i;
+      if (out.index[p] === -1) continue;
+      const dc = [(i + 0.5 - cx) / fx, (j + 0.5 - cy) / fy, 1];
+      const dw = [0, 1, 2].map((k) => R[k] * dc[0] + R[3 + k] * dc[1] + R[6 + k] * dc[2]);
+      const x = C[0] + (-C[2] / dw[2]) * dw[0]; // 광선이 지붕 평면(z=0)과 만나는 동쪽 좌표
+      const ref = refSample(image, (x - A0) / (A1 - A0), 0.5);
+      worst = Math.max(worst, Math.abs(out.color[3 * p] - ref[0]));
+      n += 1;
+    }
+  }
+  assert.ok(n > 1500, `덮인 화소 ${n}`);
+  assert.ok(worst <= 1, `최대 차 ${worst}`);
+});
+
 test('wallMask=1 정점이 하나라도 있는 삼각형은 faceRgb, 영상 색을 섞지 않는다', () => {
   const face = [...BUILDINGS_DEFAULTS.faceRgb];
   const white = { width: 2, height: 2, rgb: new Uint8Array(12).fill(255) };
