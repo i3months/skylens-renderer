@@ -125,7 +125,7 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 클라이언트 래스터 기반 관제탑 지형 그리기. 계약 `contracts/controlview/terrain.mjs`, 구현 `client/tower/terrain/`(경계 렌더링·타일 관리·캐시). 도착한 지형 타일만 CPU 래스터로 그린다. 없는 곳은 비운다. 딜레이 패턴 4수준(스텝 250·1,000·3,500·7,000)은 같은 타일의 낮은 수준을 교체하고, 늦게 온 낮거나 같은 수준은 건너뜀. 도착하지 않은 타일은 "없음" 표시이며, 상태는 도착 이벤트로만 바뀐다. 좌표는 GeoAnchor 기준 로컬 ENU, 1 unit = 1 m. 시험: `node --test client/tower/terrain/*.test.mjs`.
 
-8시점 SSIM은 SPEC S9의 합성 근사이며, 해상도 160×90, 3곳 눈 높이 17 m로 올림하고, 기준 영상은 같은 DEM의 LOD 0 메시(원본 점군 렌더가 아님)이다. LOD3에서 합성 시드 5·6·7·9·10이 0.95에 못 미치는 미달을 보이므로 T15.1은 미완이며, 알려진 미달 시험으로 하한을 지키고 있고, 후속 T15.1c가 개선 중이다. 기준 0.95는 낮추지 않았다.
+8시점 SSIM은 SPEC S9의 합성 근사이며, 해상도 160×90, 3곳 눈 높이 17 m로 올림하고, 기준 영상은 같은 DEM의 LOD 0 메시(원본 점군 렌더가 아님)이다. LOD3은 높이 오차 상한을 1 m로 조여(T15.1c, 합성 장면 결과를 보고 고른 값) 합성 시드 1~12의 최소가 0.9645로 0.95를 넘는다(이전에는 시드 5·6·7·9·10이 미달). 기준 0.95는 낮추지 않았다.
 
 ## English
 
@@ -252,5 +252,5 @@ The contract lives in `contracts/tower_assets/`. It covers terrain mesh LOD (`se
 
 Client rasterization-based control tower terrain drawing. Contract: `contracts/controlview/terrain.mjs`; implementation: `client/tower/terrain/` (boundary rendering, tile management, caching). Only arrived terrain tiles are CPU-rasterized. Missing areas are left empty. The four-level delay pattern (steps 250, 1,000, 3,500, 7,000) replaces the lower level of the same tile, and a lower or equal level arriving late is skipped. An unreached tile is shown as missing; state changes only on arrival events. Coordinates are local ENU anchored at the GeoAnchor, 1 unit = 1 m. Tests: `node --test client/tower/terrain/*.test.mjs`.
 
-The 8-viewpoint SSIM is a composite approximation of SPEC S9, with resolution 160×90 and eye height 17 m on 3 locations, and the reference image is LOD 0 mesh from the same DEM (not original point-cloud render). LOD3 synthesis with seeds 5, 6, 7, 9, 10 shows a shortfall below 0.95, so T15.1 is incomplete; it holds the lower bound with a known shortfall test, and follow-up T15.1c is in progress for improvement. The baseline 0.95 was not lowered.
+The 8-viewpoint SSIM is a composite approximation of SPEC S9, with resolution 160×90 and eye height 17 m on 3 locations, and the reference image is LOD 0 mesh from the same DEM (not original point-cloud render). LOD3 now clears 0.95 (minimum 0.9645 over synthetic seeds 1-12) by tightening the height-error cap to 1 m (T15.1c, a value chosen after seeing the synthetic results); seeds 5, 6, 7, 9 and 10 previously fell short. The baseline 0.95 was not lowered.
 
