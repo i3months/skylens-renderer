@@ -1,10 +1,19 @@
 // 건물 층 통합 시험: 실제 서버 자산 파이프라인 출력(integration_bundle.mjs)으로 createBuildingsLayer 를 먹인다.
 // 층 구현(index.mjs)이 아직 없으면 동적 import 가 실패해 시험이 명확히 실패한다(정상). 번들 조립 헬퍼 시험은 항상 통과해야 한다.
-import { test } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { DISPLAY_MODES, buildingHeightM } from '../../../contracts/tower_assets/index.mjs';
 import { buildRealBundle, makeFootprints, BUILDING_COUNT } from './integration_bundle.mjs';
+import { installNetworkSpies } from './network_spies.mjs';
+
+// 네트워크 감시자(F-409): 이 파일의 모든 시험 동안 걸어 두고, 끝에 호출이 0 인지 확인한다.
+let netSpies = null;
+before(() => { netSpies = installNetworkSpies(); });
+after(async () => {
+  await netSpies.restore();
+  assert.deepEqual(netSpies.calls, [], '통합 시험 중 네트워크 호출이 있었음');
+});
 
 const SEED = 20260;
 // 위에서 내려다보는 카메라(contracts/raster 규약, X_c = R·X_w + t, OpenCV 축).

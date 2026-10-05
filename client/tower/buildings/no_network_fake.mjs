@@ -1,6 +1,7 @@
 // 'no_network.test.mjs' 의 검사 함수가 변이를 잡는지 보이기 위한 시험용 가짜 층.
 // BuildingsLayer 서명(accept/setMode/mode/render/state)을 흉내 내며 옵션마다 다른 색을 그린다.
 // 실제 그리기는 하지 않는다: 화면 중앙 사각형을 옵션 색으로 채울 뿐이다.
+import { lookup as namedLookup } from 'node:dns'; // 이름으로 가져온 바인딩(M3)
 import { emptyResult } from '../../../contracts/raster/index.mjs';
 import { DISPLAY_MODES } from '../../../contracts/tower_assets/index.mjs';
 
@@ -61,4 +62,18 @@ export function createReacceptOnSetModeFake() {
 /** 양성 대조용: 위반 없는 가짜 층(검사 함수가 정상 층은 통과시키는지 확인). */
 export function createCleanFake() {
   return baseFake(() => {});
+}
+
+/** 변이 M4: 전환 직후가 아니라 setTimeout 으로 미뤄서 fetch 를 부르는 층(동기 루프가 끝난 뒤에 나간다). */
+export function createDelayedFetchFake() {
+  return baseFake(() => {
+    setTimeout(() => { globalThis.fetch('http://127.0.0.1:1/aerial.png'); }, 0);
+  });
+}
+
+/** 변이 M3: import { lookup } from 'node:dns' 로 이름 가져온 lookup 을 전환 때 부르는 층. */
+export function createNamedDnsLookupFake() {
+  return baseFake(() => {
+    try { namedLookup('example.invalid', () => {}); } catch { /* 호출 자체가 위반 */ }
+  });
 }
