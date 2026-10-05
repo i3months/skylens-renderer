@@ -343,14 +343,19 @@ function strideFor(w, h, budget) {
  *   blocks:Array<{i0:number,j0:number,dx:number,dy:number,n:number,local:boolean,undecided:boolean,axes:'xy'|'x'|'y',pairedT:number}>}}
  *   pairedT = 재적합 이상치 잔차 경로 짝 검정의 t(그 검정을 하지 않았거나 예측 위치를 못 잰 블록은 NaN).
  *   undecided = 불확정 블록(위 3), undecidedBlocks = 그 수(측정 불가면 NaN). 불확정 블록은 이동량을 재지 못했으므로 dx·dy 가
- *   NaN 이고(예측 근처 값을 측정값처럼 내지 않는다), 크기는 undecidedMaxPx 로 보고하며 blockMaxPx·residualMaxPx 에도
- *   undecidedMaxPx 를 합친다(둘 다 ≥ undecidedMaxPx; 불확정 블록 자신의 hypot·잔차는 세지 않는다).
+ *   NaN(JSON 으로는 null)이고(예측 근처 값을 측정값처럼 내지 않는다), 크기는 undecidedMaxPx 로 보고하며 blockMaxPx·residualMaxPx 에도
+ *   undecidedMaxPx 를 합친다(둘 다 ≥ undecidedMaxPx; 불확정 블록 자신의 hypot·잔차는 세지 않는다). 따라서 blockMaxPx·residualMaxPx 는
+ *   이동량을 측정하지 못한 쪽의 상한을 포함한 값이다. 타입 선언의 dx·dy:number 는 불확정 블록에서 NaN 일 수 있으므로,
+ *   소비자는 dx·dy 를 읽기 전에 undecided 를 먼저 거른다.
  *   flatBlocks = 두 축 모두 평평해 뺀 블록 수, flatAreaFraction = 그 면적 / 피복 블록 면적, axisFlatBlocks = 한 축만 잰 블록 수,
  *   axes = 그 블록에서 잰 축.
  *   dxPx·dyPx·rms·samples 는 타일 전체 단일 이동량(1 의 첫 가설) 기준(타일 픽셀 단위), dx 는 동쪽, dy 는 남쪽(행 증가) 방향.
  *   globalDxPx·globalDyPx = 고른 가설의 전역 이동량. scaleX = kxx, scaleY = kyy(0 = 축척 오류 없음; 축척 1+f 로 만든 타일은
  *   −f/(1+f)). rotationRad = (kxy − kyx)/2(내용이 ENU 반시계로 θ 돌아간 타일이면 sin θ). blockMaxPx = 블록 이동량 크기 최댓값,
- *   residualMaxPx = 블록 실측과 아핀 모형의 차 최댓값.
+ *   residualMaxPx = 블록 실측과 아핀 모형의 차 최댓값. 단 기준이 섞여 있다: 불확정 블록은 residualMaxPx 에 자기 잔차를 세지 않고
+ *   undecidedMaxPx(= 배제하지 못한 이동량의 원점 기준 절대 크기, 모형 예측에서 잰 값이 아님)를 max 로 합친다. 그래서 타일 전체가
+ *   3 px 이동하고 예측 근처에 불확정 블록이 하나 있으면 모형 잔차는 ~0 이어도 residualMaxPx ≈ 3 이 된다. 모형 잔차만의 상한이 필요하면
+ *   residualMaxPx 가 아니라 blocks 의 non-undecided 블록으로 다시 구해야 한다(별도 필드는 두지 않았다).
  */
 export function measureDrapeAlignment(image, tile) {
   const { sx, sy } = checkImage(image);
@@ -709,6 +714,10 @@ export function measureDrapeAlignment(image, tile) {
     // 짝 검정으로 o 보다 유의하게 나쁘지 않은(t ≤ PAIRED_K, 잴 수 없으면 멈춤) 점의 크기 최댓값(o 자신 포함). 자기 최소만 쓰면
     // 저대비 블록의 박스 평균 MSE 최소가 0 쪽으로 치우쳐(실제 1.5 px 에서 자기 최소 0.78~1.0 px) 실제 어긋남을 1 px 이하로
     // 보고했다(F-359 검토 #4 측정: 사인 2 DN ±1·±2 DN 시드 30개 중 불확정 15·15회, local 2회).
+    // 알려진 비대칭(F-385 ⑨, 열림: 검토 사항): 걷기는 예측에서 멀어지는 쪽(o 방향)으로만 간다. 그런데 farOwn(아래 재적합 이상치
+    // 경로)은 자기 최소가 예측 반대쪽이어도 켜지므로, 실제 이동이 예측을 넘어 반대쪽에 있으면 걷기가 거기까지 닿지 않는다.
+    // 사례: ±3 DN 사인 2 seed 2007922, o=+0.906, 실제 −1.5, 보고 1.675(거짓 통과는 아님). 양방향 걷기를 임시로 시험하니 기존 시험
+    // 수치(50·45·0·5)는 그대로였으나 farOwn 경로를 지키는 시험이 없어(F-386) 출력 변화를 못 잡으므로 적용하지 않았다.
     const unexcludedPx = (b, [px, py]) => {
       const o = ownFine(b);
       let far = Math.hypot(o.dx, o.dy);
@@ -724,7 +733,7 @@ export function measureDrapeAlignment(image, tile) {
       }
       return far;
     };
-    // 불확정(undecided): 정합 증거로 세지 않는 블록. 보고 dx·dy 는 그대로 두고, 배제하지 못한 이동량 크기를 undecidedMaxPx 에 넣는다.
+    // 불확정(undecided): 정합 증거로 세지 않는 블록. 보고 dx·dy 는 NaN 으로 낸다(예측 근처 값을 측정값처럼 내지 않는다, 결과 조립 쪽 참조). 배제하지 못한 이동량 크기를 undecidedMaxPx 에 넣는다.
     const markUndecided = (b, p) => {
       b.undecided = true;
       b.undecidedPx = unexcludedPx(b, p);
@@ -759,7 +768,7 @@ export function measureDrapeAlignment(image, tile) {
         // 같은 조건 실제 1.5 px 어긋남의 t 분포가 귀무와 겹친다(F-359 검토 #4). 불확정 블록도 배제하지 못한 이동량을
         // maxMisalignPx 에 넣으므로, local/불확정 갈림은 local 표시만 바꾸고 정합 통과 여부는 PAIRED_K 하나에 기대지 않는다.
         // local 블록도 보고는 자기 최소지만, 배제하지 못한 이동량은 unexcludedMaxPx 로 maxMisalignPx 에 넣는다(같은 치우침).
-        if (t === null || t > PAIRED_K) { markLocal(b); b.unexcludedPx = t === null ? 0 : unexcludedPx(b, [px, py]); }
+        if (t === null || t > PAIRED_K) { markLocal(b); b.unexcludedPx = t === null ? 0 /* 0 은 '이동 없음' 이 아니라 측정 불가: 예측 위치를 잴 수 없어 배제 못 한 이동량을 모른다. 별도 계수는 두지 않았다(F-389 ⑥, 필드 추가는 출력 형식 변경) */ : unexcludedPx(b, [px, py]); }
         else markUndecided(b, [px, py]);
       } else if (out !== false) markLocal(b);
     }
@@ -780,6 +789,8 @@ export function measureDrapeAlignment(image, tile) {
     }
     // 불확정 블록은 이동량을 재지 못했다 — 예측 근처 값을 측정값처럼 내지 않고 dx·dy 를 NaN 으로 둔다(F-380).
     // 크기는 undecidedMaxPx(배제 못 한 이동량)로 보고하고 blockMaxPx·residualMaxPx 에도 합친다.
+    // 주의: undecidedPx 는 원점 기준 절대 이동량(unexcludedPx 의 hypot(cx, cy))이라 모형 잔차(예측 기준)와 기준이 다르다 —
+    // 아래 residualMaxPx 합산은 두 기준을 섞는다(타일 전체 이동 + 불확정 블록이면 residualMaxPx ≈ 이동량). 값은 의도적으로 유지(F-385 ⑧).
     for (const b of blocks) if (b.undecided) { b.dx = NaN; b.dy = NaN; }
 
     // 4) 피복 사각형(위 ei0..ej1: 타일 ∩ mask 완전 피복 ∩ coverage.bounds) 네 모서리의 모형 변위 최댓값, 그리고 모형으로 설명되지 않는
@@ -834,8 +845,8 @@ const LOCAL_SIGNIFICANCE_K = 4;
  *   = 2.75. 규칙을 정할 때 시험의 ±2 DN 양성 4경우 t(2.92~3.49)는 이미 알려져 있었다 — 그 값에 맞춰 고른 것은 아니지만 여유가
  *   0.17 로 얇다.
  * 대가: 같은 블록·잡음 ±2 DN 의 실제 1.5 px 국소 어긋남(시드 30개씩) t 는 사인 1.5 DN 중앙 3.18·사인 2.5 DN 중앙 2.69 로
- * 귀무 꼬리(최소 1.77)와 겹쳐, 2.75 이하인 절반가량은 여전히 local 아님(예측 ±0.5 경계값으로 보고)이다 — 블록 하나의 짝 차
- * 통계로는 이 둘을 가를 정보가 없다. 다시 볼 조건: 귀무 표본에서 2.75 를 넘는 t 가 나오거나, 블록 통계를 바꿀 때.
+ * 귀무 꼬리(최소 1.77)와 겹쳐, 2.75 이하인 절반가량은 local 이 아니라 불확정이 된다(R9 규칙: 경계값으로 보고하지 않고 dx·dy NaN, 배제 못 한 이동량을
+ * undecidedMaxPx·maxMisalignPx 로 보고) — 블록 하나의 짝 차 통계로는 이 둘을 가를 정보가 없다. 다시 볼 조건: 귀무 표본에서 2.75 를 넘는 t 가 나오거나, 블록 통계를 바꿀 때.
  */
 const PAIRED_K = 2.75;
 // 불확정 블록의 배제 못 한 이동량을 찾는 걸음과 범위(자기 최소에서, 타일 픽셀). 1 px 허용 판정에 쓰는 값이라 1 px 까지 본다.

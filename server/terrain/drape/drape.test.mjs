@@ -779,7 +779,8 @@ const F359_DEFICIT = [...F359_OLD.slice(0, 3), ...F359_WARP1, ...F359_WARP2];
 // 보고가 이 값 − 1/32(다듬기 한 걸음) 아래면 측정한 최소보다 작게 보고하는 회귀다(F-374: 짝 검정 경로에서 |dx| 를 1.0001 로
 // 자르는 변이가 '보고 > 1' 단언을 통과했다).
 const F359_DEFICIT_COSTMIN = [1.1875, 1.1875, 1.34375];
-// warpedTile ±1·±2 DN 고정 시드 입력(F359_WARP1·F359_WARP2 순서)의 블록 다듬은 자기 최소 |dx|(T14.R10 측정). 짝 검정 경로 local
+// warpedTile ±1·±2 DN 고정 시드 입력(F359_WARP1·F359_WARP2 순서)의 블록 다듬은 자기 최소 |dx|(T14.R10 에서 한 번 측정해 굳힌 값).
+// 이 시험이 비용 최소를 다시 구하는 것은 아니다 — 출력 스냅샷이라 측정 코드가 바뀌어 최소가 달라지면 값을 다시 재야 한다. 짝 검정 경로 local
 // 블록의 보고가 이 값 − 1/32 아래면 자기 최소보다 작게 보고하는 회귀다 — |dx| 를 1.0001 로 자르는 변이가 위 shiftedTile 단언만
 // 아니라 잡음 입력에서도 직접 실패하게 한다(F-374 잔여).
 const F359_WARP_COSTMIN = [1.125, 1.125, 1.3125, 1.21875, 1.15625, 1.1875, 1.40625, 1.3125];
@@ -806,7 +807,7 @@ test('F-359 정보 한계 입력(잡음 없는 1·2 DN 사인): 블록 local, �
   assert.deepEqual(bad, []);
 });
 
-test('F-359·F-366·F-374 측정 부족 입력(2.5·1.5 DN shiftedTile, warpedTile ±1·±2 DN 시드 두 쌍): 정합 통과 없음, 보고 ≥ |g+e| − 0.5', () => {
+test('F-359·F-366·F-374 측정 부족 입력(2.5·1.5 DN shiftedTile, warpedTile ±1·±2 DN 시드 두 쌍; 사인 2.5 ±2 DN seed 31676 은 제외 — 아래 todo): 정합 통과 없음, 보고 ≥ |g+e| − 0.5', () => {
   // 수정 전: shiftedTile 은 local 아님·보고 0.125~0.5 px, warpedTile ±2 DN 은 짝 검정 t 2.92~3.49 < k = 4 라 local 아님·dx 가
   // 예측 ± 0.5 경계값(−0.75·−0.625)·보고 0.125~0.25 px 로 정합 통과(F-359 검토 #3). F-359 검토 #4: 짝 검정이 결정을 못 내린
   // 블록(t ≤ PAIRED_K)은 불확정 — local 이 아니어도 배제 못 한 이동량을 maxMisalignPx 에 넣어 정합 통과를 내지 않는다.
@@ -1034,4 +1035,18 @@ const HASHES = ['0fae29d8703f8e5e', '5fdc0825c64459be', '175a0aba3df4db8c', '00f
 test('F-359 측정 부족 시험의 다른 시드(사인 2.5 DN ±2 DN seed 31676)도 정합 통과가 아니어야 한다', { todo: '블록 자기 최소가 예측 ±0.5 px 안(약 −0.7 px)이라 정합 블록으로 남아 약 0.27 px 로 보고한다(T14.R9 미해결, 정보 부족 영역)' }, () => {
   const bad = f359Failures(F359_WARP_ALT_ALL.filter(F359_KNOWN_FAIL), (m, blk, g, e) => (m.maxMisalignPx > 1 ? null : `정합 통과로 보고(${m.maxMisalignPx})`));
   assert.deepEqual(bad, []);
+});
+
+test('F-383 ⑨ 축 평평 불확정 경로: 사인 1.5 DN ±1 DN seed 2007922, warpedTile 실제 −1.5 px — 정합 통과가 아니다', () => {
+  const [g, e] = [-0.125, -1.375];
+  const img = lowContrastImage(LOW.sine(1.5));
+  const warp = (p) => ({ x: p.x + (p.x >= 32 && p.x < 40 && p.y >= 40 && p.y < 48 ? g + e : g) * 0.5, y: p.y });
+  const m = measureDrapeAlignment(img, warpedTile(img, 0, 0, 0, warp, { noise: 1, seed: 2007922 }));
+  assert.equal(m.status, 'measured');
+  // 아래 보고 단언이 이미 정합 통과를 막으므로, 여기서는 이 경로(축 평평 불확정)만 따로 지킨다: 불확정 블록이 있고 그 블록이 한 축만 쟀다.
+  // drape_noise.test.mjs 의 F-380 시험과 같은 seed 2007922 입력이라 불확정 블록 존재 단언은 겹친다(이 시험은 한 축만 잰 점을 더한다).
+  assert.ok(m.undecidedBlocks > 0, `불확정 블록 없음, 보고 ${m.maxMisalignPx}`);
+  const und = m.blocks.filter((b) => b.undecided);
+  assert.ok(und.length >= 1 && und.every((b) => b.axes !== 'xy') && m.axisFlatBlocks >= 1, `한 축만 잰 불확정 블록 아님: ${und.map((b) => b.axes)}, axisFlatBlocks ${m.axisFlatBlocks}`);
+  assert.ok(m.maxMisalignPx > ALIGN_TOLERANCE_PX, `보고 ${m.maxMisalignPx} ≤ 1 px`);
 });
