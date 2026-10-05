@@ -90,7 +90,7 @@ test('비유한 좌표는 RangeError', () => {
   assert.throws(() => s.lookup('1', 0), RangeError);
 });
 
-test('잘못된 타일 10종 거부', () => {
+test('잘못된 타일 13종 거부', () => {
   const bad = {
     '실수 tx': tile(0.5, 0),
     'tx 문자열': tile('0', 0),
@@ -106,9 +106,26 @@ test('잘못된 타일 10종 거부', () => {
     'coverage 없음': tile(0, 0, { coverage: undefined }),
     '타일 null': null,
   };
+  // 기대 오류 종류: 형 어긋남은 TypeError, 범위 어긋남은 RangeError.
+  const kind = {
+    '실수 tx': TypeError,
+    'tx 문자열': TypeError,
+    '실수 ty': TypeError,
+    'mip 음수': RangeError,
+    'mip 4': RangeError,
+    'width 0': RangeError,
+    'height 음수': RangeError,
+    'width 실수': TypeError,
+    'rgb 길이 47': RangeError,
+    'rgb 배열': TypeError,
+    'mask 길이 15': RangeError,
+    'coverage 없음': TypeError,
+    '타일 null': TypeError,
+  };
+  assert.equal(Object.keys(kind).length, Object.keys(bad).length);
   for (const [name, t] of Object.entries(bad)) {
     const s = createDrapeStore();
-    assert.throws(() => s.accept(1, [t]), Error, name);
+    assert.throws(() => s.accept(1, [t]), kind[name], name);
     assert.equal(s.level(), -1, name);
     assert.equal(s.count(), 0, name);
   }
@@ -138,4 +155,15 @@ test('보관 타일은 복사 없이 같은 객체를 참조한다', () => {
   const t = tile(0, 0);
   s.accept(0, [t]);
   assert.equal(s.lookup(5, 5), t);
+});
+
+test('빈 칸(sparse) 묶음은 TypeError 이고 수준·타일 수는 그대로', () => {
+  const s = createDrapeStore();
+  const a = tile(0, 0);
+  s.accept(0, [a]);
+  assert.throws(() => s.accept(1, new Array(5)), TypeError);
+  assert.throws(() => s.accept(1, [, tile(0, 0)]), TypeError);
+  assert.equal(s.level(), 0);
+  assert.equal(s.count(), 1);
+  assert.equal(s.lookup(1, 1), a);
 });
