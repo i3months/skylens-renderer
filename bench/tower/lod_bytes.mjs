@@ -1,7 +1,15 @@
+// [cloud] 합성 DEM 측정(실제 DEM T14L 은 [local] 미측정, WS 실측은 T16 이월).
 // T15.10 지형 LOD 단계별 타일 바이트 측정(결정 0046 T15.1c: LOD3 상한 1 m 의 대가 확인).
 // 합성 DEM(완만한 언덕, 거친 잡음 noiseBig 류) 각각에서 관제탑 범위 256 타일의 LOD0~LOD3 직렬화 바이트(raw·gzip -9)와
 // LOD3/LOD2, LOD3/LOD0 비율을 낸다. 직렬화는 bench/tower_assets 의 메시 조각 배치(프레임 머리 + 조각 머리 16 B + positions + indices)와 같다.
 // 판정은 값만 보고하며 문턱으로 던지지 않는다: LOD3 >= LOD2 바이트(reopen0046)이거나 LOD3 합이 초기 상한을 넘으면(overBudget) 표시한다.
+// 형식 가정: 지형 전송 형식 계약이 아직 없다. rawBytes/gzipBytes 는 인덱스 + xy 포함 메시 형식(f32 xyz + u32 인덱스)을 가정한 값이고,
+//   heightOnlyBytes 는 타일마다 높이(f32 cells²)만 보내는 형식(xy·인덱스는 격자에서 복원)의 값이다. 형식 선택 하나로 수치가 크게 달라진다
+//   (noiseBig LOD3 raw: 메시 형식 약 38.16 MB, 높이만 약 4.34 MB).
+// 범위: 지형 단독, 시야 선택 없음(256 타일 전부). SPEC 의 '초기'(접속~첫 프레임 웹소켓 바이트 전체)와 다르다. 건물·드레이프가 같은 예산을 쓰므로
+//   초기 합계 PASS/FAIL 은 bench/tower_assets 의 합계로 본다.
+// gzip 은 참고값이다: 서버 ws 는 permessage-deflate 가 없다(server/ws/frame/index.mjs:197 에서 RSV 거부). 판정은 raw 로 한다.
+// ws 머리 10 B(WS_HEADER_MAX_BYTES)는 상한이라 LOD3 프레임에서 실제보다 약 6 B 과대하다.
 // 실행: node bench/tower/lod_bytes.mjs
 import { gzipSync, constants } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -58,18 +66,19 @@ function serializeMeshPiece(mesh, tx, ty) {
 export function measureLodBytes(dem) {
   const levels = [];
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
-    let rawBytes = 0, gzipBytes = 0, cells = 0, tiles = 0;
+    let rawBytes = 0, gzipBytes = 0, heightOnlyBytes = 0, cells = 0, tiles = 0;
     for (let ty = -TILES_PER_SIDE / 2; ty < TILES_PER_SIDE / 2; ty++) {
       for (let tx = -TILES_PER_SIDE / 2; tx < TILES_PER_SIDE / 2; tx++) {
         const tile = buildTerrainTile(dem, tx, ty, lod);
         cells = tile.cells;
         const buf = serializeMeshPiece(terrainTileToMesh(tile), tx, ty);
         rawBytes += buf.length;
-        gzipBytes += gzipSync(buf, { level: 9 }).length; // 타일(조각)마다 따로 압축
+        gzipBytes += gzipSync(buf, { level: 9 }).length; // 참고값: 타일(조각)마다 따로 압축, ws 에는 압축이 없다
+        heightOnlyBytes += PIECE_FRAME_OVERHEAD_BYTES + MESH_HEADER_BYTES + tile.heights.byteLength; // 높이만 형식(조각 머리 같음)
         tiles++;
       }
     }
-    levels.push({ lod, cells, tiles, rawBytes, gzipBytes });
+    levels.push({ lod, cells, tiles, rawBytes, gzipBytes, heightOnlyBytes });
   }
   const [l0, , l2, l3] = levels;
   const ratios = {
