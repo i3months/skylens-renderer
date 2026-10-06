@@ -169,9 +169,9 @@ export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
   for (const [opt, bounds] of Object.entries(optionTable)) per[opt] = lodStrides(dem, bounds);
   // 결정 0057 이후 서버 상한은 셀 크기에 따라 줄어든다. 현행 절대표 사본(i)과 서버가 같은 셀 크기에서만 대조한다(그 밖은 b6_rule.mjs 가 새 규칙으로 대조).
   const serverCaps = [0, 1, 2, 3].map((l) => terrainLodMaxErrorM(l, dem.cellM));
-  const sameAsTable = serverCaps.every((c, l) => c === optionTable.i[l]);
+  const sameAsTable = Boolean(optionTable.i) && serverCaps.every((c, l) => c === optionTable.i[l]);
   if (check && sameAsTable) checkAgainstServer(dem, per.i.strides);
-  else if (check) console.error(`[b1] ${entry.name ?? ''} 서버 대조 생략: 셀 ${dem.cellM} m 의 서버 실효 상한 ${JSON.stringify(serverCaps)} ≠ 사본 i`);
+  else if (check && optionTable.i) console.error(`[b1] ${entry.name ?? ''} 서버 대조 생략: 셀 ${dem.cellM} m 의 서버 실효 상한 ${JSON.stringify(serverCaps)} ≠ 사본 i`);
 
   // SSIM: 기준 영상(LOD 0)과 간격별 층 영상.
   const order = viewTileOrder();
