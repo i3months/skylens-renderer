@@ -92,6 +92,8 @@ export function levelPointTargets(counts, total) {
 /**
  * 수준별 점 배분(T13.T, 결정 0065): 최고 수준(마지막)을 뺀 낮은 수준은 원본의 frac 만 보장하고 남는 예산을 최고 수준에 준다.
  * 정상 상태에 보이는 수준이 최고 수준이라 화질(8시점 SSIM)에 유리하다. 최고 수준이 원본에 닿으면 남는 예산은 낮은 수준에 돌린다.
+ * total 이 낮은 수준 보장 합 + 1 보다 작으면 낮은 수준을 비례로 줄이고 최고 수준은 1 점으로 둔다(의도된 퇴화 구간, 근거는 본문 주석).
+ * 결과는 total 에 대해 수준마다 줄지 않고(단조), 각 수준 ≥ 1·원본 이하, 합 ≤ total 이다.
  * @param {number|number[]} frac  낮은 수준 보장 비율(수) 또는 수준별 비율(길이 = 수준 수 - 1)
  * @returns {(counts:number[], total:number) => number[]}
  */
@@ -107,17 +109,22 @@ export function makeFloorAllocate(frac) {
     const top = n - 1;
     const f = (i) => (Array.isArray(frac) ? frac[i] ?? frac[frac.length - 1] : frac);
     const out = counts.map((c, i) => (i === top ? 1 : Math.min(c, Math.max(1, Math.floor(c * f(i))))));
-    // 보장 합이 total 을 넘으면 비례로 줄인다(최소 1).
+    // 보장 합 + 최고 수준 1 점이 total 을 넘는 구간(S6 counts 에서 total ≤ 43,750)은 보장 비율을 지킬 수 없다. 의도한 처리:
+    // 최고 수준은 1 점으로 두고 낮은 수준을 비례로 줄인다(최소 1). 내림으로 남는 몇 점은 쓰지 않는다(합 ≤ total).
+    // 남는 점을 최고 수준이나 특정 낮은 수준에 몰아주면 total 이 늘 때 그 수준의 점 수가 줄었다 늘어 단조가 아니게 되기 때문이다.
+    // 이렇게 하면 total 이 늘 때 어느 수준의 점 수도 줄지 않는다.
     let low = out.slice(0, top).reduce((s, t) => s + t, 0);
     if (low + 1 > total) {
+      const guarantee = out.slice(0, top);
       const room = Math.max(0, total - 1);
-      for (let i = 0; i < top; i++) out[i] = Math.max(1, Math.floor((out[i] * room) / low));
+      for (let i = 0; i < top; i++) out[i] = Math.max(1, Math.floor((guarantee[i] * room) / low));
       low = out.slice(0, top).reduce((s, t) => s + t, 0);
       let ex = low + 1 - total;
       for (let i = top - 1; i >= 0 && ex > 0; i--) { const c = Math.min(ex, out[i] - 1); out[i] -= c; ex -= c; }
+      return out;
     }
-    out[top] = Math.min(counts[top], total - out.slice(0, top).reduce((s, t) => s + t, 0));
-    // 최고 수준이 원본에 닿아 남은 예산은 낮은 수준에 빈 만큼 채운다(낮은 수준 큰 쪽부터 아닌 낮은 번호부터).
+    out[top] = Math.min(counts[top], total - low);
+    // 최고 수준이 원본에 닿아 남은 예산은 낮은 수준에 빈 만큼 채운다(낮은 번호부터).
     let rest = total - out.reduce((s, t) => s + t, 0);
     for (let i = 0; i < top && rest > 0; i++) { const add = Math.min(rest, counts[i] - out[i]); out[i] += add; rest -= add; }
     return out;
