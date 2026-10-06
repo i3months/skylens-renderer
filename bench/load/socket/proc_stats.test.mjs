@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { parseProcStat, readProcStats, createProcSampler } from './proc_stats.mjs';
+import { parseProcStat, parseStatm, readProcStats, createProcSampler } from './proc_stats.mjs';
 
 test('parseProcStat handles comm with spaces and parens', () => {
   const line = '123 ((a b) c)) S 1 123 123 0 -1 4194560 100 0 0 0 250 70 0 0 20 0 1 0 5000 1000000 500 18446744073709551615';
@@ -16,6 +16,14 @@ test('parseProcStat rejects negative and non-integer utime/stime', () => {
   assert.deepEqual(parseProcStat(mk(7, 8)), { utime: 7, stime: 8 });
   for (const [u, st] of [[-1, 5], [5, -1], [1.5, 5], [5, 2.5], ['abc', 5], [5, 'x']]) {
     assert.equal(parseProcStat(mk(u, st)), null, `${u} ${st}`);
+  }
+});
+
+test('parseStatm validates resident pages', () => {
+  assert.deepEqual(parseStatm('1000 250 100 10 0 300 0\n'), { resident: 250 });
+  assert.deepEqual(parseStatm('5 0'), { resident: 0 });
+  for (const bad of ['1000 -1 100', '1000 1.5 100', '1000 NaN 100', '1000 abc', '', '   ', '1000', null, undefined, 5]) {
+    assert.equal(parseStatm(bad), null, String(bad));
   }
 });
 
