@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { validateResult } from '../../../contracts/load/index.mjs';
 import { simulateClients, countOpenConnections } from '../clients/index.mjs';
 import { simulateSlowLink } from '../slow_link/index.mjs';
-import { showFromArrivals, checkBurstInvariants } from '../burst/index.mjs';
+import { showFromArrivals, checkBurstInvariants, burstArrivals } from '../burst/index.mjs';
 import { createStatsSampler } from '../server_stats/index.mjs';
 import { perClientFromEvents, unreachableClients } from '../per_client/index.mjs';
 import { firstFrameStats, firstFrameViolations } from '../first_frame/index.mjs';
@@ -29,13 +29,14 @@ function commitHash() {
 
 /**
  * Runs one scenario and returns { result, violations, serverSamples }.
- * Every check reads the SAME measured event log. opts.thresholds and opts.statsClock are injectable.
+ * Every check reads the SAME measured event log. opts.thresholds, opts.statsClock and opts.events (a replacement log, default: simulate) and opts.show (default: showFromArrivals) are injectable.
  * serverSamples come from the stats sampler of this harness process ticked once per simulated second.
  */
 export function runScenario(scenario, opts = {}) {
-  const { commit = commitHash(), thresholds = loadThresholds(), statsClock } = typeof opts === 'string' ? { commit: opts } : opts;
-  const slow = scenario.kind === 'slow_link' ? simulateSlowLink(scenario, { seed: SEED }) : null;
-  const events = slow ? slow.events : simulateClients(scenario, { seed: SEED });
+  const { commit = commitHash(), thresholds = loadThresholds(), statsClock, events: injected, show = showFromArrivals } = typeof opts === 'string' ? { commit: opts } : opts;
+  const events = injected ?? (scenario.kind === 'slow_link'
+    ? simulateSlowLink(scenario, { seed: SEED }).events
+    : simulateClients(scenario, { seed: SEED }));
   const ff = firstFrameStats(events, scenario.clients);
   const bw = bandwidthStats(events, scenario.durationS);
   const rec = (metric, value, unit) => ({ metric, value, unit, device: 'headless', method: 'sim', commit });
@@ -50,8 +51,8 @@ export function runScenario(scenario, opts = {}) {
   if (open.min !== scenario.clients) violations.push(`${scenario.name}: open connections dropped to ${open.min} of ${scenario.clients}`);
   for (const id of unreachableClients(events, scenario.clients)) violations.push(`${scenario.name}: client ${id} received no bytes`);
   if (scenario.kind === 'burst') {
-    const arrivals = events.filter((e) => e.kind === 'level');
-    const shown = showFromArrivals(events, scenario.clients);
+    const arrivals = burstArrivals(events, scenario.burstLevels);
+    const shown = show(arrivals, scenario.clients);
     violations.push(...checkBurstInvariants(arrivals, shown, scenario).map((v) => `${scenario.name}: ${v}`));
   }
   const result = { scenario, records, perClient: perClientFromEvents(events, scenario.clients) };

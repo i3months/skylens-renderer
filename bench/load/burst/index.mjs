@@ -1,10 +1,12 @@
 // T16.6 burst: shown levels come from the product level machine (client/levels), checked against the measured arrivals.
 // Same-instant choice: arrivals of one client at one tMs are fed highest level first, so the machine's own decideArrival
 // skips the lower ones (one show per instant); the harness only orders the input and never computes a max itself.
+// This is a harness policy, not product behavior: fed in ascending order the same machine would show every level of the
+// instant, so the order is fixed here to keep "one show per instant, the highest" a property of the checked log.
 import { createLevelMachine } from '../../../client/levels/index.mjs';
 import { ACTIONS } from '../../../contracts/levels/index.mjs';
 import { LEVEL_COUNT } from '../../../contracts/asset/index.mjs';
-import { validateScenario } from '../../../contracts/load/index.mjs';
+import { validateScenario, MAX_CLIENTS } from '../../../contracts/load/index.mjs';
 import { simulateClients } from '../clients/index.mjs';
 
 const SEGMENT = 0;
@@ -54,20 +56,42 @@ function entryErrors(what, e, scenario) {
   return errs;
 }
 
+function groupById(list, clients) {
+  const groups = Array.from({ length: clients }, () => []);
+  for (const e of list) groups[e.id].push(e);
+  return groups;
+}
+
+/**
+ * Level events of a measured log that belong to the burst check. Levels the scenario places after the burst
+ * (burstLevels..LEVEL_COUNT-1) are outside it; anything else invalid stays in and is reported by the checker.
+ */
+export function burstArrivals(events, burstLevels) {
+  return events
+    .filter((e) => e && e.kind === 'level')
+    .filter((e) => !(Number.isInteger(e.level) && e.level >= burstLevels && e.level < LEVEL_COUNT));
+}
+
 /** Returns violation strings for a shown log against the arrivals of the same measured log; empty means valid. */
 export function checkBurstInvariants(arrivals, shown, scenario) {
+  if (scenario === null || typeof scenario !== 'object') throw new Error('checkBurstInvariants needs a scenario object');
+  if (!(Number.isInteger(scenario.clients) && scenario.clients >= 1 && scenario.clients <= MAX_CLIENTS)) {
+    throw new Error(`scenario.clients must be an integer in 1..${MAX_CLIENTS}`);
+  }
+  if (!Array.isArray(arrivals)) throw new Error('arrivals must be an array');
+  if (!Array.isArray(shown)) throw new Error('shown must be an array');
   const errs = [];
   const keep = (what, list) => list.filter((e) => {
     const bad = entryErrors(what, e, scenario);
     errs.push(...bad);
     return bad.length === 0;
   });
-  const arr = byTimeThenId(keep('arrival', arrivals));
-  const sh = byTimeThenId(keep('shown', shown));
+  const arrById = groupById(byTimeThenId(keep('arrival', arrivals)), scenario.clients);
+  const shownById = groupById(byTimeThenId(keep('shown', shown)), scenario.clients);
 
   for (let id = 0; id < scenario.clients; id++) {
-    const a = arr.filter((e) => e.id === id);
-    const s = sh.filter((e) => e.id === id);
+    const a = arrById[id];
+    const s = shownById[id];
     if (a.length > 0 && s.length === 0) {
       errs.push(`client ${id}: levels arrived but never shown`);
       continue;
@@ -77,6 +101,7 @@ export function checkBurstInvariants(arrivals, shown, scenario) {
     let maxArrived = -1;
     let maxShown = -1;
     let ai = 0;
+    let si = 0;
     for (const t of times) {
       const before = maxArrived;
       while (ai < a.length && a[ai].tMs === t) {
@@ -84,7 +109,8 @@ export function checkBurstInvariants(arrivals, shown, scenario) {
         maxArrived = Math.max(maxArrived, a[ai].level);
         ai++;
       }
-      const now = s.filter((e) => e.tMs === t);
+      const now = [];
+      while (si < s.length && s[si].tMs === t) now.push(s[si++]);
       if (now.length > 1) errs.push(`client ${id}: shown ${now.length} times at ${t}ms`);
       for (const e of now) {
         if (!arrived.has(e.level)) {
@@ -108,17 +134,14 @@ export function checkBurstInvariants(arrivals, shown, scenario) {
 }
 
 /**
- * Burst run over the measured simulateClients log. Arrivals are its 'level' events; levels the scenario places after the
- * burst (burstLevels..LEVEL_COUNT-1) are outside this check, anything else invalid stays in and is reported.
+ * Burst run over the measured simulateClients log. Arrivals are its 'level' events narrowed by burstArrivals.
  */
 export function simulateBurst(scenario, { seed }) {
   const bad = validateScenario(scenario);
   if (bad.length > 0) throw new Error(`invalid scenario: ${bad.join(', ')}`);
   if (scenario.kind !== 'burst') throw new Error('simulateBurst needs a burst scenario');
   const events = simulateClients(scenario, { seed });
-  const arrivals = events
-    .filter((e) => e.kind === 'level')
-    .filter((e) => !(Number.isInteger(e.level) && e.level >= scenario.burstLevels && e.level < LEVEL_COUNT))
+  const arrivals = burstArrivals(events, scenario.burstLevels)
     .map(({ id, tMs, level }) => ({ id, tMs, level }));
   const shown = showFromArrivals(arrivals.map((e) => ({ ...e, kind: 'level' })), scenario.clients);
   return { arrivals, shown, violations: checkBurstInvariants(arrivals, shown, scenario) };
