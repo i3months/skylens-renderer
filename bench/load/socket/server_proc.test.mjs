@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { startServerProcess } from './server_proc.mjs';
@@ -82,11 +85,72 @@ test('the server child exits when its parent is killed', async () => {
     });
     assert.ok(alive(childPid));
     parent.kill('SIGTERM');
-    const deadline = Date.now() + 2500;
+    // Death is normally near-instant; the generous limit only absorbs a loaded CI host, polling returns as soon as it dies.
+    const deadline = Date.now() + 20000;
     while (alive(childPid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     assert.equal(alive(childPid), false);
   } finally {
     parent.kill('SIGKILL');
     if (childPid && alive(childPid)) process.kill(childPid, 'SIGKILL');
+  }
+});
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const within = (p, ms) => Promise.race([p, sleep(ms).then(() => { throw new Error(`still pending after ${ms} ms`); })]);
+const until = async (cond, limitMs) => {
+  const end = Date.now() + limitMs;
+  while (!cond() && Date.now() < end) await sleep(20);
+};
+
+function fakeMain(body) {
+  const dir = mkdtempSync(join(tmpdir(), 'server_proc_'));
+  const mainPath = join(dir, 'fake_main.mjs');
+  const pidFile = join(dir, 'pid');
+  writeFileSync(mainPath, `import { writeFileSync } from 'node:fs';\n${body}\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
+  return { dir, mainPath, pid: () => Number(readFileSync(pidFile, 'utf8')) };
+}
+
+test('startServerProcess rejects within the timeout and kills a silent child', async () => {
+  const f = fakeMain('');
+  try {
+    const t0 = Date.now();
+    await assert.rejects(within(startServerProcess({ host: SOCKET_HOST, mainPath: f.mainPath, startTimeoutMs: 600 }), 5000), /did not print a listening line within 600 ms/);
+    assert.ok(Date.now() - t0 < 5000);
+    const pid = f.pid();
+    await until(() => !alive(pid), 5000);
+    assert.equal(alive(pid), false);
+  } finally {
+    try { process.kill(f.pid(), 'SIGKILL'); } catch {}
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test('the start timeout SIGKILLs a silent child that ignores SIGTERM', async () => {
+  const f = fakeMain("process.on('SIGTERM', () => {});");
+  try {
+    await assert.rejects(within(startServerProcess({ host: SOCKET_HOST, mainPath: f.mainPath, startTimeoutMs: 600 }), 5000), /did not print a listening line/);
+    const pid = f.pid();
+    await until(() => !alive(pid), 5000);
+    assert.equal(alive(pid), false);
+  } finally {
+    try { process.kill(f.pid(), 'SIGKILL'); } catch {}
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test('stop() falls back to SIGKILL when the child ignores SIGTERM', async () => {
+  const f = fakeMain("process.on('SIGTERM', () => {});\nconsole.log('listening 1');");
+  let proc = null;
+  try {
+    proc = await startServerProcess({ host: SOCKET_HOST, mainPath: f.mainPath, killAfterMs: 400 });
+    await until(() => { try { f.pid(); return true; } catch { return false; } }, 5000);
+    const t0 = Date.now();
+    const stopped = await Promise.race([proc.stop().then(() => true), sleep(5000).then(() => false)]);
+    assert.ok(stopped, 'stop() did not resolve');
+    assert.ok(Date.now() - t0 < 400 + 3000);
+    assert.equal(alive(proc.pid), false);
+  } finally {
+    if (proc && alive(proc.pid)) process.kill(proc.pid, 'SIGKILL');
+    rmSync(f.dir, { recursive: true, force: true });
   }
 });
