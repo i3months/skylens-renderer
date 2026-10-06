@@ -754,6 +754,17 @@ test('cpu/rss line: sample source is escaped for the markdown cell', () => {
   assert.equal(cpuOf(out), 'cpu/rss source: a\\|b c\\\\d, measured on a\\|b c\\\\d');
 });
 
+test('F-561: one mixed-source sample among ten gives unknown without measured on', () => {
+  const mixed = samples('server-process');
+  mixed[5] = { ...mixed[5], source: 'other' };
+  const out = loadReport(srcResult({ method: 'wrk', serverSamples: mixed }));
+  assert.equal(cpuOf(out), 'cpu/rss source: unknown');
+  assert.ok(!out.includes('measured on server-process'));
+  // the same ten samples, all server-process, give the normal line
+  const clean = loadReport(srcResult({ method: 'wrk', serverSamples: samples('server-process') }));
+  assert.equal(cpuOf(clean), 'cpu/rss source: server-process, measured on server-process');
+});
+
 test('F-558: loadReport checks the samples against result.scenario.durationS', () => {
   const one = loadReport(srcResult({ method: 'wrk', durationS: 60, serverSamples: [sample('server-process', { tS: 0.001 })] }));
   assert.equal(cpuOf(one), 'cpu/rss source: unknown');
