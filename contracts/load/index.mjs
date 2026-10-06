@@ -5,6 +5,7 @@ import { LEVEL_COUNT } from '../asset/index.mjs';
 
 export const SCENARIO_KINDS = ['steady', 'burst', 'slow_link'];
 export const MAX_CLIENTS = 30;
+export const MAX_DURATION_S = 3600;
 const ALLOWED = new Set(['name', 'kind', 'clients', 'durationS', 'path', 'burstLevels', 'linkBytesPerS']);
 const WAYPOINT_KEYS = new Set(['t', 'e', 'n', 'u']);
 const RESULT_KEYS = new Set(['scenario', 'records', 'perClient']);
