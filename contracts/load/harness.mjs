@@ -21,8 +21,8 @@
 //                                            every interval incl. first is 0.5..1.5 s except the last (final bucket width ±0.5). durationS non-finite is a violation.
 //   T16.3  bench/load/per_client/index.mjs   perClientFromEvents(events, clients) -> perClient[] (validateResult shape)
 //   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[], missing, noArrival, outOfOrder };
-//                                            noArrival lists ascending ids with a first_frame but no level-0 arrival (a subset of missing); a first_frame counts only with a level-0 arrival of the same id at tMs <= the first_frame tMs, otherwise that client's perClientMs is Infinity and firstFrameViolations says `client N: first_frame without level-0 arrival`;
-//                                            outOfOrder = ascending-id list of { id, reason } for impossible orderings: 'before_connect' (first_frame before client's connect), 'before_level0' (first_frame before earliest level-0 arrival)
+//                                            noArrival lists ascending ids with a first_frame but no level arrival (a subset of missing); a first_frame counts only with an arrival of any level of the same id at tMs <= the first_frame tMs, otherwise that client's perClientMs is Infinity and firstFrameViolations says `client N: first_frame without level-0 arrival` (message text kept);
+//                                            outOfOrder = ascending-id list of { id, reason } for impossible orderings: 'before_connect' (first_frame before client's connect), 'before_level0' (first_frame before earliest level arrival of any level)
 //   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS, invalid }; bandwidthViolations(stats) -> string[]
 //   T16.6  bench/load/burst/index.mjs        showFromArrivals(events, clients) -> shown [{id, tMs, level}]  (feeds each 'level' event of the
 //                                            measured log into the product level machine client/levels createLevelMachine, one segment per
@@ -32,7 +32,7 @@
 //                                            so far, and never followed by a lower one; overtaken levels are skipped, never filled in)
 //                                            simulateBurst(scenario, { seed }) -> { arrivals, shown, violations }  (uses simulateClients)
 //   Burst scenario: every client's levels 0..burstLevels-1 carry ONE tMs (maximum bundle delay), so they arrive together.
-//   First frame (one definition, clients and slow_link): tMs of the first payload of level 0 that arrived and was drawn.
+//   First frame (one definition, clients and slow_link): tMs of the first payload of the first level that arrived (levels may be skipped) and was drawn.
 //   T16.7  bench/load/slow_link/index.mjs    simulateSlowLink(scenario, { seed }) -> { events: ClientEvent[], maxQueueBytes, undeliveredBytes, dropped }
 //                                            (sender queue bounded by backpressure; bytes are delayed, never invented; at the end the bytes still
 //                                            queued are reported as undeliveredBytes, dropped = size of payload held back by backpressure then discarded at close; latencyMs
