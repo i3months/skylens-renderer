@@ -1,7 +1,7 @@
 // tilesInView(T15.7.1) 시험. 합성 시점의 기대 타일 집합(숫자로 박음)과 무작위 시점 오라클(화소 광선 → 누락 0).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { tilesInView } from './visible.mjs';
+import { tilesInView, vertexCallCount } from './visible.mjs';
 import { poseToView } from '../overlay/view.mjs';
 import { tileOf, TERRAIN_TILE_SIZE_M } from '../../../contracts/tower_assets/index.mjs';
 import { TOWER_STREAMING_LIMITS } from '../../../contracts/controlview/streaming.mjs';
@@ -448,7 +448,9 @@ test('기본값(maxDistM 1500) 작업량: 호출마다 f0b6609 사본의 1.2 배
     const view = poseToView(p, size);
     const sn = { rows: 0, cells: 0, combos: 0, edges: 0, vertexCalls: 0 };
     const so = { rows: 0, cells: 0 };
+    const c0 = vertexCallCount();
     assert.deepEqual(tilesInView(view, opts, sn), tilesInViewF0(view, opts, so));
+    assert.equal(vertexCallCount() - c0, 1, `모듈 수준 vertices() 호출 ${vertexCallCount() - c0} 회 (시점 ${i})`);
     assert.equal(sn.combos, 220);
     assert.equal(sn.vertexCalls, 1, `vertices() 호출 ${sn.vertexCalls} 회 (시점 ${i})`);
     assert.ok(sn.rows <= so.rows && sn.cells <= so.cells, `행·칸이 늘었다 (시점 ${i})`);
@@ -476,6 +478,7 @@ test('고고도·큰 maxDistM(fovY 0.6~2.8 × f 0.3~0.99 × yaw 5 × pitch 10, z
         for (const pitch of pitches) {
           const view = poseToView(pose([0, 0, 600 + f * D], yaw, pitch, fovY), size);
           const stats = { rows: 0, cells: 0, combos: 0, edges: 0, vertexCalls: 0 };
+          const c0 = vertexCallCount();
           const t0 = performance.now();
           const r = outcome(tilesInView, view, opts, stats);
           const ms = performance.now() - t0;
@@ -485,6 +488,7 @@ test('고고도·큰 maxDistM(fovY 0.6~2.8 × f 0.3~0.99 × yaw 5 × pitch 10, z
           assert.ok(stats.cells <= LIM.maxTilesPerUpdate + 1 + 2 * stats.rows, `칸 ${stats.cells} ${where}`);
           assert.equal(stats.combos, 220, where);
           assert.equal(stats.vertexCalls, 1, `vertices() 호출 ${stats.vertexCalls} 회 ${where}`);
+          assert.equal(vertexCallCount() - c0, 1, `모듈 수준 vertices() 호출 ${vertexCallCount() - c0} 회 ${where}`);
           assert.ok(ms < 1000, `${ms} ms ${where}`); // 느슨한 안전 단언(판정은 위 계수기)
           if (stats.rows > maxRows) maxRows = stats.rows;
           // 옛 사본은 호출당 수백 ms 까지 걸리므로 일부만 비교한다: 25 번째마다 + 보고된 최악 배치(fovY 1, f 0.5, yaw −π/2, pitch −0.1)

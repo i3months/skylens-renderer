@@ -3,11 +3,15 @@
 // SPEC 기준에서 나온 수치가 아니라 회귀 감시용이다. 예산(INITIAL_LIMIT_BYTES)은 SPEC S6 초기 ≤ 15 MB 이며 시험이 바꾸지 않는다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { measureLodBytes, smoothDem, noiseBigDem, measureAll } from './lod_bytes.mjs';
+import { measureLodBytes, smoothDem, noiseBigDem, measureAll, clearLodBytesCache } from './lod_bytes.mjs';
 import { INITIAL_LIMIT_BYTES } from '../tower_assets/index.mjs';
+import { PIECE_FRAME_OVERHEAD_BYTES } from '../../server/scheduler/initial/index.mjs';
 
-const smooth = measureLodBytes(smoothDem());
-const rough = measureLodBytes(noiseBigDem(0));
+// 시간: measureAll 한 번이 smooth·noiseBig(0) 을 재고, 아래 시험이 그 결과를 재사용한다.
+clearLodBytesCache();
+const all = measureAll();
+const smooth = all.dems.smooth;
+const rough = all.dems.noiseBig;
 const raw = (r) => r.levels.map((l) => l.rawBytes);
 
 test('예산 상수는 SPEC S6 초기 15 MB 그대로', () => {
@@ -45,15 +49,35 @@ test('거친 DEM(noiseBig): 상한 1 m 로는 LOD1~3 이 모두 원본으로 물
   assert.equal(rough.lod3OverBudgetGzip, false);
 });
 
-test('결정성: 같은 입력 → 같은 바이트, 시드가 달라도 거친 DEM 은 LOD3 = LOD0 크기', () => {
-  assert.deepEqual(measureLodBytes(noiseBigDem(0)), rough);
-  const r1 = measureLodBytes(noiseBigDem(1));
+test('결정성: 캐시를 우회한 독립 계산 두 번이 같은 바이트, 시드가 달라도 거친 DEM 은 LOD3 = LOD0 크기', () => {
+  clearLodBytesCache();
+  // 가운데 8 x 8 타일(64 개)만: 시간 절약. 전체 256 타일 값은 위 measureAll 이 한 번 계산했다.
+  const a = measureLodBytes(noiseBigDem(0), { tilesPerSide: 8 }); // 캐시가 비어 있어 새로 계산
+  clearLodBytesCache();
+  const b = measureLodBytes(noiseBigDem(0), { tilesPerSide: 8 }); // 다시 비우고 독립 계산: 같은 객체가 아니어야 한다
+  assert.notEqual(a, b);
+  assert.notEqual(a.levels, b.levels);
+  assert.deepEqual(a, b);
+  assert.equal(a.levels[0].tiles, 64);
+  assert.equal(a.levels[0].rawBytes, rough.levels[0].rawBytes / 4); // 가운데 64 타일은 거친 DEM 에서 전체의 1/4(타일마다 같은 크기)
+  // 시드 비교는 가운데 4 x 4 타일(시간 절약, 전체 256 타일 계산은 위 measureAll 의 한 번)
+  const r0 = measureLodBytes(noiseBigDem(0), { tilesPerSide: 4 });
+  const r1 = measureLodBytes(noiseBigDem(1), { tilesPerSide: 4 });
   assert.equal(r1.levels[3].rawBytes, r1.levels[0].rawBytes);
-  assert.notEqual(r1.levels[0].gzipBytes, rough.levels[0].gzipBytes);
+  assert.notEqual(r1.levels[0].gzipBytes, r0.levels[0].gzipBytes);
+});
+
+test('heightOnlyBytes: 타일 256 개 x (조각 머리 + 메시 머리 16 + 높이 f32 cells^2), noiseBig LOD0~3 모두 4,340,224 B', () => {
+  for (const dem of [smooth, rough]) {
+    for (const l of dem.levels) {
+      assert.equal(l.heightOnlyBytes, 256 * (PIECE_FRAME_OVERHEAD_BYTES + 16 + l.cells * l.cells * 4));
+    }
+  }
+  assert.deepEqual(smooth.levels.map((l) => l.heightOnlyBytes), [4340224, 1128960, 309760, 96768]);
+  assert.deepEqual(rough.levels.map((l) => l.heightOnlyBytes), [4340224, 4340224, 4340224, 4340224]);
 });
 
 test('measureAll 은 JSON 직렬화 가능하고 상한표 [0, 0.5, 1, 1] 을 싣는다', () => {
-  const a = measureAll();
-  assert.deepEqual(a.maxErrorM, [0, 0.5, 1, 1]);
-  assert.deepEqual(JSON.parse(JSON.stringify(a.dems.smooth)), smooth);
+  assert.deepEqual(all.maxErrorM, [0, 0.5, 1, 1]);
+  assert.deepEqual(JSON.parse(JSON.stringify(all.dems.smooth)), smooth);
 });
