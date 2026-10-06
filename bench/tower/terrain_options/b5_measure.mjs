@@ -43,6 +43,22 @@ function demSet() {
   return out;
 }
 
+// 그룹별 셀 크기(m). 결과 객체에 cellM 이 없으면(이전 json) 이 표로 채운다.
+const GROUP_CELL_M = { lowNoise: 1, lowNoise2m: 2, noiseBig: 1, hill: 2 };
+const cellMOf = (r) => r.cellM ?? GROUP_CELL_M[r.group] ?? 1;
+
+/** --only 값 검증. 빈 값·알 수 없는 이름이면 throw, 정상이면 이름 배열을 돌려준다. */
+export function parseOnly(arg, names = demSet().map((d) => d.name)) {
+  if (arg === null || arg === undefined) return null;
+  if (typeof arg !== 'string' || arg.trim() === '') throw new Error('--only 값이 비어 있다');
+  const list = arg.split(',').map((x) => x.trim());
+  if (list.some((x) => x === '')) throw new Error(`--only 에 빈 이름이 있다: "${arg}"`);
+  const known = new Set(names);
+  const bad = list.filter((x) => !known.has(x));
+  if (bad.length) throw new Error(`--only 알 수 없는 이름: ${bad.join(', ')}`);
+  return list;
+}
+
 export function measureB5({ only = null } = {}) {
   const cams = towerViewpoints();
   const results = [];
@@ -51,6 +67,7 @@ export function measureB5({ only = null } = {}) {
     const check = d.group === 'lowNoise' || d.group === 'noiseBig';
     const r = measureDem(d, cams, { check, optionTable: B5_OPTIONS });
     r.group = d.group;
+    r.cellM = GROUP_CELL_M[d.group] ?? 1;
     results.push(r);
     console.error(`[b5] ${d.name} ${r.ms} ms`);
   }
@@ -76,7 +93,7 @@ export function summarize(all) {
       const l3Mesh = rs.map((r) => r.options[opt].levels[3].meshRawBytes);
       const l3Height = rs.map((r) => r.options[opt].levels[3].heightOnlyRawBytes);
       rows.push({
-        group: g, opt, scenes: rs.length, strides, lod0SsimMin: lod0Min, lod1to3SsimMin: min, fail, conditions: n,
+        group: g, opt, cellM: cellMOf(rs[0]), scenes: rs.length, strides, lod0SsimMin: lod0Min, lod1to3SsimMin: min, fail, conditions: n,
         lod3MeshMax: Math.max(...l3Mesh), lod3MeshSum: l3Mesh.reduce((a, b) => a + b, 0),
         lod3HeightMax: Math.max(...l3Height), lod3HeightSum: l3Height.reduce((a, b) => a + b, 0),
         lod1MeshMax: Math.max(...rs.map((r) => r.options[opt].levels[1].meshRawBytes)),
@@ -88,15 +105,15 @@ export function summarize(all) {
 
 export function formatB5(all) {
   const lines = [`안 ${Object.entries(all.options).map(([k, v]) => `${k} ${JSON.stringify(v)}`).join('  ')} | SSIM 기준 ${all.ssimMin}, 초기 상한 ${fmtB(all.initialLimitBytes)} B(raw)`];
-  lines.push('그룹 | 안 | 장면 | 간격 LOD0..3 | LOD0 SSIM 최소 | LOD1~3 SSIM 최소 | 0.95 미만/조건 | LOD1 메시 최대 B | LOD3 메시 최대 B | LOD3 메시 합 B | LOD3 높이만 최대 B | LOD3 높이만 합 B');
+  lines.push('그룹 | 안 | 장면 | cellM(m) | 간격(셀) LOD0..3 | LOD0 SSIM 최소 | LOD1~3 SSIM 최소 | 0.95 미만/조건 | LOD1 메시 최대 B | LOD3 메시 최대 B | LOD3 메시 합 B | LOD3 높이만 최대 B | LOD3 높이만 합 B');
   for (const r of summarize(all)) {
-    lines.push(`${r.group} | ${r.opt} | ${r.scenes} | ${r.strides.join(',')} | ${r.lod0SsimMin.toFixed(4)} | ${r.lod1to3SsimMin.toFixed(4)} | ${r.fail}/${r.conditions} | ${fmtB(r.lod1MeshMax)} | ${fmtB(r.lod3MeshMax)} | ${fmtB(r.lod3MeshSum)} | ${fmtB(r.lod3HeightMax)} | ${fmtB(r.lod3HeightSum)}`);
+    lines.push(`${r.group} | ${r.opt} | ${r.scenes} | ${r.cellM} | ${r.strides.join(',')} | ${r.lod0SsimMin.toFixed(4)} | ${r.lod1to3SsimMin.toFixed(4)} | ${r.fail}/${r.conditions} | ${fmtB(r.lod1MeshMax)} | ${fmtB(r.lod3MeshMax)} | ${fmtB(r.lod3MeshSum)} | ${fmtB(r.lod3HeightMax)} | ${fmtB(r.lod3HeightSum)}`);
   }
   lines.push('');
-  lines.push('장면별 LOD1~3 최소 SSIM(안 i / v1 / v2), 간격:');
+  lines.push('장면별 LOD1~3 최소 SSIM(안 i / v1 / v2), @뒤 숫자 = 간격(셀), 실제 간격 m = 간격 × cellM:');
   for (const r of all.results) {
     const cell = (o) => r.options[o].levels.slice(1).map((l) => `${l.ssimMin8.toFixed(4)}@${l.stride}`).join(' ');
-    lines.push(`  ${r.dem.padEnd(16)} i ${cell('i')} | v1 ${cell('v1')} | v2 ${cell('v2')} | 간격2 최대오차 ${r.options.i.levels[1].stride === 2 ? r.options.i.levels[1].maxErrorM.toFixed(4) : '-'}`);
+    lines.push(`  ${r.dem.padEnd(16)} i ${cell('i')} | v1 ${cell('v1')} | v2 ${cell('v2')} | cellM ${cellMOf(r)} m | 간격 2셀 최대오차 ${r.options.i.levels[1].stride === 2 ? r.options.i.levels[1].maxErrorM.toFixed(4) : '-'}`);
   }
   return lines.join('\n');
 }
@@ -105,7 +122,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const get = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null; };
   const onlyArg = get('--only');
-  const all = measureB5({ only: onlyArg ? onlyArg.split(',') : null });
+  // 빈 값·오타는 parseOnly 가 던져 비영 종료한다. --only 가 값 없이 끝나면 null 이 아니라 빈 값으로 본다.
+  const only = args.includes('--only') ? parseOnly(onlyArg ?? '') : null;
+  const all = measureB5({ only });
   console.log(formatB5(all));
   const jsonPath = get('--json');
   if (jsonPath) writeFileSync(jsonPath, JSON.stringify(all, null, 2) + '\n');
