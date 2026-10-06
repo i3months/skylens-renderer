@@ -3,7 +3,6 @@
 // 숫자(묶음 수·배율)는 이 장면과 카메라에서 잰 값이다. 실기기 fps 는 [local].
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { performance } from 'node:perf_hooks';
 import { EMPTY_INDEX } from '../../../contracts/raster/index.mjs';
 import { createBuildingsLayer } from './index.mjs';
 import { makeAerialImage } from './test_support/fixtures.mjs';
@@ -70,6 +69,10 @@ const CAM_ONE = lookAt([-1000, -900, 120], [-1000, -900, 0]); // 154×86 m: 몇 
 const CAM_OBLIQUE = lookAt([800, -1500, 400], [0, 0, 0]);
 const CAM_BEHIND = lookAt([0, 0, 500], [0, 0, 1000]); // 하늘 쪽(전부 카메라 뒤·위)
 
+// 벽시계 대신 스레드 CPU 시간(threadCpuUsage, 없으면 프로세스 cpuUsage)으로 잰다: 다른 프로세스가 CPU 를 빼앗아 생기는 대기는 포함하지 않는다(fallback/perf.test.mjs 와 같은 방식).
+// 문턱 1/3 은 측정에 맞춘 값이 아니라 원래 약속(②의 묶음 수 ≤ 33/100 과 같은 비율)이다. 컬링이 동작하면 1/10 은 전체의 약 1/10 일(묶음 수 비례)을 하므로 3배 여유가 있고,
+// 컬링을 끄면 1/10 도 전체와 같은 일을 하므로 비율이 약 1 이 되어 실패한다.
+function cpuMs() { const u = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : process.cpuUsage(); return (u.user + u.system) / 1000; }
 function median(a) { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; }
 function covered(r) { let n = 0; for (let i = 0; i < r.index.length; i += 1) if (r.index[i] !== EMPTY_INDEX) n += 1; return n; }
 function sameResult(a, b) {
@@ -212,7 +215,7 @@ test('③ 도시 1/10 만 보면 래스터에 넘어간 묶음 수 ≤ 1/3, blac
   assert.ok(drawn >= 1);
   const time = (cam) => {
     const ts = [];
-    for (let r = 0; r < RUNS; r += 1) { const t0 = performance.now(); l.render(cam, out); ts.push(performance.now() - t0); }
+    for (let r = 0; r < RUNS; r += 1) { const t0 = cpuMs(); l.render(cam, out); ts.push(cpuMs() - t0); }
     return median(ts);
   };
   time(CAM_EDGE);
