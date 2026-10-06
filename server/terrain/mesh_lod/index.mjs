@@ -19,7 +19,7 @@
 //   가장자리 정점 수가 달라져 T 접합 균열이 생기므로, 균열 없음을 단순화 정도보다 우선했다.
 // - 전제(F-313, 미해결): 봉합·스커트가 없다. 균열 없음은 '같은 DEM·같은 LOD 이웃'에서만 보장된다.
 //   서로 다른 LOD(또는 다른 DEM) 타일이 이웃하면 공유 변에서 가는 쪽은 DEM 표본, 굵은 쪽은 선형 보간이라
-//   최대 상한 수준(TERRAIN_LOD_MAX_ERROR_M 의 큰 쪽)의 T 접합 틈이 날 수 있다. 가는 쪽 가장자리를 굵은 쪽
+//   최대 상한 수준(terrainLodMaxErrorM(lod, cellM) 의 큰 쪽)의 T 접합 틈이 날 수 있다. 가는 쪽 가장자리를 굵은 쪽
 //   보간값으로 바꾸면 가는 쪽 LOD 의 오차 상한이 깨지므로, 섞어 쓰려면 스커트 또는 결정(F-309) 이 먼저 필요하다.
 //   현재 호출자는 한 화면에서 이웃 타일 LOD 를 섞지 않는다고 가정한다.
 // - 결정적: 부동소수 연산 순서가 입력만으로 정해지고, 정점 높이는 DEM Float32 값을 복사한다.
@@ -216,7 +216,7 @@ function checkTile(tile) {
 
 /**
  * (dem, tile) → { maxErrorM }. 타일 메시 표면(삼각형 보간)과 원본 DEM 메시(같은 대각선 규약의 삼각형 보간)의
- * 차이 |Δz| 의 타일 영역 최댓값. 계약 TERRAIN_LOD_MAX_ERROR_M 은 이 '메시 표면 기준' 값에 대한 상한이다.
+ * 차이 |Δz| 의 타일 영역 최댓값. 상한 terrainLodMaxErrorM(lod, cellM)(계약 TERRAIN_LOD_MAX_ERROR_M 과 기울기 항의 min) 은 이 '메시 표면 기준' 값에 대한 상한이다.
  * 타일 정점이 DEM 표본 위에 있어야 한다(buildTerrainTile 출력은 항상 그렇다).
  */
 export function measureTerrainError(dem, tile) {
