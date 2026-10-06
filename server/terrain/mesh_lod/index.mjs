@@ -12,7 +12,8 @@
 //   DEM 의 작은 삼각형 하나는 타일의 큰 삼각형 하나 안에 통째로 들어간다. 그 안에서 차이는 선형이라
 //   절댓값 최대는 DEM 표본점(칸 대각선 위 표본 포함)에서 난다. 따라서 타일 안 DEM 표본점에서의 최대 오차가
 //   메시 표면 연속 영역 전체의 정확한 최대 오차다. (이전에는 양쪽을 쌍선형으로 재서 비틀린 칸에서 메시 오차를 놓쳤다.)
-// - 오차 상한 보장: 명목 간격에서 상한 TERRAIN_LOD_MAX_ERROR_M[lod] 을 넘는 타일이 하나라도 있으면
+// - 오차 상한 보장: 명목 간격에서 상한 terrainLodMaxErrorM(lod, cellM) = min(TERRAIN_LOD_MAX_ERROR_M[lod],
+//   TERRAIN_LOD_MAX_SLOPE_ERROR · cellM)(결정 0057, 셀 크기 비례 기울기 항) 을 넘는 타일이 하나라도 있으면
 //   그 LOD 의 간격을 절반으로 줄여 다시 잰다(간격 1 = LOD 0 이면 오차 0 이므로 반드시 끝난다).
 //   간격은 DEM 하나·LOD 하나에 대해 전역으로 정한다. 타일마다 다르게 고르면 같은 LOD 의 이웃이
 //   가장자리 정점 수가 달라져 T 접합 균열이 생기므로, 균열 없음을 단순화 정도보다 우선했다.
@@ -25,7 +26,7 @@
 import {
   TERRAIN_TILE_SIZE_M,
   TERRAIN_LOD_COUNT,
-  TERRAIN_LOD_MAX_ERROR_M,
+  terrainLodMaxErrorM,
   TowerAssetError,
 } from '../../../contracts/tower_assets/index.mjs';
 
@@ -170,7 +171,7 @@ export function terrainLodStride(dem, lod) {
     strideCache.set(dem.heights, entry);
   }
   if (entry.strides[lod]) return entry.strides[lod];
-  const limit = TERRAIN_LOD_MAX_ERROR_M[lod];
+  const limit = terrainLodMaxErrorM(lod, dem.cellM); // 결정 0057: min(절대 상한, 기울기 상한 · cellM)
   // 결측 타일(terrainMissingTiles)은 명시적으로 빼고 판정한다.
   const tiles = coveredTileOrigins(dem, n0).filter(([i0, j0]) => !tileHasNonFinite(dem, i0, j0, n0));
   let stride = nominalStride(n0, lod);

@@ -16,7 +16,7 @@ import { gzipSync, constants } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { buildTerrainTile, terrainTileToMesh } from '../../server/terrain/mesh_lod/index.mjs';
 import { PIECE_FRAME_OVERHEAD_BYTES } from '../../server/scheduler/initial/index.mjs';
-import { TERRAIN_LOD_COUNT, TERRAIN_LOD_MAX_ERROR_M } from '../../contracts/tower_assets/index.mjs';
+import { TERRAIN_LOD_COUNT, TERRAIN_LOD_MAX_ERROR_M, terrainLodMaxErrorM } from '../../contracts/tower_assets/index.mjs';
 import { INITIAL_LIMIT_BYTES } from '../tower_assets/index.mjs';
 
 const SPAN_M = 1024;
@@ -140,7 +140,9 @@ export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
 
 export function measureAll() {
   return {
-    maxErrorM: [...TERRAIN_LOD_MAX_ERROR_M],
+    maxErrorM: [...TERRAIN_LOD_MAX_ERROR_M], // 셀 크기 무관 절대 상한
+    // 결정 0057: 실제 상한 = min(절대 상한, 0.25·cellM). 두 DEM 모두 1 m 셀이다.
+    effectiveMaxErrorM1m: [0, 1, 2, 3].map((l) => terrainLodMaxErrorM(l, 1)),
     limitBytes: INITIAL_LIMIT_BYTES,
     tilesPerRun: TILES_PER_SIDE * TILES_PER_SIDE,
     dems: { smooth: measureLodBytes(smoothDem()), noiseBig: measureLodBytes(noiseBigDem(0)) },

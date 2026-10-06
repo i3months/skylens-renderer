@@ -4,7 +4,7 @@ import { TowerAssetError } from './index.mjs';
 
 const todo = (n) => () => { throw new TowerAssetError(`${n}: 미구현`); };
 
-/** T14.1 server/terrain/mesh_lod/index.mjs — (dem: Dem, tx, ty, lod) → TerrainTile. 원본 대비 오차 ≤ TERRAIN_LOD_MAX_ERROR_M[lod]. */
+/** T14.1 server/terrain/mesh_lod/index.mjs — (dem: Dem, tx, ty, lod) → TerrainTile. 원본 대비 오차 ≤ terrainLodMaxErrorM(lod, dem.cellM)(결정 0057). */
 export const buildTerrainTile = todo('buildTerrainTile');
 /** T14.1 — (dem, tile: TerrainTile) → { maxErrorM } mesh surface(같은 대각선 삼각형) 대비 최대 오차. */
 export const measureTerrainError = todo('measureTerrainError');

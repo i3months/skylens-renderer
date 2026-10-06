@@ -2,7 +2,7 @@
 // 단언: 한도 규모 frame 묶음 중앙값 ≤ 16 ms(한 프레임 예산, FRAME_BUDGET_MS)·≤ 50 ms, 묶음 p90 ≤ 16 ms(P90_MAX_MS, 한 프레임 예산)·p90/중앙값 ≤ P90_MEDIAN_RATIO, 자동 맞춤 frame ≤ 16 ms(AUTO_FIT_MAX_MS),
 // 같은 프로세스의 기준 연산(setView frame) 대비 비율 상한, 맞춤 순회 몫(자동 − setView frame)이 독립 기준 순회의 FIT_SHARE_RATIO 배 이하,
 // 결과 개수가 입력과 같다(결정적), 자동 맞춤이 점마다 배열을 만들지 않는다(push 호출 0), 옛 구현과 결과가 같다,
-// frame 당 경로 points 순회가 정확히 1회다(시간이 아니라 접근 횟수 계수. 제품 순회 10회 변이를 결정적으로 잡는다).
+// 맞춤 순회가 저장소 points 배열을 점당 1회 읽는다(시간이 아니라 접근 횟수 계수. 배열 읽기·좌표 읽기·setView frame 읽기를 센다).
 // 시간은 벽시계가 아니라 이 프로세스의 CPU 시간으로 잰다: 시험이 동시에 여러 개 돌아 CPU 를 나눠 써도 흔들리지 않는다.
 // 상한을 측정에 맞춰 낮추지 않는다.
 import test from 'node:test';
@@ -254,7 +254,7 @@ test('perf: 자동 맞춤 frame ≤ 16 ms 이고 setView frame 대비 비율 안
 // 그러므로 기준 순회 9회 추가 = 제품 순회 9회 추가(몫 ≈ 7.2 ms 추가)이지, 제품 순회 17배가 아니다(앞 주석의 '17배'는 틀렸다). 정상 몫은 1.2~1.7 ms(기준 순회의 1.5~2.2배, 문턱 3배 아래).
 // 이 변이의 몫은 7.4 ms(실측 1회, 기준 순회의 약 9배)라 문턱 3×0.80 = 2.4 ms 를 약 3.1배 넘는다. 문턱의 정상 쪽 여유는 정상 몫 최대 1.7 ms 에 대해 2.4 ms(약 1.4배)다.
 // 제품 index.mjs 의 순회 루프를 실제로 10번 돌게 고친 변이(직접 시험, 이 파일 밖)의 몫은 3.7~6.4 ms(기준 순회의 4.6~8.1배)로 흔들렸고, 문턱(2.4 ms)을 넘는 쪽이 많지만
-// 13회 중 2회는 이 시간 판정을 통과해 살아남았다(F-472). 시간만으로는 이 변이를 확실히 잡지 못한다. 그래서 시간과 무관한 결정적 계수 시험(아래 'frame 당 points 순회 횟수 = 1')을 더했다.
+// 13회 중 2회는 이 시간 판정을 통과해 살아남았다(F-472). 시간만으로는 이 변이를 확실히 잡지 못한다. 그래서 시간과 무관한 결정적 계수 시험(아래 '맞춤 순회는 저장소 points 배열을 점당 정확히 1회 읽는다')을 더했다.
 // 문턱은 건드리지 않았다(3배 그대로). 정상 제품에서 그 시험은 시간을 재지 않으므로 부하에 흔들리지 않는다.
 // 실제 변이는 한 함수 안에서 같은 루프를 되풀이해 JIT 이 더 싸게 돌리므로 별도 복사본 변이(아래 Pprod10)보다 몫이 작다. 둘 다 아래에서 시험한다.
 test('perf: 맞춤 순회 10배 변이는 판정에서 실패한다', () => {
@@ -290,16 +290,30 @@ test('perf: 제품 순회 10회 변이(인라인 복사본)는 판정에서 실�
   assert.ok(r.share > FIT_SHARE_RATIO * r.ref, `순회 몫 ${r.share.toFixed(2)} ms 가 ${FIT_SHARE_RATIO}배 기준 순회 ${r.ref.toFixed(2)} ms 이하다`);
 });
 
-/** 저장소가 가진 경로의 points 를 접근 계수 Proxy 로 바꾼다(제품 코드는 고치지 않는다). 값을 복사하는 검증 뒤에 저장소 안의 배열을 보므로 Array.from 을 잠시 가로챈다. */
+/**
+ * 저장소가 가진 경로의 points 를 접근 계수 Proxy 로 바꾼다(제품 코드는 고치지 않는다).
+ * 두 가지를 센다: arr = 저장소 points 배열의 인덱스 읽기, coord = 점 하나의 좌표(q[0]/q[1]) 읽기.
+ * 점마다 Proxy 를 씌우므로 points.slice() 로 복사한 뒤 되풀이 순회해도(복사본 원소는 같은 점 Proxy) coord 가 늘어난다.
+ * 값을 복사하는 검증 뒤에 저장소 안의 배열을 보므로 Array.from 을 잠시 가로챈다. counter.stored 는 가로챈 저장소 경로 목록이다.
+ */
 function countPointReads(fn) {
   const origFrom = Array.from;
-  const proxies = new WeakSet();
-  const counter = { reads: 0 };
-  const handler = { get(t, k, r) { if (typeof k === 'string' && /^(0|[1-9][0-9]*)$/.test(k)) counter.reads += 1; return Reflect.get(t, k, r); } };
+  const wrapped = new WeakSet();
+  const counter = { arr: 0, coord: 0, stored: [] };
+  const isIdx = (k) => typeof k === 'string' && /^(0|[1-9][0-9]*)$/.test(k);
+  const pointHandler = { get(t, k, r) { if (isIdx(k)) counter.coord += 1; return Reflect.get(t, k, r); } };
+  const arrHandler = { get(t, k, r) { if (isIdx(k)) counter.arr += 1; return Reflect.get(t, k, r); } };
   Array.from = function (src, ...rest) {
     const out = origFrom.call(this, src, ...rest);
     if (src && src[Symbol.toStringTag] === 'Map Iterator') {
-      for (const p of out) if (p && Array.isArray(p.points) && !proxies.has(p.points)) { const px = new Proxy(p.points, handler); proxies.add(px); p.points = px; }
+      counter.stored = out;
+      for (const p of out) {
+        if (p && Array.isArray(p.points) && !wrapped.has(p.points)) {
+          const px = new Proxy(p.points.map((q) => new Proxy(q, pointHandler)), arrHandler);
+          wrapped.add(px);
+          p.points = px;
+        }
+      }
     }
     return out;
   };
@@ -307,24 +321,41 @@ function countPointReads(fn) {
   return counter;
 }
 
-// frame 당 points 순회 횟수: 자동 맞춤 frame 의 points 인덱스 읽기 수에서 setView frame(순회 없이 출력만)의 읽기 수를 빼면 맞춤 순회 읽기 수다.
-// 그것이 정확히 총 점 수(= 순회 1회)여야 한다. 시간이 아니라 횟수라 부하·GC 와 무관하게 결정적이고, 순회 10회 변이는 10배가 되어 항상 실패한다.
-test('perf: frame 당 경로 points 순회는 정확히 1회다(결정적 계수)', () => {
+// 맞춤 순회 저장소 배열 읽기 1회: 자동 맞춤 frame 의 읽기 수에서 setView frame(순회 없이 출력만, buildPaths 1회)의 읽기 수를 빼면 맞춤 순회 몫이다.
+// 시간이 아니라 횟수라 부하·GC 와 무관하게 결정적이다. 세 가지를 모두 단언한다.
+// ① setView frame: 저장소 배열 읽기 = total(buildPaths 1회), 좌표 읽기 = 2·total. buildPaths 를 10번 돌리는 변이가 실패한다.
+// ② 맞춤 몫의 저장소 배열 읽기 = total, 좌표 읽기 = 2·total. points.slice() 로 한 번 복사한 뒤 10회 순회하는 변이는 배열 읽기만 보면 1회로 보이지만 좌표 읽기가 20·total 이 되어 실패한다.
+// 이 시험이 보증하는 것은 '맞춤이 저장소 points 를 점당 1회 읽는다' 까지다(원소 객체를 따로 캐시한 순회까지 막지는 않는다).
+test('perf: 맞춤 순회는 저장소 points 배열을 점당 정확히 1회 읽는다(결정적 계수)', () => {
   const scene = makeScene();
   const total = N_PATHS * N_POINTS;
-  const sizes = [];
   const auto = fbOf(scene);
   const view = fbOf(scene);
   view.setView({ centerE: 0, centerN: 0, metersPerPx: 0.5 });
-  let autoReads = 0, viewReads = 0;
-  countPointReads((c) => { auto.frame(SIZE); autoReads = c.reads; c.reads = 0; auto.frame(SIZE); sizes.push(c.reads); });
-  countPointReads((c) => { view.frame(SIZE); viewReads = c.reads; });
-  assert.ok(viewReads > 0, '계수가 동작하지 않는다(setView frame 의 points 읽기 0)');
-  assert.equal(autoReads - viewReads, total, `맞춤 순회 읽기 ${autoReads - viewReads} 번, 기대 ${total}(순회 ${((autoReads - viewReads) / total).toFixed(2)} 회)`);
-  assert.equal(sizes[0], autoReads, '같은 frame 을 되풀이해도 읽기 수가 같아야 한다');
-  // 양성 대조: 순회를 한 번 더 하는 가짜 frame 은 2 가 된다
-  const extra = countPointReads((c) => { auto.frame(SIZE); for (const p of scene.paths) { const pp = new Proxy(p.points, { get(t, k, r) { if (typeof k === 'string' && /^\d+$/.test(k)) c.reads += 1; return Reflect.get(t, k, r); } }); for (let i = 0; i < pp.length; i++) pp[i]; } });
-  assert.equal(extra.reads - autoReads, total, '계수기가 추가 순회 1회를 total 만큼 세지 못했다');
+  let a = null, again = null, v = null, storedAuto = -1, storedView = -1;
+  countPointReads((c) => { auto.frame(SIZE); storedAuto = c.stored.length; a = { arr: c.arr, coord: c.coord }; c.arr = 0; c.coord = 0; auto.frame(SIZE); again = { arr: c.arr, coord: c.coord }; });
+  countPointReads((c) => { view.frame(SIZE); storedView = c.stored.length; v = { arr: c.arr, coord: c.coord }; });
+  // 계수기가 저장소 경로 목록을 가로채지 못하면(Array.from(Map 반복자) 경로가 바뀐 경우) 읽기 수가 0 이 되므로 원인을 먼저 가린다.
+  assert.equal(storedAuto, N_PATHS, `계수기가 가로챈 저장소 경로 ${storedAuto} 개(자동 맞춤 frame), 기대 ${N_PATHS}: 저장소 경로를 Array.from(Map 반복자)로 읽지 않게 바뀌었는지 확인`);
+  assert.equal(storedView, N_PATHS, `계수기가 가로챈 저장소 경로 ${storedView} 개(setView frame), 기대 ${N_PATHS}: 저장소 경로를 Array.from(Map 반복자)로 읽지 않게 바뀌었는지 확인`);
+  assert.ok(v.arr > 0 && v.coord > 0, `계수가 동작하지 않는다(setView frame 의 points 읽기 배열 ${v.arr}·좌표 ${v.coord}, 가로챈 경로 ${storedView} 개)`);
+  assert.equal(v.arr, total, `setView frame 의 배열 읽기 ${v.arr} 번, 기대 ${total}(buildPaths 1회)`);
+  assert.equal(v.coord, 2 * total, `setView frame 의 좌표 읽기 ${v.coord} 번, 기대 ${2 * total}`);
+  assert.equal(a.arr - v.arr, total, `맞춤 순회 배열 읽기 ${a.arr - v.arr} 번, 기대 ${total}(순회 ${((a.arr - v.arr) / total).toFixed(2)} 회)`);
+  assert.equal(a.coord - v.coord, 2 * total, `맞춤 순회 좌표 읽기 ${a.coord - v.coord} 번, 기대 ${2 * total}(복사 뒤 반복 순회 의심)`);
+  assert.deepEqual(again, a, '같은 frame 을 되풀이해도 읽기 수가 같아야 한다');
+  // 양성 대조: 설치된 Proxy 위에서 저장소 points 를 한 번 더 읽으면 계수기가 그만큼 올라야 한다(복사 뒤 반복도 좌표 계수에 잡힌다)
+  countPointReads((c) => {
+    auto.frame(SIZE);
+    c.arr = 0; c.coord = 0;
+    for (const p of c.stored) for (let i = 0; i < p.points.length; i++) { const q = p.points[i]; q[0]; q[1]; }
+    assert.equal(c.arr, total, '설치된 Proxy 가 추가 순회의 배열 읽기를 total 만큼 세지 못했다');
+    assert.equal(c.coord, 2 * total, '설치된 Proxy 가 추가 순회의 좌표 읽기를 2·total 만큼 세지 못했다');
+    c.arr = 0; c.coord = 0;
+    for (const p of c.stored) { const cp = p.points.slice(); for (let r = 0; r < 3; r++) for (let i = 0; i < cp.length; i++) { const q = cp[i]; q[0]; q[1]; } }
+    assert.equal(c.arr, total, 'slice 는 배열 읽기를 1회로만 센다');
+    assert.equal(c.coord, 6 * total, '복사 뒤 3회 순회의 좌표 읽기를 세지 못했다');
+  });
 });
 
 test('perf: 꼬리 비율은 중앙값 0 에서도 판정과 단언이 같다', () => {

@@ -4,7 +4,6 @@
 // 각 모드·카메라 조합의 덮인 화소 수는 측정값과 ±0.1% 안이어야 한다(일부만 그리거나 비우는 변이가 통과하지 못하게 한다).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { performance } from 'node:perf_hooks';
 import { EMPTY_INDEX } from '../../../contracts/raster/index.mjs';
 import { makeAerialImage } from './test_support/fixtures.mjs';
 
@@ -25,6 +24,11 @@ const COVERED_TOLERANCE = 0.001;
 const MIN_AERIAL_COLORS = [17300, 46700, 44000];
 const MODE_SWITCH_THRESHOLD_MS = 1;
 const MODE_SWITCH_CALLS = 1000;
+
+// 벽시계 대신 스레드 CPU 시간(threadCpuUsage, 없으면 프로세스 cpuUsage)으로 잰다: 전체 npm test 처럼 다른 프로세스가 CPU 를 빼앗아 생기는 대기(한 번 300 ms 를 넘긴 적이 있다)는 포함하지 않는다(reuse_cull.test.mjs 와 같은 방식).
+// 문턱 300 ms·1 ms 는 올리지도 측정에 맞춰 조정하지도 않았다. 렌더가 실제로 느려지는 변이(CPU 일 증가)는 CPU 시간에도 그대로 잡히므로 계속 실패한다.
+// 결정적 단언(덮인 화소 수 ±0.1%·aerial 색 수 하한·묶음 수·건물 수)은 시간과 별개로 병행한다.
+function cpuMs() { const u = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : process.cpuUsage(); return (u.user + u.system) / 1000; }
 
 /** 중앙값 계산 */
 function median(values) {
@@ -225,9 +229,9 @@ function medianMs(fn) {
   const times = [];
   fn(); // 워밍업
   for (let r = 0; r < RUNS; r++) {
-    const t0 = performance.now();
+    const t0 = cpuMs();
     fn();
-    times.push(performance.now() - t0);
+    times.push(cpuMs() - t0);
   }
   return median(times);
 }
@@ -282,9 +286,9 @@ test('buildings layer 성능: 렌더 ≤ 300ms, setMode ≤ 1ms (평균)', async
   // setMode 성능: 1000회 호출 평균
   const modeSwitchTimes = [];
   for (let i = 0; i < MODE_SWITCH_CALLS; i++) {
-    const t0 = performance.now();
+    const t0 = cpuMs();
     layer.setMode(modes[i % modes.length]);
-    modeSwitchTimes.push(performance.now() - t0);
+    modeSwitchTimes.push(cpuMs() - t0);
   }
   const avgModeSwitch = modeSwitchTimes.reduce((a, b) => a + b, 0) / modeSwitchTimes.length;
 

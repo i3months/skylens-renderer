@@ -8,8 +8,30 @@ export const TERRAIN_LOD_COUNT = 4;
 /**
  * 지형 LOD 단계별 높이 오차 상한(m): 내보내는 삼각형 메시 표면과 원본 DEM 표본의 높이 차 최댓값이 이 값 이하다(메시 표면 기준, 결정 0044 §5).
  * LOD 3 은 처음 2 m 였으나 결정 0046 T15.1c 에서 1 m 로 조였다(SSIM 시험 결과 기반 사후 조정). 자세한 근거·대가·한계는 결정 0046 참조.
+ * 결정 0057 부터 이 표는 셀 크기와 무관한 절대 상한이고, 실제 상한은 기울기 항과의 최솟값(terrainLodMaxErrorM)이다.
  */
 export const TERRAIN_LOD_MAX_ERROR_M = Object.freeze([0, 0.5, 1, 1]);
+/**
+ * 지형 LOD 기울기 오차 상한(무차원, m/m). 결정 0057(T15.10d, F-474).
+ * 높이 오차 상한은 셀 크기와 무관한 절대값이라, 같은 높이 오차라도 셀이 작을수록 이웃 표본 사이 기울기(곧 정점 법선 음영)가
+ * 크게 흔들린다(1 m 셀 ±0.15 m 잡음에서 현행표가 SSIM 0.95 를 어김). 그래서 LOD k ≥ 1 의 실제 상한은
+ * min(TERRAIN_LOD_MAX_ERROR_M[k], TERRAIN_LOD_MAX_SLOPE_ERROR · cellM) 이다(terrainLodMaxErrorM).
+ * 0.25 = 현행표 LOD1 상한 0.5 m ÷ 그 표가 검증된 장면(ssim_views makeHillDem)의 셀 2 m. 곧 이미 검증된 'LOD1 상한/셀' 비를
+ * 모든 LOD·모든 셀 크기에 적용한다(lowNoise 측정을 보고 고른 값이 아니다. 근거·대가는 결정 0057).
+ */
+export const TERRAIN_LOD_MAX_SLOPE_ERROR = 0.25;
+
+/**
+ * 셀 크기 cellM(m) 인 DEM 의 LOD lod 높이 오차 상한(m). LOD 0 은 0.
+ * @param {number} lod
+ * @param {number} cellM
+ */
+export function terrainLodMaxErrorM(lod, cellM) {
+  if (!Number.isInteger(lod) || lod < 0 || lod >= TERRAIN_LOD_MAX_ERROR_M.length) throw new RangeError(`lod ${String(lod)}`);
+  const abs = TERRAIN_LOD_MAX_ERROR_M[lod];
+  if (!(Number.isFinite(cellM) && cellM > 0)) throw new RangeError(`cellM ${cellM}`);
+  return Math.min(abs, TERRAIN_LOD_MAX_SLOPE_ERROR * cellM);
+}
 /** 드레이프 밉 단계 수. 0 = 가장 세밀. */
 export const DRAPE_MIP_COUNT = 4;
 /** 건물 높이 규칙: 층 수가 있으면 층 × 3 m, 없으면 6 m. */

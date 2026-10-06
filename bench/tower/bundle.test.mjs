@@ -17,13 +17,13 @@ const EXPECTED_MODULES = [
 const MIN_ENTRY_GZIP = 50; // an entry that bundles to fewer bytes is empty/broken
 // Floor for the whole bundle. Measured with only the entry files counted
 // (bundle:false, shared chunks dropped, or every import external) the total is
-// ~16,280 B; the real graph is 68,062 B. 32,000 B is about twice the
+// ~16,280 B; the real graph is 68,060 B. 32,000 B is about twice the
 // entry-files-only value, so any measurement that stops following imports
 // falls below it, while it stays well under the real total so ordinary
 // refactors do not trip it.
 const MIN_TOTAL_GZIP = 32_000;
-// Shared chunks alone. Measured on the real graph: 13 chunks, 32,630 B gzip
-// (entries alone: 35,432 B). 16,000 B is about half of that, so a measurement
+// Shared chunks alone. Measured on the real graph: 13 chunks, 32,930 B gzip
+// (entries alone: 35,130 B). 16,000 B is about half of that, so a measurement
 // that keeps only some of the chunks (e.g. one) falls well below it, while
 // ordinary refactors that move code between chunks do not trip it.
 const MIN_CHUNK_GZIP = 16_000;
@@ -31,6 +31,8 @@ const MIN_CHUNK_GZIP = 16_000;
 // few large chunks (and adjusting outputs to match) still passes the gzip
 // floor above, so the count is checked too. 10 leaves a margin of 3 for
 // chunks merging in ordinary refactors while rejecting a handful of survivors.
+// 여유 3: 가장 작은 3개 청크가 합 ~1,160 B일 때, 일반적 리팩터링에서 3개까지 통합되는
+// 것은 수용하되 그 이상은 거부한다 (code-split 에서 의도하지 않은 통합 감지).
 const MIN_CHUNK_COUNT = 10;
 // e2e wires the other tower modules together; its graph must include them.
 const MIN_E2E_INPUTS = 10;
