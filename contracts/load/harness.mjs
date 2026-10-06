@@ -1,0 +1,70 @@
+// Load harness contract (T16.1-T16.10). All harness modules are pure functions over an event log;
+// no sockets, no wall clock (time is the event's tMs). Same seed + same scenario gives the same log.
+// Decisions: see research decisions/0060. Coordinates are GeoAnchor-relative ENU, 1 unit = 1 m.
+//
+// ClientEvent: { id: int 0..clients-1, tMs: number >= 0 (ms from scenario start),
+//   kind: 'connect' | 'bytes' | 'level' | 'first_frame' | 'close',
+//   bytes?: int >= 0 (kind 'bytes': payload bytes received),
+//   level?: int 0..LEVEL_COUNT-1 (kind 'level': highest level that arrived, a replacement not an accumulation),
+//   latencyMs?: number >= 0 (kind 'bytes': request-to-receive delay of that payload) }
+//
+// Module signatures (default export is none; use the named export):
+//   T16.1  bench/load/clients/index.mjs      simulateClients(scenario, { seed }) -> ClientEvent[]   (sorted by tMs, then id)
+//   T16.2  bench/load/server_stats/index.mjs createStatsSampler({ intervalMs, cpuUsage, memoryUsage, now }) -> { tick(), samples() }
+//                                            samples() -> [{ tS, cpuPct, rssMB }] at intervalMs (default 1000)
+//   T16.3  bench/load/per_client/index.mjs   perClientFromEvents(events, clients) -> perClient[] (validateResult shape)
+//   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[] }
+//   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS }
+//   T16.6  bench/load/burst/index.mjs        simulateBurst(scenario, { seed }) -> { shown: [{id, tMs, level}], violations: string[] }
+//                                            (levels arriving together: only the highest is shown, overtaken ones are skipped, never filled in)
+//   T16.7  bench/load/slow_link/index.mjs    simulateSlowLink(scenario, { seed }) -> { events: ClientEvent[], maxQueueBytes, dropped: 0 }
+//                                            (sender queue bounded by backpressure; bytes are delayed, never invented)
+//   T16.8  tools/load_report/index.mjs       loadReport(result) -> markdown table string (SPEC section 4 rows)
+//   T16.9  bench/thresholds/index.mjs        checkThresholds(records, thresholds) -> string[] violations; thresholds.json beside it
+//   T16.10 bench/load/run_all/run.mjs        node run.mjs -> runs every scenario, writes result JSON, exits non-zero on violations
+import { LEVEL_COUNT } from '../asset/index.mjs';
+
+export const EVENT_KINDS = ['connect', 'bytes', 'level', 'first_frame', 'close'];
+
+/** Returns violation strings for one event; empty means valid. */
+export function validateEvent(e, clients) {
+  const isInt = Number.isInteger;
+  if (e === null || typeof e !== 'object' || Array.isArray(e)) return ['event must be an object'];
+  const errs = [];
+  if (!(isInt(e.id) && e.id >= 0 && e.id < clients)) errs.push('bad id');
+  if (!(Number.isFinite(e.tMs) && e.tMs >= 0)) errs.push('bad tMs');
+  if (!EVENT_KINDS.includes(e.kind)) errs.push('bad kind');
+  if (e.kind === 'bytes') {
+    if (!(isInt(e.bytes) && e.bytes >= 0)) errs.push('bad bytes');
+    if (!(Number.isFinite(e.latencyMs) && e.latencyMs >= 0)) errs.push('bad latencyMs');
+  }
+  if (e.kind === 'level' && !(isInt(e.level) && e.level >= 0 && e.level < LEVEL_COUNT)) errs.push('bad level');
+  return errs;
+}
+
+/** Shared deterministic PRNG (mulberry32) so every module draws the same way from a seed. */
+export function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export const FIXTURE_SCENARIO = {
+  name: 'fixture', kind: 'steady', clients: 3, durationS: 10,
+  path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 10, e: 30, n: 0, u: 100 }],
+};
+/** Tiny valid log for FIXTURE_SCENARIO: client 0 first frame at 1200 ms, 1 at 2000 ms, 2 never. */
+export const FIXTURE_EVENTS = [
+  { id: 0, tMs: 0, kind: 'connect' }, { id: 1, tMs: 0, kind: 'connect' }, { id: 2, tMs: 0, kind: 'connect' },
+  { id: 0, tMs: 1000, kind: 'bytes', bytes: 5000, latencyMs: 100 },
+  { id: 0, tMs: 1200, kind: 'first_frame' },
+  { id: 1, tMs: 1800, kind: 'bytes', bytes: 3000, latencyMs: 300 },
+  { id: 1, tMs: 2000, kind: 'first_frame' },
+  { id: 2, tMs: 4000, kind: 'bytes', bytes: 1000, latencyMs: 900 },
+  { id: 0, tMs: 9000, kind: 'close' }, { id: 1, tMs: 9000, kind: 'close' }, { id: 2, tMs: 9000, kind: 'close' },
+];
