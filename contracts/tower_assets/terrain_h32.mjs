@@ -21,7 +21,7 @@ export const TERRAIN_H32_VERSION = 2;
 export const TERRAIN_H32_HEADER_BYTES = 16;
 export const TERRAIN_H32_QUANT_EXTRA_BYTES = 8;
 export const TERRAIN_H32_FLAG_QUANTIZED = 1;
-/** 양자화 간격(m). 결정 0056 은 noiseBig 시드 0 한 장면만 쟀다(하락 0.0076). ssim_h32.test 측정(31 장면): 하락 최대 hill 0.0365·lowNoise 0.0183·noiseBig 0.0090, 최소 SSIM 0.9555(여유 약 0.006). 작업자가 정한 상한이며 SPEC 수치가 아니다. */
+/** 양자화 격자 간격(m). 전역 격자라 모든 타일이 같은 step 을 써야 한다(디코더가 다른 step 을 거부). 선택 근거(F-493, 전역 격자 6e138ea 에서 재측정, ssim_h32_sweep.mjs, 128 장면 × LOD1~3 × 8시점): step 0.25 는 noiseBig 시드 6 에서 SSIM 0.9489 미달, 0.15 이하는 모든 장면 ≥ 0.95(0.15 최소 0.9627, 0.1 0.9642, 0.05 0.9647, 0.03 0.9648). 바이트는 step 과 무관(u16)이고 최소 SSIM 은 step ≤ 0.1 에서 LOD 솎기(lowNoise012 0.9647)가 정하므로, 오차를 줄이는 쪽(양자화 오차 ≤ step/2 = 0.015 m)으로 0.03 m 를 둔다. 작업자가 정한 값이며 SPEC 수치가 아니다. */
 export const TERRAIN_H32_STEP_M = 0.03;
 export const TERRAIN_H32_MAX_Q = 65535;
 const I32_MIN = -0x80000000, I32_MAX = 0x7fffffff;
