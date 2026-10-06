@@ -6,11 +6,13 @@ import { ENV_HOST, ENV_PORT } from '../../../server/ws/index.mjs';
 const MAIN = fileURLToPath(new URL('./server_main.mjs', import.meta.url));
 const START_TIMEOUT_MS = 10000;
 const KILL_AFTER_MS = 3000;
+const MAX_TIMER_MS = 2 ** 31 - 1; // larger setTimeout delays are coerced to 1 ms by Node
 
 export function startServerProcess({ host, env = {}, mainPath = MAIN, startTimeoutMs = START_TIMEOUT_MS, killAfterMs = KILL_AFTER_MS } = {}) {
   if (!host) return Promise.reject(new TypeError('host is required'));
   for (const [name, v] of [['startTimeoutMs', startTimeoutMs], ['killAfterMs', killAfterMs]]) {
     if (!Number.isFinite(v) || v <= 0) return Promise.reject(new RangeError(`${name} must be a positive finite number`));
+    if (v > MAX_TIMER_MS) return Promise.reject(new RangeError(`${name} must be <= ${MAX_TIMER_MS}`));
   }
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [mainPath], {

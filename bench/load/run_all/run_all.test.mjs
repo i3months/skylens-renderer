@@ -372,3 +372,30 @@ test('F-558: default SCENARIOS give no violations and 60 samples each', () => {
     assert.equal(r.serverSamples.length, 60, s.name);
   }
 });
+
+// ---- F-579: on a cloud-approximation run only the first_frame_p95 threshold is a reference note ----
+test('F-579: loopback-socket keeps a bandwidth threshold overrun a violation, only first_frame goes to notes; sim has both as violations', () => {
+  const sc = { name: 'socket3', kind: 'steady', clients: 3, durationS: 4, path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 4, e: 150, n: 0, u: 100 }] };
+  const events = [];
+  for (let id = 0; id < 3; id++) {
+    events.push({ id, tMs: 0, kind: 'connect' });
+    events.push({ id, tMs: 3500, kind: 'bytes', bytes: 1000, latencyMs: 3500 });
+    events.push({ id, tMs: 3500, kind: 'level', level: 0 });
+    events.push({ id, tMs: 3500, kind: 'first_frame' });
+    events.push({ id, tMs: 4000, kind: 'close' });
+  }
+  events.sort((a, b) => a.tMs - b.tMs || a.id - b.id);
+  const thresholds = { 'load.first_frame_p95': { max: 3000 }, 'load.bandwidth_total': { max: 1 } };
+  const sock = runScenario(sc, { ...OPTS, events, thresholds, method: 'loopback-socket' });
+  const noSamples = (xs) => xs.filter((v) => !v.includes('server samples'));
+  assert.ok(sock.violations.includes('socket3: load.bandwidth_total: 3000 > max 1'), sock.violations.join('\n'));
+  assert.ok(!sock.violations.some((v) => v.includes('load.first_frame_p95')), sock.violations.join('\n'));
+  assert.ok(!sock.violations.some((v) => v.includes('first-frame p95')), sock.violations.join('\n'));
+  assert.ok(!sock.notes.some((n) => n.includes('bandwidth')), sock.notes.join('\n'));
+  assert.ok(sock.notes.some((n) => n.endsWith('load.first_frame_p95: 3500 > max 3000')), sock.notes.join('\n'));
+  assert.equal(noSamples(sock.violations).length, 1, sock.violations.join('\n'));
+  const sim = runScenario(sc, { ...OPTS, events, thresholds });
+  assert.deepEqual(sim.notes, []);
+  assert.ok(sim.violations.includes('socket3: load.bandwidth_total: 3000 > max 1'), sim.violations.join('\n'));
+  assert.ok(sim.violations.includes('socket3: load.first_frame_p95: 3500 > max 3000'), sim.violations.join('\n'));
+});

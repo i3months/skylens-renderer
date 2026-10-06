@@ -53,6 +53,7 @@ export const MAX_TICK_LATE_MS = 1000;
  * Resolves after the last tick.
  */
 export function tickOnRealClock(sampler, durationS, now, onError, t0 = now(), schedule = setTimeout) {
+  if (!(Number.isFinite(durationS) && durationS > 0)) throw new RangeError(`tickOnRealClock: durationS must be a finite number > 0, got ${durationS}`);
   const n = Math.ceil(durationS);
   let i = 0;
   return new Promise((resolve, reject) => {
@@ -134,7 +135,7 @@ export async function runSocketLoad({ clients = 30, durationS = 10, commit, deps
   return { result, violations, notes, serverSamples, report };
 }
 
-export async function main(outDir = 'load_out/socket', durationArg, opts = {}) {
+export async function main(outDir = 'load_out/socket', durationArg, opts = {}, writeErr = (s) => process.stderr.write(s)) {
   const durationS = durationArg === undefined ? 10 : Number(durationArg);
   if (!(Number.isFinite(durationS) && durationS > 0)) {
     console.error(`usage: node bench/load/socket/run.mjs [outDir] [durationS]  (bad durationS: ${durationArg})`);
@@ -148,6 +149,7 @@ export async function main(outDir = 'load_out/socket', durationArg, opts = {}) {
   const violationLines = violations.map((v) => `- ${v}`).join('\n');
   writeFileSync(`${outDir}/report.md`, `## ${SCENARIO_NAME}\n${body}\n${notes.length ? `\nreference only (not S5 verdicts):\n${notes.map((n) => `- ${n}`).join('\n')}\n` : ''}${violations.length ? `\nviolations:\n${violationLines}\n` : ''}`);
   console.log(`## ${SCENARIO_NAME}\n${body}\n`);
+  for (const n of notes) writeErr(`NOTE ${n}\n`);
   for (const v of violations) console.error(`VIOLATION ${v}`);
   return violations.length === 0 ? 0 : 1;
 }

@@ -6,6 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import { startServerProcess } from './server_proc.mjs';
 import { LEVEL_PAYLOAD_BYTES, SOCKET_HOST } from './contract.mjs';
@@ -171,5 +172,40 @@ test('startServerProcess rejects invalid timeouts with a RangeError and spawns n
     assert.throws(() => readFileSync(f.pidFile), { code: 'ENOENT' });
   } finally {
     rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+const timeouts = () => process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length;
+const settle = () => new Promise((r) => setImmediate(r));
+
+test('startServerProcess, stop() and within() leave no pending timers behind', async () => {
+  const f = fakeMain("console.log('listening 1');");
+  try {
+    await settle();
+    const before = timeouts();
+    const proc = await within(startServerProcess({ host: SOCKET_HOST, mainPath: f.mainPath }), 5000);
+    await within(proc.stop(), 5000);
+    await settle();
+    assert.equal(timeouts(), before);
+  } finally {
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test('invalid options are rejected before child_process.spawn is called', async () => {
+  const require = createRequire(import.meta.url);
+  const cp = require('node:child_process');
+  const real = cp.spawn;
+  let calls = 0;
+  cp.spawn = (...args) => { calls++; return real(...args); };
+  syncBuiltinESMExports();
+  try {
+    for (const opt of [{ startTimeoutMs: NaN }, { killAfterMs: NaN }, { startTimeoutMs: -1 }]) {
+      await assert.rejects(startServerProcess({ host: SOCKET_HOST, ...opt }), RangeError, JSON.stringify(opt));
+    }
+    assert.equal(calls, 0);
+  } finally {
+    cp.spawn = real;
+    syncBuiltinESMExports();
   }
 });
