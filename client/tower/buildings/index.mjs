@@ -10,6 +10,7 @@ import { rasterizeFlat } from './raster_flat.mjs';
 import { rasterizeTextured } from './raster_tex.mjs';
 import { rasterizeLines } from './lines.mjs';
 import { rasterizePoints } from './points.mjs';
+import { rasterCount } from './raster_count.mjs';
 
 const EMPTY_GROUP = Object.freeze({
   ids: Object.freeze([]),
@@ -76,7 +77,7 @@ export function createBuildingsLayer(opts) {
   let boundsOf = null; // bounds 를 만든 묶음 목록(교체 감지)
   const scratchGroups = []; // render 마다 재사용하는 래스터 입력(번호 유지: 빠진 자리는 빈 묶음)
   const corners = new Array(24).fill(0);
-  let stats = { groupsTotal: 0, groupsDrawn: 0 };
+  let stats = { groupsTotal: 0, groupsDrawn: 0, rasterCalls: 0, rasterPixels: 0 };
   // 생성 시점에 색 인자를 한 번 검사한다(잘못된 값은 render 가 아니라 생성에서 던진다).
   rasterizeLines({ width: 1, height: 1, K: { fx: 1, fy: 1, cx: 0.5, cy: 0.5 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }, [], lineRgb, emptyResult(1, 1));
   rasterizePoints({ width: 1, height: 1, K: { fx: 1, fy: 1, cx: 0.5, cy: 0.5 }, R: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }, [], pointRgb, emptyResult(1, 1));
@@ -117,7 +118,7 @@ export function createBuildingsLayer(opts) {
         out.color.fill(0); out.depth.fill(EMPTY_DEPTH); out.index.fill(EMPTY_INDEX);
       }
       const bundle = state.bundle();
-      if (!bundle) { stats = { groupsTotal: 0, groupsDrawn: 0 }; return out; }
+      if (!bundle) { stats = { groupsTotal: 0, groupsDrawn: 0, rasterCalls: 0, rasterPixels: 0 }; return out; }
       const groups = bundle.groups;
       let drawn = groups.length;
       let list = groups;
@@ -132,7 +133,7 @@ export function createBuildingsLayer(opts) {
         }
         list = scratchGroups;
       }
-      stats = { groupsTotal: groups.length, groupsDrawn: drawn };
+      const calls0 = rasterCount.calls, pixels0 = rasterCount.pixels;
       const mode = modeState.get();
       if (mode === 'points') rasterizePoints(camera, list, pointRgb, out);
       else if (mode === 'aerial') rasterizeTextured(camera, list, bundle.image, out);
@@ -140,9 +141,10 @@ export function createBuildingsLayer(opts) {
         rasterizeFlat(camera, list, () => face, out);
         rasterizeLines(camera, list, lineRgb, out);
       }
+      stats = { groupsTotal: groups.length, groupsDrawn: drawn, rasterCalls: rasterCount.calls - calls0, rasterPixels: rasterCount.pixels - pixels0 };
       return out;
     },
-    /** 진단용: 마지막 render 에서 래스터에 넘어간 묶음 수. */
+    /** 진단용: 마지막 render 의 래스터에 넘어간 묶음 수, 래스터 호출 수, 처리 화소 수(points 는 점 수). */
     stats() {
       return stats;
     },

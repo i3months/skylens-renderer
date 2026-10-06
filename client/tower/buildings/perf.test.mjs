@@ -1,7 +1,7 @@
 // 건물 층 성능 시험. 3000개 건물 묶음을 세 카메라(위에서 내려다봄 + 비스듬 2종)로 세 옵션 각각 렌더(RUNS=5회 중앙값).
-// 시간 문턱은 CPU 래스터 회귀 감시용 거친 상한이며 모드마다 따로 둔다(근거는 RENDER_THRESHOLD_MS 위).
-// 렌더 문턱은 S1 판정이 아니다. black 은 실측 최대 약 51 ms(부하 시 더 큼) 라 S1 의 33 ms 를 넘을 수 있다(aerial 최대 약 68 ms). 실기기 fps 는 T17 [local] 에서 잰다.
-// 각 모드·카메라 조합의 덮인 화소 수는 측정값과 ±0.1% 안이어야 한다(일부만 그리거나 비우는 변이가 통과하지 못하게 한다).
+// 회귀 감시의 중심은 결정적 단언이다: 모드별 래스터 호출 수(정확값)·처리 화소 수(±0.1%)·덮인 화소 수(±0.1%)·aerial 색 수. 래스터를 여러 번 부르는 변이는 시간이 아니라 이 숫자로 잡는다.
+// 시간 문턱은 CPU 래스터가 크게 느려지는 회귀만 보는 거친 상한이며 모드마다 따로 둔다(측정 규칙과 근거는 RENDER_THRESHOLD_MS 위). S1 판정이 아니다. 실기기 fps 는 T17 [local] 에서 잰다.
+// 재사용 out 단언: 이전 렌더 잔여가 가득한 out 을 넘겨도 덮인 화소 수가 새 out 렌더와 같아야 한다(index.mjs 의 out 초기화 삭제 변이를 잡는다).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EMPTY_INDEX } from '../../../contracts/raster/index.mjs';
@@ -13,18 +13,19 @@ const GROUP_COUNT = 6; // 합성 장면을 나눌 묶음 수(3000개 건물을 5
 // 합성 항공영상 범위(ENU m): 건물 격자(약 ±1400 m) 전체를 덮는다.
 const AERIAL_BOUNDS_M = { minX: -1500, minY: -1500, maxX: 1500, maxY: 1500 };
 // 모드별 렌더 문턱(ms). 한 문턱을 공용하면 points(실측 1 ms 안팎)가 수십 배 느려져도 통과하므로 모드마다 둔다.
-// 측정 규칙(미리 정함, F-503): 문턱은 (a) 원본을 8 프로세스 동시 부하로 40회 돌려 전부 통과하는 값이고, (b) 래스터 4회 반복 변이를 가르는 값이면 더 좋다.
-// 측정 조건: render(camera, out) 에 미리 할당한 out 을 넘겨 출력 버퍼 할당 비용을 뺀다(out 초기화 fill 은 남는다). 스레드 CPU 시간, 카메라 3개 중 최대.
-// 실측(VM, 4코어, out 사전 할당): 원본 순차 20회 최대 black 50.9·aerial 68.0·points 1.0 ms, 8 프로세스 동시 부하에서 최대 aerial 94.9(40회 중 문턱 90 으로 1회 실패해 올림)·감독 재현 81.8·black 83.5 ms.
-// 래스터 4회 반복 변이: black 최소 106.2(15회 중 1회는 95 이하라 통과)·aerial 최소 79.9(최대 119.0)·points 2.6 ms 이상(10/10 실패).
-// black 100 ms 는 4회 변이를 대부분(약 90 %) 가르고, points 2 ms 는 10/10 가른다. aerial 은 변이 최소(79.9)가 부하 원본 최대(94.9)보다 낮아 둘을 한 문턱으로 가를 수 없다.
-// 그래서 원본이 거짓 실패하지 않는 쪽을 우선해 aerial 120 ms(부하 최대의 1.26배)로 둔다. 한계: aerial 은 4회 반복 변이를 잡지 못하고 래스터 약 6~7배 이상의 회귀만 잡는다. black 도 4회 변이를 매번 잡지는 않는다(미충족, 감독 판정 요청).
-// points: 1280×720 에서는 출력 버퍼 초기화 같은 고정 비용이 커서 4회 변이가 약 2배밖에 안 늘었다. 화소 수에 비례하지 않는 점 투영 비용만 남도록
-// 가로세로 1/4 카메라(같은 시야각)로 재고, 1회가 threadCpuUsage 눈금(이 VM 약 4 ms)보다 짧아 POINTS_REPS 회를 한 쌍으로 재서 호출당 값을 낸다.
+// 측정 규칙(측정 전에 정함, F-505): 문턱은 래스터 호출 수·화소 수 단언이 못 보는 큰 회귀용 거친 상한이다. 원본을 8 프로세스 동시(×5 라운드 40회)와 16 프로세스 동시(×3 라운드 48회)로 돌려 모드별 최대를 재고,
+// 문턱 = 그 최대의 약 1.5배 이상으로 올림한다. 래스터 4회 반복 변이를 시간으로 가르려고 문턱을 내리지 않는다(그건 결정적 단언의 몫이고, 부하에서 원본 최대가 변이 최소와 겹쳐 시간으로는 못 가른다).
+// 측정 조건: render(camera, out) 에 미리 할당한 out 을 넘겨 출력 버퍼 할당 비용을 뺀다(out 초기화 fill 은 남는다). 스레드 CPU 시간, 카메라 3개 중 최대. VM 4코어.
+// 실측(F-505, 원본): 순차 최대 black 51.9·aerial 68.3·points 1.2 ms. 8 프로세스 동시 40회 최대 black 74.7·aerial 102.2·points 1.8 ms, 16 프로세스 동시 48회 최대 black 77.8·aerial 100.7·points 1.6 ms. 전부 통과.
+// 그래서 black 120(최대의 1.5배)·aerial 160(1.57배)·points 3 ms(1.67배). 이전 F-503 의 aerial 90 → 120 은 부하 최대 94.9 ms 기준이었고 이번 부하 최대가 102.2 ms 라 100 아래로 되돌릴 근거가 없다.
+// 한계: 이 문턱은 래스터가 약 1.5~2배 이상 느려져야 실패한다. 래스터를 4회 부르는 식의 회귀는 호출 수·화소 수 단언이 정확히 잡는다.
+// points: 1280×720 에서는 출력 버퍼 초기화 같은 고정 비용이 커서 가로세로 1/4 카메라(같은 시야각)로 재고, 1회가 threadCpuUsage 눈금(이 VM 약 4 ms)보다 짧아 POINTS_REPS 회를 한 쌍으로 재서 호출당 값을 낸다.
 const POINTS_REPS = 100; // points 는 1회가 눈금보다 짧아 100회를 한 쌍으로 잰다(해상도 약 0.04 ms)
-const RENDER_THRESHOLD_MS = { black: 100, points: 2, aerial: 120 };
-// 벽시계 멈춤 감시: CPU 시간이 못 보는 Atomics.wait·sleep 류 지연을 호출당 벽시계의 5회 중앙값으로 잡는다. 한 번의 순간 지연(부하에서 1538·2001 ms 가 한 번 나온 적 있다)에는 실패하지 않는다.
-// 문턱 350 ms: 8 프로세스 부하 중앙값 최대 약 208 ms(감독 축 4b)보다 위, Atomics.wait 400 ms 변이(호출마다 대기 → 중앙값 ≥ 400 ms)보다 아래.
+const RENDER_THRESHOLD_MS = { black: 120, points: 3, aerial: 160 };
+// 비CPU 멈춤 감시(Atomics.wait·sleep·I/O 대기처럼 CPU 시간이 못 보는 지연). 측정 규칙(측정 전에 정함, F-505): 호출당 (벽시계 − CPU) 를 RUNS=5회 재어 최솟값을 문턱과 비교한다.
+// 다른 프로세스에 CPU 를 빼앗겨 생기는 대기는 5회 모두에서 같이 커질 수 없다고 보고 최솟값을 쓴다(한 번의 순간 지연에 실패하지 않는다). 문턱은 부하 원본 최댓값 위, 호출당 400 ms 대기 변이 아래의 거친 상한이다.
+// 실측(F-505, 원본): 16 프로세스 동시 48회에서 최솟값의 최대 200.5 ms. Atomics.wait 400 ms 변이는 호출마다 대기하므로 최솟값 ≥ 400 ms.
+// 한계: 문턱 350 ms 미만의 멈춤(예: 100 ms 대기)은 못 잡는다. 그 이하는 실기기 fps(T17 [local])가 맡는다.
 const WALL_STALL_MS = 350;
 // 모드·카메라(위/남동/북서)별 덮인 화소 수의 측정값. 래스터는 결정적이라 3회 실행이 같았고(묶음 1개·6개 모두), 측정값과 ±0.1% 안이어야 한다.
 const EXPECTED_COVERED = {
@@ -33,16 +34,23 @@ const EXPECTED_COVERED = {
   aerial: [251783, 383930, 400922],
 };
 const COVERED_TOLERANCE = 0.001;
+// 모드별 render 한 번의 래스터 함수 호출 수(정확값)와 카메라별 처리 화소 수(±0.1%). stats() 의 rasterCalls·rasterPixels 로 읽는다.
+// black = 면(flat) + 선(lines) 2회, aerial = 질감 1회, points = 점 1회. 화소 수: flat·tex 는 깊이 시험 통과(onPixel 호출), lines 는 plot 시도, points 는 검사한 점 수.
+const EXPECTED_RASTER_CALLS = { black: 2, points: 1, aerial: 1 };
+const EXPECTED_RASTER_PIXELS = {
+  black: [448077, 663998, 686759],
+  points: [20000, 60000, 60000],
+  aerial: [408823, 587575, 610462],
+};
 // aerial 카메라별 서로 다른 색 수 하한: 원본 결과(19230/51954/48890)의 약 90%. 1×1 단색 영상이면 몇 가지뿐이다.
 const MIN_AERIAL_COLORS = [17300, 46700, 44000];
 const MODE_SWITCH_THRESHOLD_MS = 1;
 const MODE_SWITCH_CALLS = 1000;
 
-// 벽시계 대신 스레드 CPU 시간(threadCpuUsage, 없으면 프로세스 cpuUsage)으로 잰다: 전체 npm test 처럼 다른 프로세스가 CPU 를 빼앗아 생기는 대기(한 번 300 ms 를 넘긴 적이 있다)는 포함하지 않는다(reuse_cull.test.mjs 와 같은 방식).
-// 문턱 근거는 위 RENDER_THRESHOLD_MS 주석(F-503: aerial 90 ms). 렌더가 실제로 느려지는 변이(CPU 일 증가)는 CPU 시간에도 그대로 잡히므로 계속 실패한다.
-// 한계: CPU 시간은 Atomics.wait·sleep·I/O 대기 같은 비CPU 지연을 보지 못한다. 그런 지연은 호출당 벽시계 중앙값이 WALL_STALL_MS(350 ms)를 넘을 때만 잡히고, 짧은 지연은 통과한다.
-// 그 이하의 멈춤은 실기기 fps(T17 [local])가 맡고, 여기서는 CPU 일 증가만 정밀하게 감시한다.
-// 결정적 단언(덮인 화소 수 ±0.1%·aerial 색 수 하한·묶음 수·건물 수)은 시간과 별개로 병행한다.
+// 스레드 CPU 시간(threadCpuUsage, 없으면 프로세스 cpuUsage)으로 잰다: 전체 npm test 처럼 다른 프로세스가 CPU 를 빼앗아 생기는 대기는 포함하지 않는다(reuse_cull.test.mjs 와 같은 방식).
+// 문턱 근거는 위 RENDER_THRESHOLD_MS 주석. CPU 일이 크게 늘어나는 변이는 CPU 시간에도 그대로 잡힌다.
+// 한계: CPU 시간은 비CPU 지연을 보지 못한다. 그런 지연은 위 WALL_STALL_MS 주석의 (벽시계 − CPU) 최솟값 감시가 문턱 350 ms 이상일 때만 잡는다.
+// 결정적 단언(래스터 호출 수·처리 화소 수·덮인 화소 수 ±0.1%·aerial 색 수 하한·묶음 수·건물 수)은 시간과 별개로 병행한다.
 function cpuMs() { const u = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : process.cpuUsage(); return (u.user + u.system) / 1000; }
 
 /** 중앙값 계산 */
@@ -245,22 +253,48 @@ function makeOut(camera) {
   return { width: camera.width, height: camera.height, color: new Uint8Array(3 * n), depth: new Float32Array(n), index: new Int32Array(n) };
 }
 
-/** RUNS회 호출해서 중앙값 얻기. 벽시계는 호출당 값의 중앙값을 WALL_STALL_MS 와 비교한다(한 번의 순간 지연에 거짓 실패하지 않는다). */
+/** RUNS회 호출해서 CPU 시간 중앙값 얻기. 비CPU 멈춤 감시는 호출당 (벽시계 − CPU) 의 RUNS회 최솟값을 WALL_STALL_MS 와 비교한다(규칙은 위 주석). */
 function medianMs(fn, reps = 1) {
   const times = [];
-  const walls = [];
+  const idle = [];
   fn(); // 워밍업
   for (let r = 0; r < RUNS; r++) {
     const w0 = performance.now();
     const t0 = cpuMs();
     for (let k = 0; k < reps; k++) fn(); // reps 회를 한 쌍으로 재고 나눈다(눈금 약 4 ms 보다 짧은 연산용)
-    times.push((cpuMs() - t0) / reps);
-    walls.push((performance.now() - w0) / reps);
+    const cpu = (cpuMs() - t0) / reps;
+    times.push(cpu);
+    idle.push((performance.now() - w0) / reps - cpu);
   }
-  const wall = median(walls);
-  assert.ok(wall <= WALL_STALL_MS, `벽시계 호출당 중앙값 ${wall.toFixed(0)} ms > ${WALL_STALL_MS} ms (비CPU 멈춤 의심)`);
+  const minIdle = Math.min(...idle);
+  console.log(`  (벽시계 − CPU) 최솟값 ${minIdle.toFixed(1)} ms`);
+  assert.ok(minIdle <= WALL_STALL_MS, `호출당 (벽시계 − CPU) 최솟값 ${minIdle.toFixed(0)} ms > ${WALL_STALL_MS} ms (비CPU 멈춤 의심)`);
   return median(times);
 }
+
+test('buildings layer: 재사용 out 에 이전 렌더 잔여가 있어도 덮인 화소 수가 새 out 렌더와 같다', async () => {
+  const { createBuildingsLayer } = await import('./index.mjs');
+  const layer = createBuildingsLayer({ mode: 'black' });
+  assert.equal(layer.accept(0, createSyntheticBundle()), 'first');
+  const camera = makeCameras()[1];
+  for (const mode of ['black', 'points', 'aerial']) {
+    layer.setMode(mode);
+    const want = EXPECTED_COVERED[mode][1];
+    const fresh = layer.render(camera);
+    // 잔여: 모든 화소가 "가장 가까운 깊이로 이미 덮임". 초기화(fill)가 없으면 아무것도 새로 그려지지 않고 잔여 index 가 그대로 남는다.
+    const out = makeOut(camera);
+    out.color.fill(255); out.depth.fill(1e-3); out.index.fill(7);
+    const res = layer.render(camera, out);
+    assert.equal(res, out);
+    const covered = coveredPixels(res);
+    assert.ok(Math.abs(covered - want) <= want * COVERED_TOLERANCE, `${mode}: 재사용 out 덮인 화소 ${covered} 가 측정값 ${want} 의 ±0.1% 밖(out 초기화 누락 의심)`);
+    assert.equal(covered, coveredPixels(fresh), `${mode}: 재사용 out 과 새 out 의 덮인 화소 수가 다름`);
+    // 덮이지 않은 화소는 비어 있어야 한다(잔여 색·깊이가 남지 않음).
+    let dirty = 0;
+    for (let i = 0; i < res.index.length; i++) if (res.index[i] === EMPTY_INDEX && (res.color[3 * i] !== 0 || res.depth[i] !== fresh.depth[i])) dirty++;
+    assert.equal(dirty, 0, `${mode}: 덮이지 않은 화소 ${dirty}개에 잔여 색·깊이가 남음`);
+  }
+});
 
 test('buildings layer 성능: 렌더 모드별 문턱, setMode ≤ 1ms (평균)', async () => {
   const { createBuildingsLayer } = await import('./index.mjs');
@@ -288,6 +322,11 @@ test('buildings layer 성능: 렌더 모드별 문턱, setMode ≤ 1ms (평균)'
       console.log(`  ${mode} 카메라 ${ci}: 덮인 화소 ${covered}`);
       const want = EXPECTED_COVERED[mode][ci];
       assert.ok(Math.abs(covered - want) <= want * COVERED_TOLERANCE, `${mode} 카메라 ${ci}: 덮인 화소 ${covered} 가 측정값 ${want} 의 ±0.1% 밖`);
+      const st = layer.stats();
+      console.log(`  ${mode} 카메라 ${ci}: 래스터 호출 ${st.rasterCalls}, 처리 화소 ${st.rasterPixels}`);
+      assert.equal(st.rasterCalls, EXPECTED_RASTER_CALLS[mode], `${mode} 카메라 ${ci}: 래스터 호출 수 ${st.rasterCalls}`);
+      const wantPx = EXPECTED_RASTER_PIXELS[mode][ci];
+      assert.ok(Math.abs(st.rasterPixels - wantPx) <= wantPx * COVERED_TOLERANCE, `${mode} 카메라 ${ci}: 처리 화소 ${st.rasterPixels} 가 측정값 ${wantPx} 의 ±0.1% 밖`);
       if (mode === 'aerial') {
         // 영상을 표본하는 것은 지붕(wallMask 0)이다. 실제로 표본했다면 지붕 화소 색이 다양해야 한다(1×1 단색 영상이면 몇 가지뿐).
         const colors = distinctCoveredColors(res);
