@@ -154,3 +154,12 @@ test('boundary seeds 0 and 2^32-1 are valid and give different logs', () => {
   assert.ok(a.events.length > 60 && b.events.length > 60);
   assert.notDeepEqual(a.events, b.events);
 });
+
+test('F-552: slow link emits a level-0 event for every client that received bytes', () => {
+  const r = simulateSlowLink(mk(50000), { seed: 9 });
+  const got = new Set(r.events.filter((e) => e.kind === 'bytes' && e.bytes > 0).map((e) => e.id));
+  assert.ok(got.size > 0);
+  for (const id of got) {
+    assert.ok(r.events.some((e) => e.id === id && e.kind === 'level' && e.level === 0), `client ${id} level 0`);
+  }
+});
