@@ -73,3 +73,33 @@ test('input validation errors', () => {
     assert.throws(() => checkThresholds([], bad), { message: 'thresholds must be an object' });
   }
 });
+
+test('checkThresholds rejects empty thresholds object', () => {
+  assert.throws(() => checkThresholds([], {}), { message: 'thresholds object must not be empty' });
+});
+
+test('loadThresholds validation: rejects missing max/min', () => {
+  // Test that checkThresholds rejects thresholds without max/min
+  const invalidThresholds = { 'load.metric': {} };
+  assert.throws(() => checkThresholds([], invalidThresholds), { message: 'load.metric: threshold needs max or min' });
+});
+
+test('loadThresholds validation: rejects invalid numeric values', () => {
+  // Test that checkThresholds rejects thresholds with non-numeric max/min
+  assert.throws(() => checkThresholds([], { 'load.metric': { max: 'not_a_number' } }),
+    { message: 'load.metric: max must be a finite number' });
+  assert.throws(() => checkThresholds([], { 'load.metric': { min: NaN } }),
+    { message: 'load.metric: min must be a finite number' });
+  assert.throws(() => checkThresholds([], { 'load.metric': { max: Infinity } }),
+    { message: 'load.metric: max must be a finite number' });
+  assert.throws(() => checkThresholds([], { 'load.metric': { min: -Infinity } }),
+    { message: 'load.metric: min must be a finite number' });
+});
+
+test('loadThresholds validation: rejects non-object threshold values', () => {
+  // Test that checkThresholds rejects non-object threshold entries
+  for (const bad of [null, 'string', 42, [], true]) {
+    assert.throws(() => checkThresholds([], { 'load.metric': bad }),
+      { message: 'load.metric: threshold must be an object' });
+  }
+});

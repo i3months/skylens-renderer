@@ -7,6 +7,9 @@ function assertThresholds(thresholds) {
   if (thresholds === null || typeof thresholds !== 'object' || Array.isArray(thresholds)) {
     throw new Error('thresholds must be an object');
   }
+  if (Object.keys(thresholds).length === 0) {
+    throw new Error('thresholds object must not be empty');
+  }
   for (const [name, t] of Object.entries(thresholds)) {
     if (t === null || typeof t !== 'object' || Array.isArray(t)) throw new Error(`${name}: threshold must be an object`);
     const hasMax = 'max' in t;
@@ -52,5 +55,7 @@ export function checkThresholds(records, thresholds) {
 }
 
 export function loadThresholds() {
-  return JSON.parse(readFileSync(new URL('./thresholds.json', import.meta.url), 'utf8'));
+  const thresholds = JSON.parse(readFileSync(new URL('./thresholds.json', import.meta.url), 'utf8'));
+  assertThresholds(thresholds);
+  return thresholds;
 }
