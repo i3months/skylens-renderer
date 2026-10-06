@@ -1,4 +1,6 @@
 // Server process CPU/memory readings from /proc (Linux) for the load harness.
+// Note: the sampler's cpuPct resolution is 100/(CLK_TCK*wallS) percent (utime/stime are whole clock ticks),
+// so short buckets are coarse: with CLK_TCK=100 and a 1 s bucket, steps of 1 %; a 0.1 s bucket, steps of 10 %.
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createStatsSampler } from '../server_stats/index.mjs';
@@ -47,9 +49,14 @@ export function readProcStats(pid) {
 
 // Stats sampler over another process; a gone process yields null, which the sampler treats as a skipped tick.
 export function createProcSampler({ pid, now } = {}) {
+  // Resolve getconf values now, before the sampler's clock starts, so the first tick is not delayed by a subprocess.
+  tck();
+  pgsz();
+  // One /proc snapshot per tick: the sampler calls cpuUsage() first, memoryUsage() right after, for the same tick.
+  let snap = null;
   return createStatsSampler({
-    cpuUsage: () => readProcStats(pid)?.cpuUsage ?? null,
-    memoryUsage: () => { const r = readProcStats(pid); return r ? { rss: r.rssBytes } : null; },
+    cpuUsage: () => { snap = readProcStats(pid); return snap?.cpuUsage ?? null; },
+    memoryUsage: () => (snap ? { rss: snap.rssBytes } : null),
     now: now ?? (() => performance.now()),
     clock: 'real',
     source: 'server-process',
