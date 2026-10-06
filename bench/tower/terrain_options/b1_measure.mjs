@@ -15,7 +15,7 @@
 // 바이트(lod_bytes.mjs 와 같은 정의, raw 만): 256 타일 합. 간격이 DEM 전역 하나라 타일마다 cells 가 같다.
 //   메시 형식 = 조각 프레임 머리(PIECE_FRAME_OVERHEAD_BYTES) + 메시 머리 16 B + f32 xyz·cells² + u32 인덱스·6(cells−1)²
 //   높이만 형식 = 조각 프레임 머리 + 16 B + f32 높이·cells²
-//   현행표 (i) 에서는 smooth 에 대해 lod_bytes.mjs measureLodBytes 와 바이트가 같은지 대조한다(--no-check 로 끔).
+//   check 가 켜지면 모든 DEM 에서 사본 대 서버(서버 실효 상한) 간격·타일 높이를 대조한다(--no-check 로 끔).
 //
 // SSIM(client/tower/terrain/ssim_views.test.mjs 2부 절차): 기준 영상 = 같은 DEM 의 LOD 0 메시를 ref_trace(정점 법선, 서버 램버트)로,
 //   대상 = createTerrainLayer 에 LOD k 타일 묶음을 accept 해 render. 시점 = fixtures towerViewpoints() 8개(160×90, 눈 높이 17 m 올림 포함).
@@ -106,6 +106,18 @@ function demSet() {
   return out;
 }
 
+/** --only 값 검증. 빈 값·빈 이름·알 수 없는 이름이면 throw, 정상이면 이름 배열(null 이면 null). */
+export function parseOnly(arg, names = demSet().map((d) => d.name)) {
+  if (arg === null || arg === undefined) return null;
+  if (typeof arg !== 'string' || arg.trim() === '') throw new Error('--only 값이 비어 있다');
+  const list = arg.split(',').map((x) => x.trim());
+  if (list.some((x) => x === '')) throw new Error(`--only 에 빈 이름이 있다: "${arg}"`);
+  const known = new Set(names);
+  const bad = list.filter((x) => !known.has(x));
+  if (bad.length) throw new Error(`--only 알 수 없는 이름: ${bad.join(', ')}`);
+  return list;
+}
+
 function tileBytes(cells) {
   const mesh = PIECE_FRAME_OVERHEAD_BYTES + MESH_HEADER_BYTES + cells * cells * 3 * 4 + (cells - 1) * (cells - 1) * 6 * 4;
   const heightOnly = PIECE_FRAME_OVERHEAD_BYTES + MESH_HEADER_BYTES + cells * cells * 4;
@@ -143,22 +155,40 @@ function viewTileOrder() {
   return order;
 }
 
-/** 현행표에서 이 사본이 서버 함수와 같은 간격·높이를 내는지 대조한다. 다르면 던진다. */
-function checkAgainstServer(dem, stridesI) {
+/** DEM 이 완전히 덮는 타일 좌표 중 앞·가운데·끝 타일(대조 표본). */
+function sampleTiles(dem) {
+  const n0 = checkCellM(dem.cellM);
+  const nx = (dem.width - 1) / n0, ny = (dem.height - 1) / n0;
+  const tx0 = Math.round(dem.originX / 64), ty0 = Math.round(dem.originY / 64);
+  const pts = [[0, 0], [Math.floor((nx - 1) / 2), Math.floor((ny - 1) / 2)], [nx - 1, ny - 1]];
+  const seen = new Set();
+  return pts.map(([i, j]) => [tx0 + i, ty0 + j]).filter(([x, y]) => (seen.has(`${x},${y}`) ? false : seen.add(`${x},${y}`)));
+}
+
+/**
+ * 서버 실효 상한(terrainLodMaxErrorM(·, cellM))으로 구한 사본 간격 stridesI 가 서버 terrainLodStride 와 같고,
+ * 사본 타일(buildTileWithStride, 주입 가능)의 cells·높이가 서버 buildTerrainTile 과 같은지 대조한다. 다르면 던진다.
+ * 돌린 대조 수 { lods, tiles } 를 돌려준다(시험이 실제 실행을 단언하는 데 쓴다).
+ */
+export function checkAgainstServer(dem, stridesI, { build = buildTileWithStride } = {}) {
+  let tiles = 0;
+  const samples = sampleTiles(dem);
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
     const s = terrainLodStride(dem, lod);
     if (s !== stridesI[lod]) throw new Error(`사본 간격 불일치 LOD ${lod}: 사본 ${stridesI[lod]} 서버 ${s}`);
-    for (const [tx, ty] of [[-8, -8], [-1, 0], [7, 7]]) {
-      const a = buildTerrainTile(dem, tx, ty, lod), b = buildTileWithStride(dem, tx, ty, lod, stridesI[lod]);
+    for (const [tx, ty] of samples) {
+      const a = buildTerrainTile(dem, tx, ty, lod), b = build(dem, tx, ty, lod, stridesI[lod]);
       if (a.cells !== b.cells || !a.heights.every((v, k) => v === b.heights[k])) throw new Error(`사본 타일 불일치 LOD ${lod} (${tx},${ty})`);
+      tiles++;
     }
   }
+  return { lods: TERRAIN_LOD_COUNT, tiles };
 }
 
 /**
  * DEM 하나를 상한표 묶음 optionTable 로 잰다. b5_measure.mjs 가 다른 상한표·DEM(2 m 셀 hill 등)으로 다시 쓴다.
  * 바이트의 타일 수·cells 는 DEM 에서 구한다(1024 m·1 m 셀이면 256 타일·cells = 64/간격+1 로 이전과 같다).
- * check 는 optionTable.i 가 현행표일 때만 뜻이 있다(서버 함수 대조).
+ * check 가 켜지면 optionTable 과 무관하게 서버 실효 상한으로 사본·서버 대조를 항상 실행한다.
  */
 export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
   const t0 = Date.now();
@@ -167,11 +197,8 @@ export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
   const n0 = Math.round(64 / dem.cellM);
   const per = {};
   for (const [opt, bounds] of Object.entries(optionTable)) per[opt] = lodStrides(dem, bounds);
-  // 결정 0057 이후 서버 상한은 셀 크기에 따라 줄어든다. 현행 절대표 사본(i)과 서버가 같은 셀 크기에서만 대조한다(그 밖은 b6_rule.mjs 가 새 규칙으로 대조).
-  const serverCaps = [0, 1, 2, 3].map((l) => terrainLodMaxErrorM(l, dem.cellM));
-  const sameAsTable = Boolean(optionTable.i) && serverCaps.every((c, l) => c === optionTable.i[l]);
-  if (check && sameAsTable) checkAgainstServer(dem, per.i.strides);
-  else if (check && optionTable.i) console.error(`[b1] ${entry.name ?? ''} 서버 대조 생략: 셀 ${dem.cellM} m 의 서버 실효 상한 ${JSON.stringify(serverCaps)} ≠ 사본 i`);
+  // 서버 대조는 항상 서버 실효 상한 terrainLodMaxErrorM(·, cellM)으로 사본 간격을 새로 구해 한다(생략 경로 없음).
+  if (check) checkAgainstServer(dem, lodStrides(dem, [0, 1, 2, 3].map((l) => terrainLodMaxErrorM(l, dem.cellM))).strides);
 
   // SSIM: 기준 영상(LOD 0)과 간격별 층 영상.
   const order = viewTileOrder();
@@ -242,6 +269,8 @@ function checkBytesAgainstLodBytes(result) {
 }
 
 const fmtB = (n) => n.toLocaleString('en-US');
+/** 소수 d 자리로 내림해 찍는다(반올림하면 0.94996 이 0.9500 으로 보여 문턱 0.95 통과처럼 읽힌다). */
+export const floorFixed = (x, d) => (Math.floor(x * 10 ** d + 1e-9) / 10 ** d).toFixed(d);
 
 export function measureAllOptions({ only = null, check = true } = {}) {
   if (JSON.stringify([...TERRAIN_LOD_MAX_ERROR_M]) !== JSON.stringify([...B1_OPTIONS.i])) {
@@ -278,8 +307,8 @@ export function formatTable(all) {
         const verdict = l.lod === 0 ? '-' : (l.ssimMin8 >= all.ssimMin ? 'PASS' : 'FAIL');
         lines.push([
           r.dem.padEnd(12), opt.padEnd(3), String(l.lod).padStart(3), String(l.boundM).padStart(6), String(l.stride).padStart(4), String(l.cells).padStart(5),
-          l.maxErrorM.toFixed(4).padStart(10), fmtB(l.meshRawBytes).padStart(12), fmtB(l.heightOnlyRawBytes).padStart(13),
-          l.ssimMin8.toFixed(4).padStart(10), l.ssimFilledMin8.toFixed(4).padStart(10), verdict.padStart(5),
+          l.maxErrorM.toFixed(6).padStart(10), fmtB(l.meshRawBytes).padStart(12), fmtB(l.heightOnlyRawBytes).padStart(13),
+          floorFixed(l.ssimMin8, 4).padStart(10), floorFixed(l.ssimFilledMin8, 4).padStart(10), verdict.padStart(5),
         ].join(' '));
       }
     }
@@ -289,7 +318,7 @@ export function formatTable(all) {
   for (const r of all.results) {
     for (const opt of ['i', 'ii']) {
       const o = r.options[opt], l3 = o.levels[3];
-      lines.push(`${r.dem.padEnd(12)} | ${opt.padEnd(2)} | ${fmtB(l3.meshRawBytes).padStart(11)} | ${fmtB(l3.heightOnlyRawBytes).padStart(10)} | ${o.lod3EqLod2 ? 'Y' : 'N'} | ${o.lod3EqLod0 ? 'Y' : 'N'} | ${o.lod3MeshOverInitialLimit ? 'Y' : 'N'} | ${o.lod3HeightOnlyOverInitialLimit ? 'Y' : 'N'} | ${l3.ssimMin8.toFixed(4)} | ${o.lod1to3SsimPass ? 'Y' : 'N'} | ${r.zShiftM} | ${r.refFillMin.toFixed(3)}`);
+      lines.push(`${r.dem.padEnd(12)} | ${opt.padEnd(2)} | ${fmtB(l3.meshRawBytes).padStart(11)} | ${fmtB(l3.heightOnlyRawBytes).padStart(10)} | ${o.lod3EqLod2 ? 'Y' : 'N'} | ${o.lod3EqLod0 ? 'Y' : 'N'} | ${o.lod3MeshOverInitialLimit ? 'Y' : 'N'} | ${o.lod3HeightOnlyOverInitialLimit ? 'Y' : 'N'} | ${floorFixed(l3.ssimMin8, 4)} | ${o.lod1to3SsimPass ? 'Y' : 'N'} | ${r.zShiftM} | ${r.refFillMin.toFixed(3)}`);
     }
   }
   return lines.join('\n');
@@ -299,7 +328,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const get = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null; };
   const onlyArg = get('--only');
-  const all = measureAllOptions({ only: onlyArg ? onlyArg.split(',') : null, check: !args.includes('--no-check') });
+  const only = args.includes('--only') ? parseOnly(onlyArg ?? '') : null;
+  const all = measureAllOptions({ only, check: !args.includes('--no-check') });
   console.log(formatTable(all));
   const jsonPath = get('--json');
   if (jsonPath) writeFileSync(jsonPath, JSON.stringify(all, null, 2) + '\n');
