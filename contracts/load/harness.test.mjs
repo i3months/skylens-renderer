@@ -76,3 +76,26 @@ test('T16.2: createStatsSampler documentation signature and defaults are correct
   const occurrences = (harnessSrc.match(new RegExp(oldIncorrectPhrase, 'g')) || []).length;
   assert.equal(occurrences, 0, `"${oldIncorrectPhrase}" should not occur in harness.mjs`);
 });
+
+test('F-550: FIXTURE_EVENTS validate, are sorted, and carry level-0 arrivals before first_frame', () => {
+  for (const e of FIXTURE_EVENTS) assert.deepEqual(validateEvent(e, 3), [], JSON.stringify(e));
+  for (let i = 1; i < FIXTURE_EVENTS.length; i++) assert.ok(FIXTURE_EVENTS[i - 1].tMs <= FIXTURE_EVENTS[i].tMs, `index ${i}`);
+  for (const id of [0, 1]) {
+    const mine = FIXTURE_EVENTS.filter((e) => e.id === id);
+    const ff = mine.find((e) => e.kind === 'first_frame');
+    const lv0 = mine.find((e) => e.kind === 'level' && e.level === 0);
+    assert.ok(ff, `client ${id} first_frame`);
+    assert.ok(lv0 && lv0.tMs <= ff.tMs, `client ${id} level-0 arrival at or before first_frame`);
+  }
+  const l2 = FIXTURE_EVENTS.find((e) => e.id === 2 && e.kind === 'level');
+  const f2 = FIXTURE_EVENTS.find((e) => e.id === 2 && e.kind === 'first_frame');
+  assert.ok(l2 && f2 && l2.tMs <= f2.tMs && f2.tMs === 2800);
+});
+
+test('F-550: harness header documents noArrival, clock, tMs order and the serverSamples fallback', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'harness.mjs'), 'utf8');
+  const header = src.slice(0, src.indexOf('import '));
+  for (const re of [/noArrival/, /\bclock\b/, /(non-decreasing tMs|tMs order|monotonic)/i, /serverSamples[^\n]*fallback|fallback[^\n]*serverSamples/]) {
+    assert.ok(re.test(header), String(re));
+  }
+});

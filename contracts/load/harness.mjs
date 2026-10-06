@@ -1,6 +1,6 @@
 // Load harness contract (T16.1-T16.10). All harness modules are pure functions over an event log;
 // no sockets, no wall clock (time is the event's tMs). Same seed + same scenario gives the same log.
-// Decisions: see research decisions/0060. Coordinates are GeoAnchor-relative ENU, 1 unit = 1 m.
+// Decisions: see research decisions/0060 (contract) and 0061 (harness). Coordinates are GeoAnchor-relative ENU, 1 unit = 1 m.
 //
 // ClientEvent: { id: int 0..clients-1, tMs: number >= 0 (ms from scenario start),
 //   kind: 'connect' | 'bytes' | 'level' | 'first_frame' | 'close',
@@ -18,7 +18,7 @@
 //                                            cpuSource must be 'measured' | 'stub' | 'simulated', and 'measured' needs clock 'real' (a simulated clock never carries a measured CPU).
 //                                            With durationS given and clock 'real': the last tS must be within 1 s of durationS and every non-final interval between 0.5 s and 1.5 s.
 //   T16.3  bench/load/per_client/index.mjs   perClientFromEvents(events, clients) -> perClient[] (validateResult shape)
-//   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[], missing }; a first_frame counts only with a level-0 arrival of the same id at tMs <= the first_frame tMs, otherwise that client's perClientMs is Infinity and firstFrameViolations says `client N: first_frame without level-0 arrival`
+//   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[], missing, noArrival }; noArrival lists ascending ids with a first_frame but no level-0 arrival (a subset of missing); a first_frame counts only with a level-0 arrival of the same id at tMs <= the first_frame tMs, otherwise that client's perClientMs is Infinity and firstFrameViolations says `client N: first_frame without level-0 arrival`
 //   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS, invalid }; bandwidthViolations(stats) -> string[]
 //   T16.6  bench/load/burst/index.mjs        showFromArrivals(events, clients) -> shown [{id, tMs, level}]  (feeds each 'level' event of the
 //                                            measured log into the product level machine client/levels createLevelMachine, one segment per
@@ -39,6 +39,8 @@
 //                                            runScenario(scenario, opts) and main(outDir, opts): opts.commit (default: commitHash()), opts.thresholds (default: loadThresholds()),
 //                                            opts.statsClock (optional), opts.events (alternate log, default: simulated), opts.show (default: showFromArrivals) injectable.
 //                                            In burst scenarios arrivals are generated from burstArrivals. Violations checked against the same measurement log; runScenario returns { result, violations, serverSamples } (serverSamples is NOT part of result).
+//                                            Injected logs must have non-decreasing tMs (checkEventLog rejects the whole log otherwise); statsClock.clock is required whenever statsClock is given;
+//                                            loadReport(result, opts) also accepts result.serverSamples as a fallback when opts.serverSamples is absent (opts wins).
 //                                            An injected log also goes through validateScenario(scenario) first. statsClock: both now and cpuUsage or neither, unknown keys throw; source/clock are NOT pre-filled (createStatsSampler defaults apply);
 //                                            a 'real' statsClock is checked by checkServerSamples(samples, { durationS }). checkBurstInvariants additionally reports `client N: burst level K missing` and `burst levels not at one instant`.
 import { LEVEL_COUNT } from '../asset/index.mjs';
@@ -96,13 +98,14 @@ export const FIXTURE_SCENARIO = {
   name: 'fixture', kind: 'steady', clients: 3, durationS: 10,
   path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 10, e: 30, n: 0, u: 100 }],
 };
-/** Tiny valid log for FIXTURE_SCENARIO: client 0 first frame at 1200 ms, 1 at 2000 ms, 2 never. */
+/** Tiny valid log for FIXTURE_SCENARIO: client 0 level-0 arrival and first frame at 1200 ms, 1 at 2000 ms, 2 at 2800 ms. */
 export const FIXTURE_EVENTS = [
   { id: 0, tMs: 0, kind: 'connect' }, { id: 1, tMs: 0, kind: 'connect' }, { id: 2, tMs: 0, kind: 'connect' },
   { id: 0, tMs: 1000, kind: 'bytes', bytes: 5000, latencyMs: 100 },
-  { id: 0, tMs: 1200, kind: 'first_frame' },
+  { id: 0, tMs: 1200, kind: 'level', level: 0 }, { id: 0, tMs: 1200, kind: 'first_frame' },
   { id: 1, tMs: 1800, kind: 'bytes', bytes: 3000, latencyMs: 300 },
-  { id: 1, tMs: 2000, kind: 'first_frame' },
+  { id: 1, tMs: 2000, kind: 'level', level: 0 }, { id: 1, tMs: 2000, kind: 'first_frame' },
+  { id: 2, tMs: 2800, kind: 'level', level: 0 }, { id: 2, tMs: 2800, kind: 'first_frame' },
   { id: 2, tMs: 4000, kind: 'bytes', bytes: 1000, latencyMs: 900 },
   { id: 0, tMs: 9000, kind: 'close' }, { id: 1, tMs: 9000, kind: 'close' }, { id: 2, tMs: 9000, kind: 'close' },
 ];
