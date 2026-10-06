@@ -75,7 +75,7 @@ test('T16.0: 결과 음성 — 입력마다 정확한 오류', () => {
     [res({ perClient: pc(30, (i) => (i === 0 ? { latencyMs: undefined } : {})) }), ['perClient[0] bad']],
     [res({ perClient: [null, ...pc(29).map((c, i) => ({ ...c, id: i + 1 }))] }), ['perClient[0] bad']],
   ];
-  for (const [bad, want] of cases) assert.deepEqual(validateResult(bad), want);
+  cases.forEach(([bad, want], i) => assert.deepEqual(validateResult(bad), want, `result case #${i}`));
 });
 
 test('T16.0: 무효 원소가 매우 많아도 던지지 않는다', () => {
@@ -99,7 +99,7 @@ test('F-519: sparse arrays and unknown fields are violations', () => {
     [res({ perClient: one({ x: 1, bytes: -1 }) }), ['perClient[0] unknown field x', 'perClient[0] bad']],
     [res({ perClient: one({ x: 1, y: 2 }) }), ['perClient[0] unknown field x', 'perClient[0] unknown field y']],
   ];
-  for (const [bad, want] of cases) assert.deepEqual(validateResult(bad), want);
+  cases.forEach(([bad, want], i) => assert.deepEqual(validateResult(bad), want, `result case #${i}`));
   assert.deepEqual(validateScenario({ ...base, path: [path[0], { ...path[1], x: 1 }] }), ['path[1] unknown field x']);
   assert.deepEqual(validateScenario({ ...base, path: [{ ...path[0], x: 1 }, path[1]] }), ['path[0] unknown field x']);
   assert.deepEqual(validateScenario({ ...base, path: [{ ...path[0], t: NaN }, path[1]] }), ['path[0] needs finite t,e,n,u']);
@@ -120,7 +120,7 @@ test('F-520: boundary values with exact messages', () => {
     [res({ scenario: { ...base, name: 'ab-' } }), ['bad name']],
     [res({ scenario: { ...base, name: '' } }), ['bad name']],
   ];
-  for (const [bad, want] of cases) assert.deepEqual(validateResult(bad), want);
+  cases.forEach(([bad, want], i) => assert.deepEqual(validateResult(bad), want, `result case #${i}`));
   assert.deepEqual(validateScenario({ ...base, name: 'ab-' }), ['bad name']);
   assert.deepEqual(validateScenario({ ...base, name: '' }), ['bad name']);
   assert.deepEqual(validateScenario({ ...base, name: 'a_9' }), []);
@@ -147,4 +147,15 @@ test('F-520: very large invalid perClient/records through validateResult do not 
   const e4 = validateResult(res({ records: new Array(N) }));
   assert.equal(e4.length, N);
   assert.equal(e4[N - 1], `records[${N - 1}] missing`);
+});
+
+test('T16.0: 큰 배열에서도 오류가 스택을 넘기지 않고 전부 모인다', () => {
+  const N = 300000;
+  const bigPath = Array.from({ length: N }, () => ({ t: 0, e: 0, n: 0, u: 0 }));
+  const bigPc = Array.from({ length: N }, () => null);
+  const errs = validateResult({ scenario: { ...base, path: bigPath }, records: [rec], perClient: bigPc });
+  // path[0] ok; path[1..N-1] not increasing; perClient: 1 length error + N bad entries
+  assert.equal(errs.length, (N - 1) + 1 + N);
+  assert.equal(errs[0], 'path[1].t not increasing');
+  assert.equal(validateScenario({ ...base, path: bigPath }).length, N - 1);
 });
