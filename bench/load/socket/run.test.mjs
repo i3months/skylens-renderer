@@ -37,10 +37,10 @@ function fakeDeps({ earlyCloseId } = {}) {
         await sleep(args.durationS * 1000);
         return fakeLog(args.clients, args.durationS, earlyCloseId);
       },
-      createProcSampler({ pid, now }) {
-        calls.samplerArgs = { pid };
+      createProcSampler({ pid, now, t0 }) {
+        calls.samplerArgs = { pid, t0 };
         return createStatsSampler({
-          clock: 'real', source: 'server-process', now,
+          clock: 'real', source: 'server-process', now, t0,
           cpuUsage: () => ({ user: 1000, system: 0 }), memoryUsage: () => ({ rss: 50 * 1048576 }),
         });
       },
@@ -136,6 +136,10 @@ test('real server process, real sockets and real proc sampler: 30 clients for 2 
   });
   assert.deepEqual(out.violations, []);
   assert.equal(out.serverSamples.length, 2);
+  // The sampler shares run's t0: every tS sits on its target, early or late (getconf must not shift it).
+  out.serverSamples.forEach((s, i) => assert.ok(Math.abs(s.tS - Math.min(i + 1, 2)) < 0.002, `tS[${i}] = ${s.tS}`));
+  assert.equal(out.report.split('(handshake-complete basis, not an S5 value)').length - 1, 1, out.report);
+  assert.match(out.report, /first_frame_p95.*\(handshake-complete basis, not an S5 value\)/);
   for (const s of out.serverSamples) {
     assert.equal(s.clock, 'real');
     assert.equal(s.source, 'server-process');
@@ -167,12 +171,13 @@ test('zero server samples names the likely cause: /proc not available (non-Linux
   deps.createProcSampler = () => ({ samples: () => [], tick() {} });
   const out = await runSocketLoad({ clients: 5, durationS: 1, commit: COMMIT, deps });
   assert.ok(out.violations.some((v) => v.startsWith('socket30: ') && v.includes('/proc not available (non-Linux?)')), out.violations.join('\n'));
+  assert.equal(out.violations.filter((v) => v.includes('0 samples')).length, 1, out.violations.join('\n'));
 });
 
 test('tick times are anchored to the shared t0 despite late and early timer firings', async () => {
   let t = 5000;
   const now = () => t;
-  const t0 = now();
+  const t0 = 4800; // not now(): ticks are measured from the t0 passed in
   const ticks = [];
   const lateness = [30, 0, 400, 0];
   let k = 0;
@@ -196,8 +201,67 @@ test('report states the cloud approximation and the literal loopback-socket meth
   const out = await runSocketLoad({ clients: 5, durationS: 1, commit: COMMIT, deps });
   assert.equal(SOCKET_METHOD, 'loopback-socket');
   assert.ok(out.report.includes('(cloud approximation)'), out.report);
+  assert.ok(/first_frame_p95.*\(handshake-complete basis, not an S5 value\)/.test(out.report), out.report);
   assert.ok(out.report.includes('[local]'), out.report);
   assert.ok(!out.report.includes('measured on loopback-socket'), out.report);
   assert.ok(out.report.includes('loopback-socket'), out.report);
   assert.ok(out.result.records.every((r) => r.method === 'loopback-socket'));
+});
+
+// Injected clock at a non-zero origin; every timer fires exactly at its delay. createProcSampler advances the clock
+// by 8 ms before it builds the sampler (the cost of getconf), which only a shared t0 can absorb.
+function fakeClockDeps(extra = {}) {
+  const clock = { t: 5000 };
+  const { deps } = fakeDeps();
+  const make = deps.createProcSampler;
+  deps.runSocketClients = async (args) => fakeLog(args.clients, args.durationS);
+  deps.createProcSampler = (a) => { clock.t += 8; return make(a); };
+  deps.now = () => clock.t;
+  deps.setTimeout = (fn, delay) => { clock.t += delay; fn(); };
+  return { clock, deps: { ...deps, ...extra } };
+}
+
+test('runSocketLoad with an injected clock: serverSamples[i].tS === min(i + 1, durationS) exactly', async () => {
+  const { deps, clock } = fakeClockDeps();
+  const out = await runSocketLoad({ clients: 5, durationS: 2.5, commit: COMMIT, deps });
+  assert.deepEqual(out.serverSamples.map((s) => s.tS), [1, 2, 2.5]);
+  assert.equal(clock.t, 5000 + 2500);
+});
+
+test('runSocketLoad passes the t0 it ticks against to the sampler', async () => {
+  const { deps } = fakeClockDeps();
+  let seen;
+  const make = deps.createProcSampler;
+  deps.createProcSampler = (a) => { seen = a; return make(a); };
+  await runSocketLoad({ clients: 5, durationS: 1, commit: COMMIT, deps });
+  assert.equal(seen.t0, 5000);
+});
+
+test('tickOnRealClock with a stopped clock rejects with RangeError instead of re-arming forever', async () => {
+  let calls = 0;
+  const schedule = (fn) => { if (++calls > 100) throw new Error('re-armed forever'); fn(); };
+  const ticks = [];
+  await assert.rejects(tickOnRealClock({ tick() { ticks.push(1); } }, 2, () => 0, (e) => { throw e; }, 0, schedule), RangeError);
+  assert.deepEqual(ticks, []);
+  assert.ok(calls <= 3, String(calls));
+});
+
+test('runSocketLoad with a stopped injected clock ends and reports it', async () => {
+  const { deps } = fakeClockDeps();
+  deps.now = () => 0;
+  deps.setTimeout = (fn) => { fn(); };
+  const out = await runSocketLoad({ clients: 5, durationS: 2, commit: COMMIT, deps });
+  assert.ok(out.violations.some((v) => v.startsWith('socket30: server stats: ') && v.includes('did not advance')), out.violations.join('\n'));
+});
+
+test('a timer 2500 ms late does not release a burst of back-to-back ticks', async () => {
+  let t = 0;
+  const now = () => t;
+  const ticks = [];
+  let k = 0;
+  const schedule = (fn, delay) => { t += delay + (k++ === 0 ? 2500 : 0); fn(); };
+  await tickOnRealClock({ tick() { ticks.push(t); } }, 4, now, (e) => { throw e; }, 0, schedule);
+  assert.ok(ticks.length < 4, `${ticks}`);
+  for (let i = 1; i < ticks.length; i++) assert.ok(ticks[i] - ticks[i - 1] >= 500, `ticks ${ticks}`);
+  assert.equal(ticks.at(-1), 4000);
 });

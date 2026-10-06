@@ -22,7 +22,7 @@ test('parseProcStat rejects negative and non-integer utime/stime', () => {
 test('parseStatm validates resident pages', () => {
   assert.deepEqual(parseStatm('1000 250 100 10 0 300 0\n'), { resident: 250 });
   assert.deepEqual(parseStatm('5 0'), { resident: 0 });
-  for (const bad of ['1000 -1 100', '1000 1.5 100', '1000 NaN 100', '1000 abc', '', '   ', '1000', null, undefined, 5]) {
+  for (const bad of ['1000 -1 100', '1000 1.5 100', '1000 NaN 100', '1000 abc', '1 1e3', '1 0x10', '1 +5', '1 5e0', '1 Infinity', '', '   ', '1000', null, undefined, 5]) {
     assert.equal(parseStatm(bad), null, String(bad));
   }
 });
@@ -75,5 +75,34 @@ test('first sample tS is not delayed by getconf (fresh module instance)', async 
   sampler.tick();
   const [s] = sampler.samples();
   assert.ok(s, 'tick produced a sample');
-  assert.ok(s.tS - 1.0 < 0.002, `first tS ${s.tS} is ${((s.tS - 1) * 1000).toFixed(2)} ms late`);
+  assert.ok(Math.abs(s.tS - 1.0) < 0.002, `first tS ${s.tS} is ${((s.tS - 1) * 1000).toFixed(2)} ms off 1 s`);
+});
+
+const STAT = '1 (x) S 1 1 1 0 -1 0 0 0 0 0 7 8 0 0 20 0 1 0 5 1000 500';
+
+test('readProcStats reads through the injected function; a malformed or unreadable file gives null', () => {
+  const page = Number(execFileSync('getconf', ['PAGESIZE'], { encoding: 'utf8' }).trim());
+  const files = (stat, statm) => (p) => {
+    if (p === '/proc/77/stat') return stat;
+    if (p === '/proc/77/statm') return statm;
+    throw new Error(`unexpected path ${p}`);
+  };
+  const ok = readProcStats(77, files(STAT, '1000 250 100 10 0 300 0\n'));
+  assert.equal(ok.rssBytes, 250 * page);
+  assert.ok(ok.cpuUsage.user > 0 && ok.cpuUsage.system > 0);
+  // A statm that does not parse must not become rss 0.
+  assert.equal(readProcStats(77, files(STAT, '1000 abc 100')), null);
+  assert.equal(readProcStats(77, files(STAT, '1000 1e3 100')), null);
+  assert.equal(readProcStats(77, files(STAT, '')), null);
+  assert.equal(readProcStats(77, files('garbage', '1000 250')), null);
+  assert.equal(readProcStats(77, () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); }), null);
+  assert.equal(readProcStats(77, (p) => { if (p.endsWith('statm')) throw new Error('statm unreadable'); return STAT; }), null);
+});
+
+test('createProcSampler measures tS from an injected t0 that differs from now()', () => {
+  let t = 5000;
+  const sampler = createProcSampler({ pid: process.pid, now: () => t, t0: 4800 });
+  t = 6000;
+  sampler.tick();
+  assert.equal(sampler.samples()[0].tS, 1.2);
 });
