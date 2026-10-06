@@ -1,9 +1,11 @@
-import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "fs";
-import { gzipSync } from 'zlib';
-import { resolve } from 'path';
+import { gzipSync } from 'node:zlib';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { dirname, resolve, relative, sep } from 'node:path';
 
-import { tmpdir } from 'os';
+// Repo root resolved from this file, never from the current working directory.
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+// Entry points (directories holding index.mjs). client/raster is included.
 const modules = [
   'client/tower/input',
   'client/tower/chase',
@@ -13,134 +15,93 @@ const modules = [
   'client/tower/e2e',
   'client/tower/terrain',
   'client/tower/buildings',
-  'client/tower/drape'
+  'client/tower/drape',
+  'client/raster',
 ];
 
-async function checkEsbuild() {
+async function loadEsbuild() {
   try {
-    const nodeModulesPath = resolve('./node_modules/.bin/esbuild');
-    try {
-      execSync(`${nodeModulesPath} --version`, { stdio: 'ignore', timeout: 20000 });
-      return { available: true, command: nodeModulesPath, source: 'node_modules' };
-    } catch {
-      // Fall back to npx
-      try {
-        execSync('npx esbuild --version', { stdio: 'ignore', timeout: 20000 });
-        return { available: true, command: 'npx esbuild', source: 'npx' };
-      } catch {
-        return { available: false, source: null };
-      }
-    }
-  } catch {
-    return { available: false, source: null };
-  }
-}
-
-async function bundleWithEsbuild(modulePath, esbuildCmd) {
-  const entryPath = resolve(modulePath, 'index.mjs');
-  const tempDir = mkdtempSync(resolve(tmpdir(), 'bundle-'));
-  const outputPath = resolve(tempDir, `${modulePath.replace(/\//g, '-')}.mjs`);
-
-  try {
-    const cmd = `${esbuildCmd} ${entryPath} --bundle --minify --format=esm --outfile=${outputPath}`;
-    execSync(cmd, { stdio: 'ignore', timeout: 20000 });
-    const result = readFileSync(outputPath, 'utf8');
-    rmSync(tempDir, { recursive: true, force: true });
-    return result;
+    return await import('esbuild');
   } catch (error) {
-    rmSync(tempDir, { recursive: true, force: true });
-    throw new Error(`Failed to bundle ${modulePath}: ${error.message}`);
+    throw new Error(
+      `esbuild is required (devDependency, run "npm ci"): ${error.message}`
+    );
   }
 }
 
-function concatenateSources(modulePath) {
-  const entryPath = resolve(modulePath, 'index.mjs');
-  try {
-    return readFileSync(entryPath, 'utf8');
-  } catch (error) {
-    throw new Error(`Failed to read ${modulePath}: ${error.message}`);
-  }
+function gzipBytes(bytes) {
+  return gzipSync(bytes, { level: 9 }).length;
 }
 
-function measureGzipSize(content) {
-  const gzipped = gzipSync(content, { level: 9 });
-  return gzipped.length;
-}
-
-async function generateTable(esbuild) {
-  const results = [];
-  let totalRawSize = 0;
-  let totalGzipSize = 0;
-
-  for (const modulePath of modules) {
-    let content;
-    let method;
-
-    if (esbuild.available) {
-      try {
-        content = await bundleWithEsbuild(modulePath, esbuild.command);
-        method = `esbuild (${esbuild.source})`;
-      } catch (error) {
-        console.error(`Error bundling ${modulePath}:`, error.message);
-        process.exit(1);
-      }
-    } else {
-      content = concatenateSources(modulePath);
-      method = 'concatenate (fallback)';
-    }
-
-    const rawSize = content.length;
-    const gzipSize = measureGzipSize(content);
-    totalRawSize += rawSize;
-    totalGzipSize += gzipSize;
-
-    results.push({
-      module: modulePath,
-      raw: rawSize,
-      minified: rawSize, // For tower modules, raw and minified are the same in fallback mode
-      gzip: gzipSize,
-      method: method
-    });
+/**
+ * Bundle all entries together (code splitting, minified ESM) so modules shared
+ * between entries are counted once, then gzip every emitted file.
+ * Returns { entries, chunks, totalGzip, totalMinified }.
+ *   entries: one row per requested module, { module, minified, gzip }
+ *   chunks:  shared chunks emitted by splitting, { file, minified, gzip }
+ * Throws when esbuild is missing or a bundle fails; never falls back.
+ */
+async function measureBundle(entryModules = modules, { root = ROOT, esbuild } = {}) {
+  const es = esbuild ?? (await loadEsbuild());
+  const entryPoints = {};
+  for (const m of entryModules) entryPoints[m] = resolve(root, m, 'index.mjs');
+  const outdir = resolve(root, '.bundle-measure-out');
+  const result = await es.build({
+    entryPoints,
+    bundle: true,
+    minify: true,
+    format: 'esm',
+    splitting: true,
+    write: false,
+    outdir,
+    absWorkingDir: root,
+    logLevel: 'silent',
+  });
+  const entries = [];
+  const chunks = [];
+  for (const file of result.outputFiles) {
+    const rel = relative(outdir, file.path).split(sep).join('/');
+    const name = rel.replace(/\.js$/, '');
+    const minified = file.contents.length;
+    const gzip = gzipBytes(file.contents);
+    if (entryModules.includes(name)) entries.push({ module: name, minified, gzip });
+    else chunks.push({ file: rel, minified, gzip });
   }
-
-  return { results, totalRawSize, totalGzipSize };
+  entries.sort((a, b) => entryModules.indexOf(a.module) - entryModules.indexOf(b.module));
+  const all = [...entries, ...chunks];
+  return {
+    entries,
+    chunks,
+    totalGzip: all.reduce((s, r) => s + r.gzip, 0),
+    totalMinified: all.reduce((s, r) => s + r.minified, 0),
+  };
 }
 
 async function main() {
-  const esbuild = await checkEsbuild();
-
-  if (!esbuild.available) {
-    console.log('esbuild not available, using concatenating size estimator');
+  const { entries, chunks, totalGzip, totalMinified } = await measureBundle();
+  const w = 34;
+  console.log('\nTower client bundle (esbuild, minified, entries bundled together, shared chunks counted once):');
+  console.log('='.repeat(w + 24));
+  console.log('Output'.padEnd(w) + 'Minified'.padStart(12) + 'Gzip'.padStart(12));
+  console.log('-'.repeat(w + 24));
+  for (const r of entries) {
+    console.log(r.module.padEnd(w) + String(r.minified).padStart(12) + String(r.gzip).padStart(12));
   }
-
-  const { results, totalRawSize, totalGzipSize } = await generateTable(esbuild);
-
-  // Print table
-  console.log('\nTower Client Bundle Sizes:');
-  console.log('='.repeat(90));
-  console.log('Module'.padEnd(30) + 'Raw'.padStart(12) + 'Minified'.padStart(12) + 'Gzip'.padStart(12) + 'Method'.padStart(24));
-  console.log('-'.repeat(90));
-
-  for (const result of results) {
-    console.log(
-      result.module.padEnd(30) +
-      result.raw.toString().padStart(12) +
-      result.minified.toString().padStart(12) +
-      result.gzip.toString().padStart(12) +
-      result.method.padStart(24)
-    );
+  for (const r of chunks) {
+    console.log(`(shared) ${r.file}`.padEnd(w) + String(r.minified).padStart(12) + String(r.gzip).padStart(12));
   }
-
-  console.log('-'.repeat(90));
-  console.log('Total'.padEnd(30) + totalRawSize.toString().padStart(12) + ''.padStart(12) + totalGzipSize.toString().padStart(12));
-  console.log('='.repeat(90));
-  console.log(`Total gzip size: ${totalGzipSize} bytes (${(totalGzipSize / 1024).toFixed(2)} KB)`);
-
-  return results;
+  console.log('-'.repeat(w + 24));
+  console.log('Total'.padEnd(w) + String(totalMinified).padStart(12) + String(totalGzip).padStart(12));
+  console.log('='.repeat(w + 24));
+  console.log(`Total gzip size: ${totalGzip} bytes (${(totalGzip / 1024).toFixed(2)} KB)`);
+  return { entries, chunks, totalGzip, totalMinified };
 }
 
-export { main, modules };
+export { main, measureBundle, gzipBytes, modules, ROOT };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
 }

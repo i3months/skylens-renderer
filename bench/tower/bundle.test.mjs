@@ -1,98 +1,64 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { execSync } from 'child_process';
-import { readFileSync, mkdtempSync, rmSync } from 'fs';
-import { gzipSync } from 'zlib';
-import { resolve } from 'path';
-import { tmpdir } from 'os';
-import { main, modules } from './bundle.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { measureBundle, modules } from './bundle.mjs';
+import { CONTROLVIEW_LIMITS } from '../../contracts/controlview/index.mjs';
 
-const GZIP_LIMIT_BYTES = 300 * 1024;
+const LIMIT = CONTROLVIEW_LIMITS.bundleBytes;
+const EXPECTED_MODULES = [
+  'client/tower/input', 'client/tower/chase', 'client/tower/overlay',
+  'client/tower/streaming', 'client/tower/fallback', 'client/tower/e2e',
+  'client/tower/terrain', 'client/tower/buildings', 'client/tower/drape',
+  'client/raster',
+];
+const MIN_ENTRY_GZIP = 50; // an entry that bundles to fewer bytes is empty/broken
+const MIN_TOTAL_GZIP_PER_MODULE = 1024;
 
-async function checkEsbuild() {
-  try {
-    const nodeModulesPath = resolve('./node_modules/.bin/esbuild');
-    try {
-      execSync(`${nodeModulesPath} --version`, { stdio: 'ignore', timeout: 20000 });
-      return { available: true, command: nodeModulesPath };
-    } catch {
-      try {
-        execSync('npx esbuild --version', { stdio: 'ignore', timeout: 20000 });
-        return { available: true, command: 'npx esbuild' };
-      } catch {
-        return { available: false };
-      }
-    }
-  } catch {
-    return { available: false };
+// esbuild is a pinned devDependency; if it is missing the measurement throws
+// and these tests fail (no fallback measurement exists).
+test('tower client bundle gzip size <= CONTROLVIEW_LIMITS.bundleBytes', { timeout: 120_000 }, async () => {
+  assert.deepEqual(modules, EXPECTED_MODULES, 'module list must not shrink');
+  const r = await measureBundle(modules);
+
+  console.log('\nActual tower bundle measurements (entries bundled together, shared chunks once):');
+  for (const e of r.entries) console.log(`  ${e.module}: ${e.gzip} gzip bytes`);
+  for (const c of r.chunks) console.log(`  (shared) ${c.file}: ${c.gzip} gzip bytes`);
+  console.log(`  Total: ${r.totalGzip} bytes; limit ${LIMIT} bytes`);
+
+  assert.equal(typeof LIMIT, 'number');
+  assert.equal(LIMIT, 300_000);
+
+  // negative assertions: the measurement actually measured everything
+  assert.equal(r.entries.length, modules.length, 'one measured entry per module');
+  assert.deepEqual(r.entries.map((e) => e.module), modules);
+  for (const e of r.entries) {
+    assert.ok(e.minified > 0, `${e.module} minified size must be > 0`);
+    assert.ok(e.gzip >= MIN_ENTRY_GZIP, `${e.module} gzip ${e.gzip} below floor ${MIN_ENTRY_GZIP}`);
   }
-}
-
-async function bundleWithEsbuild(modulePath, esbuildCmd) {
-  const entryPath = resolve(modulePath, 'index.mjs');
-  const tempDir = mkdtempSync(resolve(tmpdir(), 'bundle-test-'));
-  const outputPath = resolve(tempDir, `${modulePath.replace(/\//g, '-')}.mjs`);
-
-  try {
-    const cmd = `${esbuildCmd} ${entryPath} --bundle --minify --format=esm --outfile=${outputPath}`;
-    execSync(cmd, { stdio: 'ignore', timeout: 20000 });
-    const content = readFileSync(outputPath, 'utf8');
-    rmSync(tempDir, { recursive: true, force: true });
-    return content;
-  } catch (error) {
-    rmSync(tempDir, { recursive: true, force: true });
-    throw new Error(`Failed to bundle ${modulePath}: ${error.message}`);
-  }
-}
-
-function concatenateSources(modulePath) {
-  const entryPath = resolve(modulePath, 'index.mjs');
-  try {
-    return readFileSync(entryPath, 'utf8');
-  } catch (error) {
-    throw new Error(`Failed to read ${modulePath}: ${error.message}`);
-  }
-}
-
-function measureGzipSize(content) {
-  const gzipped = gzipSync(content, { level: 9 });
-  return gzipped.length;
-}
-
-test('tower client bundle gzip size <= 300 KB', { timeout: 60_000 }, async (t) => {
-  const esbuild = await checkEsbuild();
-
-  let totalSize = 0;
-  const moduleSizes = [];
-
-  for (const modulePath of modules) {
-    let content;
-
-    if (esbuild.available) {
-      try {
-        content = await bundleWithEsbuild(modulePath, esbuild.command);
-      } catch (error) {
-        assert.fail(`Failed to bundle ${modulePath}: ${error.message}`);
-      }
-    } else {
-      content = concatenateSources(modulePath);
-    }
-
-    const gzipSize = measureGzipSize(content);
-    totalSize += gzipSize;
-    moduleSizes.push({ module: modulePath, gzip: gzipSize });
-  }
-
-  // Log actual measurement values
-  console.log('\nActual tower bundle measurements:');
-  for (const { module, gzip } of moduleSizes) {
-    console.log(`  ${module}: ${gzip} bytes (${(gzip / 1024).toFixed(2)} KB)`);
-  }
-  console.log(`  Total: ${totalSize} bytes (${(totalSize / 1024).toFixed(2)} KB)`);
-  console.log(`  Limit: ${GZIP_LIMIT_BYTES} bytes (${GZIP_LIMIT_BYTES / 1024} KB)`);
-
+  const sum = [...r.entries, ...r.chunks].reduce((s, x) => s + x.gzip, 0);
+  assert.equal(r.totalGzip, sum, 'total equals sum of emitted files');
   assert.ok(
-    totalSize <= GZIP_LIMIT_BYTES,
-    `Total gzip size ${totalSize} bytes exceeds limit of ${GZIP_LIMIT_BYTES} bytes (${(totalSize / 1024).toFixed(2)} KB / ${GZIP_LIMIT_BYTES / 1024} KB)`
+    r.totalGzip >= modules.length * MIN_TOTAL_GZIP_PER_MODULE,
+    `total gzip ${r.totalGzip} below floor ${modules.length * MIN_TOTAL_GZIP_PER_MODULE}`
   );
+
+  assert.ok(r.totalGzip <= LIMIT, `Total gzip size ${r.totalGzip} bytes exceeds limit of ${LIMIT} bytes`);
+});
+
+test('positive control: a large input is judged over the limit', { timeout: 120_000 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'bundle-control-'));
+  try {
+    mkdirSync(join(root, 'big'));
+    // incompressible payload well above the limit
+    const payload = randomBytes(Math.ceil(LIMIT * 1.5)).toString('base64');
+    writeFileSync(join(root, 'big', 'index.mjs'), `export const blob = ${JSON.stringify(payload)};\n`);
+    const r = await measureBundle(['big'], { root });
+    assert.equal(r.entries.length, 1);
+    assert.ok(r.totalGzip > LIMIT, `control gzip ${r.totalGzip} should exceed ${LIMIT}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
