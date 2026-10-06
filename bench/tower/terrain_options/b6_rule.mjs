@@ -26,6 +26,7 @@ import { makeHillDem, towerViewpoints } from '../../../client/tower/terrain/fixt
 import { measureDem, lowNoiseDem, checkCellM } from './b1_measure.mjs';
 import { buildTileWithStride } from './b1_lod.mjs';
 import { parseOnly } from './b5_measure.mjs';
+import { parseFlags } from './flags.mjs';
 
 export const B6_SEEDS = Object.freeze([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
 export const B6_GROUPS = Object.freeze(['lowNoise', 'lowNoise012', 'lowNoise2m', 'noiseBig', 'hill']);
@@ -94,14 +95,14 @@ export function parseB6Only(arg, groups) {
 }
 
 /**
- * 사본 간격 strides 로 만든 타일 높이가 서버 buildTerrainTile 과 바이트 단위로 같은지 LOD 마다 타일 3개(왼쪽 아래 모서리·가운데·오른쪽 위 모서리)에서 대조한다.
+ * 사본 간격 strides 로 만든 타일 높이가 서버 buildTerrainTile 과 바이트 단위로 같은지 LOD 마다 타일 3개(네 모서리와 가운데, b1 sampleTiles 와 같은 표본)에서 대조한다.
  * 다르면 던진다. 대조한 타일 수를 돌려준다(시험이 대조가 실제로 돌았는지 단언). build 는 시험의 변이 주입용.
  */
 export function checkTilesAgainstServer(dem, strides, build = buildTileWithStride) {
   const n0 = checkCellM(dem.cellM);
   const tx0 = Math.round(dem.originX / 64), ty0 = Math.round(dem.originY / 64);
   const ntx = (dem.width - 1) / n0, nty = (dem.height - 1) / n0;
-  const picks = [[tx0, ty0], [tx0 + Math.floor(ntx / 2), ty0 + Math.floor(nty / 2)], [tx0 + ntx - 1, ty0 + nty - 1]];
+  const picks = [[tx0, ty0], [tx0 + Math.floor((ntx - 1) / 2), ty0 + Math.floor((nty - 1) / 2)], [tx0 + ntx - 1, ty0 + nty - 1], [tx0 + ntx - 1, ty0], [tx0, ty0 + nty - 1]];
   let n = 0;
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
     for (const [tx, ty] of picks) {
@@ -181,13 +182,12 @@ export function formatB6(all) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  const get = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null; };
-  // 빈 값·오타는 던져 비영 종료한다(F-484 ②). 플래그가 값 없이 끝나면 빈 값으로 본다.
-  const groups = args.includes('--groups') ? parseGroups(get('--groups') ?? '') : undefined;
-  const only = args.includes('--only') ? parseB6Only(get('--only') ?? '', groups) : null;
+  // 빈 값·오타·알 수 없는 '--' 토큰·값 누락은 던져 비영 종료한다(F-484 ②, F-491 ⑥).
+  const flags = parseFlags(process.argv.slice(2), { values: ['--groups', '--only', '--json'] });
+  const groups = flags.has('--groups') ? parseGroups(flags.get('--groups')) : undefined;
+  const only = flags.has('--only') ? parseB6Only(flags.get('--only'), groups) : null;
   const all = measureB6({ only, groups });
   console.log(formatB6(all));
-  const jsonPath = get('--json');
+  const jsonPath = flags.get('--json');
   if (jsonPath) writeFileSync(jsonPath, JSON.stringify(all, null, 2) + '\n');
 }
