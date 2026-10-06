@@ -9,7 +9,8 @@
 // 범위: 지형 단독, 시야 선택 없음(256 타일 전부). SPEC 의 '초기'(접속~첫 프레임 웹소켓 바이트 전체)와 다르다. 건물·드레이프가 같은 예산을 쓰므로
 //   초기 합계 PASS/FAIL 은 bench/tower_assets 의 합계로 본다.
 // gzip 은 참고값이다: 서버 ws 는 permessage-deflate 가 없다(server/ws/frame/index.mjs:197 에서 RSV 거부). 판정은 raw 로 한다.
-// ws 머리 10 B(WS_HEADER_MAX_BYTES)는 상한이라 LOD3 프레임에서 실제보다 약 6 B 과대하다.
+// ws 머리 10 B(WS_HEADER_MAX_BYTES)는 상한이라, 조각 프레임이 64 KiB 미만일 때만(ws 머리가 4 B 로 줄어드는 구간) 실제보다 약 6 B 과대하다.
+//   64 KiB 이상 조각(noiseBig LOD3 의 약 149 KB 메시 조각 등)은 상한이 실제와 같아 과대 0 이다.
 // 실행: node bench/tower/lod_bytes.mjs
 import { gzipSync, constants } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -66,21 +67,27 @@ function serializeMeshPiece(mesh, tx, ty) {
 // Module-level cache for memoization
 const __measureLodBytesCache = {};
 
+/** 측정 캐시를 비운다. 결정성 시험이 캐시를 우회해 독립 계산 두 번을 비교할 때 쓴다. */
+export function clearLodBytesCache() {
+  for (const k of Object.keys(__measureLodBytesCache)) delete __measureLodBytesCache[k];
+}
+
 /**
  * DEM 하나의 LOD 별 256 타일 합계.
  * @returns {{levels: {lod:number, cells:number, rawBytes:number, gzipBytes:number}[], ratios:Object, ...}}
  */
-export function measureLodBytes(dem) {
-  // Check cache if DEM has a cache key
-  if (dem.__cacheKey && __measureLodBytesCache[dem.__cacheKey]) {
-    return __measureLodBytesCache[dem.__cacheKey];
+export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
+  // tilesPerSide: 가운데 tilesPerSide x tilesPerSide 타일만 잰다(기본 16 = 256 타일 전부, 작게 주면 시험이 빨라진다).
+  const cacheKey = dem.__cacheKey ? `${dem.__cacheKey}|${tilesPerSide}` : null;
+  if (cacheKey && __measureLodBytesCache[cacheKey]) {
+    return __measureLodBytesCache[cacheKey];
   }
 
   const levels = [];
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
     let rawBytes = 0, gzipBytes = 0, heightOnlyBytes = 0, cells = 0, tiles = 0;
-    for (let ty = -TILES_PER_SIDE / 2; ty < TILES_PER_SIDE / 2; ty++) {
-      for (let tx = -TILES_PER_SIDE / 2; tx < TILES_PER_SIDE / 2; tx++) {
+    for (let ty = -tilesPerSide / 2; ty < tilesPerSide / 2; ty++) {
+      for (let tx = -tilesPerSide / 2; tx < tilesPerSide / 2; tx++) {
         const tile = buildTerrainTile(dem, tx, ty, lod);
         cells = tile.cells;
         const buf = serializeMeshPiece(terrainTileToMesh(tile), tx, ty);
@@ -108,8 +115,8 @@ export function measureLodBytes(dem) {
   };
 
   // Cache the result if DEM has a cache key
-  if (dem.__cacheKey) {
-    __measureLodBytesCache[dem.__cacheKey] = result;
+  if (cacheKey) {
+    __measureLodBytesCache[cacheKey] = result;
   }
 
   return result;
