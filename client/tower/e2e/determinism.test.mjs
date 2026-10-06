@@ -72,7 +72,7 @@ test('같은 녹화를 새 view 두 개로 재생하면 Snapshot[] 이 JSON 으�
   assert.notEqual(JSON.stringify(a), JSON.stringify(c));
 });
 
-test('손계산 기대값: 모드·held·드론 마커·카메라 이동', () => {
+test('기대값(손계산 + 회귀 고정 구분): 모드·held·드론 마커·카메라 이동', () => {
   // 난수 없이 손으로 정한 10프레임(dt 0.1 s): 프레임 0 에서 ArrowUp 을 누른 채 유지, 드론 2기, 프레임 1 에서 (0,0) 도착
   const frames = Array.from({ length: 10 }, () => ({ dtSec: 0.1 }));
   frames[0].keys = { down: ['ArrowUp'] };
@@ -100,11 +100,21 @@ test('손계산 기대값: 모드·held·드론 마커·카메라 이동', () =>
   }
   // 프레임 0 에서 드론 2기를 넣었다 → 3D 층 오버레이 드론 2개
   assert.equal(s[0].overlay.drones.length, 2);
-  // 프레임 0 의 요청 목록(16개, state() 가 (tx,ty) 사전순으로 내준다)
+  // 프레임 0 의 요청 목록. 손으로 유도할 수 있는 성질만 단언한다:
+  //  - 한 번에 요청하는 수는 maxInflight 기본값 16 이 상한이고, 보이는 타일은 그보다 많아 모두 찬다 → 정확히 16개
+  //  - state() 는 (tx,ty) 사전순으로 내준다
+  //  - 카메라 [32,33,50] 의 지면 투영점은 타일 (0,0)=[0,64)² 안이라 가장 가까운 needed 로 먼저 요청된다
+  // 시야 사각뿔과 타일 상자의 교차 16개 전체는 손으로 유도하지 않았다(구현 출력은 아래 회귀 고정으로만 둔다).
+  const inflight0 = s[0].streaming.inflight.map((t) => [t.tx, t.ty]);
+  assert.equal(inflight0.length, 16);
+  assert.deepEqual(inflight0, [...inflight0].sort((p, q) => p[0] - q[0] || p[1] - q[1]));
+  assert.ok(inflight0.some(([tx, ty]) => tx === 0 && ty === 0));
+  // 회귀 고정(구현 출력을 받아 적은 값, 손계산 아님)
   const tiles0 = [[-2, 2], [-2, 3], [-1, 1], [-1, 2], [-1, 3], [-1, 4], [0, 0], [0, 1], [0, 2], [0, 3], [0, 4], [1, 1], [1, 2], [1, 3], [2, 2], [2, 3]];
-  assert.deepEqual(s[0].streaming.inflight.map((t) => [t.tx, t.ty]), tiles0);
+  assert.deepEqual(inflight0, tiles0);
   assert.deepEqual(s[0].streaming.held, []);
-  // 프레임 1 에서 (0,0) 이 도착해 held 로 옮겨지고 inflight 는 15개가 된다
+  // 프레임 1: 같은 프레임에서 step(update) 뒤에 도착을 적용한다(replayRecording 순서). update 시점에 inflight 는 16 으로 가득 차
+  // 새 요청이 없고, 이어서 (0,0) 이 도착해 held 로 옮겨지므로 inflight = 16 − 1 = 15
   assert.deepEqual(s[1].streaming.held, [{ tx: 0, ty: 0 }]);
   assert.equal(s[1].streaming.inflight.length, 15);
 });
@@ -118,10 +128,10 @@ test('중간에 던지는 입력을 한 프레임 넣어도 이후 스냅샷은 
   const head = replayRecording(view, { version: 1, frames: rec.frames.slice(0, k) }, SIZE);
   const before = JSON.stringify(view.snapshot(SIZE));
   // 잘못된 입력: dt 비유한·음수, 크기 위반, id 중복 드론 목록 — 모두 던지고 상태는 그대로
-  assert.throws(() => view.step(Number.NaN, SIZE));
-  assert.throws(() => view.step(-1, SIZE));
-  assert.throws(() => view.step(0.1, { width: 0, height: 10 }));
-  assert.throws(() => view.setDrones([{ id: 'dup', enu: [0, 0, 0] }, { id: 'dup', enu: [1, 1, 1] }]));
+  assert.throws(() => view.step(Number.NaN, SIZE), RangeError);
+  assert.throws(() => view.step(-1, SIZE), RangeError);
+  assert.throws(() => view.step(0.1, { width: 0, height: 10 }), RangeError);
+  assert.throws(() => view.setDrones([{ id: 'dup', enu: [0, 0, 0] }, { id: 'dup', enu: [1, 1, 1] }]), RangeError);
   assert.equal(JSON.stringify(view.snapshot(SIZE)), before);
   const tail = replayRecording(view, { version: 1, frames: rec.frames.slice(k) }, SIZE);
 
