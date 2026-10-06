@@ -17,11 +17,16 @@ const EXPECTED_MODULES = [
 const MIN_ENTRY_GZIP = 50; // an entry that bundles to fewer bytes is empty/broken
 // Floor for the whole bundle. Measured with only the entry files counted
 // (bundle:false, shared chunks dropped, or every import external) the total is
-// ~16,280 B; the real graph is 68,057 B. 32,000 B is about twice the
+// ~16,280 B; the real graph is 68,062 B. 32,000 B is about twice the
 // entry-files-only value, so any measurement that stops following imports
 // falls below it, while it stays well under the real total so ordinary
 // refactors do not trip it.
 const MIN_TOTAL_GZIP = 32_000;
+// Shared chunks alone. Measured on the real graph: 13 chunks, 32,630 B gzip
+// (entries alone: 35,432 B). 16,000 B is about half of that, so a measurement
+// that keeps only some of the chunks (e.g. one) falls well below it, while
+// ordinary refactors that move code between chunks do not trip it.
+const MIN_CHUNK_GZIP = 16_000;
 // e2e wires the other tower modules together; its graph must include them.
 const MIN_E2E_INPUTS = 10;
 
@@ -56,6 +61,12 @@ test('tower client bundle gzip size <= CONTROLVIEW_LIMITS.bundleBytes', { timeou
   assert.ok(e2e.inputs >= MIN_E2E_INPUTS, `e2e bundles ${e2e.inputs} files, expected >= ${MIN_E2E_INPUTS}`);
   // code shared between entries must be emitted and counted, not dropped
   assert.ok(r.chunks.length >= 1, 'shared chunks must be emitted and counted');
+  // metafile.outputs is the independent count of emitted files; the rows
+  // returned must account for every one of them (a dropped chunk breaks this)
+  assert.ok(Number.isInteger(r.outputs) && r.outputs > 0, `outputs must be a positive integer, got ${r.outputs}`);
+  assert.equal(r.entries.length + r.chunks.length, r.outputs, 'emit count = entries + chunks (no emitted file left unmeasured)');
+  const chunkGzip = r.chunks.reduce((s, x) => s + x.gzip, 0);
+  assert.ok(chunkGzip >= MIN_CHUNK_GZIP, `shared chunks gzip ${chunkGzip} below floor ${MIN_CHUNK_GZIP}`);
   const entriesOnly = r.entries.reduce((s, x) => s + x.gzip, 0);
   assert.ok(r.totalGzip > entriesOnly, 'total must exceed the entry files alone');
   assert.ok(r.totalGzip >= MIN_TOTAL_GZIP, `total gzip ${r.totalGzip} below floor ${MIN_TOTAL_GZIP}`);
