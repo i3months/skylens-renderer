@@ -1,5 +1,5 @@
 // 폴백 frame 성능 시험. 한도 규모(드론 256·탐지 4096·경로 64개×1500점 ≈ 10만 점)에서 frame 이 한 프레임 예산에 드는지 본다.
-// 단언: 한도 규모 frame 묶음 중앙값 ≤ 16 ms(한 프레임 예산, FRAME_BUDGET_MS)·≤ 50 ms, 묶음 p90 ≤ 8 ms(P90_MAX_MS), 자동 맞춤 frame ≤ 16 ms(AUTO_FIT_MAX_MS),
+// 단언: 한도 규모 frame 묶음 중앙값 ≤ 16 ms(한 프레임 예산, FRAME_BUDGET_MS)·≤ 50 ms, 묶음 p90 ≤ 16 ms(P90_MAX_MS, 한 프레임 예산)·p90/중앙값 ≤ P90_MEDIAN_RATIO, 자동 맞춤 frame ≤ 16 ms(AUTO_FIT_MAX_MS),
 // 같은 프로세스의 기준 연산(setView frame) 대비 비율 상한, 맞춤 순회 몫(자동 − setView frame)이 독립 기준 순회의 FIT_SHARE_RATIO 배 이하,
 // 결과 개수가 입력과 같다(결정적), 자동 맞춤이 점마다 배열을 만들지 않는다(push 호출 0), 옛 구현과 결과가 같다.
 // 시간은 벽시계가 아니라 이 프로세스의 CPU 시간으로 잰다: 시험이 동시에 여러 개 돌아 CPU 를 나눠 써도 흔들리지 않는다.
@@ -20,14 +20,26 @@ const BATCH = 11; // 묶음 개수(중앙값을 낸다)
 const PER_BATCH = 5; // 묶음 하나당 frame 호출 수(평균을 낸다)
 const MAX_MS = 50;
 const FRAME_BUDGET_MS = 16; // 한 프레임 예산(60 Hz)
-const P90_MAX_MS = 8; // 묶음 p90 상한(예산의 절반). 근거는 보고: CPU 시간 기준 실측 한 자리 ms 아래로 여유가 크다
+// p90 문턱. 옛 8 ms 는 근거가 약했다: CPU 소모 프로세스 4개를 띄운 4코어에서 21묶음 p90 은 중앙값 5.5 ms(최소 4.1~최대 12.2 ms, 40회),
+// 한가할 때도 3.5~5.7 ms 라 8 ms 에 여유가 크지 않았다(부하 평균 5 에서 8.56 ms 로 간헐 실패). 지금은 두 가지로 본다.
+// ① 절대: p90 ≤ FRAME_BUDGET_MS(16 ms). 꼬리 프레임도 한 프레임 예산 안이라는 제품 요구 그대로다(측정에 맞춘 값이 아니다).
+// ② 모양: p90 / 중앙값 ≤ P90_MEDIAN_RATIO. 꼬리가 몸통의 몇 배로 퍼지는지 본다. 묶음당 5회면 부하에서 비율이 최대 3.21(중앙값 1.8)까지 튀었고,
+//    묶음당 10회(P90_PER_BATCH)로 늘리면 부하 80회·한가 40회 시행에서 최대 1.77(중앙값 1.2, 부하 최대 1.70)이다. 상한 2.5 는 그 최대의 약 1.4배.
+// 한계: 이 두 단언은 '꼬리가 예산을 넘지 않고 터지지 않는다' 만 본다. 균일한 N 배 느려짐(맞춤 순회 10배 등)은 비율이 그대로라 여기서 못 잡고,
+// 중앙값·기준 대비 비율·맞춤 순회 몫 단언이 잡는다.
+const P90_MAX_MS = FRAME_BUDGET_MS;
+const P90_MEDIAN_RATIO = 2.5;
 const P90_BATCH = 21; // p90 을 내려면 묶음이 많아야 한다
+const P90_PER_BATCH = 10; // p90 묶음 하나당 frame 호출 수(5 는 부하에서 꼬리 비율이 너무 튄다)
 const P90_WARM = 8;
 const FIT_SHARE_RATIO = 3; // 맞춤 순회 몫 / 독립 기준 순회 상한(같은 일을 하므로 상수배 안. 10배 변이는 실패)
 const CAP_SCALE_MAX_MS = 100; // 총 점 상한 규모 절대 시간(헐렁한 상한, 실측은 수 ms)
 const AUTO_FIT_MAX_MS = 16; // 자동 맞춤 frame 상한
 const MAX_RATIO = 3; // 자동 맞춤 frame / setView frame 상한
-const BIG_RATIO = 5; // 점 64만 개 규모는 GC 가 커서 비율 여유를 더 둔다(10배 느린 변이는 여전히 실패)
+// 긴 경로 장면(8×12,000점)은 GC 가 커서 비율이 흔들린다. 부하에서 30회 실측: 정상 비율 0.75~3.00(중앙값 1.02), 옛 push 구현(Pold) 2.43~5.48(중앙값 3.31).
+// 두 분포가 겹쳐 비율 문턱으로는 Pold 를 오탐 없이 가를 수 없다. 5 는 정상 최대(3.00)보다 높게 잡은 '극단 GC·10배급 퇴행만 잡는' 헐렁한 상한이다.
+// Pold 는 이 비율이 아니라 'Array push 호출 0' 단언이 잡는다. 이 상한을 Pold 를 잡는다고 읽지 않는다.
+const BIG_RATIO = 5;
 const FIT_OPTS = { minSpanM: 100, marginPx: 16 };
 const SIZE = { width: 1280, height: 720 };
 
@@ -67,13 +79,13 @@ function cpuMs() { const u = typeof process.threadCpuUsage === 'function' ? proc
 function medianCpuMs(fn) { return median(batchesCpuMs(fn)); }
 
 /** 데운 뒤 묶음별 평균 CPU 시간(ms) 배열. */
-function batchesCpuMs(fn, batchCount = BATCH, warm = 1) {
+function batchesCpuMs(fn, batchCount = BATCH, warm = 1, perBatch = PER_BATCH) {
   for (let w = 0; w < warm; w += 1) fn();
   const batches = [];
   for (let b = 0; b < batchCount; b += 1) {
     const t0 = cpuMs();
-    for (let r = 0; r < PER_BATCH; r += 1) fn();
-    batches.push((cpuMs() - t0) / PER_BATCH);
+    for (let r = 0; r < perBatch; r += 1) fn();
+    batches.push((cpuMs() - t0) / perBatch);
   }
   return batches;
 }
@@ -99,7 +111,11 @@ function floorOf(scene) {
   return () => fb.frame(SIZE);
 }
 
-/** 부하로 한 번 튄 측정이 오탐이 되지 않게 최대 ATTEMPTS 번 재서, 한 번이라도 통과하면 통과로 본다. 실제 회귀(10배·옛 push)는 매번 실패한다. */
+/**
+ * 부하로 한 번 튄 측정이 오탐이 되지 않게 최대 ATTEMPTS 번 재서, 한 번이라도 통과하면 통과로 본다.
+ * 한계: 3회 중 1회만 통과해도 통과이므로, 간헐적으로만 느린 회귀(예: 3회 중 2회 이상 문턱을 넘지만 가끔 통과하는 정도)는 놓칠 수 있다.
+ * 실제 회귀(맞춤 순회 10배·옛 push)는 측정마다 문턱을 크게 넘어 3회 모두 실패하므로 잡힌다(변이 시험으로 확인). 오탐 확률은 문턱 초과 확률 p 의 3제곱이다.
+ */
 const ATTEMPTS = 3;
 function untilOk(measure) {
   let r;
@@ -146,15 +162,16 @@ test('perf: 드론 256·탐지 4096·경로 64×1500점 frame 묶음 중앙값 �
   const fb = loaded();
   assert.deepEqual(fb.counts(), { drones: N_DRONES, detections: N_DETECTIONS, paths: N_PATHS });
   const r = untilOk(() => {
-    const batches = batchesCpuMs(() => fb.frame(SIZE), P90_BATCH, P90_WARM); // 첫 호출의 JIT·GC 꼬리가 p90 에 들지 않게 충분히 데운다
+    const batches = batchesCpuMs(() => fb.frame(SIZE), P90_BATCH, P90_WARM, P90_PER_BATCH); // 첫 호출의 JIT·GC 꼬리가 p90 에 들지 않게 충분히 데운다
     const m = median(batches), q = p90(batches);
-    return { ms: m, q90: q, ok: m <= FRAME_BUDGET_MS && q <= P90_MAX_MS };
+    return { ms: m, q90: q, tail: q / m, ok: m <= FRAME_BUDGET_MS && q <= P90_MAX_MS && q <= P90_MEDIAN_RATIO * m };
   });
-  const { ms, q90 } = r;
-  console.log(`fallback perf: frame 한 번 묶음 중앙값 ${ms.toFixed(2)} ms (상한 ${MAX_MS} ms, 예산 ${FRAME_BUDGET_MS} ms), p90 ${q90.toFixed(2)} ms (상한 ${P90_MAX_MS} ms)`);
+  const { ms, q90, tail } = r;
+  console.log(`fallback perf: frame 한 번 묶음 중앙값 ${ms.toFixed(2)} ms (상한 ${MAX_MS} ms, 예산 ${FRAME_BUDGET_MS} ms), p90 ${q90.toFixed(2)} ms (상한 ${P90_MAX_MS} ms), p90/중앙값 ${tail.toFixed(2)} (상한 ${P90_MEDIAN_RATIO})`);
   assert.ok(ms <= MAX_MS, `중앙값 ${ms.toFixed(2)} ms > ${MAX_MS} ms`);
   assert.ok(ms <= FRAME_BUDGET_MS, `중앙값 ${ms.toFixed(2)} ms > 한 프레임 예산 ${FRAME_BUDGET_MS} ms`);
   assert.ok(q90 <= P90_MAX_MS, `p90 ${q90.toFixed(2)} ms > ${P90_MAX_MS} ms`);
+  assert.ok(tail <= P90_MEDIAN_RATIO, `p90/중앙값 ${tail.toFixed(2)} > ${P90_MEDIAN_RATIO}`);
 });
 
 test('perf: 총 점 상한 규모의 자동 맞춤 frame 절대 시간(한 번 호출 ms 단위)', () => {
@@ -227,12 +244,15 @@ test('perf: 자동 맞춤 frame ≤ 16 ms 이고 setView frame 대비 비율 안
   assert.ok(r.ok, `frame ${r.ms.toFixed(2)} ms, 기준 ${r.base.toFixed(2)} ms, 비율 ${r.ratio.toFixed(2)}, 순회 몫 ${r.share.toFixed(2)} ms, 기준 순회 ${r.ref.toFixed(2)} ms`);
 });
 
-test('perf: 10배 느린 변이는 판정에서 실패한다', () => {
+// 맞춤 순회 10배 변이(Pfit10): frame 한 번에 경계 상자 순회를 10번 한다(독립 기준 순회 9번 + frame 안의 1번). frame 전체를 10번 하는 것보다 구체적인 회귀다.
+// 순회 몫이 기준 순회의 약 10배가 돼 FIT_SHARE_RATIO(3) 단언이 실패해야 한다(몫 ≈ 9×0.8 ms ≫ 3×0.8 ms).
+test('perf: 맞춤 순회 10배 변이는 판정에서 실패한다', () => {
   const scene = makeScene();
   const fb = fbOf(scene);
-  const slow = { frame(size) { let o; for (let i = 0; i < 10; i += 1) o = fb.frame(size); return o; } };
+  const slow = { frame(size) { for (let i = 0; i < 9; i += 1) refTraverse(scene); return fb.frame(size); } };
   const r = judge(slow, floorOf(scene), scene);
-  assert.equal(r.ok, false, `10배 느린 변이가 통과했다: ${r.ms.toFixed(2)} ms, 비율 ${r.ratio.toFixed(2)}`);
+  assert.equal(r.ok, false, `맞춤 순회 10배 변이가 통과했다: ${r.ms.toFixed(2)} ms, 순회 몫 ${r.share.toFixed(2)} ms, 기준 순회 ${r.ref.toFixed(2)} ms`);
+  assert.ok(r.share > FIT_SHARE_RATIO * r.ref, `순회 몫 ${r.share.toFixed(2)} ms 가 ${FIT_SHARE_RATIO}배 기준 순회 ${r.ref.toFixed(2)} ms 이하다(몫 단언이 변이를 잡지 못함)`);
 });
 
 // 총 점 상한(maxTotalPathPoints)이 생겨 64×10,000(64만 점)은 setPath 가 거부한다. 같은 합계 안에서 경로 하나가 긴 극단(8×12,000 점)을 비율 문턱(BIG_RATIO, 그대로)으로 본다.
