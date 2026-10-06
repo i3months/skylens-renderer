@@ -182,3 +182,9 @@ test("fractional durationS 1.005: event at tMs 1006 is still invalid", () => {
   assert.deepStrictEqual(r.invalid, [0]);
   assert.strictEqual(r.totalBytes, 0);
 });
+
+test('bandwidthViolations never throws on a non-array invalid', () => {
+  assert.deepStrictEqual(bandwidthViolations({ invalid: 5 }), ['bandwidth stats: invalid is not an array']);
+  assert.deepStrictEqual(bandwidthViolations(null), []);
+  assert.deepStrictEqual(bandwidthViolations({ invalid: [3] }), ['bytes event 3: bad tMs']);
+});

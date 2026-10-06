@@ -60,5 +60,7 @@ export function bandwidthStats(events, durationS) {
 
 /** Violation strings for a bandwidthStats result: one `bytes event i: bad tMs` per invalid event. */
 export function bandwidthViolations(bw) {
-  return (bw?.invalid ?? []).map((i) => `bytes event ${i}: bad tMs`);
+  const inv = bw?.invalid ?? [];
+  if (!Array.isArray(inv)) return ['bandwidth stats: invalid is not an array'];
+  return inv.map((i) => `bytes event ${i}: bad tMs`);
 }
