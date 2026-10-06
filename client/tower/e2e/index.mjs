@@ -24,6 +24,58 @@ const copyOpts = (o) => (o === undefined ? undefined : { ...o });
 
 const copyVec = (v) => [v[0], v[1], v[2]];
 
+const MAX_COPY_DEPTH = 6;
+
+// 입력을 한 번만 읽어 평범한 사본으로 만든다(배열·평범한 객체만 재귀, 접근자는 한 번씩만 읽힌다).
+// strictName 이 있으면 희소 배열 구멍을 TypeError 로 막고, 없으면 구멍은 undefined 로 두어 각 검사가 던지게 한다.
+export function copyInput(v, strictName, depth = MAX_COPY_DEPTH) {
+  if (v === null || typeof v !== 'object') return v;
+  if (depth <= 0) throw new RangeError(`${strictName ?? '입력'} 의 중첩이 너무 깊다`);
+  if (Array.isArray(v)) {
+    const n = v.length;
+    const out = new Array(n);
+    for (let i = 0; i < n; i++) {
+      if (strictName !== undefined && !Object.prototype.hasOwnProperty.call(v, i)) {
+        throw new TypeError(`${strictName}[${i}] 는 비어 있으면 안 된다(희소 배열 구멍)`);
+      }
+      out[i] = copyInput(v[i], strictName === undefined ? undefined : `${strictName}[${i}]`, depth - 1);
+    }
+    return out;
+  }
+  const keys = Object.keys(v);
+  const entries = new Array(keys.length);
+  for (let i = 0; i < keys.length; i++) {
+    entries[i] = [keys[i], copyInput(v[keys[i]], strictName === undefined ? undefined : `${strictName}.${keys[i]}`, depth - 1)];
+  }
+  return Object.fromEntries(entries); // 자체 속성으로만 만든다(__proto__ 키도 평범한 속성)
+}
+
+// size 사본: 비객체는 그대로 둬 크기 검사가 TypeError 로 던진다. 접근자 재읽기로 값이 바뀌어도 사본만 쓴다.
+export function copySize(size) {
+  if (size === null || typeof size !== 'object' || Array.isArray(size)) return size;
+  const keys = Object.keys(size);
+  const out = {};
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    const x = size[k];
+    if (k === '__proto__') Object.defineProperty(out, k, { value: x, enumerable: true, writable: true, configurable: true });
+    else out[k] = x;
+  }
+  return out;
+}
+
+// 크기만 검사하는 가벼운 검사(frame 을 만들지 않는다). 규칙·오류 종류는 overlay/fallback 의 checkSize 와 같다.
+export function checkSizeLight(sz) {
+  if (sz === null || typeof sz !== 'object' || Array.isArray(sz)) throw new TypeError('size 는 객체여야 한다');
+  if (typeof sz.width !== 'number') throw new TypeError('size.width 는 숫자여야 한다');
+  if (typeof sz.height !== 'number') throw new TypeError('size.height 는 숫자여야 한다');
+  for (const k of Object.keys(sz)) {
+    if (k !== 'width' && k !== 'height') throw new RangeError(`size 에 알 수 없는 키 '${k}'`);
+  }
+  if (!Number.isInteger(sz.width) || sz.width <= 0) throw new RangeError('size.width 는 양의 정수여야 한다');
+  if (!Number.isInteger(sz.height) || sz.height <= 0) throw new RangeError('size.height 는 양의 정수여야 한다');
+}
+
 /**
  * createControlView(opts?) -> ControlView
  * opts: {input?, chase?, overlay?, streaming?, fallback?} 각 모듈 opts 를 그대로 넘긴다. 알 수 없는 키는 RangeError.
@@ -73,6 +125,10 @@ export function createControlView(opts) {
   }
 
   function snapshot(size) {
+    return snapshotOf(copySize(size)); // 진입 때 size 를 한 번만 읽는다
+  }
+
+  function snapshotOf(size) {
     // 크기 검사는 폴백 frame 이 한다(overlay 와 같은 규칙). 상태를 바꾸지 않는다.
     const fb = fallback.frame(size);
     if (fb.mode === 'fallback') {
@@ -92,7 +148,8 @@ export function createControlView(opts) {
   function step(dtSec, size) {
     if (typeof dtSec !== 'number') throw new TypeError('dtSec 는 number 여야 한다');
     if (!Number.isFinite(dtSec) || dtSec < 0) throw new RangeError('dtSec 는 유한 ≥ 0 이어야 한다');
-    fallback.frame(size); // 크기 검사만(상태 불변)
+    size = copySize(size); // 한 번만 읽은 사본만 쓴다
+    checkSizeLight(size); // 크기 검사만(frame 을 만들지 않는다, 상태 불변)
 
     const savedPose = input.pose();
     const savedTracking = tracking;
@@ -105,14 +162,22 @@ export function createControlView(opts) {
       if (drones.length > 0) {
         const d = drones[0];
         // 방위가 없으면 같은 드론의 이전 목표 방위를 유지하고, 처음이면 0(북)으로 둔다.
-        const yaw = d.yaw !== undefined ? d.yaw : (chaseTarget !== null && chaseTarget.id === d.id ? chaseTarget.yaw : 0);
-        chase.setTarget(copyVec(d.enu), yaw);
-        // 목표가 새로 생기면(또는 다른 드론으로 바뀌면) 옛 자리에서 날아오지 않게 컷 전환한다.
-        if (!tracking || chaseTarget === null || chaseTarget.id !== d.id) chase.snap();
-        tracking = true;
-        chaseTarget = { id: d.id, pos: copyVec(d.enu), yaw };
-        const s = chase.step(dtSec);
-        chaseCur = { pos: copyVec(s.pos), yaw: s.yaw };
+        const yaw = d.yaw !== undefined ? d.yaw : (chaseTarget !== null && chaseTarget.id === d.id ? chaseTarget.yaw : undefined);
+        if (yaw !== undefined) {
+          chase.setTarget(copyVec(d.enu), yaw);
+          // 목표가 새로 생기면(또는 다른 드론으로 바뀌면) 옛 자리에서 날아오지 않게 컷 전환한다.
+          if (!tracking || chaseTarget === null || chaseTarget.id !== d.id) chase.snap();
+          tracking = true;
+          chaseTarget = { id: d.id, pos: copyVec(d.enu), yaw };
+          const s = chase.step(dtSec);
+          chaseCur = { pos: copyVec(s.pos), yaw: s.yaw };
+        } else {
+          // 방위가 도착한 적 없으면 지어내지 않고 이 프레임은 추적하지 않는다(입력 카메라).
+          chase.clearTarget();
+          tracking = false;
+          chaseTarget = null;
+          chaseCur = null;
+        }
       } else {
         chase.clearTarget();
         tracking = false;
@@ -120,8 +185,9 @@ export function createControlView(opts) {
         chaseCur = null;
       }
       // 3) 카메라 → 4) 스트리밍 update
-      streaming.update(activeCamera(), size);
-      return snapshot(size);
+      // 폴백 중에는 오지 않을 타일을 요청해 자리를 막지 않도록 update 를 건너뛴다(복귀 뒤 첫 step 이 update).
+      if (fallback.mode() !== 'fallback') streaming.update(activeCamera(), size);
+      return snapshotOf(size);
     } catch (err) {
       rebuildInput(savedPose);
       rebuildChase(savedTracking, savedCur, savedTarget);
@@ -149,7 +215,8 @@ export function createControlView(opts) {
     },
     step,
     // 데이터는 폴백(검사가 더 엄격: |e|,|n| 상한) 먼저, 그다음 오버레이에 넣는다. 오버레이가 던지면 폴백을 이전 값으로 되돌린다.
-    setDrones(list) {
+    setDrones(input) {
+      const list = copyInput(input); // 한 번만 읽은 사본(yaw 접근자 포함)을 넘기고 저장한다
       const prev = drones;
       fallback.setDrones(list);
       try {
@@ -160,7 +227,8 @@ export function createControlView(opts) {
       }
       drones = list.map((d) => (d.yaw === undefined ? { id: d.id, enu: copyVec(d.enu) } : { id: d.id, enu: copyVec(d.enu), yaw: d.yaw }));
     },
-    setDetections(list) {
+    setDetections(input) {
+      const list = copyInput(input);
       const prev = detections;
       fallback.setDetections(list);
       try {
@@ -171,7 +239,8 @@ export function createControlView(opts) {
       }
       detections = list.map((d) => ({ ...d, enu: copyVec(d.enu) }));
     },
-    setPath(path) {
+    setPath(input) {
+      const path = copyInput(input);
       fallback.setPath(path);
       const id = path.id;
       try {
