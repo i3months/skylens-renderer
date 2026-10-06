@@ -4,7 +4,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { validateResult } from '../../../contracts/load/index.mjs';
+import { validateResult, validateScenario } from '../../../contracts/load/index.mjs';
 import { simulateClients, countOpenConnections, connectionViolations } from '../clients/index.mjs';
 import { simulateSlowLink } from '../slow_link/index.mjs';
 import { showFromArrivals, checkBurstInvariants, burstArrivals } from '../burst/index.mjs';
@@ -39,7 +39,7 @@ const STATS_CLOCK_KEYS = new Set(['now', 'cpuUsage', 'memoryUsage', 'source', 'c
 /**
  * Builds the server stats sampler options. Without statsClock the run uses the simulated clock (tickMs) and a stub
  * CPU (cpuStub: samples carry cpuPct null, cpuSource 'stub'), so no CPU figure is presented as measured.
- * An injected statsClock must provide both now and cpuUsage; source/clock overrides are only accepted with them.
+ * An injected statsClock must provide both now and cpuUsage and an explicit clock ('simulated' | 'real'); source/clock overrides are only accepted with them.
  */
 function samplerOptions(statsClock, nowSimulated) {
   const simulated = { clock: 'simulated', source: 'simulated', now: nowSimulated, cpuUsage: () => ({ user: 0, system: 0 }) };
@@ -54,7 +54,11 @@ function samplerOptions(statsClock, nowSimulated) {
   if (!hasNow) {
     throw new Error('runScenario: statsClock overrides (source, clock, memoryUsage, cpuStub) need both now and cpuUsage');
   }
-  return { ...simulated, ...statsClock };
+  if (statsClock.clock !== 'simulated' && statsClock.clock !== 'real') {
+    throw new Error("runScenario: statsClock.clock must be 'simulated' or 'real'");
+  }
+  // source/clock are NOT pre-filled from the simulated defaults: createStatsSampler applies its own defaults for the given clock.
+  return { ...statsClock };
 }
 
 /**
@@ -66,11 +70,17 @@ function samplerOptions(statsClock, nowSimulated) {
  */
 export function runScenario(scenario, opts = {}) {
   const { commit = commitHash(), thresholds = loadThresholds(), statsClock, events: injected, show = showFromArrivals } = typeof opts === 'string' ? { commit: opts } : opts;
+  if (scenario === null || typeof scenario !== 'object' || Array.isArray(scenario)) throw new Error('runScenario: scenario must be an object');
   const name = scenario.name;
   let tickMs = 0;
   const samplerOpts = samplerOptions(statsClock, () => tickMs);
   const violations = [];
   const empty = () => ({ result: { scenario, records: [], perClient: [] }, violations, serverSamples: [] });
+  const badScenario = validateScenario(scenario);
+  if (badScenario.length > 0) {
+    appendAll(violations, badScenario, `${name}: `);
+    return empty();
+  }
   if (injected !== undefined) {
     const bad = checkEventLog(injected, scenario.clients);
     if (bad.length > 0) {
@@ -115,13 +125,20 @@ export function runScenario(scenario, opts = {}) {
   // The 3 s limit is a regression threshold of the mock harness (SPEC S5 value); slow_link only reports.
   if (scenario.kind !== 'slow_link') appendAll(violations, checkThresholds(records, thresholds), `${name}: `);
   // Simulated clock and stub CPU by default, so source reads 'simulated'. Real server verdicts are the [local] follow-up (T16.12 / T17).
-  const sampler = createStatsSampler(samplerOpts);
-  // One tick per started second; the last tick lands exactly on durationS (0.5 s -> [0.5], 1.5 s -> [1, 1.5]).
-  const expectedSamples = Math.ceil(scenario.durationS);
-  for (let i = 1; i <= expectedSamples; i++) { tickMs = Math.min(i, scenario.durationS) * 1000; sampler.tick(); }
-  const serverSamples = sampler.samples();
-  if (serverSamples.length < expectedSamples) violations.push(`${name}: ${serverSamples.length} server samples, expected ${expectedSamples}`);
-  appendAll(violations, checkServerSamples(serverSamples), `${name}: `);
+  // A sampler or usage function that throws or returns nothing (null memoryUsage/cpuUsage) becomes a violation, not an exception.
+  let serverSamples = [];
+  try {
+    const sampler = createStatsSampler(samplerOpts);
+    // One tick per started second; the last tick lands exactly on durationS (0.5 s -> [0.5], 1.5 s -> [1, 1.5]).
+    const expectedSamples = Math.ceil(scenario.durationS);
+    for (let i = 1; i <= expectedSamples; i++) { tickMs = Math.min(i, scenario.durationS) * 1000; sampler.tick(); }
+    serverSamples = sampler.samples();
+    if (serverSamples.length < expectedSamples) violations.push(`${name}: ${serverSamples.length} server samples, expected ${expectedSamples}`);
+    appendAll(violations, checkServerSamples(serverSamples, { durationS: scenario.durationS }), `${name}: `);
+  } catch (e) {
+    violations.push(`${name}: server stats: ${e instanceof Error ? e.message : String(e)}`);
+    serverSamples = [];
+  }
   return { result, violations, serverSamples };
 }
 
@@ -133,7 +150,7 @@ export function main(outDir = 'load_out', opts = {}) {
     writeFileSync(`${outDir}/${s.name}.json`, JSON.stringify(result, null, 2) + '\n');
     writeFileSync(`${outDir}/${s.name}.server.json`, JSON.stringify(serverSamples, null, 2) + '\n');
     // slow_link is exempt from the S5 threshold check; loadReport carries that note in the report body.
-    if (violations.length === 0) console.log(`## ${s.name}\n${loadReport(result)}\n`);
+    if (violations.length === 0) console.log(`## ${s.name}\n${loadReport(result, { serverSamples })}\n`);
     appendAll(all, violations);
   }
   for (const v of all) console.error(`VIOLATION ${v}`);
