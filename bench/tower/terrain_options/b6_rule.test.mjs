@@ -33,8 +33,8 @@ function runGroup(group) {
   const rows = [];
   for (const d of b6DemSet([group])) {
     const r = measureRuleDem(d, cams, { withBaseline: false });
-    // 서버 타일 높이 대조가 실제로 돌았다: LOD 4 × 타일 3.
-    assert.equal(r.serverTilesChecked, 12, `${d.name} 서버 높이 대조 타일 수`);
+    // 서버 타일 높이 대조가 실제로 돌았다: LOD 4 × 타일 5.
+    assert.equal(r.serverTilesChecked, 20, `${d.name} 서버 높이 대조 타일 수`);
     rows.push({ name: d.name, levels: r.options.rule.levels });
   }
   return rows;
@@ -103,7 +103,7 @@ test('noiseHalfDem(·, 0.15) 은 lowNoiseDem 과 바이트가 같다(lowNoise012
 test('서버 타일 높이 대조: 사본 높이를 바꾸거나 간격이 다르면 던진다', () => {
   const dem = noiseHalfDem(3, LOW_NOISE_012_HALF_M, 1);
   const strides = [0, 1, 2, 3].map((l) => terrainLodStride(dem, l));
-  assert.equal(checkTilesAgainstServer(dem, strides), 12);
+  assert.equal(checkTilesAgainstServer(dem, strides), 20);
   // 변이: 사본이 한 정점 높이를 1e-3 m 바꾼다.
   const bent = (d, tx, ty, lod, st) => { const t = buildTileWithStride(d, tx, ty, lod, st); if (lod === 2) t.heights[5] += 1e-3; return t; };
   assert.throws(() => checkTilesAgainstServer(dem, strides, bent), /높이 불일치 LOD 2/);
