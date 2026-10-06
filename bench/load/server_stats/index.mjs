@@ -1,17 +1,22 @@
 // Server CPU/memory sampler for the load harness (T16.2). Clock and usage sources are injected.
 // tS is the real elapsed time since creation; no nominal interval is used or reported.
 // cpuPct is total CPU time over wall time, so a fully busy 2-core process reads 200.
-// Samples carry `source` and `clock` labels. Defaults describe the mock: a harness process on a
-// simulated clock. A real server run injects source 'server-process' and clock 'real'.
-// A custom `now` and a custom `cpuUsage` must come together: a simulated clock against the real
-// process.cpuUsage would fabricate a CPU figure that looks like measurement.
+// Samples carry `source` and `clock` labels. `clock` ('simulated' | 'real') is a required explicit
+// argument, never inferred from whether `now` was injected. A simulated clock needs both `now` and
+// `cpuUsage` injected (against the real process.cpuUsage it would fabricate a CPU figure that looks
+// like measurement) and defaults source to 'simulated'; a real clock defaults source to
+// 'harness-process' (a real server run passes 'server-process'). A real clock with only one of
+// `now`/`cpuUsage` injected is refused as well.
 export function createStatsSampler({
   cpuUsage: cpuIn,
   memoryUsage = () => process.memoryUsage(),
   now: nowIn,
-  source = 'harness-process',
-  clock = nowIn ? 'simulated' : 'real',
+  clock,
+  source,
 } = {}) {
+  if (clock !== 'simulated' && clock !== 'real') throw new Error("createStatsSampler: clock must be 'simulated' or 'real'");
+  if (clock === 'simulated' && !(cpuIn && nowIn)) throw new Error('createStatsSampler: a simulated clock needs both now and cpuUsage injected');
+  source ??= clock === 'simulated' ? 'simulated' : 'harness-process';
   if (Boolean(cpuIn) !== Boolean(nowIn)) throw new Error('createStatsSampler: inject both now and cpuUsage, or neither');
   const cpuUsage = cpuIn ?? (() => process.cpuUsage());
   const now = nowIn ?? (() => performance.now());

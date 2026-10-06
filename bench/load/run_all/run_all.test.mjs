@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SCENARIOS, runScenario, main } from './run.mjs';
+import { SCENARIOS, runScenario, main, appendAll } from './run.mjs';
 import { validateScenario } from '../../../contracts/load/index.mjs';
 
 const steady = SCENARIOS[0];
@@ -62,12 +62,16 @@ test('F-529: recorded metric names are fixed', () => {
 test('F-529: no first frame at all -> NaN p95 violation', () => {
   const events = baseSteady().filter((e) => e.kind !== 'first_frame');
   const { violations } = runScenario(steady, { ...OPTS, events });
-  assert.ok(violations.includes('steady30: first-frame p95 is NaN: no first frame was measured'), violations.join('|'));
+  assert.deepEqual(violations, [
+    'steady30: first-frame p95 is NaN: no first frame was measured',
+    'steady30: records[0]: bad value',
+    'steady30: load.first_frame_p95: non-numeric value',
+  ]);
 });
 test('F-529: a client with no bytes is reported unreachable', () => {
   const events = baseSteady().filter((e) => !(e.kind === 'bytes' && e.id === 4));
   const { violations } = runScenario(steady, { ...OPTS, events });
-  assert.ok(violations.includes('steady30: client 4 received no bytes'), violations.join('|'));
+  assert.deepEqual(violations, ['steady30: client 4 received no bytes', 'steady30: perClient length != clients']);
 });
 test('F-529: an early close reports the open-connection drop', () => {
   const events = baseSteady();
@@ -75,7 +79,7 @@ test('F-529: an early close reports the open-connection drop', () => {
   events[closeIdx] = { ...events[closeIdx], tMs: 1 };
   events.sort((a, b) => a.tMs - b.tMs);
   const { violations } = runScenario(steady, { ...OPTS, events });
-  assert.ok(violations.some((v) => /^steady30: open connections dropped to 29 of 30$/.test(v)), violations.join('|'));
+  assert.deepEqual(violations, ['steady30: open connections dropped to 29 of 30']);
 });
 test('F-529: burst scenarios with burstLevels 1..4 have 0 violations', () => {
   for (const b of [1, 2, 3, 4]) {
@@ -100,12 +104,12 @@ test('F-529: constant-3 shown mutation on a burstLevels 2 burst is reported', ()
   const s = burstOf(2);
   const log = simulateClients(s, { seed: 1 });
   const mutated = const3(burstArrivals(log, 2), 30);
+  assert.ok(mutated.length >= 30, 'mutated.length >= 30');
   const { violations } = runScenario(s, { ...OPTS, events: log, show: const3 });
   const expected = [
     ...mutated.map((x) => `burst2: shown: client ${x.id} level 3 at ${x.tMs}ms out of range 0..1`),
     ...Array.from({ length: 30 }, (_, id) => `burst2: client ${id}: levels arrived but never shown`),
   ].sort();
-  assert.ok(mutated.length >= 30);
   assert.deepEqual([...violations].sort(), expected);
 });
 test('F-529: constant-3 shown mutation, level 3 inside the scenario range but never arrived', () => {
@@ -113,5 +117,32 @@ test('F-529: constant-3 shown mutation, level 3 inside the scenario range but ne
   const log = simulateClients(burstOf(2), { seed: 1 }).filter((e) => e.kind !== 'level' || e.level < 2);
   const mutated = const3(burstArrivals(log, 4), 30);
   const { violations } = runScenario(burstOf(4), { ...OPTS, events: log, show: const3 });
+  
+  assert.ok(mutated.length >= 30, 'mutated.length >= 30');
   for (const x of mutated) assert.ok(violations.includes(`burst4: client ${x.id}: level 3 at ${x.tMs}ms never arrived`), `client ${x.id}`);
+});
+
+// ---- F-535 / F-537: 소수 durationS, 대량 위반, slow_link 표시 ----
+const shortPath = [{ t: 0, e: 0, n: 0, u: 100 }, { t: 0.4, e: 1, n: 0, u: 100 }];
+test('F-535: durationS 소수(1.5, 0.5) 시나리오도 위반 0, 샘플 수는 floor', () => {
+  const r15 = runScenario({ ...steady, name: 'steady1_5', durationS: 1.5, clients: 5, path: shortPath }, OPTS);
+  assert.deepEqual(r15.violations, []);
+  assert.equal(r15.serverSamples.length, 1);
+  const r05 = runScenario({ ...steady, name: 'steady0_5', durationS: 0.5, clients: 5, path: shortPath }, OPTS);
+  assert.deepEqual(r05.violations, []);
+  assert.equal(r05.serverSamples.length, 0);
+});
+test('F-537: appendAll 은 대량(200000) 위반도 RangeError 없이 접두어를 붙여 덧붙인다', () => {
+  const items = Array.from({ length: 200000 }, (_, i) => `v${i}`);
+  const out = ['first'];
+  assert.equal(appendAll(out, items, 'x: '), out);
+  assert.equal(out.length, 200001);
+  assert.deepEqual([out[0], out[1], out[200000]], ['first', 'x: v0', 'x: v199999']);
+});
+test('F-537: main 콘솔 출력의 slow_link 시나리오 줄에만 S5 문턱 제외 표시', () => {
+  const lines = []; const log = console.log;
+  console.log = (m) => lines.push(String(m));
+  try { assert.equal(main(mkdtempSync(join(tmpdir(), 'load-')), OPTS), 0); } finally { console.log = log; }
+  const headings = lines.flatMap((l) => l.split('\n')).filter((l) => l.startsWith('## '));
+  assert.deepEqual(headings, ['## steady30', '## burst30', '## slow30 (S5 문턱 제외 시나리오)']);
 });
