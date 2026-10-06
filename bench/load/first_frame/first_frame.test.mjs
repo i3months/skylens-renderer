@@ -58,7 +58,7 @@ test('one missing client of 20 leaves p95 finite; two missing push p95 to Infini
   const s2 = firstFrameStats(log(two), 20);
   assert.equal(s2.p50Ms, 1000);
   assert.equal(s2.p95Ms, Infinity);
-  assert.equal(firstFrameViolations(s2).length, 1);
+  assert.deepEqual(firstFrameViolations(s2), ['client 18: no first frame', 'client 19: no first frame']);
 });
 
 test('boundary: p95 exactly 3000 passes, 3001 fails', () => {
@@ -90,10 +90,15 @@ test('zero first frames: NaN percentiles and a violation', () => {
   assert.ok(Number.isNaN(none.p50Ms));
   assert.ok(Number.isNaN(none.p95Ms));
   assert.deepEqual(none.perClientMs, [Infinity, Infinity, Infinity]);
-  assert.equal(firstFrameViolations(none).length, 1);
+  assert.deepEqual(firstFrameViolations(none), [
+    'first-frame p95 is NaN: no first frame was measured',
+    'client 0: no first frame', 'client 1: no first frame', 'client 2: no first frame',
+  ]);
   const empty = firstFrameStats([], 2);
   assert.ok(Number.isNaN(empty.p95Ms));
-  assert.equal(firstFrameViolations(empty).length, 1);
+  assert.deepEqual(firstFrameViolations(empty), [
+    'first-frame p95 is NaN: no first frame was measured', 'client 0: no first frame', 'client 1: no first frame',
+  ]);
 });
 
 test('first_frame before the client connect gives Infinity, not a negative value', () => {
@@ -149,4 +154,31 @@ test('firstFrameViolations reports invalid stats input, not "p95 undefined"', ()
     assert.match(v[0], /input invalid/);
     assert.doesNotMatch(v[0], /undefined/);
   }
+});
+
+test('30 clients, client 5 has no first_frame: p95 is finite but exactly one violation is reported', () => {
+  const times = Array.from({ length: 30 }, (_, i) => 100 + i * 10);
+  times[5] = null;
+  const s = firstFrameStats(log(times), 30);
+  assert.ok(Number.isFinite(s.p95Ms));
+  assert.deepEqual(s.missing, [5]);
+  assert.deepEqual(firstFrameViolations(s), ['client 5: no first frame']);
+});
+
+test('missing lists every client without a first frame, in id order; healthy log has none', () => {
+  const s = firstFrameStats(log([100, null, 200, null, 300]), 5);
+  assert.deepEqual(s.missing, [1, 3]);
+  assert.deepEqual(firstFrameViolations(s), ['client 1: no first frame', 'client 3: no first frame']);
+  const ok = firstFrameStats(log(Array(30).fill(100)), 30);
+  assert.deepEqual(ok.missing, []);
+  assert.deepEqual(firstFrameViolations(ok), []);
+});
+
+test('slow p95 with a missing client reports both; all missing keeps the NaN message', () => {
+  const times = Array(30).fill(4000);
+  times[0] = null;
+  assert.deepEqual(firstFrameViolations(firstFrameStats(log(times), 30)),
+    ['first-frame p95 4000 ms exceeds limit 3000 ms', 'client 0: no first frame']);
+  assert.deepEqual(firstFrameViolations(firstFrameStats(log([null, null]), 2)),
+    ['first-frame p95 is NaN: no first frame was measured', 'client 0: no first frame', 'client 1: no first frame']);
 });

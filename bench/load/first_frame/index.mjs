@@ -20,7 +20,8 @@ function nearestRank(sortedAsc, p) {
 }
 
 /**
- * firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs }
+ * firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs, missing }
+ * missing = ascending ids whose perClientMs is Infinity (no usable first frame).
  * perClientMs[id] = first 'first_frame' tMs minus the client's 'connect' tMs.
  * A client with no first_frame (or no connect) gets Infinity; it is never dropped or filled in,
  * so it ranks above every finite value in the percentiles. A first_frame earlier than the client's
@@ -48,17 +49,32 @@ export function firstFrameStats(events, clients) {
   }
   const perClientMs = connect.map((c, id) =>
     Number.isFinite(c) && Number.isFinite(frame[id]) && frame[id] >= c ? frame[id] - c : Infinity);
-  if (!perClientMs.some(Number.isFinite)) return { p50Ms: NaN, p95Ms: NaN, perClientMs };
+  const missing = [];
+  perClientMs.forEach((ms, id) => { if (!Number.isFinite(ms)) missing.push(id); });
+  if (!perClientMs.some(Number.isFinite)) return { p50Ms: NaN, p95Ms: NaN, perClientMs, missing };
   const sorted = [...perClientMs].sort((a, b) => a - b);
-  return { p50Ms: nearestRank(sorted, 0.5), p95Ms: nearestRank(sorted, 0.95), perClientMs };
+  return { p50Ms: nearestRank(sorted, 0.5), p95Ms: nearestRank(sorted, 0.95), perClientMs, missing };
 }
 
-/** Returns violation strings (an input-check violation if stats.p95Ms is not a number); empty only when p95 is a number <= FIRST_FRAME_P95_LIMIT_MS (NaN fails). */
+/**
+ * Returns violation strings (an input-check violation if stats.p95Ms is not a number). Empty only when p95 is a
+ * number <= FIRST_FRAME_P95_LIMIT_MS (NaN fails) and no client lacks a first frame. Every client without one yields
+ * `client N: no first frame` in id order; an Infinity p95 caused only by such clients is not reported twice.
+ */
 export function firstFrameViolations(stats) {
   if (stats === null || typeof stats !== 'object' || typeof stats.p95Ms !== 'number') {
     return ['first-frame stats input invalid: p95Ms must be a number'];
   }
-  if (Number.isNaN(stats.p95Ms)) return ['first-frame p95 is NaN: no first frame was measured'];
-  if (stats.p95Ms <= FIRST_FRAME_P95_LIMIT_MS) return [];
-  return [`first-frame p95 ${stats.p95Ms} ms exceeds limit ${FIRST_FRAME_P95_LIMIT_MS} ms`];
+  let missing = [];
+  if (Array.isArray(stats.missing)) missing = stats.missing;
+  else if (Array.isArray(stats.perClientMs)) {
+    stats.perClientMs.forEach((ms, id) => { if (!Number.isFinite(ms)) missing.push(id); });
+  }
+  const out = [];
+  if (Number.isNaN(stats.p95Ms)) out.push('first-frame p95 is NaN: no first frame was measured');
+  else if (stats.p95Ms > FIRST_FRAME_P95_LIMIT_MS && !(stats.p95Ms === Infinity && missing.length > 0)) {
+    out.push(`first-frame p95 ${stats.p95Ms} ms exceeds limit ${FIRST_FRAME_P95_LIMIT_MS} ms`);
+  }
+  for (const id of missing) out.push(`client ${id}: no first frame`);
+  return out;
 }
