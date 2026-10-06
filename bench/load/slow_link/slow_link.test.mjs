@@ -36,7 +36,8 @@ test('events sorted, connect/first_frame/close present per client', () => {
     assert.equal(mine.at(-1).kind, 'close');
     assert.equal(mine.at(-1).tMs, 20000);
     const ff = mine.findIndex((e) => e.kind === 'first_frame');
-    assert.ok(ff > 0 && mine[ff - 1].kind === 'bytes' && mine[ff - 1].tMs === mine[ff].tMs);
+    assert.ok(ff > 1 && mine[ff - 1].kind === 'level' && mine[ff - 1].level === 0 && mine[ff - 1].tMs === mine[ff].tMs);
+    assert.ok(mine[ff - 2].kind === 'bytes' && mine[ff - 2].tMs === mine[ff].tMs);
   }
 });
 

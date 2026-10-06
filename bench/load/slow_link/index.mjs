@@ -44,7 +44,7 @@ function simulateClient(id, scenario, random) {
     if (queued > maxQueue) maxQueue = queued;
     if (deliverMs < closeMs) {
       events.push({ id, tMs: deliverMs, kind: 'bytes', bytes: size, latencyMs: deliverMs - wantMs });
-      if (!firstDone) { events.push({ id, tMs: deliverMs, kind: 'first_frame' }); firstDone = true; }
+      if (!firstDone) { events.push({ id, tMs: deliverMs, kind: 'level', level: 0 }, { id, tMs: deliverMs, kind: 'first_frame' }); firstDone = true; }
     } else undelivered += size;
     wantMs = t + gap;
   }
@@ -69,7 +69,7 @@ export function simulateSlowLink(scenario, { seed } = {}) {
     dropped += r.dropped;
     if (r.maxQueue > maxQueueBytes) maxQueueBytes = r.maxQueue;
   }
-  events.sort((a, b) => a.tMs - b.tMs || a.id - b.id); // stable: keeps bytes before first_frame
+  events.sort((a, b) => a.tMs - b.tMs || a.id - b.id); // stable: keeps bytes, then level 0, before first_frame
   for (const e of events) {
     const v = validateEvent(e, scenario.clients);
     if (v.length > 0) throw new Error(`invalid event: ${v.join('; ')}`);
