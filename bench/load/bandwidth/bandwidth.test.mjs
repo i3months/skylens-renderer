@@ -208,3 +208,7 @@ test('bandwidthStats normal inputs stay finite and unchanged', () => {
   assert.deepStrictEqual(r, { totalBytes: 1e6, meanBytesPerS: 2e6, peakBytesPerS: 2e6, invalid: [] });
   assert.strictEqual(bandwidthStats(FIXTURE_EVENTS, 10).peakBytesPerS, 8000);
 });
+
+test("F-571: peak-only overflow throws RangeError", () => {
+  assert.throws(() => bandwidthStats([{ id: 0, tMs: 2000, kind: "bytes", bytes: 1e300, latencyMs: 0 }], 2 + 4.44e-16), RangeError);
+});

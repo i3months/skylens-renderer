@@ -16,13 +16,14 @@
 //                                            cpuStub true makes cpuPct null and cpuSource 'stub' (source is unchanged).
 //                                            checkServerSamples(samples, { durationS }?) -> string[] violation strings, never throws; a non-finite sample is a violation;
 //                                            cpuSource must be 'measured' | 'stub' | 'simulated', and 'measured' needs clock 'real' (a simulated clock never carries a measured CPU).
+//                                            Mixed check: whenever samples exist, mixed clock or mixed source is a violation (with or without durationS; only a non-finite-positive durationS returns first, see below).
 //                                            Count check: when durationS is given and finite positive, for ALL clocks (empty array included) count = ceil(durationS);
 //                                            real-clock timing checks (real only): first tS ≈ min(1,durationS)±0.5, last tS within durationS±0.25, every interval 0.5..1.5 s except the last (final bucket width ±0.5);
 //                                            durationS not finite-positive is a violation.
 //   T16.3  bench/load/per_client/index.mjs   perClientFromEvents(events, clients) -> perClient[] (validateResult shape)
 //   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[], missing, noArrival, outOfOrder };
 //                                            noArrival lists ascending ids with a first_frame but no level arrival (a subset of missing); a first_frame counts only with an arrival of any level of the same id at tMs <= the first_frame tMs, otherwise that client's perClientMs is Infinity and firstFrameViolations says `client N: first_frame without level-0 arrival` (message text kept);
-//                                            outOfOrder = ascending-id list of { id, reason } for impossible orderings: 'before_connect' (first_frame before client's connect), 'before_level0' (first_frame before earliest level arrival of any level)
+//                                            outOfOrder = ascending-id list of { id, reason } for impossible orderings: 'before_connect' (first_frame before client's connect), 'before_firstArrival' (first_frame before earliest level arrival of any level); firstFrameViolations reports any other reason as a violation
 //   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS, invalid }; bandwidthViolations(stats) -> string[]
 //   T16.6  bench/load/burst/index.mjs        showFromArrivals(events, clients) -> shown [{id, tMs, level}]  (feeds each 'level' event of the
 //                                            measured log into the product level machine client/levels createLevelMachine, one segment per

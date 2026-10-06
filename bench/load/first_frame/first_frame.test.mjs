@@ -329,3 +329,23 @@ test('F-560: connect uses the minimum tMs, not the first value seen', () => {
   ];
   assert.deepEqual(firstFrameStats(ev, 1).perClientMs, [600]);
 });
+
+test('F-568: outOfOrder reasons are pinned', () => {
+  const ev = [
+    { id: 0, tMs: 100, kind: 'connect' }, { id: 0, tMs: 50, kind: 'first_frame' }, { id: 0, tMs: 60, kind: 'level', level: 0 },
+    { id: 1, tMs: 0, kind: 'connect' }, { id: 1, tMs: 50, kind: 'first_frame' }, { id: 1, tMs: 60, kind: 'level', level: 0 },
+    { id: 2, tMs: 0, kind: 'connect' }, { id: 2, tMs: 50, kind: 'first_frame' }, { id: 2, tMs: 50, kind: 'level', level: 2 },
+  ];
+  assert.deepEqual(firstFrameStats(ev, 3).outOfOrder, [
+    { id: 0, reason: 'before_connect' }, { id: 1, reason: 'before_firstArrival' },
+  ]);
+});
+
+test('F-568: unknown outOfOrder reason is a violation', () => {
+  const v = firstFrameViolations({ p95Ms: 1, missing: [], outOfOrder: [{ id: 0, reason: 'before_level0' }] });
+  assert.ok(v.length >= 1);
+});
+
+test('F-571: noArrival of wrong type is a violation', () => {
+  assert.ok(firstFrameViolations({ p95Ms: 1, missing: [], perClientMs: [1], noArrival: 'x' }).length >= 1);
+});
