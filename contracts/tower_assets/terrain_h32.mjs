@@ -13,7 +13,7 @@ export const TERRAIN_H32_VERSION = 1;
 export const TERRAIN_H32_HEADER_BYTES = 16;
 export const TERRAIN_H32_QUANT_EXTRA_BYTES = 8;
 export const TERRAIN_H32_FLAG_QUANTIZED = 1;
-/** 양자화 간격(m). 결정 0056 측정: step ≤ 0.05 m 에서 SSIM 하락 ≤ 0.0076. 작업자가 정한 상한이며 SPEC 수치가 아니다. */
+/** 양자화 간격(m). 결정 0056 은 noiseBig 시드 0 한 장면만 쟀다(하락 0.0076). ssim_h32.test 측정(31 장면): 하락 최대 hill 0.0365·lowNoise 0.0183·noiseBig 0.0090, 최소 SSIM 0.9555(여유 약 0.006). 작업자가 정한 상한이며 SPEC 수치가 아니다. */
 export const TERRAIN_H32_STEP_M = 0.05;
 export const TERRAIN_H32_MAX_Q = 65535;
 /** 초기 지형 몫(raw 웹소켓 바이트): 15,000,000 − 건물 3,157,410 − 드레이프 밉2 1,062,400 − WELCOME 27(결정 0056, 감독 승인 해석). */
