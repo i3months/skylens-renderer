@@ -16,6 +16,10 @@ import { rasterCount } from './raster_count.mjs';
 
 const ERR = 'buildings/raster:';
 
+// 깊이 시험 결과와 무관한 작업량 누적(진단용): tris = 근평면 절단 뒤 부채꼴로 나눠 그린 삼각형 수, covered = w0·w1·w2 가장자리 판정을 통과한 화소 수(깊이 비교 전).
+// 같은 묶음 순회를 반복해도 깊이 시험이 두 번째부터 막아 raster_count.pixels 는 변하지 않으므로, 반복 변이는 이 값으로 잡는다. 호출이 끝날 때 한 번만 더한다.
+export const rasterWork = { tris: 0, covered: 0 };
+
 /**
  * 묶음 목록의 모든 삼각형을 그리는 공용 핵심. raster_flat·raster_tex 가 함께 쓴다.
  * @param {import('../../../contracts/raster/index.mjs').Camera} camera
@@ -51,6 +55,8 @@ export function rasterizeGroupsCore(camera, groups, onTriangle, onPixel, out, uv
   const uz = [0, 0, 0, 0]; const vz = [0, 0, 0, 0]; // u/z, v/z
 
   let pixelCount = 0; // onPixel 호출 수(진단용 raster_count)
+  let subCount = 0; // 그린 부채꼴 삼각형 수(진단용 rasterWork.tris)
+  let coveredCount = 0; // 가장자리 판정 통과 화소 수(진단용 rasterWork.covered)
 
   function rasterSub(ia, ib, ic, gid) {
     const ax = sx[ia]; const ay = sy[ia];
@@ -79,6 +85,7 @@ export function rasterizeGroupsCore(camera, groups, onTriangle, onPixel, out, uv
     const tl1 = (ay - qy < 0) || (ay - qy === 0 && ax - qx > 0);
     const tl2 = (by - ay < 0) || (by - ay === 0 && bx - ax > 0);
     const invArea = 1 / area2;
+    subCount += 1;
     for (let py = pyMin; py <= pyMax; py += 1) {
       const syc = py + 0.5;
       const rowOff = py * width;
@@ -90,8 +97,10 @@ export function rasterizeGroupsCore(camera, groups, onTriangle, onPixel, out, uv
         if (!(w1 > 0 || (w1 === 0 && tl1))) continue;
         const w2 = (bx - ax) * (syc - ay) - (by - ay) * (sxc - ax);
         if (!(w2 > 0 || (w2 === 0 && tl2))) continue;
+        coveredCount += 1;
         const inv = (w0 * aiz + w1 * biz + w2 * ciz) * invArea; // 원근 보정 1/z
         const z = Math.fround(1 / inv);
+        if (!Number.isFinite(z)) continue; // float32 범위 밖 깊이는 쓰지 않는다(Infinity 가 깊이 버퍼에 남지 않게)
         const pix = rowOff + px;
         if (index[pix] !== -1 && !(z < depth[pix])) continue; // 같은 깊이·더 먼 것은 앞선 것 유지
         depth[pix] = z;
@@ -171,6 +180,8 @@ export function rasterizeGroupsCore(camera, groups, onTriangle, onPixel, out, uv
   }
   rasterCount.calls += 1;
   rasterCount.pixels += pixelCount;
+  rasterWork.tris += subCount;
+  rasterWork.covered += coveredCount;
 }
 
 /**
