@@ -244,6 +244,7 @@ test('connectionViolations: bad clients returns immediately without looping', ()
 
 test('connectionViolations: never throws on non-array logs or non-object events', () => {
   for (const bad of [null, undefined, 5, 'x', {}]) assert.deepEqual(connectionViolations(bad, 3), ['event log: not an array']);
+  assert.deepEqual(connectionViolations([[]], 1), ['event 0: not an object', 'client 0: never connected']);
   assert.deepEqual(connectionViolations([null], 1), ['event 0: not an object', 'client 0: never connected']);
   assert.deepEqual(connectionViolations([{ id: 0, tMs: 0, kind: 'connect' }, 7, undefined], 1), ['event 1: not an object', 'event 2: not an object']);
   assert.deepEqual(connectionViolations([, { id: 0, tMs: 0, kind: 'connect' }], 1), ['event 0: not an object']);

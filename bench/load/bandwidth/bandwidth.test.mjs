@@ -185,6 +185,15 @@ test("fractional durationS 1.005: event at tMs 1006 is still invalid", () => {
 
 test('bandwidthViolations never throws on a non-array invalid', () => {
   assert.deepStrictEqual(bandwidthViolations({ invalid: 5 }), ['bandwidth stats: invalid is not an array']);
-  assert.deepStrictEqual(bandwidthViolations(null), []);
+  for (const bad of [undefined, null, 5, 'x', true]) {
+    assert.deepStrictEqual(bandwidthViolations(bad), ['bandwidth stats: not an object'], String(bad));
+  }
+  assert.deepStrictEqual(bandwidthViolations({}), ['bandwidth stats: invalid is not an array']);
   assert.deepStrictEqual(bandwidthViolations({ invalid: [3] }), ['bytes event 3: bad tMs']);
+});
+
+test('bandwidth peak: a short last bin is a rate over its own width (documented definition)', () => {
+  // durationS 2.25: last bin [2000, 2250) ms is 0.25 s wide; 10 bytes there is 40 B/s, above the 30 B/s of bin 0.
+  const r = bandwidthStats([{ kind: 'bytes', tMs: 10, bytes: 30 }, { kind: 'bytes', tMs: 2100, bytes: 10 }], 2.25);
+  assert.strictEqual(r.peakBytesPerS, 40);
 });

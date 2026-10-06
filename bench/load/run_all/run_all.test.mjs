@@ -35,7 +35,7 @@ test('T16.10: 문턱 주입이 slow_link 는 면제', () => {
 test('T16.10: 서버 샘플 시계가 끊기면 샘플 부족 위반', () => {
   const { violations, serverSamples } = runScenario(steady, { commit: 'abcdef1', statsClock: { clock: 'simulated', now: () => 0, cpuUsage: () => ({ user: 0, system: 0 }) } });
   assert.equal(serverSamples.length, 0);
-  assert.deepEqual(violations, ['steady30: 0 server samples, expected 60']);
+  assert.deepEqual(violations, ['steady30: server samples: 0 samples, expected 60']);
 });
 test('T16.10: main 은 위반이 있으면 종료 코드 1, 없으면 0', () => {
   const quiet = console.error; const log = console.log;
@@ -187,7 +187,7 @@ test('F-538: unknown statsClock keys throw', () => {
 test('F-538: now returning Infinity yields no non-finite tS sample and a missing-sample violation', () => {
   const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => Infinity, cpuUsage: zeroCpu } });
   assert.ok(serverSamples.every((x) => Number.isFinite(x.tS)));
-  assert.deepEqual(violations, ['steady30: 0 server samples, expected 60']);
+  assert.deepEqual(violations, ['steady30: server samples: 0 samples, expected 60']);
 });
 test('F-538: injected now and cpuUsage give measured samples', () => {
   let t = 0;
@@ -317,12 +317,10 @@ test('F-547: a huge clients count is rejected fast by the scenario check', () =>
 test('F-548: null memoryUsage / cpuUsage becomes a server stats violation, not a TypeError', () => {
   let t = 0;
   const mem = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: zeroCpu, memoryUsage: () => null } });
-  assert.equal(mem.violations.length, 1);
-  assert.match(mem.violations[0], /^steady30: (server stats: |0 server samples)/);
+  assert.deepEqual(mem.violations, ['steady30: server samples: 0 samples, expected 60']);
   let n = 0;
   const cpu = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: () => (n++ === 0 ? zeroCpu() : null) } });
-  assert.equal(cpu.violations.length, 1);
-  assert.match(cpu.violations[0], /^steady30: (server stats: |\d+ server samples)/);
+  assert.deepEqual(cpu.violations, ['steady30: server samples: 0 samples, expected 60']);
 });
 test('F-548: runScenario(null / undefined) throws a clear error', () => {
   for (const s of [null, undefined]) assert.throws(() => runScenario(s), { message: 'runScenario: scenario must be an object' });
@@ -354,5 +352,23 @@ test('F-553: a throwing cpuUsage becomes exactly one server stats violation with
 test('F-553: a cpuUsage that always returns null reports the exact sample shortfall', () => {
   let t = 0;
   const { violations } = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: () => null } });
-  assert.deepEqual(violations, ['steady30: 0 server samples, expected 60']);
+  assert.deepEqual(violations, ['steady30: server samples: 0 samples, expected 60']);
+});
+test('F-560: a null first cpuUsage (baseline) is skipped, not a TypeError; the shortfall is reported once', () => {
+  let t = 0; let n = 0;
+  const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: () => (n++ === 0 ? null : zeroCpu()) } });
+  assert.equal(serverSamples.length, 59);
+  assert.deepEqual(violations, ['steady30: server samples: 59 samples, expected 60']);
+});
+test('F-560: a real-clock sample shortfall has one wording, reported once', () => {
+  let t = 0;
+  const { violations } = runScenario(steady, { ...OPTS, statsClock: { clock: 'real', source: 'server-process', now: () => (t += 1000), cpuUsage: () => null } });
+  assert.deepEqual(violations, ['steady30: server samples: 0 samples, expected 60']);
+});
+test('F-558: default SCENARIOS give no violations and 60 samples each', () => {
+  for (const s of SCENARIOS) {
+    const r = runScenario(s, OPTS);
+    assert.deepEqual(r.violations, [], s.name);
+    assert.equal(r.serverSamples.length, 60, s.name);
+  }
 });
