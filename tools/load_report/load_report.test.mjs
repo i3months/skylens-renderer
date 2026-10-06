@@ -715,10 +715,10 @@ test('cpu/rss line: numeric record method is rejected by the contract or reporte
   assert.equal(srcOf(out), 'source: unknown, S5/S8 verdict origin unknown');
 });
 
-test('cpu/rss line: two samples with different sources, first sample wins', () => {
+test('cpu/rss line: two samples with different sources give unknown', () => {
   const two = [sample('server-process', { tS: 0 }), sample('harness-process', { tS: 1 })];
   const out = loadReport(srcResult({ method: 'wrk', serverSamples: two }));
-  assert.equal(cpuOf(out), 'cpu/rss source: server-process, measured on server-process');
+  assert.equal(cpuOf(out), 'cpu/rss source: unknown');
   assert.ok(!out.includes('harness-process'));
 });
 
@@ -746,11 +746,6 @@ test('loadReport: non-object result throws', () => {
   for (const bad of [null, undefined, 5, 'x', true]) {
     assert.throws(() => loadReport(bad), { message: 'loadReport: result must be an object' });
   }
-});
-
-test('cpu/rss line: mixed sample sources give unknown', () => {
-  const out = loadReport(srcResult({ method: 'wrk', serverSamples: [sample('server-process'), sample('harness-process', { tS: 1 })] }));
-  assert.equal(cpuOf(out), 'cpu/rss source: unknown');
 });
 
 test('cpu/rss line: sample source is escaped for the markdown cell', () => {
