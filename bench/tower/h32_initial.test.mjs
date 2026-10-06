@@ -43,15 +43,17 @@ test('noiseBig 시드 1~3 도 같은 바이트이고 폴백 타일이 없다', (
 });
 
 test('noiseBig LOD3 양자화 H32 는 지형 몫 이하이고 초기 합계 ≤ 15,000,000 B', () => {
-  const m = measureH32Initial(noiseBigDem(0));
-  const b = compareBudget(m.quant.wire);
-  assert.equal(b.terrainWire, 2_179_072);
-  assert.ok(b.terrainWire <= TERRAIN_INITIAL_BUDGET_BYTES);
-  assert.equal(b.shareMargin, 8_601_091);
-  assert.equal(b.total, 6_398_909);
-  assert.ok(b.total <= INITIAL_TOTAL_LIMIT_BYTES);
-  assert.equal(b.totalMargin, 8_601_091);
-  assert.equal(b.sharePass && b.totalPass, true);
+  for (const seed of [0, 1]) {
+    const m = measureH32Initial(noiseBigDem(seed));
+    const b = compareBudget(m.quant.wire);
+    assert.equal(b.terrainWire, 2_179_072, `시드 ${seed}`);
+    assert.ok(b.terrainWire <= TERRAIN_INITIAL_BUDGET_BYTES, `시드 ${seed}`);
+    assert.equal(b.shareMargin, 8_601_091, `시드 ${seed}`);
+    assert.equal(b.total, 6_398_909, `시드 ${seed}`);
+    assert.ok(b.total <= INITIAL_TOTAL_LIMIT_BYTES, `시드 ${seed}`);
+    assert.equal(b.totalMargin, 8_601_091, `시드 ${seed}`);
+    assert.equal(b.sharePass && b.totalPass, true, `시드 ${seed}`);
+  }
 });
 
 test('noiseBig LOD3 비양자화 f32 H32 도 몫 이하이고 합계 여유가 남는다', () => {
