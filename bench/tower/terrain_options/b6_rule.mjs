@@ -162,7 +162,8 @@ export function formatB6(all) {
       for (const r of rs) {
         const ls = r.options[opt].levels;
         lod0 = Math.min(lod0, ls[0].ssimMin8);
-        for (const l of ls.slice(1)) { n++; if (l.ssimMin8 < all.ssimMin) fail++; min = Math.min(min, l.ssimMin8); }
+        // NaN 도 실패로 세도록 '< 기준' 이 아니라 '!(>= 기준)' 으로 판정한다(F-487 ①).
+        for (const l of ls.slice(1)) { n++; if (!(l.ssimMin8 >= all.ssimMin)) fail++; min = Math.min(min, l.ssimMin8); }
       }
       const m3 = rs.map((r) => r.options[opt].levels[3].meshRawBytes), h3 = rs.map((r) => r.options[opt].levels[3].heightOnlyRawBytes);
       const sum = (a) => a.reduce((x, y) => x + y, 0);
