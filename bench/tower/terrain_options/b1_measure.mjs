@@ -67,6 +67,7 @@ function hashNoise(i, j, seed = 0) {
 
 /** smooth + ±0.15 m 화소 잡음. lod_bytes.mjs makeDem 과 같은 격자. */
 export function lowNoiseDem(seed, cellM = 1) {
+  checkCellM(cellM);
   const side = SPAN_M / cellM + 1;
   const heights = new Float32Array(side * side);
   for (let j = 0; j < side; j++) {
@@ -76,6 +77,26 @@ export function lowNoiseDem(seed, cellM = 1) {
     }
   }
   return { originX: -SPAN_M / 2, originY: -SPAN_M / 2, cellM, width: side, height: side, heights };
+}
+
+/** cellM 이 유한·양수이고 64/cellM 이 정수인지 검사한다. */
+export function checkCellM(cellM) {
+  if (typeof cellM !== 'number' || !Number.isFinite(cellM) || cellM <= 0) throw new Error(`cellM 은 유한한 양수여야 한다: ${cellM}`);
+  const n0 = 64 / cellM;
+  if (!Number.isInteger(n0)) throw new Error(`64/cellM 이 정수가 아니다: cellM=${cellM}`);
+  return n0;
+}
+
+/** DEM 격자 검사 후 완전히 덮는 64 m 타일 수를 돌려준다(큰 측정 없이 계산만). 어긋나면 Error. */
+export function demTileCount(dem) {
+  const n0 = checkCellM(dem.cellM);
+  if (!Number.isInteger(dem.width) || !Number.isInteger(dem.height) || dem.width < 1 || dem.height < 1) throw new Error('DEM width·height 가 양의 정수가 아니다');
+  if (!dem.heights || dem.heights.length !== dem.width * dem.height) throw new Error(`heights.length(${dem.heights && dem.heights.length}) != width·height(${dem.width * dem.height})`);
+  if ((dem.width - 1) % n0 !== 0 || (dem.height - 1) % n0 !== 0) throw new Error('DEM 이 타일 격자에 맞지 않는다');
+  for (const [k, v] of [['originX', dem.originX], ['originY', dem.originY]]) {
+    if (!Number.isFinite(v) || v % 64 !== 0) throw new Error(`${k} 가 64 m 배수가 아니다: ${v}`);
+  }
+  return ((dem.width - 1) / n0) * ((dem.height - 1) / n0);
 }
 
 function demSet() {
@@ -142,9 +163,8 @@ function checkAgainstServer(dem, stridesI) {
 export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
   const t0 = Date.now();
   const dem = entry.make();
+  const tileCount = demTileCount(dem);
   const n0 = Math.round(64 / dem.cellM);
-  const tileCount = ((dem.width - 1) / n0) * ((dem.height - 1) / n0);
-  if (!Number.isInteger(tileCount)) throw new Error('DEM 이 타일 격자에 맞지 않는다');
   const per = {};
   for (const [opt, bounds] of Object.entries(optionTable)) per[opt] = lodStrides(dem, bounds);
   if (check) checkAgainstServer(dem, per.i.strides);
