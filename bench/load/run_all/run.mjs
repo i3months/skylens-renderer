@@ -13,7 +13,7 @@ import { perClientFromEvents, unreachableClients } from '../per_client/index.mjs
 import { firstFrameStats, firstFrameViolations } from '../first_frame/index.mjs';
 import { bandwidthStats, bandwidthViolations } from '../bandwidth/index.mjs';
 import { checkThresholds, loadThresholds } from '../../thresholds/index.mjs';
-import { loadReport } from '../../../tools/load_report/index.mjs';
+import { loadReport, CLOUD_APPROXIMATION_METHODS, FIRST_FRAME_P95_CLOUD_NOTE } from '../../../tools/load_report/index.mjs';
 import { checkEventLog, guarded } from './event_log.mjs';
 
 const path = [{ t: 0, e: 0, n: 0, u: 100 }, { t: 30, e: 150, n: 0, u: 100 }];
@@ -62,7 +62,10 @@ function samplerOptions(statsClock, nowSimulated) {
 }
 
 /**
- * Runs one scenario and returns { result, violations, serverSamples }.
+ * Runs one scenario and returns { result, violations, notes, serverSamples }.
+ * opts.method (default 'sim') labels every record. For a cloud-approximation method (CLOUD_APPROXIMATION_METHODS, e.g. a real-socket
+ * run) the first_frame p95 runs from the connect event (handshake completion), so it is not an S5 value: the 3 s threshold result then goes to
+ * notes as a reference line carrying the same note as the report row, and never into violations.
  * Every check reads the SAME measured event log. opts.thresholds, opts.statsClock and opts.events (a replacement log, default: simulate) and opts.show (default: showFromArrivals) are injectable.
  * An injected log is checked with checkEventLog first; a bad log returns its violations without running any stats.
  * A stats function that still throws becomes a `<name>: bad event log: ...` violation instead of an exception.
@@ -70,13 +73,15 @@ function samplerOptions(statsClock, nowSimulated) {
  */
 export function runScenario(scenario, opts = {}) {
   if (opts === null || (typeof opts !== 'string' && (typeof opts !== 'object' || Array.isArray(opts)))) throw new Error('runScenario: opts must be an object');
-  const { commit = commitHash(), thresholds = loadThresholds(), statsClock, events: injected, show = showFromArrivals } = typeof opts === 'string' ? { commit: opts } : opts;
+  const { commit = commitHash(), thresholds = loadThresholds(), statsClock, events: injected, show = showFromArrivals, method = 'sim' } = typeof opts === 'string' ? { commit: opts } : opts;
   if (scenario === null || typeof scenario !== 'object' || Array.isArray(scenario)) throw new Error('runScenario: scenario must be an object');
   const name = scenario.name;
   let tickMs = 0;
   const samplerOpts = samplerOptions(statsClock, () => tickMs);
   const violations = [];
-  const empty = () => ({ result: { scenario, records: [], perClient: [] }, violations, serverSamples: [] });
+  const notes = [];
+  const empty = () => ({ result: { scenario, records: [], perClient: [] }, violations, notes, serverSamples: [] });
+  if (typeof method !== 'string' || method === '') throw new Error('runScenario: method must be a non-empty string');
   const badScenario = validateScenario(scenario);
   if (badScenario.length > 0) {
     appendAll(violations, badScenario, `${name}: `);
@@ -109,13 +114,19 @@ export function runScenario(scenario, opts = {}) {
   }) : [];
   const perClient = run(() => perClientFromEvents(events, scenario.clients));
   if (failed) return empty();
-  const rec = (metric, value, unit) => ({ metric, value, unit, device: 'headless', method: 'sim', commit });
+  const rec = (metric, value, unit) => ({ metric, value, unit, device: 'headless', method, commit });
   const records = [
     rec('load.first_frame_p95', ff.p95Ms, 'ms'),
     rec('load.bandwidth_total', bw.totalBytes, 'B'),
     rec('load.bandwidth_peak_bytes_per_s', bw.peakBytesPerS, 'B') // contract units have no B/s: the name carries the per-second meaning,
   ];
-  appendAll(violations, firstFrameViolations(ff), `${name}: `);
+  const cloud = CLOUD_APPROXIMATION_METHODS.includes(method);
+  const referenceOnly = `${name}: reference only (not an S5 verdict), ${FIRST_FRAME_P95_CLOUD_NOTE}: `;
+  // firstFrameViolations also states the 3 s limit ('first-frame p95 N ms exceeds limit M ms'); every other message stays a violation.
+  for (const v of firstFrameViolations(ff)) {
+    if (cloud && /^first-frame p95 \S+ ms exceeds limit /.test(v)) notes.push(referenceOnly + v);
+    else violations.push(`${name}: ${v}`);
+  }
   appendAll(violations, connViol, `${name}: `);
   appendAll(violations, bandwidthViolations(bw), `${name}: `);
   if (open.min !== scenario.clients) violations.push(`${name}: open connections dropped to ${open.min} of ${scenario.clients}`);
@@ -124,7 +135,12 @@ export function runScenario(scenario, opts = {}) {
   const result = { scenario, records, perClient };
   appendAll(violations, validateResult(result), `${name}: `);
   // The 3 s limit is a regression threshold of the mock harness (SPEC S5 value); slow_link only reports.
-  if (scenario.kind !== 'slow_link') appendAll(violations, checkThresholds(records, thresholds), `${name}: `);
+  // A cloud-approximation first_frame p95 is not an S5 value (handshake-complete basis), so its threshold result is a reference note, not a verdict.
+  if (scenario.kind !== 'slow_link') {
+    const thresholdResults = checkThresholds(records, thresholds);
+    if (cloud) appendAll(notes, thresholdResults, referenceOnly);
+    else appendAll(violations, thresholdResults, `${name}: `);
+  }
   // Simulated clock and stub CPU by default, so source reads 'simulated'. Real server verdicts are the [local] follow-up (T16.12 / T17).
   // A sampler or usage function that throws becomes a `server stats: <message>` violation; one that returns null makes the sampler
   // skip the tick (fewer samples), reported by checkServerSamples as `server samples: N samples, expected M`. Neither escapes as an exception.
@@ -140,7 +156,7 @@ export function runScenario(scenario, opts = {}) {
     violations.push(`${name}: server stats: ${e instanceof Error ? e.message : String(e)}`);
     serverSamples = [];
   }
-  return { result, violations, serverSamples };
+  return { result, violations, notes, serverSamples };
 }
 
 export function main(outDir = 'load_out', opts = {}) {
