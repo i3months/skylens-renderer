@@ -599,9 +599,9 @@ test('loadReport: non slow_link has source line and no exclusion mark', () => {
   assert.ok(!lines.some((l) => l.includes('S5 threshold-excluded')));
 });
 
-function srcResult({ method = 'x', serverSamples } = {}) {
+function srcResult({ method = 'x', serverSamples, durationS = 10 } = {}) {
   const r = {
-    scenario: { name: 's', kind: 'steady', clients: 1, durationS: 10, path: basePath },
+    scenario: { name: 's', kind: 'steady', clients: 1, durationS, path: basePath },
     records: [{ metric: 'm', value: 1, unit: 'ms', device: 'd', method, commit: 'abc1234567890' }],
     perClient: [{ id: 0, bytes: 1, latencyMs: [1] }],
   };
@@ -609,7 +609,8 @@ function srcResult({ method = 'x', serverSamples } = {}) {
   return r;
 }
 const sample = (source, extra = {}) => ({ tS: 0, cpuPct: 1, rssMiB: 1, source, clock: 'real', cpuSource: 'measured', ...extra });
-const samples = (source) => [sample(source)];
+// A valid real-clock run for the 10 s srcResult scenario: one sample per second, tS 1..10.
+const samples = (source, n = 10) => Array.from({ length: n }, (_, i) => sample(source, { tS: i + 1 }));
 const lines = (out) => out.split('\n');
 const srcOf = (out) => lines(out).find((l) => l.startsWith('source:'));
 const cpuOf = (out) => lines(out).find((l) => l.startsWith('cpu/rss source:'));
@@ -751,4 +752,16 @@ test('loadReport: non-object result throws', () => {
 test('cpu/rss line: sample source is escaped for the markdown cell', () => {
   const out = loadReport(srcResult({ method: 'wrk', serverSamples: samples('a|b\nc\\d') }));
   assert.equal(cpuOf(out), 'cpu/rss source: a\\|b c\\\\d, measured on a\\|b c\\\\d');
+});
+
+test('F-558: loadReport checks the samples against result.scenario.durationS', () => {
+  const one = loadReport(srcResult({ method: 'wrk', durationS: 60, serverSamples: [sample('server-process', { tS: 0.001 })] }));
+  assert.equal(cpuOf(one), 'cpu/rss source: unknown');
+  assert.ok(!one.includes('measured on server-process'));
+  const full = loadReport(srcResult({ method: 'wrk', durationS: 60, serverSamples: samples('server-process', 60) }));
+  assert.equal(cpuOf(full), 'cpu/rss source: server-process, measured on server-process');
+  // a simulated-clock count shortfall is caught too
+  const sim = (n) => Array.from({ length: n }, (_, i) => sample('simulated', { tS: i + 1, clock: 'simulated', cpuSource: 'simulated' }));
+  assert.equal(cpuOf(loadReport(srcResult({ method: 'sim', serverSamples: sim(9) }))), 'cpu/rss source: unknown');
+  assert.equal(cpuOf(loadReport(srcResult({ method: 'sim', serverSamples: sim(10) }))), 'cpu/rss source: simulated');
 });
