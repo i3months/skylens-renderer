@@ -55,7 +55,7 @@ test('result with FIXTURE_SCENARIO and valid record passes validateResult', () =
   assert.deepEqual(errors, []);
 });
 
-test('returns array of exactly clients entries', () => {
+test('populates result array at indices matching client ids', () => {
   for (const clients of [1, 3, 5]) {
     const events = [];
     for (let id = 0; id < clients; id++) {
