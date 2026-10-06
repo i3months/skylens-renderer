@@ -69,6 +69,8 @@ function tickOnRealClock(sampler, durationS, now, onError) {
  * server process, checked with checkServerSamples. Every violation is prefixed with `socket30: `.
  */
 export async function runSocketLoad({ clients = 30, durationS = 10, commit, deps = {} } = {}) {
+  if (!(Number.isFinite(durationS) && durationS > 0)) throw new RangeError(`durationS must be a finite number > 0, got ${durationS}`);
+  if (!(Number.isInteger(clients) && clients > 0)) throw new RangeError(`clients must be a positive integer, got ${clients}`);
   const needed = ['startServerProcess', 'runSocketClients', 'createProcSampler'];
   const d = needed.every((k) => typeof deps[k] === 'function') ? { ...deps } : { ...(await realDeps()), ...deps };
   const now = d.now ?? (() => performance.now());

@@ -87,6 +87,66 @@ test('runSocketLoad stops the server and reports a client failure', async () => 
   assert.equal(out.report, null);
 });
 
+test('runSocketLoad rejects bad durationS / clients before starting a server', async () => {
+  for (const bad of [{ durationS: NaN }, { durationS: 0 }, { durationS: Infinity }, { durationS: -1 }, { clients: 0 }, { clients: 1.5 }, { clients: NaN }]) {
+    const { deps, calls } = fakeDeps();
+    const t0 = Date.now();
+    await assert.rejects(runSocketLoad({ commit: COMMIT, deps, ...bad }), RangeError, JSON.stringify(bad));
+    assert.ok(Date.now() - t0 < 1000);
+    assert.equal(calls.started, 0);
+  }
+});
+
+test('runSocketLoad with fakes and 5 clients', async () => {
+  const { deps, calls } = fakeDeps();
+  const out = await runSocketLoad({ clients: 5, durationS: 1, commit: COMMIT, deps });
+  assert.deepEqual(out.violations, []);
+  assert.equal(out.result.scenario.clients, 5);
+  assert.equal(calls.clientArgs.clients, 5);
+  assert.deepEqual(validateResult(out.result), []);
+});
+
+test('runSocketLoad with durationS 1.5 takes 2 samples, the last at 1.5 s', async () => {
+  const { deps } = fakeDeps();
+  const out = await runSocketLoad({ clients: 30, durationS: 1.5, commit: COMMIT, deps });
+  assert.equal(out.serverSamples.length, 2);
+  assert.ok(Math.abs(out.serverSamples.at(-1).tS - 1.5) <= 0.25, String(out.serverSamples.at(-1).tS));
+});
+
+test('a sampler that throws once (on the last tick) is reported with the socket30 prefix', async () => {
+  const { deps } = fakeDeps();
+  const make = deps.createProcSampler;
+  deps.createProcSampler = (a) => {
+    const s = make(a);
+    let n = 0;
+    return { samples: () => s.samples(), tick() { if (++n === 2) throw new Error('proc gone'); return s.tick(); } };
+  };
+  const out = await runSocketLoad({ clients: 30, durationS: 2, commit: COMMIT, deps });
+  assert.ok(out.violations.includes('socket30: server stats: proc gone'), out.violations.join('\n'));
+  assert.ok(out.violations.includes('socket30: server samples: 1 samples, expected 2'), out.violations.join('\n'));
+  assert.ok(out.violations.every((v) => v.startsWith('socket30: ')));
+});
+
+test('real server process, real sockets and real proc sampler: 30 clients for 2 s', async () => {
+  const pids = [];
+  const { startServerProcess } = await import('./server_proc.mjs');
+  const out = await runSocketLoad({
+    clients: 30, durationS: 2, commit: COMMIT,
+    deps: { startServerProcess: async (o) => { const p = await startServerProcess(o); pids.push(p.pid); return p; } },
+  });
+  assert.deepEqual(out.violations, []);
+  assert.equal(out.serverSamples.length, 2);
+  for (const s of out.serverSamples) {
+    assert.equal(s.clock, 'real');
+    assert.equal(s.source, 'server-process');
+    assert.equal(s.cpuSource, 'measured');
+  }
+  assert.deepEqual(validateResult(out.result), []);
+  assert.equal(out.result.scenario.clients, 30);
+  assert.equal(pids.length, 1);
+  assert.throws(() => process.kill(pids[0], 0));
+});
+
 test('main writes result, samples and report.md and returns 0', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'socket-run-'));
   try {

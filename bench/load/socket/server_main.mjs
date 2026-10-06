@@ -18,10 +18,16 @@ const ws = await createWsServer({
 });
 
 let stopping = false;
-process.on('SIGTERM', () => {
+function shutdown() {
   if (stopping) return;
   stopping = true;
   ws.close().then(() => process.exit(0), () => process.exit(0));
-});
+}
+process.on('SIGTERM', shutdown);
+// The parent holds the write end of our stdin; when it dies (any way) the pipe closes and we exit too.
+process.stdin.on('end', shutdown);
+process.stdin.on('close', shutdown);
+process.stdin.on('error', shutdown);
+process.stdin.resume();
 
 process.stdout.write(`listening ${ws.address().port}\n`);
