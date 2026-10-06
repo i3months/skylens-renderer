@@ -49,11 +49,19 @@ export function createStatsSampler({
 // Returns violation strings for samples that are not usable as evidence. Never throws on bad input.
 // cpuPct must be finite and >= 0, except for stub samples (cpuSource 'stub') where it must be exactly null.
 // cpuSource is 'measured' | 'stub' | 'simulated'; 'measured' needs a real clock, 'simulated' a simulated one.
-// With durationS (finite) and real-clock samples: the last tS is within 1 s of durationS and every
-// non-final interval is between 0.5 and 1.5 s.
-export function checkServerSamples(samples, { durationS } = {}) {
+// durationS option: if the key is present it must be a finite positive number (else a violation).
+// Real-clock checks (only when every sample has clock 'real'; mixed clock or source is a violation):
+//   count == ceil(durationS); first tS within min(1, durationS) +- 0.5; last tS <= durationS (+1e-9)
+//   and >= durationS - 0.25; every interval incl. the first is 0.5..1.5 s, except the last interval of
+//   a run, which is the final bucket width (durationS - (ceil(durationS) - 1)) +- 0.5.
+//   A correct run ticks at min(i, durationS) for i = 1..ceil(durationS).
+// Limit: a fake `now` passed with clock 'real' produces samples indistinguishable from a real clock, so
+// this check cannot detect it; the clock label is trusted evidence of the caller, not proof.
+export function checkServerSamples(samples, opts) {
   if (!Array.isArray(samples)) return ['server samples: not an array'];
   const v = [];
+  const hasDur = opts !== null && typeof opts === 'object' && 'durationS' in opts;
+  const durationS = hasDur ? opts.durationS : undefined;
   let prevT = -Infinity;
   for (let i = 0; i < samples.length; i++) {
     const s = samples[i];
@@ -75,16 +83,33 @@ export function checkServerSamples(samples, { durationS } = {}) {
     else if (s.cpuSource === 'measured' && s.clock === 'simulated') v.push(`server sample ${i}: measured cpu with simulated clock`);
     else if (s.cpuSource === 'simulated' && s.clock === 'real') v.push(`server sample ${i}: simulated cpu with real clock`);
   }
-  if (Number.isFinite(durationS)) {
-    const last = samples.length - 1;
-    const isReal = (s) => s !== null && typeof s === 'object' && s.clock === 'real';
-    if (last >= 0 && isReal(samples[last]) && Number.isFinite(samples[last].tS) && Math.abs(samples[last].tS - durationS) > 1) {
-      v.push(`server samples: last tS ${samples[last].tS} is not within 1 s of durationS ${durationS}`);
-    }
-    for (let i = 1; i < last; i++) {
-      if (!isReal(samples[i]) || !isReal(samples[i - 1])) continue;
-      const d = samples[i].tS - samples[i - 1].tS;
-      if (Number.isFinite(d) && (d < 0.5 || d > 1.5)) v.push(`server sample ${i}: interval ${d} s outside 0.5..1.5`);
+  if (hasDur && !(Number.isFinite(durationS) && durationS > 0)) {
+    v.push(`server samples: durationS must be a finite positive number (${String(durationS)})`);
+    return v;
+  }
+  const objs = samples.filter((s) => s !== null && typeof s === 'object');
+  if (objs.length > 0 && !objs.every((s) => s.clock === objs[0].clock)) v.push('server samples: mixed clock');
+  if (objs.length > 0 && !objs.every((s) => s.source === objs[0].source)) v.push('server samples: mixed source');
+  if (hasDur && objs.length === samples.length && samples.length > 0 && samples.every((s) => s.clock === 'real')) {
+    const E = 1e-9;
+    const n = samples.length;
+    const expected = Math.ceil(durationS);
+    if (n !== expected) v.push(`server samples: ${n} samples, expected ${expected}`);
+    if (samples.every((s) => Number.isFinite(s.tS))) {
+      const first = samples[0].tS;
+      const want = Math.min(1, durationS);
+      if (Math.abs(first - want) > 0.5 + E) v.push(`server sample 0: first tS ${first} is not within 0.5 s of ${want}`);
+      const last = samples[n - 1].tS;
+      if (last > durationS + E) v.push(`server samples: last tS ${last} is beyond durationS ${durationS}`);
+      else if (last < durationS - 0.25 - E) v.push(`server samples: last tS ${last} is not within 0.25 s of durationS ${durationS}`);
+      for (let i = 1; i < n; i++) {
+        const d = samples[i].tS - samples[i - 1].tS;
+        const isLast = i === n - 1;
+        const mid = isLast ? durationS - (expected - 1) : 1;
+        const lo = isLast ? Math.max(0, mid - 0.5) : 0.5;
+        const hi = isLast ? mid + 0.5 : 1.5;
+        if (d < lo - E || d > hi + E) v.push(`server sample ${i}: interval ${d} s outside ${lo}..${hi}`);
+      }
     }
   }
   return v;

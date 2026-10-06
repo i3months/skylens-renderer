@@ -197,29 +197,84 @@ test('F-543: checkServerSamples cpuSource/clock consistency', () => {
   assert.deepEqual(checkServerSamples([{ ...REAL, tS: 1, cpuPct: null, cpuSource: 'stub' }]), []);
 });
 
-test('F-543: durationS - performance.now sampling in ~1 ms is a violation', () => {
+const R = (...ts) => ts.map((tS) => ({ ...REAL, tS }));
+const seq = (n) => R(...Array.from({ length: n }, (_, i) => i + 1));
+
+test('F-543/F-551: performance.now sampling in ~1 ms is a violation', () => {
   const s = createStatsSampler({ clock: 'real' });
   for (let i = 0; i < 60; i++) { const e = performance.now() + 0.01; while (performance.now() < e); s.tick(); }
   const v = checkServerSamples(s.samples(), { durationS: 60 });
   assert.ok(v.length >= 1);
-  assert.ok(v.some((x) => /not within 1 s of durationS 60/.test(x)));
+  assert.ok(v.some((x) => /first tS .* is not within 0\.5 s of 1/.test(x)));
   assert.ok(v.some((x) => /interval .* s outside 0\.5\.\.1\.5/.test(x)));
 });
 
-test('F-543: durationS - proper 1 s spacing passes; bad interval and bad end reported', () => {
-  const good = Array.from({ length: 60 }, (_, i) => ({ ...REAL, tS: i + 1 }));
-  assert.deepEqual(checkServerSamples(good, { durationS: 60 }), []);
-  assert.deepEqual(checkServerSamples(good, {}), []);
-  assert.deepEqual(checkServerSamples(good, { durationS: 'x' }), []);
-  assert.deepEqual(checkServerSamples(good, { durationS: 58.9 }), ['server samples: last tS 60 is not within 1 s of durationS 58.9']);
-  assert.deepEqual(checkServerSamples(good, { durationS: 59 }), []);
-  const gap = [1, 2, 4, 5].map((tS) => ({ ...REAL, tS }));
-  assert.deepEqual(checkServerSamples(gap, { durationS: 5 }), ['server sample 2: interval 2 s outside 0.5..1.5']);
-  const fast = [1, 1.2, 2.5, 3.5].map((tS) => ({ ...REAL, tS }));
-  assert.deepEqual(checkServerSamples(fast, { durationS: 3.5 }), ['server sample 1: interval 0.19999999999999996 s outside 0.5..1.5']);
-  // final interval is exempt; simulated clock is not checked
-  assert.deepEqual(checkServerSamples([{ ...REAL, tS: 1 }, { ...REAL, tS: 1.1 }], { durationS: 1 }), []);
+test('F-551: acceptance cases', () => {
+  assert.deepEqual(checkServerSamples(seq(60), { durationS: 60 }), []);
+  assert.deepEqual(checkServerSamples(seq(60), {}), []);
+  assert.ok(checkServerSamples(R(0.001, 60), { durationS: 60 }).length >= 1);
+  assert.ok(checkServerSamples(R(0.0059, 0.006), { durationS: 1.005 }).length >= 1);
+  assert.ok(checkServerSamples(R(0.00011), { durationS: 0.5 }).length >= 1);
+  const over = checkServerSamples(R(...Array.from({ length: 60 }, (_, i) => i + 1), 60.5), { durationS: 60 });
+  assert.ok(over.includes('server samples: 61 samples, expected 60'));
+  assert.ok(over.includes('server samples: last tS 60.5 is beyond durationS 60'));
+  // correct runs of partial durations
+  assert.deepEqual(checkServerSamples(R(0.5), { durationS: 0.5 }), []);
+  assert.deepEqual(checkServerSamples(R(1, 1.5), { durationS: 1.5 }), []);
+  assert.deepEqual(checkServerSamples(R(1, 1.005), { durationS: 1.005 }), []);
+  assert.deepEqual(checkServerSamples(R(1, 2, 2.5), { durationS: 2.5 }), []);
+});
+
+test('F-551: count, end, bad durationS, mixed clock/source', () => {
+  assert.deepEqual(checkServerSamples(seq(59), { durationS: 60 }), [
+    'server samples: 59 samples, expected 60',
+    'server samples: last tS 59 is not within 0.25 s of durationS 60',
+  ]);
+  assert.deepEqual(checkServerSamples(seq(60), { durationS: 58.9 }), [
+    'server samples: 60 samples, expected 59',
+    'server samples: last tS 60 is beyond durationS 58.9',
+  ]);
+  assert.deepEqual(checkServerSamples(R(1, 2, 3, 3.2), { durationS: 3.5 }), ['server samples: last tS 3.2 is not within 0.25 s of durationS 3.5']);
+  for (const bad of ['x', NaN, Infinity, 0, -1, null, undefined]) {
+    const v = checkServerSamples(seq(3), { durationS: bad });
+    assert.deepEqual(v, [`server samples: durationS must be a finite positive number (${String(bad)})`]);
+  }
+  const mixedClock = [{ ...REAL, tS: 1 }, { ...OK, tS: 2 }];
+  assert.ok(checkServerSamples(mixedClock, { durationS: 2 }).includes('server samples: mixed clock'));
+  const mixedSrc = [{ ...REAL, tS: 1 }, { ...REAL, source: 'other', tS: 2 }];
+  assert.deepEqual(checkServerSamples(mixedSrc, { durationS: 2 }), ['server samples: mixed source']);
+  // simulated clock unchanged: no timing checks
   assert.deepEqual(checkServerSamples([{ ...OK, tS: 0.001 }], { durationS: 60 }), []);
+});
+
+test('F-551/F-553: interval boundaries 0.5 and 1.5 pass, 0.49 and 1.51 fail', () => {
+  const intervals = (ts, D) => checkServerSamples(R(...ts), { durationS: D }).filter((x) => /interval/.test(x));
+  for (const d of [0.5, 1, 1.5]) assert.deepEqual(intervals([1, 1 + d, 2 + d, 3 + d], 3 + d), [], `d=${d}`);
+  assert.deepEqual(checkServerSamples(R(1.5, 2.5, 3.5), { durationS: 3 }).filter((x) => /interval/.test(x)), []);
+  for (const d of [0.49, 1.51]) {
+    assert.deepEqual(intervals([1, 1 + d, 2 + d, 3 + d], 3 + d).slice(0, 1), [`server sample 1: interval ${1 + d - 1} s outside 0.5..1.5`], `d=${d}`);
+  }
+  // first interval is checked too (tS 1 -> 2.51)
+  assert.equal(checkServerSamples(R(1, 2.51, 3.51), { durationS: 3.51 }).filter((x) => /^server sample 1:/.test(x)).length, 1);
+  // first tS bounds: 0.5 and 1.5 pass, 0.49 and 1.51 fail
+  assert.deepEqual(checkServerSamples(R(0.5, 1.5, 2.5), { durationS: 2.5 }), []);
+  assert.ok(checkServerSamples(R(0.49, 1.5, 2.5), { durationS: 2.5 }).some((x) => /^server sample 0: first tS/.test(x)));
+  assert.ok(checkServerSamples(R(1.51, 2.5, 3.5), { durationS: 3.5 }).some((x) => /^server sample 0: first tS/.test(x)));
+  // last (partial bucket) interval: width 0.5 +- 0.5 for durationS 2.5
+  assert.deepEqual(checkServerSamples(R(1, 2, 2.5), { durationS: 2.5 }), []);
+  assert.deepEqual(checkServerSamples(R(1, 2, 2.2), { durationS: 2.5 }).length, 1);
+});
+
+test('F-553: checkServerSamples with null/non-object options does not throw', () => {
+  for (const o of [null, 5, 'x']) {
+    let v;
+    assert.doesNotThrow(() => { v = checkServerSamples(seq(2), o); });
+    assert.ok(Array.isArray(v));
+    assert.deepEqual(v, []);
+  }
+  assert.doesNotThrow(() => checkServerSamples(null, null));
+  assert.deepEqual(checkServerSamples(null, null), ['server samples: not an array']);
+  assert.deepEqual(checkServerSamples(undefined), ['server samples: not an array']);
 });
 
 test('F-548: null/undefined memoryUsage or cpuUsage skips the tick, keeps baseline', () => {
