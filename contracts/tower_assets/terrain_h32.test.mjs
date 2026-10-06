@@ -71,10 +71,12 @@ test('F-494 ⑤·F-496 ②: terrainH32ErrorBoundM 값(f32 반올림 항 제외)'
 
 test('F-499 ①: snapHeightsToGrid 는 h ∈ (−s/2, 0) 에서 −0 이 아니라 +0 을 낸다', () => {
   const out = h.snapHeightsToGrid(new Float32Array([-0.01, -0.0149, 0, -0]), 0.03);
-  for (let k = 0; k < out.length; k++) assert.ok(Object.is(out[k], 0), `[${k}] 비트 ${new Uint32Array(out.buffer)[k].toString(16)}`);
-  // 양자화 복원 경로(kbase −1 + q 1 = 0)와 같은 비트
+  const bits = new Uint32Array(out.buffer);
+  // 양자화 복원 경로(kbase −1 + q 1 = 0)가 내는 값과 비트 비교(+0 삭제 변이에서 snap 만 −0 이 되어 실패한다)
   const qz = h.quantizeHeights(new Float32Array([-0.01, 0.2]), 0.03);
-  assert.ok(Object.is(h.dequantizeHeights(qz.kbase, qz.step, qz.q)[0], 0));
+  const ref = h.dequantizeHeights(qz.kbase, qz.step, qz.q)[0];
+  assert.equal(new Uint32Array(Float32Array.of(ref).buffer)[0], 0);
+  for (let k = 0; k < out.length; k++) assert.ok(Object.is(out[k], ref), `[${k}] 비트 ${bits[k].toString(16)}`);
 });
 
 test('F-499 ③: quantizeHeights kbase 는 floor — 소수부 ≥ 0.5 인 최솟값(명시 step, 손 계산 리터럴)', () => {
@@ -91,8 +93,51 @@ test('F-499 ④: snapHeightsToGrid 복원값이 비유한이면 null', () => {
 });
 
 test('F-499 ⑥: dequantizeHeights 는 step 이 유한한 양수가 아니면 RangeError', () => {
-  for (const step of [NaN, undefined, 0, -0.03, Infinity, -Infinity, '0.03', null]) {
+  for (const step of [NaN, undefined, 0, -0.03, Infinity, -Infinity, '0.03', '12', null]) {
     assert.throws(() => h.dequantizeHeights(0, step, new Uint16Array(1)), RangeError, `step ${String(step)}`);
   }
   assert.doesNotThrow(() => h.dequantizeHeights(0, 0.03, new Uint16Array(1)));
+});
+
+test('F-502 ①: dequantizeHeights 는 double 0.03 과 fround(0.03) 에서 비트 동일(전 q 범위)', () => {
+  const q = Uint16Array.from({ length: 65536 }, (_, k) => k);
+  for (const kbase of [0, -1000, 123456]) {
+    const a = h.dequantizeHeights(kbase, 0.03, q);
+    const b = h.dequantizeHeights(kbase, Math.fround(0.03), q);
+    // 65536 원소 deepEqual 은 불일치 시 diff 생성으로 프로세스가 죽으므로 첫 불일치 인덱스로 비교한다.
+    const ua = new Uint32Array(a.buffer), ub = new Uint32Array(b.buffer);
+    const i = ua.findIndex((v, k) => v !== ub[k]);
+    assert.equal(i, -1, `첫 불일치 인덱스 ${i} (kbase ${kbase})`);
+  }
+});
+
+test('F-502 ⑥: 진입부 음성 — null·undefined·비배열·q 원소 NaN 은 RangeError', () => {
+  for (const bad of [null, undefined, 5, {}]) {
+    assert.throws(() => h.quantizeHeights(bad), RangeError, `quantize ${String(bad)}`);
+    assert.throws(() => h.snapHeightsToGrid(bad), RangeError, `snap ${String(bad)}`);
+    assert.throws(() => h.dequantizeHeights(0, 0.03, bad), RangeError, `dequantize ${String(bad)}`);
+  }
+  assert.throws(() => h.dequantizeHeights(0, 0.03, [0, NaN]), RangeError);
+  assert.throws(() => h.dequantizeHeights(0, 0.03, [0, 1.5]), RangeError);
+  assert.throws(() => h.dequantizeHeights(0, 0.03, [0, -1]), RangeError);
+  assert.throws(() => h.dequantizeHeights(0, 0.03, [65536]), RangeError);
+});
+
+test('F-504 ②: step 이 f32 로 0 또는 Infinity 가 되면 RangeError(fround 뒤 재검사)', () => {
+  for (const step of [1e-50, 3.5e38]) {
+    assert.throws(() => h.dequantizeHeights(0, step, [1, 2]), RangeError, `step ${step}`);
+  }
+});
+
+test('F-504 ⑤: length 만 있는 유사배열은 세 함수 모두 RangeError', () => {
+  const fake = { length: 3 };
+  assert.throws(() => h.quantizeHeights(fake), RangeError);
+  assert.throws(() => h.snapHeightsToGrid(fake), RangeError);
+  assert.throws(() => h.dequantizeHeights(0, 0.03, fake), RangeError);
+  assert.throws(() => h.quantizeHeights('abc'), RangeError);
+});
+
+test('F-504 ⑥: dequantizeHeights 복원값이 비유한이면 RangeError', () => {
+  assert.throws(() => h.dequantizeHeights(2147483647, 3.4e38, [65535]), RangeError);
+  assert.doesNotThrow(() => h.dequantizeHeights(0, 3.4e38, [1]));
 });

@@ -84,7 +84,6 @@ test('noiseBig 시드 0~3 LOD1~3 이웃 공유 가장자리 비트 동일', () =
   for (const seed of [0, 1]) {
     const r = seamCheck(tilted(noiseBigDem(seed)), R6, R6, LODS);
     assert.equal(r.bad, 0, `기울기 시드 ${seed}`);
-    assert.ok(r.kbases.size >= 2, `서로 다른 kbase ${r.kbases.size}`);
     assert.ok(r.kbases.size > LODS.length, `LOD 안에서도 kbase 가 갈린다 ${r.kbases.size}`);
   }
 });

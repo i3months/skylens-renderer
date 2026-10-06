@@ -43,15 +43,17 @@ test('noiseBig 시드 1~3 도 같은 바이트이고 폴백 타일이 없다', (
 });
 
 test('noiseBig LOD3 양자화 H32 는 지형 몫 이하이고 초기 합계 ≤ 15,000,000 B', () => {
-  const m = measureH32Initial(noiseBigDem(0));
-  const b = compareBudget(m.quant.wire);
-  assert.equal(b.terrainWire, 2_179_072);
-  assert.ok(b.terrainWire <= TERRAIN_INITIAL_BUDGET_BYTES);
-  assert.equal(b.shareMargin, 8_601_091);
-  assert.equal(b.total, 6_398_909);
-  assert.ok(b.total <= INITIAL_TOTAL_LIMIT_BYTES);
-  assert.equal(b.totalMargin, 8_601_091);
-  assert.equal(b.sharePass && b.totalPass, true);
+  for (const seed of [0, 1]) {
+    const m = measureH32Initial(noiseBigDem(seed));
+    const b = compareBudget(m.quant.wire);
+    assert.equal(b.terrainWire, 2_179_072, `시드 ${seed}`);
+    assert.ok(b.terrainWire <= TERRAIN_INITIAL_BUDGET_BYTES, `시드 ${seed}`);
+    assert.equal(b.shareMargin, 8_601_091, `시드 ${seed}`);
+    assert.equal(b.total, 6_398_909, `시드 ${seed}`);
+    assert.ok(b.total <= INITIAL_TOTAL_LIMIT_BYTES, `시드 ${seed}`);
+    assert.equal(b.totalMargin, 8_601_091, `시드 ${seed}`);
+    assert.equal(b.sharePass && b.totalPass, true, `시드 ${seed}`);
+  }
 });
 
 test('noiseBig LOD3 비양자화 f32 H32 도 몫 이하이고 합계 여유가 남는다', () => {
@@ -91,6 +93,30 @@ test('범위를 넘는 타일은 f32 폴백으로 센다', () => {
   assert.equal(m.quant.fallbackTiles, 1);
   assert.equal(m.quant.quantizedTiles, 3);
   assert.equal(m.quant.payload, 3 * 8_474 + 16_916);
+});
+
+test('폴백 타일 DEM 의 compareBudget 이 손 계산 숫자와 같다(2×2 타일 중 1장 f32 폴백)', () => {
+  // 손 계산: 타일 (0,0) 만 +4000 m → 범위/0.03 ≈ 133,000+ > 65535 이므로 그 1장만 f32, 나머지 3장은 양자화.
+  //   f32 타일 16 + 4·65² = 16,916 B, 양자화 타일 24 + 2·65² = 8,474 B
+  //   payload = 16,916 + 3·8,474 = 42,338 B, wire = payload + 4·38 = 42,490 B
+  //   고정분 = 3,157,410 + 1,062,400 + 27 = 4,219,837 B → 합계 = 4,262,327 B
+  //   몫 여유 = 10,780,163 - 42,490 = 10,737,673 B, 합계 여유 = 15,000,000 - 4,262,327 = 10,737,673 B
+  const dem = noiseBigDem(0);
+  const h = new Float32Array(dem.heights);
+  h[520 * dem.width + 520] = 4000;
+  const m = measureH32Initial({ ...dem, heights: h }, { tilesPerSide: 2 });
+  assert.equal(m.quant.fallbackTiles, 1);
+  assert.equal(m.quant.quantizedTiles, 3);
+  assert.equal(m.quant.payload, 42_338);
+  assert.equal(m.quant.wire, 42_490);
+  const b = compareBudget(m.quant.wire);
+  assert.equal(b.terrainWire, 42_490);
+  assert.equal(b.total, 4_262_327);
+  assert.equal(b.shareMargin, 10_737_673);
+  assert.equal(b.totalMargin, 10_737_673);
+  assert.equal(b.sharePass && b.totalPass, true);
+  // 폴백이 없었다면(전부 양자화) 4·8,474 + 152 = 34,048 B 로 8,442 B 더 작다 — 폴백이 수치에 실제로 반영됨.
+  assert.equal(42_490 - (4 * 8_474 + 4 * 38), 8_442);
 });
 
 test('서버 인코더 대조: 인코더가 반드시 있어야 하고, 양자화 256 타일·payload 가 계약 바이트 식에서 유도한 값과 같다', async () => {
