@@ -54,8 +54,8 @@ export function checkThresholds(records, thresholds) {
   return out;
 }
 
-export function loadThresholds() {
-  const thresholds = JSON.parse(readFileSync(new URL('./thresholds.json', import.meta.url), 'utf8'));
+export function loadThresholds(path = new URL('./thresholds.json', import.meta.url)) {
+  const thresholds = JSON.parse(readFileSync(path, 'utf8'));
   assertThresholds(thresholds);
   return thresholds;
 }

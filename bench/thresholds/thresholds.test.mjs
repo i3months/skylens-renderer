@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { checkThresholds, loadThresholds } from './index.mjs';
 
 const rec = (metric, value) => ({ metric, value, unit: 'ms', device: 'd', method: 'm', commit: 'abcdef1' });
@@ -78,13 +81,13 @@ test('checkThresholds rejects empty thresholds object', () => {
   assert.throws(() => checkThresholds([], {}), { message: 'thresholds object must not be empty' });
 });
 
-test('loadThresholds validation: rejects missing max/min', () => {
+test('checkThresholds validation: rejects missing max/min', () => {
   // Test that checkThresholds rejects thresholds without max/min
   const invalidThresholds = { 'load.metric': {} };
   assert.throws(() => checkThresholds([], invalidThresholds), { message: 'load.metric: threshold needs max or min' });
 });
 
-test('loadThresholds validation: rejects invalid numeric values', () => {
+test('checkThresholds validation: rejects invalid numeric values', () => {
   // Test that checkThresholds rejects thresholds with non-numeric max/min
   assert.throws(() => checkThresholds([], { 'load.metric': { max: 'not_a_number' } }),
     { message: 'load.metric: max must be a finite number' });
@@ -96,10 +99,21 @@ test('loadThresholds validation: rejects invalid numeric values', () => {
     { message: 'load.metric: min must be a finite number' });
 });
 
-test('loadThresholds validation: rejects non-object threshold values', () => {
+test('checkThresholds validation: rejects non-object threshold values', () => {
   // Test that checkThresholds rejects non-object threshold entries
   for (const bad of [null, 'string', 42, [], true]) {
     assert.throws(() => checkThresholds([], { 'load.metric': bad }),
       { message: 'load.metric: threshold must be an object' });
   }
+});
+
+test('loadThresholds validates the file it reads (path injection)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'thr-'));
+  try {
+    const write = (name, text) => { const p = join(dir, name); writeFileSync(p, text); return p; };
+    assert.throws(() => loadThresholds(write('empty.json', '{}')), { message: 'thresholds object must not be empty' });
+    assert.throws(() => loadThresholds(write('nomax.json', '{"a":{}}')), { message: 'a: threshold needs max or min' });
+    assert.throws(() => loadThresholds(write('arr.json', '[]')), { message: 'thresholds must be an object' });
+    assert.deepEqual(loadThresholds(write('ok.json', '{"a":{"max":1}}')), { a: { max: 1 } });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
