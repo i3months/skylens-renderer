@@ -157,6 +157,7 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 측정 도구:
 - `node bench/tower/lod_bytes.mjs`: 관제탑 조망 범위의 지형 LOD 단계별 바이트 크기를 측정한다.
+- `node bench/tower/h32_initial.mjs`: 지형 높이만 전송 형식(H32, 계약 `contracts/tower_assets/terrain_h32.mjs`)의 초기 지형 바이트를 지형 몫 10,780,163 B·초기 합계 15,000,000 B 와 견준다(LOD1~3 선택적 u16, 전역 격자 step 0.03 m, 합성 DEM). 서버 `server/terrain/height_format`, 클라이언트 `client/tower/terrain/decode.mjs`.
 - `node bench/tower/bundle.mjs`: 관제탑 클라이언트 모듈들의 번들 크기(원본·축소·gzip)를 측정한다.
 
 ## English
@@ -316,5 +317,6 @@ A compute-only module that draws only received drones, paths and detection marke
 
 Measurement tools:
 - `node bench/tower/lod_bytes.mjs`: Measures terrain LOD level byte sizes across the control tower viewing range.
+- `node bench/tower/h32_initial.mjs`: Compares the initial terrain bytes of the height-only wire format (H32, contract `contracts/tower_assets/terrain_h32.mjs`) with the terrain share (10,780,163 B) and the 15,000,000 B initial total (optional u16 global-grid quantization at step 0.03 m for LOD1~3, synthetic DEMs). Server `server/terrain/height_format`, client `client/tower/terrain/decode.mjs`.
 - `node bench/tower/bundle.mjs`: Measures tower client module bundle sizes (raw, minified, and gzipped).
 

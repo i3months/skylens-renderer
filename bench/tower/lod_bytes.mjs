@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { buildTerrainTile, terrainTileToMesh } from '../../server/terrain/mesh_lod/index.mjs';
 import { PIECE_FRAME_OVERHEAD_BYTES } from '../../server/scheduler/initial/index.mjs';
 import { TERRAIN_LOD_COUNT, TERRAIN_LOD_MAX_ERROR_M, terrainLodMaxErrorM } from '../../contracts/tower_assets/index.mjs';
+import { terrainH32Bytes, quantizeHeights } from '../../contracts/tower_assets/terrain_h32.mjs';
 import { INITIAL_LIMIT_BYTES } from '../tower_assets/index.mjs';
 
 const SPAN_M = 1024;
@@ -82,7 +83,8 @@ export function clearLodBytesCache() {
  * DEM 하나의 LOD 별 256 타일 합계.
  * @returns {{levels: {lod:number, cells:number, rawBytes:number, gzipBytes:number}[], ratios:Object, ...}}
  */
-export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
+export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE, limitBytes = INITIAL_LIMIT_BYTES } = {}) {
+  // limitBytes: lod3OverBudget* 판정 문턱(기본 INITIAL_LIMIT_BYTES). 시험이 gzip 초과 경우를 작은 DEM 으로 만들 때만 바꾼다.
   // tilesPerSide: 가운데 tilesPerSide x tilesPerSide 타일만 잰다(기본 16 = 256 타일 전부, 작게 주면 시험이 빨라진다).
   // Validate tilesPerSide: must be positive even integer
   if (!Number.isInteger(tilesPerSide) || tilesPerSide <= 0 || tilesPerSide % 2 !== 0) {
@@ -91,7 +93,7 @@ export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
 
   // 캐시 키는 DEM 내용(heights 배열)을 포함하지 않으므로, 호출자는 같은 키에 같은 DEM만 넣어야 한다.
   // 키가 같으면 계산 결과도 같다고 가정한다.
-  const cacheKey = dem.__cacheKey ? `${dem.__cacheKey}|${tilesPerSide}` : null;
+  const cacheKey = dem.__cacheKey ? `${dem.__cacheKey}|${tilesPerSide}|${limitBytes}` : null;
   if (cacheKey && __measureLodBytesCache[cacheKey]) {
     return __measureLodBytesCache[cacheKey];
   }
@@ -99,6 +101,7 @@ export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
   const levels = [];
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
     let rawBytes = 0, gzipBytes = 0, heightOnlyBytes = 0, cells = 0, tiles = 0;
+    let h32PayloadBytes = 0, h32QuantPayloadBytes = 0, h32QuantFallbackTiles = 0; // H32 payload 바이트(계약 terrain_h32.mjs terrainH32Bytes: H32 머리+본문만, 조각 프레임 머리 PIECE_FRAME_OVERHEAD_BYTES 제외)
     for (let ty = -tilesPerSide / 2; ty < tilesPerSide / 2; ty++) {
       for (let tx = -tilesPerSide / 2; tx < tilesPerSide / 2; tx++) {
         const tile = buildTerrainTile(dem, tx, ty, lod);
@@ -107,10 +110,14 @@ export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
         rawBytes += buf.length;
         gzipBytes += gzipSync(buf, { level: 9 }).length; // 참고값: 타일(조각)마다 따로 압축, ws 에는 압축이 없다
         heightOnlyBytes += PIECE_FRAME_OVERHEAD_BYTES + MESH_HEADER_BYTES + tile.heights.byteLength; // 높이만 형식(조각 머리 같음)
+        // H32: 비양자화는 f32. 양자화는 LOD>=1 만 시도하고 양자화 불가(null) 타일은 f32 로 센다. LOD0 은 항상 f32.
+        h32PayloadBytes += terrainH32Bytes(tile.cells, false);
+        if (lod >= 1 && quantizeHeights(tile.heights)) h32QuantPayloadBytes += terrainH32Bytes(tile.cells, true);
+        else { h32QuantPayloadBytes += terrainH32Bytes(tile.cells, false); if (lod >= 1) h32QuantFallbackTiles++; }
         tiles++;
       }
     }
-    levels.push({ lod, cells, tiles, rawBytes, gzipBytes, heightOnlyBytes });
+    levels.push({ lod, cells, tiles, rawBytes, gzipBytes, heightOnlyBytes, h32PayloadBytes, h32QuantPayloadBytes, h32QuantFallbackTiles });
   }
   const [l0, , l2, l3] = levels;
   const ratios = {
@@ -123,8 +130,8 @@ export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
     // 0046 다시 볼 조건: LOD3 바이트가 LOD2 와 같거나 크다.
     lod3NotSmallerThanLod2: l3.rawBytes >= l2.rawBytes,
     // LOD3 만 보낸 지형 합이 초기 상한(SPEC S6 초기 ≤ 15 MB, bench/tower_assets INITIAL_LIMIT_BYTES)을 넘는다(raw 기준·gzip 기준).
-    lod3OverBudgetRaw: l3.rawBytes > INITIAL_LIMIT_BYTES,
-    lod3OverBudgetGzip: l3.gzipBytes > INITIAL_LIMIT_BYTES,
+    lod3OverBudgetRaw: l3.rawBytes > limitBytes,
+    lod3OverBudgetGzip: l3.gzipBytes > limitBytes,
   };
 
   // Deep freeze the result to prevent cache pollution

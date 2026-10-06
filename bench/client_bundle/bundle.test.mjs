@@ -29,6 +29,7 @@ const MIN_INPUTS = {
 // chunk 수 하한(:47), chunk gzip 하한(:51)이 잡는다.
 const MIN_TOTAL_GZIP = 10_000;
 // 실측 공유 chunk 2개. 가장 큰 chunk 하나만 남는 변이를 잡기 위한 개수 하한.
+// 실측 chunk 수에서 정한 사후 문턱이며 근거는 독립적이지 않다. 낮추지 않는다.
 const MIN_CHUNKS = 2;
 const MIN_CHUNK_GZIP = 1_000;
 

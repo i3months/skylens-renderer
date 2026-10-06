@@ -45,6 +45,7 @@ import { lambert as serverLambert } from '../../../server/raster_ref/shade/index
 import { towerViewpoints, TOWER_EYE_MIN_U_M } from '../../../client/tower/terrain/fixtures.mjs';
 import { createTerrainLayer } from '../../../client/tower/terrain/index.mjs';
 import { createTracer } from '../../../client/tower/terrain/ref_trace.mjs';
+import { parseFlags } from './flags.mjs';
 import { B1_OPTIONS, lodStrides, buildTileWithStride } from './b1_lod.mjs';
 
 const SPAN_M = 1024;
@@ -155,12 +156,13 @@ function viewTileOrder() {
   return order;
 }
 
-/** DEM 이 완전히 덮는 타일 좌표 중 앞·가운데·끝 타일(대조 표본). */
+/** DEM 이 완전히 덮는 타일 좌표 중 앞·가운데·끝 타일과 나머지 두 모서리(대조 표본). */
 function sampleTiles(dem) {
   const n0 = checkCellM(dem.cellM);
   const nx = (dem.width - 1) / n0, ny = (dem.height - 1) / n0;
   const tx0 = Math.round(dem.originX / 64), ty0 = Math.round(dem.originY / 64);
-  const pts = [[0, 0], [Math.floor((nx - 1) / 2), Math.floor((ny - 1) / 2)], [nx - 1, ny - 1]];
+  // 대각선 3점만으로는 tx/ty 뒤바뀜·대각선 밖 오류를 못 잡으므로 나머지 두 모서리도 넣는다(F-489).
+  const pts = [[0, 0], [Math.floor((nx - 1) / 2), Math.floor((ny - 1) / 2)], [nx - 1, ny - 1], [nx - 1, 0], [0, ny - 1]];
   const seen = new Set();
   return pts.map(([i, j]) => [tx0 + i, ty0 + j]).filter(([x, y]) => (seen.has(`${x},${y}`) ? false : seen.add(`${x},${y}`)));
 }
@@ -188,9 +190,10 @@ export function checkAgainstServer(dem, stridesI, { build = buildTileWithStride 
 /**
  * DEM 하나를 상한표 묶음 optionTable 로 잰다. b5_measure.mjs 가 다른 상한표·DEM(2 m 셀 hill 등)으로 다시 쓴다.
  * 바이트의 타일 수·cells 는 DEM 에서 구한다(1024 m·1 m 셀이면 256 타일·cells = 64/간격+1 로 이전과 같다).
+ * 결과의 serverCheck 는 돌린 대조 수 { lods, tiles }(check 꺼짐이면 null), cellM 은 실제 dem.cellM 이다. checkBuild 로 사본 타일 함수를 주입할 수 있다(시험용).
  * check 가 켜지면 optionTable 과 무관하게 서버 실효 상한으로 사본·서버 대조를 항상 실행한다.
  */
-export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
+export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS, checkBuild = buildTileWithStride }) {
   const t0 = Date.now();
   const dem = entry.make();
   const tileCount = demTileCount(dem);
@@ -198,7 +201,7 @@ export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
   const per = {};
   for (const [opt, bounds] of Object.entries(optionTable)) per[opt] = lodStrides(dem, bounds);
   // 서버 대조는 항상 서버 실효 상한 terrainLodMaxErrorM(·, cellM)으로 사본 간격을 새로 구해 한다(생략 경로 없음).
-  if (check) checkAgainstServer(dem, lodStrides(dem, [0, 1, 2, 3].map((l) => terrainLodMaxErrorM(l, dem.cellM))).strides);
+  const serverCheck = check ? checkAgainstServer(dem, lodStrides(dem, [0, 1, 2, 3].map((l) => terrainLodMaxErrorM(l, dem.cellM))).strides, { build: checkBuild }) : null;
 
   // SSIM: 기준 영상(LOD 0)과 간격별 층 영상.
   const order = viewTileOrder();
@@ -254,7 +257,7 @@ export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
       lod1to3SsimPass: levels.slice(1).every((l) => l.ssimMin8 >= TERRAIN_SSIM_MIN),
     };
   }
-  return { dem: entry.name, tileCount, zShiftM: zShift, viewMaxZ: maxZ, refFillMin: Math.min(...refFill), refFill, ms: Date.now() - t0, options };
+  return { dem: entry.name, cellM: dem.cellM, serverCheck, tileCount, zShiftM: zShift, viewMaxZ: maxZ, refFillMin: Math.min(...refFill), refFill, ms: Date.now() - t0, options };
 }
 
 function checkBytesAgainstLodBytes(result) {
@@ -325,12 +328,11 @@ export function formatTable(all) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  const get = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null; };
-  const onlyArg = get('--only');
-  const only = args.includes('--only') ? parseOnly(onlyArg ?? '') : null;
-  const all = measureAllOptions({ only, check: !args.includes('--no-check') });
+  // 알 수 없는 '--' 토큰·값 누락은 parseFlags 가 던져 비영 종료한다(F-491 ⑥).
+  const flags = parseFlags(process.argv.slice(2), { values: ['--only', '--json'], bools: ['--no-check'] });
+  const only = flags.has('--only') ? parseOnly(flags.get('--only')) : null;
+  const all = measureAllOptions({ only, check: !flags.has('--no-check') });
   console.log(formatTable(all));
-  const jsonPath = get('--json');
+  const jsonPath = flags.get('--json');
   if (jsonPath) writeFileSync(jsonPath, JSON.stringify(all, null, 2) + '\n');
 }

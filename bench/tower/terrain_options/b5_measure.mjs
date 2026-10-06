@@ -5,7 +5,7 @@
 // 상한표(m):
 //   i   [0, 0.5, 1, 1]      결정 0057 이전의 절대표(b1 안 (i) 과 같은 값). 서버 실효 상한은 셀에 따라 더 작으므로(1 m 셀 0.25 m) 서버와 같다는 뜻이 아니다
 //   v1  [0, 0.25, 0.5, 0.5] F-470 이 예로 든 'LOD1 0.25 m' 에 LOD2·3 을 현행의 절반으로(측정 전에 정함)
-//   v2  [0, 0.25, 0.25, 0.25] LOD1~3 모두 0.25 m. b1 출력에서 lowNoise 의 간격 2 최대 오차가 0.2960~0.2991 m 인 것을 보고
+//   v2  [0, 0.25, 0.25, 0.25] LOD1~3 모두 0.25 m. b1 출력에서 lowNoise 의 간격 2 최대 오차가 0.2960~0.2980 m(시드 1..12 실측 0.29597~0.29796, 안 i 의 LOD1) 인 것을 보고
 //       그 아래로 정한 값이다(SSIM 결과를 보고 고른 값이 아님). 이 표에서 lowNoise 는 LOD1~3 이 원본 간격이 된다.
 //
 // DEM 집합:
@@ -25,6 +25,7 @@ import { noiseBigDem } from '../lod_bytes.mjs';
 import { INITIAL_LIMIT_BYTES } from '../../tower_assets/index.mjs';
 import { TERRAIN_SSIM_MIN } from '../../../contracts/controlview/terrain.mjs';
 import { makeHillDem, towerViewpoints } from '../../../client/tower/terrain/fixtures.mjs';
+import { parseFlags } from './flags.mjs';
 import { measureDem, lowNoiseDem, floorFixed } from './b1_measure.mjs';
 
 export const B5_OPTIONS = Object.freeze({
@@ -67,7 +68,8 @@ export function measureB5({ only = null } = {}) {
     // 서버 대조는 모든 그룹(lowNoise2m·hill 포함)에서 항상 켠다. 대조 타일 좌표는 DEM 격자에서 구한다.
     const r = measureDem(d, cams, { check: true, optionTable: B5_OPTIONS });
     r.group = d.group;
-    r.cellM = GROUP_CELL_M[d.group] ?? 1;
+    // cellM 은 measureDem 이 실제 dem.cellM 으로 채운다. 그룹 표와 어긋나면 표가 틀린 것이므로 던진다.
+    if (r.cellM !== (GROUP_CELL_M[d.group] ?? 1)) throw new Error(`cellM 불일치 ${d.name}: DEM ${r.cellM} 그룹표 ${GROUP_CELL_M[d.group]}`);
     results.push(r);
     console.error(`[b5] ${d.name} ${r.ms} ms`);
   }
@@ -119,13 +121,11 @@ export function formatB5(all) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  const get = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null; };
-  const onlyArg = get('--only');
-  // 빈 값·오타는 parseOnly 가 던져 비영 종료한다. --only 가 값 없이 끝나면 null 이 아니라 빈 값으로 본다.
-  const only = args.includes('--only') ? parseOnly(onlyArg ?? '') : null;
+  // 빈 값·오타는 parseOnly 가, 알 수 없는 '--' 토큰·값 누락은 parseFlags 가 던져 비영 종료한다(F-491 ⑥).
+  const flags = parseFlags(process.argv.slice(2), { values: ['--only', '--json'] });
+  const only = flags.has('--only') ? parseOnly(flags.get('--only')) : null;
   const all = measureB5({ only });
   console.log(formatB5(all));
-  const jsonPath = get('--json');
+  const jsonPath = flags.get('--json');
   if (jsonPath) writeFileSync(jsonPath, JSON.stringify(all, null, 2) + '\n');
 }

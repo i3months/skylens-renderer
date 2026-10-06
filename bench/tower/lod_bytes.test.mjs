@@ -5,6 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { measureLodBytes, smoothDem, noiseBigDem, measureAll, clearLodBytesCache } from './lod_bytes.mjs';
 import { INITIAL_LIMIT_BYTES } from '../tower_assets/index.mjs';
+import { terrainH32Bytes } from '../../contracts/tower_assets/terrain_h32.mjs';
 import { PIECE_FRAME_OVERHEAD_BYTES } from '../../server/scheduler/initial/index.mjs';
 
 // 시간: measureAll 한 번이 smooth·noiseBig(0) 을 재고, 아래 시험이 그 결과를 재사용한다.
@@ -79,6 +80,38 @@ test('heightOnlyBytes: 타일 256 개 x (조각 머리 + 메시 머리 16 + 높�
   assert.deepEqual(rough.levels.map((l) => l.heightOnlyBytes), [4340224, 4340224, 4340224, 4340224]);
 });
 
+test('H32 payload 바이트(조각 머리 제외): 비양자화 f32 합과 LOD>=1 양자화 합(실측 정확값), 폴백 타일 0', () => {
+  // noiseBig LOD3 f32 합 = 256 x (16 + 4 x 65^2) = 4,330,496
+  assert.equal(rough.levels[3].h32PayloadBytes, 256 * terrainH32Bytes(65, false));
+  assert.deepEqual(smooth.levels.map((l) => l.h32PayloadBytes), [4330496, 1119232, 300032, 87040]);
+  assert.deepEqual(rough.levels.map((l) => l.h32PayloadBytes), [4330496, 4330496, 4330496, 4330496]);
+  // 양자화: 256 x (16 + 8 + 2 x cells^2), LOD0 은 f32 그대로
+  assert.deepEqual(smooth.levels.map((l) => l.h32QuantPayloadBytes), [4330496, 563712, 154112, 47616]);
+  assert.deepEqual(rough.levels.map((l) => l.h32QuantPayloadBytes), [4330496, 2169344, 2169344, 2169344]);
+  assert.equal(rough.levels[3].h32QuantPayloadBytes, 256 * terrainH32Bytes(65, true));
+  for (const dem of [smooth, rough]) {
+    for (const l of dem.levels) {
+      assert.equal(l.h32PayloadBytes, 256 * terrainH32Bytes(l.cells, false));
+      assert.equal(l.h32QuantFallbackTiles, 0);
+    }
+  }
+});
+
+test('H32 양자화 폴백: 높이 범위가 너무 커서 양자화 못 하는 타일은 f32 로 세고 폴백 수에 든다', () => {
+  clearLodBytesCache();
+  const dem = smoothDem();
+  for (let k = 0; k < dem.heights.length; k++) dem.heights[k] *= 1000; // 범위 약 5 만 m > 0.05 x 65535
+  dem.__cacheKey = 'smoothTall';
+  const r = measureLodBytes(dem, { tilesPerSide: 2 });
+  assert.equal(r.levels[0].h32QuantFallbackTiles, 0); // LOD0 은 시도하지 않는다
+  assert.ok(r.levels.slice(1).every((l) => l.h32QuantFallbackTiles > 0 && l.h32QuantFallbackTiles <= l.tiles));
+  for (const l of r.levels.slice(1)) {
+    const q = l.tiles - l.h32QuantFallbackTiles;
+    assert.equal(l.h32QuantPayloadBytes, q * terrainH32Bytes(l.cells, true) + l.h32QuantFallbackTiles * terrainH32Bytes(l.cells, false));
+  }
+  clearLodBytesCache();
+});
+
 test('measureAll 은 JSON 직렬화 가능하고 상한표 [0, 0.5, 1, 1] 을 싣는다', () => {
   assert.deepEqual(all.maxErrorM, [0, 0.5, 1, 1]);
   assert.deepEqual(JSON.parse(JSON.stringify(all.dems.smooth)), smooth);
@@ -115,4 +148,38 @@ test('⑤ 캐시가 돌려주는 객체는 깊은 동결로 호출자 변경이 
   assert.equal(result1, result2);
   // 데이터는 같다
   assert.deepEqual(result1, result2);
+});
+
+test('② 예산 초과 판정: raw·gzip 문턱 경계와 gzip 초과(참) 사례', () => {
+  clearLodBytesCache();
+  const dem = noiseBigDem(0);
+  const base = measureLodBytes(dem, { tilesPerSide: 2 });
+  const { rawBytes, gzipBytes } = base.levels[3];
+  assert.ok(gzipBytes < rawBytes);
+  // 문턱 = gzip 이하: raw·gzip 모두 초과(gzip 초과 참)
+  const both = measureLodBytes(dem, { tilesPerSide: 2, limitBytes: gzipBytes - 1 });
+  assert.equal(both.lod3OverBudgetRaw, true);
+  assert.equal(both.lod3OverBudgetGzip, true);
+  // 문턱 = gzip 정확히: 초과 아님(경계), raw 는 초과
+  const edge = measureLodBytes(dem, { tilesPerSide: 2, limitBytes: gzipBytes });
+  assert.equal(edge.lod3OverBudgetGzip, false);
+  assert.equal(edge.lod3OverBudgetRaw, true);
+  // 문턱 = raw 정확히·raw+... : 둘 다 초과 아님
+  const none = measureLodBytes(dem, { tilesPerSide: 2, limitBytes: rawBytes });
+  assert.equal(none.lod3OverBudgetRaw, false);
+  assert.equal(none.lod3OverBudgetGzip, false);
+  const rawOnly = measureLodBytes(dem, { tilesPerSide: 2, limitBytes: rawBytes - 1 });
+  assert.equal(rawOnly.lod3OverBudgetRaw, true);
+  assert.equal(rawOnly.lod3OverBudgetGzip, false);
+  clearLodBytesCache();
+});
+
+test('② 기본 문턱(15,000,000 B): 144 타일 noiseBig 은 raw 15 MB 초과·30 MB 미만이라 raw 문턱 2배 변이를 거른다', () => {
+  clearLodBytesCache();
+  const r = measureLodBytes(noiseBigDem(0), { tilesPerSide: 12 });
+  const l3 = r.levels[3];
+  assert.ok(l3.rawBytes > INITIAL_LIMIT_BYTES && l3.rawBytes < 2 * INITIAL_LIMIT_BYTES, `raw ${l3.rawBytes}`);
+  assert.equal(r.lod3OverBudgetRaw, true);
+  assert.equal(r.lod3OverBudgetGzip, l3.gzipBytes > INITIAL_LIMIT_BYTES);
+  clearLodBytesCache();
 });

@@ -18,6 +18,46 @@ function smallDem(cellM) {
   return { originX: -128, originY: -128, cellM, width: side, height: side, heights };
 }
 
+// 가로 ≠ 세로(5×3 타일), originX ≠ originY(-192, 64)인 비대칭 DEM(F-489). 대각선 표본만으로는 못 잡는 오류를 드러낸다.
+function rectDem(cellM) {
+  const w = 5 * 64 / cellM + 1, h = 3 * 64 / cellM + 1;
+  const heights = new Float32Array(w * h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    heights[j * w + i] = 20 + 5 * Math.sin(i * cellM / 30) * Math.cos(j * cellM / 40) + 0.3 * (((i * 7 + j * 13) % 11) / 11 - 0.5);
+  }
+  return { originX: -192, originY: 64, cellM, width: w, height: h, heights };
+}
+
+test('비대칭 DEM(가로 ≠ 세로, originX ≠ originY)에서 대조가 통과하고 모서리 5곳을 본다', () => {
+  const dem = rectDem(2);
+  const { strides } = lodStrides(dem, caps(2));
+  const seen = new Set();
+  const spy = (d, tx, ty, lod, s) => { seen.add(`${tx},${ty}`); return buildTileWithStride(d, tx, ty, lod, s); };
+  const r = checkAgainstServer(dem, strides, { build: spy });
+  assert.equal(r.tiles, 4 * 5);
+  // 타일 좌표 x −3..1, y 1..3: 네 모서리와 가운데가 모두 들어 있어야 한다.
+  for (const k of ['-3,1', '1,3', '1,1', '-3,3', '-1,2']) assert.ok(seen.has(k), `표본에 ${k} 없음: ${[...seen]}`);
+});
+
+test('비대칭 DEM: i0·j0 의 tx/ty 를 뒤바꾼 사본은 실패한다', () => {
+  const dem = rectDem(2);
+  const { strides } = lodStrides(dem, caps(2));
+  // 사본이 타일 (tx, ty) 대신 상대 위치를 뒤바꾼 (tx0 + (ty - ty0), ty0 + (tx - tx0)) 를 만든다. 범위 밖이어도 던지므로 실패로 본다.
+  const swapped = (d, tx, ty, lod, s) => buildTileWithStride(d, -3 + (ty - 1), 1 + (tx + 3), lod, s);
+  assert.throws(() => checkAgainstServer(dem, strides, { build: swapped }));
+});
+
+test('비대칭 DEM: 대각선 밖 타일에만 +0.01 을 더한 사본은 실패한다', () => {
+  const dem = rectDem(2);
+  const { strides } = lodStrides(dem, caps(2));
+  const offDiag = (d, tx, ty, lod, s) => {
+    const t = buildTileWithStride(d, tx, ty, lod, s);
+    if (tx + 3 !== ty - 1) t.heights[0] += 0.01;
+    return t;
+  };
+  assert.throws(() => checkAgainstServer(dem, strides, { build: offDiag }), /사본 타일 불일치/);
+});
+
 for (const cellM of [1, 2]) {
   test(`서버 실효 상한 사본이 서버와 일치하고 대조가 실제 돌았다 (cellM ${cellM})`, () => {
     const dem = smallDem(cellM);
@@ -46,7 +86,9 @@ test('옛 절대표 [0,0.5,1,1] 간격은 1 m 셀 서버와 어긋날 수 있어
   const dem = lowNoiseDem(1, 1);
   const old = lodStrides(dem, [0, 0.5, 1, 1]).strides;
   const now = lodStrides(dem, caps(1)).strides;
-  if (old.join() !== now.join()) assert.throws(() => checkAgainstServer(dem, old), /사본 간격 불일치/);
+  // 두 간격이 같아지면 아래 단언이 공허해지므로 먼저 다름을 못 박는다.
+  assert.notEqual(old.join(), now.join());
+  assert.throws(() => checkAgainstServer(dem, old), /사본 간격 불일치/);
 });
 
 test('hill(2 m 셀, 16 타일) 에서도 대조가 돈다', () => {
@@ -55,17 +97,29 @@ test('hill(2 m 셀, 16 타일) 에서도 대조가 돈다', () => {
   assert.ok(checkAgainstServer(dem, strides).tiles > 0);
 });
 
-test('measureDem check 는 생략 로그 없이 대조를 돌린다', () => {
-  const logs = [];
-  const orig = console.error;
-  console.error = (...a) => logs.push(a.join(' '));
-  try {
-    measureDem({ name: 'small', make: () => { const d = smallDem(2); return d; } }, [], { check: true, optionTable: { v: [0, 0.25, 0.25, 0.25] } });
-  } catch (e) {
-    // 시점 0개라 SSIM 단계에서 던질 수 있다. 대조는 그 앞이다.
-    assert.doesNotMatch(String(e.message), /사본/);
-  } finally { console.error = orig; }
-  assert.equal(logs.filter((l) => /생략/.test(l)).length, 0);
+test('measureDem check 는 대조를 실제로 돌려 횟수를 결과에 싣는다', () => {
+  const r = measureDem({ name: 'small', make: () => smallDem(2) }, [], { check: true, optionTable: { v: [0, 0.25, 0.25, 0.25] } });
+  assert.equal(r.serverCheck.lods, 4);
+  assert.ok(r.serverCheck.tiles > 0, `대조한 타일 ${r.serverCheck.tiles}`);
+  assert.equal(r.cellM, 2);
+  // check 를 끄면 대조 결과가 없다.
+  assert.equal(measureDem({ name: 'small', make: () => smallDem(2) }, [], { check: false, optionTable: { v: [0, 0.25, 0.25, 0.25] } }).serverCheck, null);
+});
+
+test('measureDem 은 두 표 간격이 다른 DEM(lowNoise 1 m 셀)에서도 서버 실효 상한 사본으로 대조해 통과한다', () => {
+  // 절대표 [0,0.5,1,1] 과 서버 실효 상한의 간격이 다른 입력이다. 사본 간격을 절대표로 구하면 /사본/ 으로 던져야 한다.
+  const dem = lowNoiseDem(1, 1);
+  assert.notEqual(lodStrides(dem, [0, 0.5, 1, 1]).strides.join(), lodStrides(dem, caps(1)).strides.join());
+  const r = measureDem({ name: 'lowNoise:1', make: () => dem }, [], { check: true, optionTable: { i: [0, 0.5, 1, 1] } });
+  assert.ok(r.serverCheck.tiles > 0);
+});
+
+test('measureDem check 는 틀린 사본 타일을 주입하면 /사본/ 으로 던진다', () => {
+  const bad = (d, tx, ty, lod, s) => { const t = buildTileWithStride(d, tx, ty, lod, s); t.heights[0] += 0.001; return t; };
+  assert.throws(
+    () => measureDem({ name: 'small', make: () => smallDem(2) }, [], { check: true, optionTable: { v: [0, 0.25, 0.25, 0.25] }, checkBuild: bad }),
+    /사본/,
+  );
 });
 
 test('parseOnly: 빈 값·알 수 없는 이름은 던진다', () => {
