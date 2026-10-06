@@ -95,7 +95,7 @@ export function parseB6Only(arg, groups) {
 }
 
 /**
- * 사본 간격 strides 로 만든 타일 높이가 서버 buildTerrainTile 과 바이트 단위로 같은지 LOD 마다 타일 3개(네 모서리와 가운데, b1 sampleTiles 와 같은 표본)에서 대조한다.
+ * 사본 간격 strides 로 만든 타일 높이가 서버 buildTerrainTile 과 바이트 단위로 같은지 LOD 마다 타일 5개(네 모서리와 가운데, b1 sampleTiles 와 같은 표본)에서 대조한다.
  * 다르면 던진다. 대조한 타일 수를 돌려준다(시험이 대조가 실제로 돌았는지 단언). build 는 시험의 변이 주입용.
  */
 export function checkTilesAgainstServer(dem, strides, build = buildTileWithStride) {
