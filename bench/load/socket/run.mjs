@@ -149,7 +149,6 @@ export async function main(outDir = 'load_out/socket', durationArg, opts = {}, w
   const violationLines = violations.map((v) => `- ${v}`).join('\n');
   writeFileSync(`${outDir}/report.md`, `## ${SCENARIO_NAME}\n${body}\n${notes.length ? `\nreference only (not S5 verdicts):\n${notes.map((n) => `- ${n}`).join('\n')}\n` : ''}${violations.length ? `\nviolations:\n${violationLines}\n` : ''}`);
   console.log(`## ${SCENARIO_NAME}\n${body}\n`);
-
   for (const n of notes) writeErr(`NOTE ${n}\n`);
   for (const v of violations) console.error(`VIOLATION ${v}`);
   return violations.length === 0 ? 0 : 1;
