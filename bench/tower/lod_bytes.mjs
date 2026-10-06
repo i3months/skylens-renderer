@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { buildTerrainTile, terrainTileToMesh } from '../../server/terrain/mesh_lod/index.mjs';
 import { PIECE_FRAME_OVERHEAD_BYTES } from '../../server/scheduler/initial/index.mjs';
 import { TERRAIN_LOD_COUNT, TERRAIN_LOD_MAX_ERROR_M, terrainLodMaxErrorM } from '../../contracts/tower_assets/index.mjs';
+import { terrainH32Bytes, quantizeHeights } from '../../contracts/tower_assets/terrain_h32.mjs';
 import { INITIAL_LIMIT_BYTES } from '../tower_assets/index.mjs';
 
 const SPAN_M = 1024;
@@ -99,6 +100,7 @@ export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
   const levels = [];
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
     let rawBytes = 0, gzipBytes = 0, heightOnlyBytes = 0, cells = 0, tiles = 0;
+    let h32Bytes = 0, h32QuantBytes = 0, h32QuantFallbackTiles = 0; // H32 실제 바이트(계약 terrain_h32.mjs, 조각 머리 제외)
     for (let ty = -tilesPerSide / 2; ty < tilesPerSide / 2; ty++) {
       for (let tx = -tilesPerSide / 2; tx < tilesPerSide / 2; tx++) {
         const tile = buildTerrainTile(dem, tx, ty, lod);
@@ -107,10 +109,14 @@ export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
         rawBytes += buf.length;
         gzipBytes += gzipSync(buf, { level: 9 }).length; // 참고값: 타일(조각)마다 따로 압축, ws 에는 압축이 없다
         heightOnlyBytes += PIECE_FRAME_OVERHEAD_BYTES + MESH_HEADER_BYTES + tile.heights.byteLength; // 높이만 형식(조각 머리 같음)
+        // H32: 비양자화는 f32. 양자화는 LOD>=1 만 시도하고 양자화 불가(null) 타일은 f32 로 센다. LOD0 은 항상 f32.
+        h32Bytes += terrainH32Bytes(tile.cells, false);
+        if (lod >= 1 && quantizeHeights(tile.heights)) h32QuantBytes += terrainH32Bytes(tile.cells, true);
+        else { h32QuantBytes += terrainH32Bytes(tile.cells, false); if (lod >= 1) h32QuantFallbackTiles++; }
         tiles++;
       }
     }
-    levels.push({ lod, cells, tiles, rawBytes, gzipBytes, heightOnlyBytes });
+    levels.push({ lod, cells, tiles, rawBytes, gzipBytes, heightOnlyBytes, h32Bytes, h32QuantBytes, h32QuantFallbackTiles });
   }
   const [l0, , l2, l3] = levels;
   const ratios = {
