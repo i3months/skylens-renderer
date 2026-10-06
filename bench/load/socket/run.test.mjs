@@ -137,8 +137,11 @@ test('real server process, real sockets and real proc sampler: 30 clients for 2 
   assert.deepEqual(out.violations, []);
   assert.equal(out.serverSamples.length, 2);
   // The sampler shares run's t0 (getconf must not shift it): a sample is never more than 2 ms before its target (F-574 saw 8-9 ms early);
-  // timer lateness is OS scheduling jitter (2.7 ms seen under the parallel full suite), so the late side is bounded at 20 ms (a 30 ms t0 skew fails).
-  out.serverSamples.forEach((s, i) => { const d = s.tS - Math.min(i + 1, 2); assert.ok(d > -0.002 && d < 0.02, `tS[${i}] = ${s.tS}`); });
+  // timer lateness is OS scheduling jitter (2.7 ms idle, 37-43 ms with 3 socket suites + 2 busy loops running), so the late side only has a
+  // loose 0.1 s bound; a t0 skew is caught by the early side (a later sampler t0 makes tS fall before its target) and by the sample spacing.
+  out.serverSamples.forEach((s, i) => { const d = s.tS - Math.min(i + 1, 2); assert.ok(d > -0.002 && d < 0.1, `tS[${i}] = ${s.tS}`); });
+  const spacing = out.serverSamples[1].tS - out.serverSamples[0].tS;
+  assert.ok(Math.abs(spacing - 1) < 0.05, `sample spacing ${spacing}`);
   assert.equal(out.report.split('(handshake-complete basis, not an S5 value)').length - 1, 1, out.report);
   assert.match(out.report, /first_frame_p95.*\(handshake-complete basis, not an S5 value\)/);
   for (const s of out.serverSamples) {

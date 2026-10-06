@@ -15,7 +15,7 @@ function marker() {
   return { dir, mark, mainPath };
 }
 
-test('timeouts above 2**31-1 throw RangeError before spawning', async () => {
+test('timeouts above 2**31-1 throw RangeError before spawning', { timeout: 10000 }, async () => {
   const f = marker();
   try {
     for (const opt of [{ startTimeoutMs: 2 ** 31 }, { killAfterMs: 2 ** 31 }]) {
@@ -28,7 +28,7 @@ test('timeouts above 2**31-1 throw RangeError before spawning', async () => {
   }
 });
 
-test('2**31-1 is accepted by validation', async () => {
+test('2**31-1 is accepted by validation', { timeout: 10000 }, async () => {
   const f = marker();
   let proc;
   try {

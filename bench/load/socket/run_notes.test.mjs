@@ -8,14 +8,14 @@ import { main, tickOnRealClock } from './run.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-test('tickOnRealClock throws RangeError synchronously for NaN and Infinity durationS', () => {
+test('tickOnRealClock rejects with RangeError (never throws synchronously) for NaN and Infinity durationS', { timeout: 10000 }, async () => {
   const sampler = { tick() {} };
   const now = () => 0;
-  assert.throws(() => tickOnRealClock(sampler, NaN, now, () => {}), RangeError);
-  assert.throws(() => tickOnRealClock(sampler, Infinity, now, () => {}), RangeError);
+  await assert.rejects(() => tickOnRealClock(sampler, NaN, now, () => {}), RangeError);
+  await assert.rejects(() => tickOnRealClock(sampler, Infinity, now, () => {}), RangeError);
 });
 
-test('main prints each note to stderr as `NOTE <text>`', async () => {
+test('main prints each note to stderr as `NOTE <text>`', { timeout: 10000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'socket-notes-'));
   try {
     const clients = 5;
