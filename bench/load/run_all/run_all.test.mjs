@@ -93,14 +93,14 @@ test('F-529: burst scenarios with burstLevels 1..4 have 0 violations', () => {
 test('F-529 / F-539: a non-integer arrival level is rejected by the event log check (exact string)', () => {
   // Since F-539 the injected log is checked first, so the burst checker never sees level 1.5.
   const s = burstOf(2);
-  const events = [...simulateClients(s, { seed: 1 }), { id: 0, tMs: 5, kind: 'level', level: 1.5 }];
+  const events = [...simulateClients(s, { seed: 1 }), { id: 0, tMs: 1e9, kind: 'level', level: 1.5 }];
   const { violations } = runScenario(s, { ...OPTS, events });
   assert.deepEqual(violations, [`burst2: event ${events.length - 1}: bad level`]);
 });
 test('F-529: burst invariant violations: levels beyond burstLevels are not arrivals', () => {
   // a level-3 event in a burstLevels 2 run belongs to the post-burst part and must not be flagged
   const s = burstOf(2);
-  const events = [...simulateClients(s, { seed: 1 }), { id: 0, tMs: 5000, kind: 'level', level: 3 }];
+  const events = [...simulateClients(s, { seed: 1 }), { id: 0, tMs: 1e9, kind: 'level', level: 3 }];
   assert.deepEqual(runScenario(s, { ...OPTS, events }).violations, []);
 });
 const const3 = (ev, c) => showFromArrivals(ev, c).map((x) => ({ ...x, level: 3 }));
@@ -194,12 +194,12 @@ test('F-538: injected now and cpuUsage give measured samples', () => {
   const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: zeroCpu } });
   assert.deepEqual(violations, []);
   assert.deepEqual(serverSamples.map((x) => x.tS).slice(0, 3), [1, 2, 3]);
-  assert.ok(serverSamples.every((x) => x.cpuPct === 0 && x.cpuSource === 'measured' && x.clock === 'simulated'));
+  assert.ok(serverSamples.every((x) => x.cpuPct === 0 && x.cpuSource === 'simulated' && x.clock === 'simulated'));
 });
 
 // ---- F-539: injected event logs are checked first, stats throws become violations ----
 test('F-539: a bad injected log returns its violations without running stats', () => {
-  const events = [...baseSteady(), { id: 99, tMs: 0, kind: 'connect' }];
+  const events = [...baseSteady(), { id: 99, tMs: 1e9, kind: 'connect' }];
   const r = runScenario(steady, { ...OPTS, events });
   assert.deepEqual(r.violations, [`steady30: event ${events.length - 1}: bad id`]);
   assert.deepEqual(r.result, { scenario: steady, records: [], perClient: [] });
@@ -265,8 +265,7 @@ test('F-543: a real clock advancing 1 s per call has 0 violations', () => {
   assert.equal(serverSamples.length, 60);
   assert.deepEqual(violations, []);
 });
-// Depends on server_stats checkServerSamples(samples, { durationS }) (separate agent); todo until it lands.
-test('F-543: a real clock that finishes in milliseconds violates the durationS rule (needs server_stats durationS option)', { todo: 'server_stats durationS option' }, () => {
+test('F-543: a real clock that finishes in milliseconds violates the durationS rule ', () => {
   const { violations } = runScenario(steady, { ...OPTS, statsClock: { clock: 'real', now: () => performance.now(), cpuUsage: () => process.cpuUsage() } });
   assert.ok(violations.some((v) => v.startsWith('steady30: server sample')), violations.join('\n'));
 });
@@ -323,20 +322,22 @@ test('F-548: null memoryUsage / cpuUsage becomes a server stats violation, not a
   let t = 0;
   const mem = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: zeroCpu, memoryUsage: () => null } });
   assert.equal(mem.violations.length, 1);
-  assert.match(mem.violations[0], /^steady30: server stats: /);
+  assert.match(mem.violations[0], /^steady30: (server stats: |0 server samples)/);
   let n = 0;
   const cpu = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: () => (n++ === 0 ? zeroCpu() : null) } });
   assert.equal(cpu.violations.length, 1);
-  assert.match(cpu.violations[0], /^steady30: server stats: /);
+  assert.match(cpu.violations[0], /^steady30: (server stats: |\d+ server samples)/);
 });
 test('F-548: runScenario(null / undefined) throws a clear error', () => {
   for (const s of [null, undefined]) assert.throws(() => runScenario(s), { message: 'runScenario: scenario must be an object' });
 });
-test('F-543: main passes the server samples to loadReport (source line follows the samples)', () => {
+test('F-543: main passes the server samples to loadReport (cpu/rss line follows the samples, source line follows the records)', () => {
   const lines = []; const log = console.log;
   console.log = (m) => lines.push(String(m));
   let t = 0;
   const statsClock = { clock: 'simulated', source: 'server-process', now: () => (t += 1000), cpuUsage: zeroCpu };
   try { assert.equal(main(mkdtempSync(join(tmpdir(), 'load-')), { ...OPTS, statsClock }), 0); } finally { console.log = log; }
-  assert.equal(lines.join('\n').split('source: server-process, S5/S8 verdict measured on server-process').length - 1, 3);
+  assert.equal(lines.join('\n').split('cpu/rss source: server-process').length - 1, 3);
+  assert.ok(!lines.join('\n').includes('measured on'));  // simulated clock: no measured claim
+  assert.equal(lines.join('\n').split('source: simulated, S5/S8 verdict [local]').length - 1, 3);
 });

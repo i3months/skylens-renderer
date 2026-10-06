@@ -96,7 +96,7 @@ test('F-530: NaN cpu gives violations from checkServerSamples and runScenario', 
     'server sample 0: missing source', 'server sample 0: missing clock', 'server sample 0: bad cpuSource',
   ]);
   const steady = { name: 'steady30', kind: 'steady', clients: 30, durationS: 60, path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 30, e: 150, n: 0, u: 100 }] };
-  const { violations } = runScenario(steady, { commit: 'abcdef1', statsClock: { cpuUsage: () => ({ user: NaN, system: 0 }), now: (() => { let t = 0; return () => (t += 1000); })() } });
+  const { violations } = runScenario(steady, { commit: 'abcdef1', statsClock: { clock: 'simulated', cpuUsage: () => ({ user: NaN, system: 0 }), now: (() => { let t = 0; return () => (t += 1000); })() } });
   assert.ok(violations.some((v) => v.startsWith('steady30: server sample') && /not finite/.test(v)));
   assert.deepEqual(runScenario(steady, { commit: 'abcdef1' }).violations, []);
 });
