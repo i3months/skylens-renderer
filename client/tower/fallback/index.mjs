@@ -24,6 +24,12 @@ export function createTowerFallback(opts) {
       if (!store.hasPath(checked.id) && store.counts().paths >= TOWER_OVERLAY_LIMITS.maxPaths) {
         throw new RangeError(`경로는 ${TOWER_OVERLAY_LIMITS.maxPaths} 개 이하여야 한다`);
       }
+      // 총 점 상한: 같은 id 교체면 옛 경로의 점은 뺀다. 넘으면 던지고 상태는 그대로다(store.setPath 전에 검사).
+      let total = checked.points.length;
+      for (const p of store.pathsRaw()) if (p.id !== checked.id) total += p.points.length;
+      if (total > TOWER_OVERLAY_LIMITS.maxTotalPathPoints) {
+        throw new RangeError(`경로 점 총합은 ${TOWER_OVERLAY_LIMITS.maxTotalPathPoints} 개 이하여야 한다`);
+      }
       store.setPath(checked);
     },
     removePath(id) { return store.removePath(id); },
