@@ -129,9 +129,8 @@ export function main(outDir = 'load_out', opts = {}) {
     const { result, violations, serverSamples } = runScenario(s, opts);
     writeFileSync(`${outDir}/${s.name}.json`, JSON.stringify(result, null, 2) + '\n');
     writeFileSync(`${outDir}/${s.name}.server.json`, JSON.stringify(serverSamples, null, 2) + '\n');
-    // slow_link is exempt from the S5 threshold check; the scenario heading line carries that note.
-    const note = s.kind === 'slow_link' ? ' (S5 문턱 제외 시나리오)' : '';
-    if (violations.length === 0) console.log(`## ${s.name}${note}\n${loadReport(result)}\n`);
+    // slow_link is exempt from the S5 threshold check; loadReport carries that note in the report body.
+    if (violations.length === 0) console.log(`## ${s.name}\n${loadReport(result)}\n`);
     appendAll(all, violations);
   }
   for (const v of all) console.error(`VIOLATION ${v}`);

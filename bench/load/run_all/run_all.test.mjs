@@ -140,12 +140,13 @@ test('F-537: appendAll 은 대량(200000) 위반도 RangeError 없이 접두어�
   assert.equal(out.length, 200001);
   assert.deepEqual([out[0], out[1], out[200000]], ['first', 'x: v0', 'x: v199999']);
 });
-test('F-537: main 콘솔 출력의 slow_link 시나리오 줄에만 S5 문턱 제외 표시', () => {
+test('F-537: main prints the S5 exclusion note exactly once, in the slow_link report body only', () => {
   const lines = []; const log = console.log;
   console.log = (m) => lines.push(String(m));
   try { assert.equal(main(mkdtempSync(join(tmpdir(), 'load-')), OPTS), 0); } finally { console.log = log; }
   const headings = lines.flatMap((l) => l.split('\n')).filter((l) => l.startsWith('## '));
-  assert.deepEqual(headings, ['## steady30', '## burst30', '## slow30 (S5 문턱 제외 시나리오)']);
+  assert.deepEqual(headings, ['## steady30', '## burst30', '## slow30']);
+  assert.equal(lines.join('\n').split('S5 threshold-excluded scenario').length - 1, 1);
 });
 
 // ---- F-538: statsClock handling ----
