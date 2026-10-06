@@ -99,6 +99,7 @@ export function checkBurstInvariants(arrivals, shown, scenario) {
   for (let id = 0; id < scenario.clients; id++) {
     const a = arrById[id];
     const s = shownById[id];
+    if (a.length === 0) errs.push(`client ${id}: no burst arrivals`);
     if (a.length > 0 && s.length === 0) {
       errs.push(`client ${id}: levels arrived but never shown`);
       continue;
