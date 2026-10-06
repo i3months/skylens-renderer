@@ -12,8 +12,10 @@ export function startServerProcess({ host, env = {} } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [MAIN], {
       env: { ...process.env, ...env, [ENV_HOST]: host, [ENV_PORT]: '0' },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+    // Kept open for the child's lifetime: its closing (parent death) is the child's cue to exit.
+    child.stdin.on('error', () => {});
     let exited = false;
     let settled = false;
     let out = '';

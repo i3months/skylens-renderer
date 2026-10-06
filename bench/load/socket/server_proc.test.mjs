@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { startServerProcess } from './server_proc.mjs';
 import { LEVEL_PAYLOAD_BYTES, SOCKET_HOST } from './contract.mjs';
@@ -60,4 +62,31 @@ test('startServerProcess rejects when the child exits early', async () => {
     startServerProcess({ host: SOCKET_HOST, env: { NODE_OPTIONS: '--no-such-flag-xyz' } }),
     /exited before listening/,
   );
+});
+
+test('the server child exits when its parent is killed', async () => {
+  const mod = fileURLToPath(new URL('./server_proc.mjs', import.meta.url));
+  const code = `import(${JSON.stringify(mod)}).then(async (m) => { const p = await m.startServerProcess({ host: '127.0.0.1' }); console.log('pid ' + p.pid); setInterval(() => {}, 1000); });`;
+  const parent = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'inherit'] });
+  let childPid;
+  try {
+    childPid = await new Promise((resolve, reject) => {
+      let out = '';
+      const timer = setTimeout(() => reject(new Error('no child pid')), 8000);
+      parent.stdout.on('data', (d) => {
+        out += d;
+        const m = /pid (\d+)/.exec(out);
+        if (m) { clearTimeout(timer); resolve(Number(m[1])); }
+      });
+      parent.on('exit', () => reject(new Error('parent exited early')));
+    });
+    assert.ok(alive(childPid));
+    parent.kill('SIGTERM');
+    const deadline = Date.now() + 2500;
+    while (alive(childPid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(alive(childPid), false);
+  } finally {
+    parent.kill('SIGKILL');
+    if (childPid && alive(childPid)) process.kill(childPid, 'SIGKILL');
+  }
 });
