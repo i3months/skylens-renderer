@@ -114,3 +114,24 @@ test('clients must be an integer in 1..30', () => {
   assert.doesNotThrow(() => firstFrameStats(log([100]), 1));
   assert.doesNotThrow(() => firstFrameStats(log(Array(30).fill(100)), 30));
 });
+
+test('events must be an array', () => {
+  assert.throws(() => firstFrameStats(undefined, 1), Error);
+  assert.throws(() => firstFrameStats(null, 1), Error);
+  assert.throws(() => firstFrameStats({}, 1), Error);
+  assert.throws(() => firstFrameStats('events', 1), Error);
+  assert.throws(() => firstFrameStats(42, 1), Error);
+});
+
+test('events array must not contain null', () => {
+  const withNull = [{ id: 0, tMs: 0, kind: 'connect' }, null, { id: 0, tMs: 100, kind: 'first_frame' }];
+  assert.throws(() => firstFrameStats(withNull, 1), /events array contains null/);
+});
+
+test('clients > MAX_CLIENTS throws', () => {
+  assert.throws(() => firstFrameStats([], 31), RangeError);
+});
+
+test('clients = MAX_CLIENTS ok', () => {
+  assert.doesNotThrow(() => firstFrameStats(log(Array(30).fill(100)), 30));
+});
