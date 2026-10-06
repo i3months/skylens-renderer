@@ -30,7 +30,7 @@ import { PIECE_FRAME_OVERHEAD_BYTES } from '../../../server/scheduler/initial/in
 import { TERRAIN_LOD_COUNT, TERRAIN_LOD_MAX_ERROR_M } from '../../../contracts/tower_assets/index.mjs';
 import { TERRAIN_SSIM_MIN, TERRAIN_DEFAULTS } from '../../../contracts/controlview/terrain.mjs';
 import { INITIAL_LIMIT_BYTES } from '../../tower_assets/index.mjs';
-import { makeHillDem, towerViewpoints } from '../../../client/tower/terrain/fixtures.mjs';
+import { makeHillDem, towerViewpoints, TOWER_EYE_MIN_U_M } from '../../../client/tower/terrain/fixtures.mjs';
 import { createTerrainLayer } from '../../../client/tower/terrain/index.mjs';
 import { createTracer } from '../../../client/tower/terrain/ref_trace.mjs';
 import { lambert as serverLambert } from '../../../server/raster_ref/shade/index.mjs';
@@ -42,6 +42,7 @@ const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const HILL_NOISES = [0, 0.015];
 const MESH_HEADER_BYTES = 16;
 const VTX = { normals: 'vertex' };
+const TERRAIN_TOP_M = TOWER_EYE_MIN_U_M - 2; // 시점 전제의 지형 상한: b1과 같은 수직 이동(fixtures 머리 주석)
 
 export const RULES = [
   { key: 'i', name: '(i) 높이 [0,0.5,1,1]', heightCapsM: [0, 0.5, 1, 1] },
@@ -80,7 +81,7 @@ const SSIM_TILES = (() => {
   return t;
 })();
 
-function concatMeshes(meshes) {
+function concatMeshes(meshes, zShift) {
   let nv = 0, nt = 0;
   for (const m of meshes) { nv += m.positions.length; nt += m.indices.length; }
   const positions = new Float32Array(nv), indices = new Uint32Array(nt), tileOfTriangle = new Int32Array(nt / 3);
@@ -91,10 +92,17 @@ function concatMeshes(meshes) {
     tileOfTriangle.fill(n, to, to + m.indices.length / 3);
     vo += m.positions.length; io += m.indices.length; to += m.indices.length / 3;
   });
+  if (zShift) for (let k = 2; k < positions.length; k += 3) positions[k] -= zShift;
   return { positions, indices, tileOfTriangle };
 }
 
 const shadeRef = (normal) => serverLambert(normal, TERRAIN_DEFAULTS.lightDirEnu, TERRAIN_DEFAULTS.baseRgb, { ambient: TERRAIN_DEFAULTS.ambient });
+
+/** 타일들의 높이를 zShift만큼 내린다 (b1과 같은 방식). */
+function shiftTiles(tiles, zShift) {
+  if (!zShift) return tiles;
+  return tiles.map((t) => ({ ...t, heights: t.heights.map((h) => h - zShift) }));
+}
 
 /** 간격 하나의 바이트(타일 목록 합). 간격이 같으면 규칙이 달라도 같으므로 (DEM, 간격) 으로 캐시한다. */
 function bytesAt(entry, rule, lod, memo) {
@@ -114,12 +122,12 @@ function bytesAt(entry, rule, lod, memo) {
   return v;
 }
 
-/** 8시점 최소 SSIM. (DEM, 간격) 캐시. */
-function ssimAt(entry, rule, lod, ctx) {
+/** 8시점 최소 SSIM. (DEM, 간격) 캐시. zShift를 적용하여 기준 영상과 같은 장면을 잰다. */
+function ssimAt(entry, rule, lod, ctx, zShift) {
   const stride = rule.lodStride(entry.dem, lod);
   const k = `${entry.key}|${stride}`;
   if (ctx.ssimMemo.has(k)) return ctx.ssimMemo.get(k);
-  const tiles = SSIM_TILES.map(([tx, ty]) => rule.buildTile(entry.dem, tx, ty, lod));
+  const tiles = shiftTiles(SSIM_TILES.map(([tx, ty]) => rule.buildTile(entry.dem, tx, ty, lod)), zShift);
   const layer = createTerrainLayer();
   layer.accept(lod, tiles);
   const views = ctx.cams.map((c, v) => {
@@ -147,9 +155,12 @@ export function measureAll({ log = () => {} } = {}) {
   const serverMismatch = [];
   for (const entry of dems) {
     const t0 = Date.now();
-    // 기준 영상: 같은 DEM 의 LOD 0(간격 1, 원본) 메시, 정점 법선 추적.
+    // 기준 영상: 같은 DEM 의 LOD 0(간격 1, 원본) 메시, 정점 법선 추적. b1과 같은 수직 이동.
     const lod0 = SSIM_TILES.map(([tx, ty]) => rules[0].buildTile(entry.dem, tx, ty, 0));
-    const tracer = createTracer(concatMeshes(lod0.map((tl) => terrainTileToMesh(tl))), VTX);
+    let maxZ = -Infinity;
+    for (const t of lod0) for (const h of t.heights) if (h > maxZ) maxZ = h;
+    entry.zShift = Math.max(0, Math.ceil(maxZ - TERRAIN_TOP_M));
+    const tracer = createTracer(concatMeshes(lod0.map((tl) => terrainTileToMesh(tl)), entry.zShift), VTX);
     entry.refs = cams.map((c) => tracer(c, shadeRef));
     // (i) 복사본이 서버 규칙과 같은 간격을 내는지(복사가 맞는지) 확인한다.
     for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
@@ -161,7 +172,7 @@ export function measureAll({ log = () => {} } = {}) {
       const levels = [];
       for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
         const b = bytesAt(entry, rule, lod, bytesMemo);
-        const s = ssimAt(entry, rule, lod, ctx);
+        const s = ssimAt(entry, rule, lod, ctx, entry.zShift);
         levels.push({ lod, stride: b.stride, cellM: b.stride * entry.dem.cellM, cells: b.cells, meshBytes: b.mesh, heightOnlyBytes: b.heightOnly, ssimMin: s.min });
       }
       // LOD3 여백: 고른 간격과 그 두 배(거부된 간격 또는 명목 상한 위)의 최대 높이·법선 오차.

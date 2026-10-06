@@ -89,6 +89,8 @@ export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
     throw new RangeError(`tilesPerSide must be a positive even integer, got ${tilesPerSide}`);
   }
 
+  // 캐시 키는 DEM 내용(heights 배열)을 포함하지 않으므로, 호출자는 같은 키에 같은 DEM만 넣어야 한다.
+  // 키가 같으면 계산 결과도 같다고 가정한다.
   const cacheKey = dem.__cacheKey ? `${dem.__cacheKey}|${tilesPerSide}` : null;
   if (cacheKey && __measureLodBytesCache[cacheKey]) {
     return __measureLodBytesCache[cacheKey];
