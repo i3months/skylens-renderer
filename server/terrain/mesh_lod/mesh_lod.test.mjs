@@ -359,7 +359,8 @@ test('F-491 ⑦: 덮는 타일이 0 이거나 전부 결측이면 공칭 간격�
   const small = { originX: 0, originY: 0, cellM: 1, width: 10, height: 10, heights: new Float32Array(100) };
   assert.deepEqual(terrainMissingTiles(small), []);
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.throws(() => terrainLodStride(small, lod), TowerAssetError);
-  assert.throws(() => buildTerrainTile(small, 0, 0, 1), TowerAssetError);
+  // buildTerrainTile 은 새 간격 검사가 아니라 기존 범위 검사에서 던진다(F-490 ⑥ 정정)
+  assert.throws(() => buildTerrainTile(small, 0, 0, 1), (e) => e instanceof TowerAssetError && /범위를 벗어난다/.test(e.message));
   // 전부 NaN 인 65×65 DEM: 덮는 타일 1 개가 모두 결측이다.
   const nan = singleTileDem(() => NaN);
   assert.equal(terrainMissingTiles(nan).length, 1);
