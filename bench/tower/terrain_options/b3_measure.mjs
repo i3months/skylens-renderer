@@ -218,10 +218,10 @@ function printAll(r) {
   P('## 대조(측정 도구 자체 검사)');
   for (const [n, ok, d] of checks) P(`- [${ok ? 'OK' : 'FAIL'}] ${n}${d ? ` (${d})` : ''}`);
   P();
-  P('## 표 1. LOD0~3 raw 바이트(256 타일), 메시 형식 / 높이만 형식, 초기 합계 판정(건물+드레이프+지형 LOD3)');
+  P('## 표 1. LOD0~3 raw 바이트(256 타일), 메시 형식 / 높이만 형식, 초기 합계 판정(건물+드레이프+WELCOME+지형 LOD3)');
   P('| DEM | 변형 | 메시 LOD0 | LOD1 | LOD2 | LOD3 (MB) | 높이만 LOD0 | LOD1 | LOD2 | LOD3 (B) | LOD3 간격(셀) | 초기 메시 | 초기 높이만 |');
   P('|---|---|---|---|---|---|---|---|---|---|---|---|---|');
-  const base = B.buildings + B.drape;
+  const base = B.buildings + B.drape + B.welcome;
   for (const row of rows) {
     for (const v of variants) {
       const L = row.bytes[v.name];
