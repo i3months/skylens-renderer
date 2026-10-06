@@ -7,7 +7,7 @@
 //   H32   : 머리 16 B(tx i32, ty i32, cells u16, lod u8, fmt u8, 예약 4 B) + heights f32 cells². xy·인덱스는 격자 규약으로 복원.
 //   Q16   : 머리 24 B(H32 머리 + k0 i32 + step f32) + 오프셋 u16 cells². 높이 = fround((k0 + off)·step).
 //   BPO   : 머리 28 B(Q16 머리 + bits u8 + 예약 3 B) + 오프셋을 bits 비트로 촘촘히(예측 없음).
-//   BPP   : 머리 28 B(같음) + 평면 예측 잔차(지그재그)를 bits 비트로 촘촘히. 예측: (0,0)=0, 첫 행=왼쪽, 첫 열=아래, 나머지=왼+아래−왼아래.
+//   BPP   : 머리 28 B(같음) + 평면 예측 잔차(지그재그)를 bits 비트로 촘촘히. 예측: (0,0)=off[0](머리 예약 바이트에 off[0] 을 실어 잔차 0), 첫 행=왼쪽, 첫 열=아래, 나머지=왼+아래−왼아래.
 //   BPX   : 타일마다 BPO·BPP 중 작은 쪽(머리 예약 바이트 하나를 예측 여부 표지로 쓴다고 가정, 머리 크기 같음).
 // 양자화 격자는 전역이다(q = round(h/step), 타일마다 k0 = min q 만 뺀다). 그래서 이웃 타일이 공유하는 가장자리 표본은
 //   같은 정수 q → 같은 Float32 높이로 복원되어 균열이 생기지 않는다(타일별 min/max 정규화는 이 성질이 없어 쓰지 않는다).
@@ -50,6 +50,8 @@ export function quantize(heights, step) {
     if (v > kMax) kMax = v;
   }
   if (!Number.isSafeInteger(k0) || Math.abs(k0) > 0x7fffffff) throw new RangeError(`k0 ${k0} 가 i32 범위 밖`);
+  // 오프셋은 Int32Array 에 담기므로 범위가 i32 최대를 넘으면 조용히 랩어라운드한다 — 막는다.
+  if (!(kMax - k0 <= 0x7fffffff)) throw new RangeError(`range ${kMax - k0} 가 i32 최대 0x7fffffff 초과`);
   const off = new Int32Array(n);
   for (let k = 0; k < n; k++) off[k] = q[k] - k0;
   return { k0, off, range: kMax - k0, stepF32 };
@@ -103,14 +105,14 @@ export function unpackBits(bytes, count, bits) {
 const zig = (r) => (r >= 0 ? 2 * r : -2 * r - 1);
 const unzig = (z) => (z % 2 === 0 ? z / 2 : -(z + 1) / 2);
 
-/** 평면 예측 잔차(지그재그). off 는 cells² 행 우선(j·cells + i). */
+/** 평면 예측 잔차(지그재그). off 는 cells² 행 우선(j·cells + i). (0,0) 은 off[0] 을 머리로 두어 잔차 0. */
 export function planarResiduals(off, cells) {
   const z = new Uint32Array(off.length);
   for (let j = 0; j < cells; j++) {
     for (let i = 0; i < cells; i++) {
       const k = j * cells + i;
       let pred;
-      if (i === 0 && j === 0) pred = 0;
+      if (i === 0 && j === 0) pred = off[0];
       else if (j === 0) pred = off[k - 1];
       else if (i === 0) pred = off[k - cells];
       else pred = off[k - 1] + off[k - cells] - off[k - cells - 1];
@@ -120,13 +122,14 @@ export function planarResiduals(off, cells) {
   return z;
 }
 
-export function planarRestore(z, cells) {
+/** head = 머리에 실린 off[0]. */
+export function planarRestore(z, cells, head) {
   const off = new Int32Array(z.length);
   for (let j = 0; j < cells; j++) {
     for (let i = 0; i < cells; i++) {
       const k = j * cells + i;
       let pred;
-      if (i === 0 && j === 0) pred = 0;
+      if (i === 0 && j === 0) pred = head;
       else if (j === 0) pred = off[k - 1];
       else if (i === 0) pred = off[k - cells];
       else pred = off[k - 1] + off[k - cells] - off[k - cells - 1];
@@ -158,7 +161,7 @@ export function encodeQuantized(tile, step, { verify = false } = {}) {
   const heights = dequantize(k0, off, stepF32);
   if (verify) {
     const o2 = unpackBits(packedO, n, bitsO);
-    const o3 = planarRestore(unpackBits(packedP, n, bitsP), tile.cells);
+    const o3 = planarRestore(unpackBits(packedP, n, bitsP), tile.cells, off[0]);
     for (let k = 0; k < n; k++) {
       if (o2[k] !== off[k] || o3[k] !== off[k]) throw new Error(`왕복 불일치 k=${k}`);
     }
