@@ -1,5 +1,5 @@
 // 폴백 frame 성능 시험. 한도 규모(드론 256·탐지 4096·경로 64개×1500점 ≈ 10만 점)에서 frame 이 한 프레임 예산에 드는지 본다.
-// 단언: 묶음 중앙값 ≤ 50 ms 와 자동 맞춤 frame ≤ 16 ms, 같은 프로세스의 기준 연산(setView frame) 대비 비율 상한,
+// 단언: 묶음 중앙값 ≤ 16 ms(한 프레임 예산) 그리고 ≤ 50 ms 와 자동 맞춤 frame ≤ 16 ms(AUTO_FIT_MAX_MS), 같은 프로세스의 기준 연산(setView frame) 대비 비율 상한,
 // 결과 개수가 입력과 같다(결정적), 자동 맞춤이 점마다 배열을 만들지 않는다(push 호출 0), 옛 구현과 결과가 같다.
 // 시간은 벽시계가 아니라 이 프로세스의 CPU 시간으로 잰다: 시험이 동시에 여러 개 돌아 CPU 를 나눠 써도 흔들리지 않는다.
 // 상한을 측정에 맞춰 낮추지 않는다.
@@ -19,6 +19,7 @@ const N_POINTS = 1500;
 const BATCH = 11; // 묶음 개수(중앙값을 낸다)
 const PER_BATCH = 5; // 묶음 하나당 frame 호출 수(평균을 낸다)
 const MAX_MS = 50;
+const CAP_SCALE_MAX_MS = 100; // 총 점 상한 규모 절대 시간(헐렁한 상한, 실측은 수 ms)
 const AUTO_FIT_MAX_MS = 16; // 자동 맞춤 frame 상한
 const MAX_RATIO = 3; // 자동 맞춤 frame / setView frame 상한
 const BIG_RATIO = 5; // 점 64만 개 규모는 GC 가 커서 비율 여유를 더 둔다(10배 느린 변이는 여전히 실패)
@@ -117,6 +118,39 @@ test('perf: 드론 256·탐지 4096·경로 64×1500점 frame 묶음 중앙값 �
   assert.ok(ms <= MAX_MS, `중앙값 ${ms.toFixed(2)} ms > ${MAX_MS} ms`);
 });
 
+test('perf: 총 점 상한 규모의 자동 맞춤 frame 절대 시간(한 번 호출 ms 단위)', () => {
+  const cap = TOWER_OVERLAY_LIMITS.maxTotalPathPoints;
+  assert.equal(cap, N_PATHS * N_POINTS); // 상한 규모 = 64×1500
+  const fb = createTowerFallback();
+  fb.setAvailable(false);
+  const per = cap / N_PATHS;
+  for (let k = 0; k < N_PATHS; k += 1) {
+    const points = [];
+    for (let j = 0; j < per; j += 1) points.push([k * 4 - 126, j * 0.2 - 150, 20]);
+    fb.setPath({ id: `cap-${k}`, points });
+  }
+  const ms = medianMs(fb);
+  console.log(`fallback perf: 총 점 상한 ${cap} 점 frame 묶음 p50 ${ms.toFixed(2)} ms (상한 ${CAP_SCALE_MAX_MS} ms)`);
+  assert.ok(ms <= CAP_SCALE_MAX_MS, `${ms.toFixed(2)} ms > ${CAP_SCALE_MAX_MS} ms`);
+});
+
+test('perf: 총 점 상한을 넘기는 setPath 는 RangeError 이고 상태는 그대로다', () => {
+  const cap = TOWER_OVERLAY_LIMITS.maxTotalPathPoints;
+  const mk = (id, n) => ({ id, points: Array.from({ length: n }, (_, j) => [j, 0, 0]) });
+  const fb = createTowerFallback();
+  fb.setAvailable(false);
+  fb.setPath(mk('a', cap - 2));
+  fb.setPath(mk('b', 2)); // 합계 정확히 cap 은 허용
+  const before = fb.frame(SIZE);
+  assert.throws(() => fb.setPath(mk('c', 2)), RangeError); // 새 경로가 합계를 넘김
+  assert.throws(() => fb.setPath(mk('b', 3)), RangeError); // 교체해도 합계가 넘으면 거부
+  assert.deepEqual(fb.counts().paths, 2);
+  assert.deepStrictEqual(fb.frame(SIZE), before);
+  fb.setPath(mk('a', 10)); // 교체는 옛 점을 빼고 센다
+  fb.setPath(mk('c', 2));
+  assert.equal(fb.counts().paths, 3);
+});
+
 test('perf: 결과 개수가 입력과 같다(결정적)', () => {
   const fb = loaded();
   const out = fb.frame(SIZE);
@@ -161,22 +195,23 @@ test('perf: 10배 느린 변이는 판정에서 실패한다', () => {
   assert.equal(r.ok, false, `10배 느린 변이가 통과했다: ${r.ms.toFixed(2)} ms, 비율 ${r.ratio.toFixed(2)}`);
 });
 
-test('perf: 계약 한도 규모(경로 64×10,000점)도 맞춤이 setView frame 의 비율 안이다', () => {
-  assert.ok(TOWER_OVERLAY_LIMITS.maxPaths >= 64 && TOWER_OVERLAY_LIMITS.maxPathPoints >= 10000);
+// 총 점 상한(maxTotalPathPoints)이 생겨 64×10,000(64만 점)은 setPath 가 거부한다. 같은 합계 안에서 경로 하나가 긴 극단(8×12,000 점)을 비율 문턱(BIG_RATIO, 그대로)으로 본다.
+test('perf: 총 점 상한 안의 긴 경로 장면(경로 8×12,000점)도 맞춤이 setView frame 의 비율 안이다', () => {
+  assert.ok(8 * 12000 <= TOWER_OVERLAY_LIMITS.maxTotalPathPoints && 12000 <= TOWER_OVERLAY_LIMITS.maxPathPoints);
   const scene = makeScene();
   const paths = [];
-  for (let k = 0; k < 64; k += 1) {
+  for (let k = 0; k < 8; k += 1) {
     const points = [];
-    for (let j = 0; j < 10000; j += 1) points.push([k * 4 - 126 + Math.sin(j * 0.05) * 10, j * 0.03 - 150, 20]);
+    for (let j = 0; j < 12000; j += 1) points.push([k * 4 - 126 + Math.sin(j * 0.05) * 10, j * 0.03 - 150, 20]);
     paths.push({ id: `big-${k}`, points });
   }
   const big = { ...scene, paths };
   const fb = fbOf(big);
   const ms = medianCpuMs(() => fb.frame(SIZE));
   const base = medianCpuMs(floorOf(big));
-  console.log(`fallback perf: 경로 64×10000점 frame ${ms.toFixed(2)} ms, 기준 ${base.toFixed(2)} ms, 비율 ${(ms / base).toFixed(2)}`);
+  console.log(`fallback perf: 경로 8×12000점 frame ${ms.toFixed(2)} ms, 기준 ${base.toFixed(2)} ms, 비율 ${(ms / base).toFixed(2)}`);
   assert.ok(ms <= BIG_RATIO * base, `비율 ${(ms / base).toFixed(2)} > ${BIG_RATIO}`);
-  assert.equal(fb.frame(SIZE).paths.length, 64);
+  assert.equal(fb.frame(SIZE).paths.length, 8);
 });
 
 test('perf: 자동 맞춤은 점마다 배열을 만들지 않는다(Array push 호출 0, 양성 대조 포함)', () => {
