@@ -265,3 +265,14 @@ test('a timer 2500 ms late does not release a burst of back-to-back ticks', asyn
   for (let i = 1; i < ticks.length; i++) assert.ok(ticks[i] - ticks[i - 1] >= 500, `ticks ${ticks}`);
   assert.equal(ticks.at(-1), 4000);
 });
+
+test('a handshake-complete first-frame p95 over 3 s is a reference note, not an S5 violation', async () => {
+  const { deps } = fakeDeps();
+  deps.runSocketClients = async (args) => {
+    await sleep(args.durationS * 1000);
+    return fakeLog(args.clients, args.durationS).map((e) => (e.kind === 'first_frame' || e.kind === 'level' || e.kind === 'bytes' ? { ...e, tMs: 3500, ...(e.kind === 'bytes' ? { latencyMs: 3500 } : {}) } : e));
+  };
+  const run = await runSocketLoad({ clients: 5, durationS: 4, commit: COMMIT, deps });
+  assert.ok(run.notes.some((n) => /reference only \(not an S5 verdict\).*first-frame p95/.test(n)), run.notes.join('\n'));
+  assert.ok(!run.violations.some((v) => /first-frame p95|first_frame_p95/.test(v)), run.violations.join('\n'));
+});

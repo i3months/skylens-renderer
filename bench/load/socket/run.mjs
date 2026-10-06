@@ -98,6 +98,7 @@ export async function runSocketLoad({ clients = 30, durationS = 10, commit, deps
   const scenario = socketScenario(clients, durationS);
   const prefix = `${SCENARIO_NAME}: `;
   const violations = [];
+  const notes = [];
 
   const server = await d.startServerProcess({ host: SOCKET_HOST });
   let events;
@@ -118,10 +119,11 @@ export async function runSocketLoad({ clients = 30, durationS = 10, commit, deps
 
   let result = { scenario, records: [], perClient: [] };
   if (events !== undefined) {
-    const run = runScenario(scenario, { events, commit });
+    const run = runScenario(scenario, { events, commit, method: SOCKET_METHOD });
     // runScenario's verdicts all read the measured log; its simulated-clock samples are dropped here.
     appendAll(violations, run.violations);
-    result = { ...run.result, records: run.result.records.map((r) => ({ ...r, method: SOCKET_METHOD })) };
+    notes.push(...run.notes);
+    result = run.result;
   }
   // With no samples checkServerSamples would add a second '0 samples' violation; the one naming the cause replaces it.
   if (serverSamples.length === 0) violations.push(`${prefix}server samples: 0 samples, likely cause: /proc not available (non-Linux?)`);
@@ -129,7 +131,7 @@ export async function runSocketLoad({ clients = 30, durationS = 10, commit, deps
 
   let report = null;
   if (validateResult(result).length === 0) report = loadReport(result, { serverSamples });
-  return { result, violations, serverSamples, report };
+  return { result, violations, notes, serverSamples, report };
 }
 
 export async function main(outDir = 'load_out/socket', durationArg, opts = {}) {
@@ -138,13 +140,13 @@ export async function main(outDir = 'load_out/socket', durationArg, opts = {}) {
     console.error(`usage: node bench/load/socket/run.mjs [outDir] [durationS]  (bad durationS: ${durationArg})`);
     return 2;
   }
-  const { result, violations, serverSamples, report } = await runSocketLoad({ ...opts, durationS });
+  const { result, violations, notes, serverSamples, report } = await runSocketLoad({ ...opts, durationS });
   mkdirSync(outDir, { recursive: true });
   writeFileSync(`${outDir}/${SCENARIO_NAME}.json`, JSON.stringify(result, null, 2) + '\n');
   writeFileSync(`${outDir}/${SCENARIO_NAME}.server.json`, JSON.stringify(serverSamples, null, 2) + '\n');
   const body = report ?? 'no report: result is invalid';
   const violationLines = violations.map((v) => `- ${v}`).join('\n');
-  writeFileSync(`${outDir}/report.md`, `## ${SCENARIO_NAME}\n${body}\n${violations.length ? `\nviolations:\n${violationLines}\n` : ''}`);
+  writeFileSync(`${outDir}/report.md`, `## ${SCENARIO_NAME}\n${body}\n${notes.length ? `\nreference only (not S5 verdicts):\n${notes.map((n) => `- ${n}`).join('\n')}\n` : ''}${violations.length ? `\nviolations:\n${violationLines}\n` : ''}`);
   console.log(`## ${SCENARIO_NAME}\n${body}\n`);
   for (const v of violations) console.error(`VIOLATION ${v}`);
   return violations.length === 0 ? 0 : 1;
