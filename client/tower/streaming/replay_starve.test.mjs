@@ -5,9 +5,9 @@
 //   이동 중 기아 변이: needed 가 직전 update 의 needed 와 다르면(움직이는 중) maxInflight 0 으로 계획하고, 같으면(정지) 정상으로 계획한다.
 //              정지 구간에서는 정상이라 정지 뒤 missing 은 0 이 된다. 기본 maxInflight 재생 15 실행이 모두 '빈 자리 낭비 0' 에서 걸려야 한다.
 //   누락 변이: tilesInView 결과에서 가운데 타일 하나를 뺀다. missing 도 같은 needed 에서 나오므로 missing 0 은 통과한다.
-//   F-441 변이(모두 기본값 15 실행 중 ≥ 10 실패를 단언, 대조군 15/15 통과):
+//   F-441 변이(m2~m4 는 기본값 15 실행 중 minFail 이상 실패를 단언, m1 은 별도 시험으로 지연 실행 전부 실패·즉시 도착 5 실행 통과를 단언, 대조군 15/15 통과):
 //     (m1) 이동 중 전부 취소 후 재요청: 움직이는 동안 날아가는 요청을 모두 취소하고 같은 타일을 다시 요청한다(도착이 계속 밀린다).
-//          즉시 도착이면 날아가는 요청이 없어 정상과 같으므로 즉시 5 실행은 잡을 수 없다(지연 2·무작위 10 실행이 걸려야 한다).
+//          즉시 도착이면 날아가는 요청이 없어 정상과 같으므로 즉시 5 실행은 통과해야 하고(잡을 수 없다), 지연 2·무작위 10 실행은 모두 걸려야 한다.
 //     (m2) 이동 중 가짜 타일로 자리 채우기: 빈 자리 중 F(16·8) 개를 보이지 않는 먼 가짜 타일로 채운다(inflight 개수는 꽉 찬다).
 //     (m3) 반노화: 4 시점 넘게 연속 보류된 타일을 needed 뒤로 민다(오래 기다린 타일일수록 더 뒤).
 //     (m4) 먼 순: needed 를 뒤집어(먼 타일 먼저) 계획한다(F-441 ⑦).
@@ -97,55 +97,59 @@ function antiAging(A = 4) {
 const farFirst = (args) => planRequests({ ...args, needed: [...args.needed].reverse() });
 
 const MUTANTS = [
-  ['(m1) 이동 중 전부 취소 후 재요청', () => cancelAllMoving(), 10],
   ['(m2) 이동 중 가짜 타일 16 개로 자리 채우기', () => fakeFillMoving(16), 10],
   ['(m2) 이동 중 가짜 타일 8 개로 자리 채우기', () => fakeFillMoving(8), 10],
   ['(m3) 오래 보류된 타일을 뒤로 미는 반노화', () => antiAging(4), 10],
   ['(m4) 먼 순 요청', () => farFirst, 15],
 ];
 
-// m1 은 즉시 도착 5 사례를 제외하고 지연 10 사례만 테스트(정확한 경계: 10/10).
-test(`변이 감지: (m1) 이동 중 전부 취소 후 재요청 → 지연 10 실행 중 10 실패`, () => {
-  const failed = [];
-  for (const [name, poses] of PATHS) {
-    for (const [dname, makeDelay, maxDelay] of DELAYS) {
-      if (maxDelay === 0) continue; // 즉시 도착 제외
-      const r = replay(name, poses, makeDelay, maxDelay, { deps: { planRequests: cancelAllMoving() } });
-      if (defaultFailures(r).length > 0) failed.push(`${name}·${dname}`);
-    }
-  }
-  assert.equal(failed.length, 10, `(m1): 실패 ${failed.length}/10 (${failed.join(', ')})`);
-});
+const ORDER = 'orderViolations';
 
 for (const [mname, make, minFail] of MUTANTS) {
-  // m1 은 이미 별도 테스트로 처리됨
-  if (mname === '(m1) 이동 중 전부 취소 후 재요청') continue;
-
   test(`변이 감지: ${mname} → 기본값 15 실행 중 ≥ ${minFail} 실패`, () => {
     const failed = [];
+    const failedWithoutOrder = [];
     for (const [name, poses] of PATHS) {
       for (const [dname, makeDelay, maxDelay] of DELAYS) {
         const r = replay(name, poses, makeDelay, maxDelay, { deps: { planRequests: make() } });
-        if (defaultFailures(r).length > 0) failed.push(`${name}·${dname}`);
+        const fails = defaultFailures(r);
+        if (fails.length > 0) failed.push(`${name}·${dname}`);
+        if (fails.some((v) => !v.startsWith(ORDER))) failedWithoutOrder.push(`${name}·${dname}`);
       }
     }
     assert.ok(failed.length >= minFail, `${mname}: 실패 ${failed.length}/15 (${failed.join(', ')})`);
 
     // m3, m4 는 orderViolations 에만 걸린다(계약: needed 는 가까운 순, request 는 그 순서).
+    // 대조: orderViolations 를 뺀 실패 수는 문턱 미만이어야 한다. 다른 지표로도 문턱을 채우면 이 단언이 순서 지표를 검증한다고 할 수 없다.
     if (mname === '(m3) 오래 보류된 타일을 뒤로 미는 반노화' || mname === '(m4) 먼 순 요청') {
-      for (const [name, poses] of PATHS) {
-        for (const [dname, makeDelay, maxDelay] of DELAYS) {
-          const r = replay(name, poses, makeDelay, maxDelay, { deps: { planRequests: make() } });
-          const violations = defaultFailures(r);
-          if (violations.length > 0) {
-            assert.ok(violations.some((v) => v.startsWith('orderViolations')),
-              `${mname} · ${name} · ${dname}: orderViolations 로만 걸려야 함, 실제: ${violations.join(', ')}`);
-          }
-        }
-      }
+      assert.ok(failedWithoutOrder.length < minFail,
+        `${mname}: orderViolations 를 뺀 실패 ${failedWithoutOrder.length}/15 가 문턱 ${minFail} 이상 (${failedWithoutOrder.join(', ')})`);
     }
   });
 }
+
+// m1 은 즉시 도착이면 날아가는 요청이 없어 정상과 같다. 즉시 도착 실행은 통과해야 하고, 지연 실행은 모두 걸려야 한다.
+test('변이 감지: (m1) 이동 중 전부 취소 후 재요청 → 지연 실행은 모두 실패, 즉시 도착 실행은 모두 통과', () => {
+  const failed = [];
+  const immediateFailed = [];
+  let delayedRuns = 0;
+  let immediateRuns = 0;
+  for (const [name, poses] of PATHS) {
+    for (const [dname, makeDelay, maxDelay] of DELAYS) {
+      const r = replay(name, poses, makeDelay, maxDelay, { deps: { planRequests: cancelAllMoving() } });
+      const bad = defaultFailures(r).length > 0;
+      if (maxDelay === 0) {
+        immediateRuns += 1;
+        if (bad) immediateFailed.push(`${name}·${dname}`);
+      } else {
+        delayedRuns += 1;
+        if (bad) failed.push(`${name}·${dname}`);
+      }
+    }
+  }
+  assert.equal(failed.length, delayedRuns, `(m1): 지연 실행 실패 ${failed.length}/${delayedRuns} (${failed.join(', ')})`);
+  assert.equal(immediateFailed.length, 0, `(m1): 즉시 도착 ${immediateRuns} 실행은 통과해야 함, 실패: ${immediateFailed.join(', ')}`);
+});
 
 const dropMiddle = (view, opts) => {
   const out = tilesInView(view, opts);
