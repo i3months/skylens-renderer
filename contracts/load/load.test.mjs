@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateScenario, validateResult } from './index.mjs';
+import { validateScenario, validateResult, MAX_DURATION_S } from './index.mjs';
 
 const path = [{ t: 0, e: 0, n: 0, u: 100 }, { t: 10, e: 50, n: 0, u: 100 }];
 const base = { name: 'steady30', kind: 'steady', clients: 30, durationS: 60, path };
@@ -158,4 +158,15 @@ test('T16.0: 큰 배열에서도 오류가 스택을 넘기지 않고 전부 모
   assert.equal(errs.length, (N - 1) + 1 + N);
   assert.equal(errs[0], 'path[1].t not increasing');
   assert.equal(validateScenario({ ...base, path: bigPath }).length, N - 1);
+});
+
+test('F-533: durationS upper bound (MAX_DURATION_S)', () => {
+  const p = (d) => [path[0], wp({ t: d })];
+  const mk = (d) => ({ ...base, durationS: d, path: p(10) });
+  assert.deepEqual(validateScenario(mk(MAX_DURATION_S)), []);
+  assert.deepEqual(validateScenario({ ...mk(3600), path: p(3600) }), []);
+  assert.deepEqual(validateScenario(mk(3600.0001)), ['bad durationS']);
+  assert.deepEqual(validateScenario(mk(3601)), ['bad durationS']);
+  assert.deepEqual(validateScenario(mk(1e9)), ['bad durationS']);
+  assert.deepEqual(validateScenario(mk(Infinity)), ['bad durationS']);
 });
