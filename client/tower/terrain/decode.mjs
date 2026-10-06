@@ -8,11 +8,16 @@ import {
   TERRAIN_H32_VERSION,
   TERRAIN_H32_HEADER_BYTES,
   TERRAIN_H32_FLAG_QUANTIZED,
+  TERRAIN_H32_STEP_M,
   terrainH32Bytes,
   dequantizeHeights,
 } from '../../../contracts/tower_assets/terrain_h32.mjs';
 
 const KNOWN_FLAGS = TERRAIN_H32_FLAG_QUANTIZED;
+// 거부 이유(F-499 ⑤): 전역 격자가 타일 간 비트 동일을 보장하려면 모든 타일이 같은 step 을 써야 한다(계약: step = TERRAIN_H32_STEP_M).
+// 다른 step 의 타일은 이웃과 격자가 달라 공유 가장자리가 갈라지고, 1e-45 같은 값은 복원값을 비유한·무의미하게 만든다.
+// 디코더가 임의 step 을 허용해야 할 실사용 경로가 없다(서버 인코더는 늘 계약 step). 시험용 비표준 step 골든은 계약 step 골든으로 바꿨다.
+const CONTRACT_STEP = Math.fround(TERRAIN_H32_STEP_M);
 
 function fail(message) {
   return new RangeError(`terrain h32: ${message}`);
@@ -47,6 +52,7 @@ export function decodeTerrainTileH32(bytes) {
     const kbase = dv.getInt32(TERRAIN_H32_HEADER_BYTES, true);
     const step = dv.getFloat32(TERRAIN_H32_HEADER_BYTES + 4, true);
     if (!Number.isFinite(step) || !(step > 0)) throw fail('step 이 유한한 양수가 아니다');
+    if (step !== CONTRACT_STEP) throw fail(`step ${step} 이 계약 step ${CONTRACT_STEP} 과 다르다`);
     const q = new Uint16Array(n);
     const off = TERRAIN_H32_HEADER_BYTES + 8;
     for (let k = 0; k < n; k++) q[k] = dv.getUint16(off + 2 * k, true);

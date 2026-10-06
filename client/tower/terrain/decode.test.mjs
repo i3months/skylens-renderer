@@ -57,35 +57,34 @@ test('골든 바이트(비양자화): cells=3, tx=-2, ty=5, 높이 0..8', () => 
   assert.deepEqual(Array.from(t.heights), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
 });
 
-test('골든 바이트(양자화): cells=3, lod=1, kbase=40(i32), step=0.25, q 9개 → 손 계산 (40+q)·0.25', () => {
+test('골든 바이트(양자화): cells=3, lod=1, kbase=40(i32), step=fround(0.03)(8f c2 f5 3c), q 9개 → 손 계산 fround((40+q)·fround(0.03))', () => {
   const bytes = Uint8Array.from([
     0x48, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x03, 0x00, 0x00, 0x00,
-    0x28, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3e,
+    0x28, 0x00, 0x00, 0x00, 0x8f, 0xc2, 0xf5, 0x3c,
     0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x14, 0x00, 0x64, 0x00, 0xc8, 0x00, 0xe8, 0x03, 0xff, 0xff,
   ]);
   assert.equal(bytes.length, 42);
   const t = decodeTerrainTileH32(bytes);
   assert.deepEqual({ tx: t.tx, ty: t.ty, lod: t.lod, cells: t.cells }, { tx: 1, ty: -1, lod: 1, cells: 3 });
-  assert.deepEqual(Array.from(t.heights), [10, 10.25, 10.5, 10.75, 15, 35, 60, 260, 16393.75]);
+  assert.deepEqual(Array.from(t.heights), [1.1999999284744263, 1.2300000190734863, 1.2599999904632568, 1.2899999618530273, 1.7999999523162842, 4.199999809265137, 7.199999809265137, 31.19999885559082, 1967.25]);
 });
 
-test('골든 바이트(양자화, 음수 kbase): kbase=-3, step=0.5 → -1.5, -1, 32766', () => {
+test('골든 바이트(양자화, 음수 kbase): kbase=-3, step=fround(0.03) → -0.09, -0.06, 1965.96', () => {
   const bytes = Uint8Array.from([
     0x48, 0x02, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
-    0xfd, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x3f,
+    0xfd, 0xff, 0xff, 0xff, 0x8f, 0xc2, 0xf5, 0x3c,
     0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0xff, 0xff,
   ]);
-  assert.deepEqual(Array.from(decodeTerrainTileH32(bytes).heights), [-1.5, -1, -1, 32766]);
+  assert.deepEqual(Array.from(decodeTerrainTileH32(bytes).heights), [-0.08999999612569809, -0.05999999865889549, -0.05999999865889549, 1965.9599609375]);
 });
 
 test('음성(F-496 ①): lod 0 + 양자화 flag, f32 본문 NaN·Inf, 복원값 비유한은 RangeError', () => {
-  assert.throws(() => decodeTerrainTileH32(assemble({ flags: 1, lod: 0, cells: 2, base: 0, step: 0.05, q: [0, 1, 2, 3] })), RangeError);
+  assert.throws(() => decodeTerrainTileH32(assemble({ flags: 1, lod: 0, cells: 2, base: 0, step: Math.fround(TERRAIN_H32_STEP_M), q: [0, 1, 2, 3] })), RangeError);
   assert.throws(() => decodeTerrainTileH32(assemble({ lod: 0, cells: 2, heights: f32([0, NaN, 1, 2]) })), RangeError);
   assert.throws(() => decodeTerrainTileH32(assemble({ lod: 2, cells: 2, heights: f32([0, 1, Infinity, 2]) })), RangeError);
   assert.throws(() => decodeTerrainTileH32(assemble({ lod: 1, cells: 2, heights: f32([-Infinity, 1, 2, 3]) })), RangeError);
-  // kbase 2^31−1 · step 3e38 → 복원 Infinity
-  assert.throws(() => decodeTerrainTileH32(assemble({ flags: 1, lod: 1, cells: 2, base: 2147483647, step: 3e38, q: [0, 0, 0, 0] })), /유한/);
-  assert.throws(() => decodeTerrainTileH32(assemble({ flags: 1, lod: 1, cells: 2, base: 1, step: 3e38, q: [0, 0, 0, 1] })), /유한/);
+  // 계약 step 이 아니면 복원값이 비유한이 되기 전에 step 에서 걸린다(F-499 ⑤)
+  assert.throws(() => decodeTerrainTileH32(assemble({ flags: 1, lod: 1, cells: 2, base: 2147483647, step: 3e38, q: [0, 0, 0, 0] })), /step/);
   assert.throws(() => decodeTerrainTileH32(assemble({ flags: 1, lod: 1, cells: 2, base: 0, step: Infinity, q: [0, 0, 0, 0] })), /step/);
   assert.throws(() => decodeTerrainTileH32(assemble({ flags: 1, lod: 1, cells: 2, base: 0, step: -0.05, q: [0, 0, 0, 0] })), /step/);
 });
@@ -185,4 +184,11 @@ test('디코드한 타일이 createTerrainLayer 에 들어가 render 에 그려�
   const painted = Array.from(out.index).filter((v) => v >= 0).length;
   assert.ok(painted > 500, `그려진 화소 ${painted}`);
   assert.ok(Array.from(out.color).some((v) => v !== 0), '색이 모두 0');
+});
+
+test('음성(F-499 ⑤): 머리 step 이 계약 step 과 다르면(1e-45·0.25·0.05) RangeError, 계약 step 이면 통과', () => {
+  for (const step of [1e-45, 0.25, 0.05, 0.0300001]) {
+    assert.throws(() => decodeTerrainTileH32(assemble({ flags: 1, lod: 1, cells: 2, base: 0, step, q: [0, 0, 0, 0] })), /계약 step/, `step ${step}`);
+  }
+  assert.doesNotThrow(() => decodeTerrainTileH32(assemble({ flags: 1, lod: 1, cells: 2, base: 0, step: Math.fround(TERRAIN_H32_STEP_M), q: [0, 0, 0, 0] })));
 });

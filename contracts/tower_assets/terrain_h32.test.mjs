@@ -68,3 +68,31 @@ test('F-494 ⑤·F-496 ②: terrainH32ErrorBoundM 값(f32 반올림 항 제외)'
   for (let k = 0; k < hs.length; k++) worst = Math.max(worst, Math.abs(back[k] - hs[k]));
   assert.ok(worst <= h.terrainH32ErrorBoundM(0, true) + 8000 * 2 ** -23, `worst ${worst}`);
 });
+
+test('F-499 ①: snapHeightsToGrid 는 h ∈ (−s/2, 0) 에서 −0 이 아니라 +0 을 낸다', () => {
+  const out = h.snapHeightsToGrid(new Float32Array([-0.01, -0.0149, 0, -0]), 0.03);
+  for (let k = 0; k < out.length; k++) assert.ok(Object.is(out[k], 0), `[${k}] 비트 ${new Uint32Array(out.buffer)[k].toString(16)}`);
+  // 양자화 복원 경로(kbase −1 + q 1 = 0)와 같은 비트
+  const qz = h.quantizeHeights(new Float32Array([-0.01, 0.2]), 0.03);
+  assert.ok(Object.is(h.dequantizeHeights(qz.kbase, qz.step, qz.q)[0], 0));
+});
+
+test('F-499 ③: quantizeHeights kbase 는 floor — 소수부 ≥ 0.5 인 최솟값(명시 step, 손 계산 리터럴)', () => {
+  // step 0.5: 10.3/0.5 = 20.6 → floor 20 (round 면 21). 최댓값 12 → kmax 24, q = 0..4
+  assert.equal(h.quantizeHeights(new Float32Array([10.3, 12]), 0.5).kbase, 20);
+  // step 0.03(f32): 10.049/0.03 ≈ 334.97 → floor 334 (round 면 335)
+  assert.equal(h.quantizeHeights(new Float32Array([10.049, 10.5]), 0.03).kbase, 334);
+  // 음수: −10.2/0.5 = −20.4 → floor −21 (round 면 −20)
+  assert.equal(h.quantizeHeights(new Float32Array([-10.2, -9]), 0.5).kbase, -21);
+});
+
+test('F-499 ④: snapHeightsToGrid 복원값이 비유한이면 null', () => {
+  assert.equal(h.snapHeightsToGrid([3.4e38], 1.8e38), null); // round(1.89)=2, 2·1.8e38 > f32 최대 → fround Infinity
+});
+
+test('F-499 ⑥: dequantizeHeights 는 step 이 유한한 양수가 아니면 RangeError', () => {
+  for (const step of [NaN, undefined, 0, -0.03, Infinity, -Infinity, '0.03', null]) {
+    assert.throws(() => h.dequantizeHeights(0, step, new Uint16Array(1)), RangeError, `step ${String(step)}`);
+  }
+  assert.doesNotThrow(() => h.dequantizeHeights(0, 0.03, new Uint16Array(1)));
+});
