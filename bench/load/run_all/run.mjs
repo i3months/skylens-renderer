@@ -23,6 +23,12 @@ export const SCENARIOS = [
 ];
 const SEED = 1;
 
+// 대량 위반에서도 인자 개수 한도(RangeError)에 걸리지 않도록 반복문으로 접두어를 붙여 덧붙인다.
+export function appendAll(target, items, prefix = '') {
+  for (const x of items) target.push(prefix + x);
+  return target;
+}
+
 function commitHash() {
   try { return execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], { encoding: 'utf8' }).trim(); } catch { return '0000000'; }
 }
@@ -46,26 +52,28 @@ export function runScenario(scenario, opts = {}) {
     rec('load.bandwidth_peak_bytes_per_s', bw.peakBytesPerS, 'B') // contract units have no B/s: the name carries the per-second meaning,
   ];
   const violations = [];
-  violations.push(...firstFrameViolations(ff).map((v) => `${scenario.name}: ${v}`));
+  appendAll(violations, firstFrameViolations(ff), `${scenario.name}: `);
   const open = countOpenConnections(events);
   if (open.min !== scenario.clients) violations.push(`${scenario.name}: open connections dropped to ${open.min} of ${scenario.clients}`);
   for (const id of unreachableClients(events, scenario.clients)) violations.push(`${scenario.name}: client ${id} received no bytes`);
   if (scenario.kind === 'burst') {
     const arrivals = burstArrivals(events, scenario.burstLevels);
     const shown = show(arrivals, scenario.clients);
-    violations.push(...checkBurstInvariants(arrivals, shown, scenario).map((v) => `${scenario.name}: ${v}`));
+    appendAll(violations, checkBurstInvariants(arrivals, shown, scenario), `${scenario.name}: `);
   }
   const result = { scenario, records, perClient: perClientFromEvents(events, scenario.clients) };
-  violations.push(...validateResult(result).map((v) => `${scenario.name}: ${v}`));
+  appendAll(violations, validateResult(result), `${scenario.name}: `);
   // The 3 s limit is a regression threshold of the mock harness (SPEC S5 value); slow_link only reports.
-  if (scenario.kind !== 'slow_link') violations.push(...checkThresholds(records, thresholds).map((v) => `${scenario.name}: ${v}`));
-  // Simulated clock with a simulated CPU source (both injected); the real server verdict is a [local] follow-up (T16.12 / T17).
+  if (scenario.kind !== 'slow_link') appendAll(violations, checkThresholds(records, thresholds), `${scenario.name}: `);
+  // 모의 시계와 모의 CPU(항상 0)이므로 source 도 'simulated' 로 표시한다. 실제 서버 판정은 [local] 후속(T16.12 / T17).
   let tickMs = 0;
-  const sampler = createStatsSampler({ now: () => tickMs, cpuUsage: () => ({ user: 0, system: 0 }), ...statsClock });
-  for (let t = 1; t <= scenario.durationS; t++) { tickMs = t * 1000; sampler.tick(); }
+  const sampler = createStatsSampler({ clock: 'simulated', source: 'simulated', now: () => tickMs, cpuUsage: () => ({ user: 0, system: 0 }), ...statsClock });
+  // tick 루프는 정수 초만 돌므로 기대 샘플 수도 소수 durationS 를 내림한다.
+  const expectedSamples = Math.floor(scenario.durationS);
+  for (let t = 1; t <= expectedSamples; t++) { tickMs = t * 1000; sampler.tick(); }
   const serverSamples = sampler.samples();
-  if (serverSamples.length < scenario.durationS) violations.push(`${scenario.name}: ${serverSamples.length} server samples, expected ${scenario.durationS}`);
-  violations.push(...checkServerSamples(serverSamples).map((v) => `${scenario.name}: ${v}`));
+  if (serverSamples.length < expectedSamples) violations.push(`${scenario.name}: ${serverSamples.length} server samples, expected ${expectedSamples}`);
+  appendAll(violations, checkServerSamples(serverSamples), `${scenario.name}: `);
   return { result, violations, serverSamples };
 }
 
@@ -76,8 +84,10 @@ export function main(outDir = 'load_out', opts = {}) {
     const { result, violations, serverSamples } = runScenario(s, opts);
     writeFileSync(`${outDir}/${s.name}.json`, JSON.stringify(result, null, 2) + '\n');
     writeFileSync(`${outDir}/${s.name}.server.json`, JSON.stringify(serverSamples, null, 2) + '\n');
-    if (violations.length === 0) console.log(`## ${s.name}\n${loadReport(result)}\n`);
-    all.push(...violations);
+    // slow_link 는 S5 문턱 검사 대상이 아니므로 시나리오 줄에 드러낸다(보고서 본문 형식은 loadReport 소관).
+    const note = s.kind === 'slow_link' ? ' (S5 문턱 제외 시나리오)' : '';
+    if (violations.length === 0) console.log(`## ${s.name}${note}\n${loadReport(result)}\n`);
+    appendAll(all, violations);
   }
   for (const v of all) console.error(`VIOLATION ${v}`);
   return all.length === 0 ? 0 : 1;

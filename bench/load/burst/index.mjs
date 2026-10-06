@@ -26,6 +26,10 @@ function byTimeThenId(list) {
  * Events with an id outside 0..clients-1 or a level the machine cannot take are not shown (the checker reports them).
  */
 export function showFromArrivals(events, clients) {
+  if (!Array.isArray(events)) throw new Error('events must be an array');
+  if (!(Number.isInteger(clients) && clients >= 1 && clients <= MAX_CLIENTS)) {
+    throw new Error(`clients must be an integer in 1..${MAX_CLIENTS}`);
+  }
   const arrivals = byTimeThenId(events.filter((e) => e && e.kind === 'level' && validId(e.id, clients)
     && Number.isFinite(e.tMs) && validLevel(e.level, LEVEL_COUNT)));
   const machines = new Map();
@@ -77,6 +81,9 @@ export function checkBurstInvariants(arrivals, shown, scenario) {
   if (scenario === null || typeof scenario !== 'object') throw new Error('checkBurstInvariants needs a scenario object');
   if (!(Number.isInteger(scenario.clients) && scenario.clients >= 1 && scenario.clients <= MAX_CLIENTS)) {
     throw new Error(`scenario.clients must be an integer in 1..${MAX_CLIENTS}`);
+  }
+  if (!(Number.isInteger(scenario.burstLevels) && scenario.burstLevels >= 1 && scenario.burstLevels <= LEVEL_COUNT)) {
+    throw new Error(`scenario.burstLevels must be an integer in 1..${LEVEL_COUNT}`);
   }
   if (!Array.isArray(arrivals)) throw new Error('arrivals must be an array');
   if (!Array.isArray(shown)) throw new Error('shown must be an array');

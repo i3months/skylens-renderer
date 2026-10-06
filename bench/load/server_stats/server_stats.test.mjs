@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { createStatsSampler, checkServerSamples } from './index.mjs';
 import { runScenario } from '../run_all/run.mjs';
 
-const L = { source: 'harness-process', clock: 'simulated' };
+const L = { source: 'simulated', clock: 'simulated' };
 function fake() {
   const st = { t: 0, user: 0, system: 0, rss: 104857600 };
   return {
     st,
-    s: createStatsSampler({ cpuUsage: () => ({ user: st.user, system: st.system }), memoryUsage: () => ({ rss: st.rss }), now: () => st.t }),
+    s: createStatsSampler({ cpuUsage: () => ({ user: st.user, system: st.system }), memoryUsage: () => ({ rss: st.rss }), now: () => st.t, clock: 'simulated' }),
   };
 }
 
@@ -45,7 +45,7 @@ test('T16.2: tS uses real elapsed time, irregular spacing; no intervalMs field',
     { tS: 0.25, cpuPct: 10, rssMiB: 100, ...L },
     { tS: 3.25, cpuPct: 10, rssMiB: 100, ...L },
   ]);
-  assert.equal('intervalMs' in createStatsSampler(), false);
+  assert.equal('intervalMs' in createStatsSampler({ clock: 'real' }), false);
 });
 
 test('T16.2: rss converted to MiB and rounded to 2 decimals', () => {
@@ -74,21 +74,21 @@ test('T16.2: samples() returns copies', () => {
 test('F-530: samples carry source/clock; labels injectable for a real run', () => {
   const { st, s } = fake();
   st.t = 1000; s.tick();
-  assert.deepEqual([s.samples()[0].source, s.samples()[0].clock], ['harness-process', 'simulated']);
+  assert.deepEqual([s.samples()[0].source, s.samples()[0].clock], ['simulated', 'simulated']);
   const r = createStatsSampler({ cpuUsage: () => ({ user: 0, system: 0 }), now: () => st.t, source: 'server-process', clock: 'real' });
   st.t = 2000; r.tick();
   assert.deepEqual([r.samples()[0].source, r.samples()[0].clock], ['server-process', 'real']);
 });
 
 test('F-530: simulated now without injected cpuUsage (and vice versa) throws; neither is fine', () => {
-  assert.throws(() => createStatsSampler({ now: () => 0 }), /both now and cpuUsage/);
-  assert.throws(() => createStatsSampler({ cpuUsage: () => ({ user: 0, system: 0 }) }), /both now and cpuUsage/);
-  assert.equal(createStatsSampler().samples().length, 0);
+  assert.throws(() => createStatsSampler({ clock: 'real', now: () => 0 }), /both now and cpuUsage/);
+  assert.throws(() => createStatsSampler({ clock: 'real', cpuUsage: () => ({ user: 0, system: 0 }) }), /both now and cpuUsage/);
+  assert.equal(createStatsSampler({ clock: 'real' }).samples().length, 0);
 });
 
 test('F-530: NaN cpu gives violations from checkServerSamples and runScenario', () => {
   const { st, s } = fake();
-  const bad = createStatsSampler({ cpuUsage: () => ({ user: NaN, system: 0 }), now: () => st.t });
+  const bad = createStatsSampler({ cpuUsage: () => ({ user: NaN, system: 0 }), now: () => st.t, clock: 'simulated' });
   st.t = 1000; bad.tick();
   assert.ok(checkServerSamples(bad.samples()).length >= 1);
   assert.deepEqual(checkServerSamples(s.samples()), []);
@@ -97,4 +97,25 @@ test('F-530: NaN cpu gives violations from checkServerSamples and runScenario', 
   const { violations } = runScenario(steady, { commit: 'abcdef1', statsClock: { cpuUsage: () => ({ user: NaN, system: 0 }) } });
   assert.ok(violations.some((v) => v.startsWith('steady30: server sample') && /not finite/.test(v)));
   assert.deepEqual(runScenario(steady, { commit: 'abcdef1' }).violations, []);
+});
+
+test('F-537: clock 는 명시 인자 - 누락/잘못된 값은 거부, now 주입 여부로 추론하지 않는다', () => {
+  const inj = { cpuUsage: () => ({ user: 0, system: 0 }), now: () => 0 };
+  assert.throws(() => createStatsSampler(), /clock must be/);
+  assert.throws(() => createStatsSampler(inj), /clock must be/);
+  assert.throws(() => createStatsSampler({ ...inj, clock: 'fake' }), /clock must be/);
+  assert.throws(() => createStatsSampler({ clock: 'simulated' }), /simulated clock needs both/);
+});
+
+test('F-537: 모의 시계 표본은 source harness-process 로 라벨되지 않는다 / 실제 시계 기본은 harness-process', () => {
+  const inj = { cpuUsage: () => ({ user: 0, system: 0 }) };
+  let t = 0;
+  const sim = createStatsSampler({ ...inj, now: () => t, clock: 'simulated' });
+  t = 1000; sim.tick();
+  assert.equal(sim.samples()[0].source, 'simulated');
+  const real = createStatsSampler({ clock: 'real' });
+  assert.equal(real.samples().length, 0);
+  const steady = { name: 'steady30', kind: 'steady', clients: 30, durationS: 3, path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 3, e: 15, n: 0, u: 100 }] };
+  const { serverSamples } = runScenario(steady, { commit: 'abcdef1' });
+  assert.deepEqual(serverSamples.map((x) => [x.source, x.clock]), [['simulated', 'simulated'], ['simulated', 'simulated'], ['simulated', 'simulated']]);
 });

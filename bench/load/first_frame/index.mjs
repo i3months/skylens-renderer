@@ -32,8 +32,8 @@ export function firstFrameStats(events, clients) {
     throw new Error('events must be an array');
   }
   for (const e of events) {
-    if (e === null) {
-      throw new Error('events array contains null');
+    if (e === null || e === undefined) {
+      throw new Error(`events array contains ${e === null ? 'null' : 'undefined'}`);
     }
   }
   if (!Number.isInteger(clients) || clients < 1 || clients > MAX_CLIENTS) {
@@ -53,8 +53,11 @@ export function firstFrameStats(events, clients) {
   return { p50Ms: nearestRank(sorted, 0.5), p95Ms: nearestRank(sorted, 0.95), perClientMs };
 }
 
-/** Returns violation strings; empty only when p95 is a number <= FIRST_FRAME_P95_LIMIT_MS (NaN fails). */
+/** Returns violation strings (an input-check violation if stats.p95Ms is not a number); empty only when p95 is a number <= FIRST_FRAME_P95_LIMIT_MS (NaN fails). */
 export function firstFrameViolations(stats) {
+  if (stats === null || typeof stats !== 'object' || typeof stats.p95Ms !== 'number') {
+    return ['first-frame stats input invalid: p95Ms must be a number'];
+  }
   if (Number.isNaN(stats.p95Ms)) return ['first-frame p95 is NaN: no first frame was measured'];
   if (stats.p95Ms <= FIRST_FRAME_P95_LIMIT_MS) return [];
   return [`first-frame p95 ${stats.p95Ms} ms exceeds limit ${FIRST_FRAME_P95_LIMIT_MS} ms`];
