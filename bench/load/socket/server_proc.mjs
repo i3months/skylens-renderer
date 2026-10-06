@@ -7,10 +7,10 @@ const MAIN = fileURLToPath(new URL('./server_main.mjs', import.meta.url));
 const START_TIMEOUT_MS = 10000;
 const KILL_AFTER_MS = 3000;
 
-export function startServerProcess({ host, env = {} } = {}) {
+export function startServerProcess({ host, env = {}, mainPath = MAIN, startTimeoutMs = START_TIMEOUT_MS, killAfterMs = KILL_AFTER_MS } = {}) {
   if (!host) return Promise.reject(new TypeError('host is required'));
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [MAIN], {
+    const child = spawn(process.execPath, [mainPath], {
       env: { ...process.env, ...env, [ENV_HOST]: host, [ENV_PORT]: '0' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -22,8 +22,8 @@ export function startServerProcess({ host, env = {} } = {}) {
     let err = '';
     const exitWaiters = [];
     const timer = setTimeout(() => {
-      fail(new Error(`server process did not print a listening line within ${START_TIMEOUT_MS} ms`));
-    }, START_TIMEOUT_MS);
+      fail(new Error(`server process did not print a listening line within ${startTimeoutMs} ms`));
+    }, startTimeoutMs);
 
     function fail(e) {
       if (settled) return;
@@ -55,7 +55,7 @@ export function startServerProcess({ host, env = {} } = {}) {
           if (!stopping) {
             stopping = (async () => {
               if (exited) return;
-              const kt = setTimeout(() => { if (!exited) child.kill('SIGKILL'); }, KILL_AFTER_MS);
+              const kt = setTimeout(() => { if (!exited) child.kill('SIGKILL'); }, killAfterMs);
               child.kill('SIGTERM');
               await waitExit();
               clearTimeout(kt);
