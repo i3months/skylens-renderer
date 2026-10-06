@@ -109,7 +109,7 @@ git config core.hooksPath .githooks
 
 부하 시험 계약 `contracts/load/`: 시나리오(종류 steady·burst·slow_link, 접속 1~30, 시간, GeoAnchor 기준 ENU 경로)와 결과(측정 기록 + 클라이언트별 바이트·지연) 검증기. 결정은 연구 저장소 decisions/0060.
 
-부하 모의 하네스(시뮬레이션, 소켓 없음): `bench/load/` 의 clients(30개 모의 클라이언트)·server_stats·per_client·first_frame·bandwidth·burst(수준 교체·추월 건너뛰기 불변식)·slow_link(역압), `tools/load_report/`(결과→표), `bench/thresholds/`(회귀 문턱), 한 명령 재현 `node bench/load/run_all/run.mjs [출력 디렉터리]`(위반 시 종료 코드 1). 이벤트 계약은 `contracts/load/harness.mjs`.
+부하 모의 하네스(시뮬레이션, 소켓 없음): `bench/load/` 의 clients(30개 모의 클라이언트)·server_stats·per_client·first_frame·bandwidth·burst(수준 교체·추월 건너뛰기 불변식)·slow_link(역압), `tools/load_report/`(결과→표), `bench/thresholds/`(회귀 문턱), 한 명령 재현 `node bench/load/run_all/run.mjs [출력 디렉터리]`(위반 시 종료 코드 1). 첫 프레임 3 s 는 모의 하네스의 회귀 문턱(SPEC S5 값을 그대로 씀)이며 실서버 판정은 [local] 후속이다. 이벤트 계약은 `contracts/load/harness.mjs`.
 
 ### 컬링 (T08)
 - 컬링 단계는 모두 보수적이다(보여야 할 리프를 버리지 않는다). 결과는 길이 leafCount 의 0/1 마스크이고 `contracts/cull` 에 서명이 있다.
@@ -273,7 +273,7 @@ A single binary WebSocket (TCP) framing: 8-byte header plus payload, nine messag
 
 Load test contract `contracts/load/`: validators for scenarios (kinds steady, burst, slow_link; 1-30 clients; duration; GeoAnchor-relative ENU path) and results (metric records plus per-client bytes and latency). Decision recorded in the research repo, decisions/0060.
 
-Load simulation harness (pure simulation, no sockets): `bench/load/` modules clients (30 mock clients), server_stats, per_client, first_frame, bandwidth, burst (replacement and overtake-skip invariants) and slow_link (backpressure); `tools/load_report/` (result to table); `bench/thresholds/` (regression thresholds); one-command run `node bench/load/run_all/run.mjs [outDir]` (exit code 1 on violations). Event contract: `contracts/load/harness.mjs`.
+Load simulation harness (pure simulation, no sockets): `bench/load/` modules clients (30 mock clients), server_stats, per_client, first_frame, bandwidth, burst (replacement and overtake-skip invariants) and slow_link (backpressure); `tools/load_report/` (result to table); `bench/thresholds/` (regression thresholds); one-command run `node bench/load/run_all/run.mjs [outDir]` (exit code 1 on violations). The 3 s first-frame limit is a regression threshold of the mock harness (it reuses the SPEC S5 value); the real-server verdict is a [local] follow-up. Event contract: `contracts/load/harness.mjs`.
 
 ### Culling (T08)
 - Every culling stage is conservative (never drops a leaf that should be visible). Each returns a 0/1 mask of length leafCount; signatures live in `contracts/cull`.
