@@ -188,9 +188,10 @@ export function checkAgainstServer(dem, stridesI, { build = buildTileWithStride 
 /**
  * DEM 하나를 상한표 묶음 optionTable 로 잰다. b5_measure.mjs 가 다른 상한표·DEM(2 m 셀 hill 등)으로 다시 쓴다.
  * 바이트의 타일 수·cells 는 DEM 에서 구한다(1024 m·1 m 셀이면 256 타일·cells = 64/간격+1 로 이전과 같다).
+ * 결과의 serverCheck 는 돌린 대조 수 { lods, tiles }(check 꺼짐이면 null), cellM 은 실제 dem.cellM 이다. checkBuild 로 사본 타일 함수를 주입할 수 있다(시험용).
  * check 가 켜지면 optionTable 과 무관하게 서버 실효 상한으로 사본·서버 대조를 항상 실행한다.
  */
-export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
+export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS, checkBuild = buildTileWithStride }) {
   const t0 = Date.now();
   const dem = entry.make();
   const tileCount = demTileCount(dem);
@@ -198,7 +199,7 @@ export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
   const per = {};
   for (const [opt, bounds] of Object.entries(optionTable)) per[opt] = lodStrides(dem, bounds);
   // 서버 대조는 항상 서버 실효 상한 terrainLodMaxErrorM(·, cellM)으로 사본 간격을 새로 구해 한다(생략 경로 없음).
-  if (check) checkAgainstServer(dem, lodStrides(dem, [0, 1, 2, 3].map((l) => terrainLodMaxErrorM(l, dem.cellM))).strides);
+  const serverCheck = check ? checkAgainstServer(dem, lodStrides(dem, [0, 1, 2, 3].map((l) => terrainLodMaxErrorM(l, dem.cellM))).strides, { build: checkBuild }) : null;
 
   // SSIM: 기준 영상(LOD 0)과 간격별 층 영상.
   const order = viewTileOrder();
@@ -254,7 +255,7 @@ export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
       lod1to3SsimPass: levels.slice(1).every((l) => l.ssimMin8 >= TERRAIN_SSIM_MIN),
     };
   }
-  return { dem: entry.name, tileCount, zShiftM: zShift, viewMaxZ: maxZ, refFillMin: Math.min(...refFill), refFill, ms: Date.now() - t0, options };
+  return { dem: entry.name, cellM: dem.cellM, serverCheck, tileCount, zShiftM: zShift, viewMaxZ: maxZ, refFillMin: Math.min(...refFill), refFill, ms: Date.now() - t0, options };
 }
 
 function checkBytesAgainstLodBytes(result) {
