@@ -179,6 +179,11 @@ test('F-506 ④: {length:0} 유사배열은 RangeError, 3.5e38 step 은 빈 q �
   }
 });
 
+test('F-514 ①: kmax 가 i32 상한을 넘으면 null(kmax 쪽 검사 단독), 한 칸 아래는 양자화', () => {
+  assert.equal(h.quantizeHeights([2147483647, 2147483648], 1), null);
+  assert.ok(h.quantizeHeights([2147483646, 2147483647], 1));
+});
+
 test('F-508: 최소 쪽 복원 검사는 실제 최소 격자 번호 round(min/s)·s 로 한다(floor 한 칸 아래 kbase·s 가 비유한이어도 양자화)', () => {
   const r = h.quantizeHeights([-2.8e38], 2e38);
   assert.notEqual(r, null);
