@@ -31,11 +31,15 @@ function makeDem(f) {
 
 /** 완만한 DEM: bench/tower_assets 의 generateSmoothDem 과 같은 식(진폭 25 m, 파장 수백 m). */
 export function smoothDem() {
-  return makeDem((x, y) => 20 + 25 * Math.sin(x / 300) * Math.cos(y / 400));
+  const dem = makeDem((x, y) => 20 + 25 * Math.sin(x / 300) * Math.cos(y / 400));
+  dem.__cacheKey = 'smooth';
+  return dem;
 }
 /** 거친 DEM: mesh_lod 시험의 noiseBig 와 같은 식(폭 ±1 m 화소 잡음). */
 export function noiseBigDem(seed = 0) {
-  return makeDem((x, y, i, j) => 2 * hashNoise(i, j, seed));
+  const dem = makeDem((x, y, i, j) => 2 * hashNoise(i, j, seed));
+  dem.__cacheKey = `noiseBig:${seed}`;
+  return dem;
 }
 
 function serializeMeshPiece(mesh, tx, ty) {
@@ -51,11 +55,19 @@ function serializeMeshPiece(mesh, tx, ty) {
   return buf;
 }
 
+// Module-level cache for memoization
+const __measureLodBytesCache = {};
+
 /**
  * DEM 하나의 LOD 별 256 타일 합계.
  * @returns {{levels: {lod:number, cells:number, rawBytes:number, gzipBytes:number}[], ratios:Object, ...}}
  */
 export function measureLodBytes(dem) {
+  // Check cache if DEM has a cache key
+  if (dem.__cacheKey && __measureLodBytesCache[dem.__cacheKey]) {
+    return __measureLodBytesCache[dem.__cacheKey];
+  }
+
   const levels = [];
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
     let rawBytes = 0, gzipBytes = 0, cells = 0, tiles = 0;
@@ -76,7 +88,7 @@ export function measureLodBytes(dem) {
     lod3OverLod2: { raw: l3.rawBytes / l2.rawBytes, gzip: l3.gzipBytes / l2.gzipBytes },
     lod3OverLod0: { raw: l3.rawBytes / l0.rawBytes, gzip: l3.gzipBytes / l0.gzipBytes },
   };
-  return {
+  const result = {
     levels,
     ratios,
     // 0046 다시 볼 조건: LOD3 바이트가 LOD2 와 같거나 크다.
@@ -85,6 +97,13 @@ export function measureLodBytes(dem) {
     lod3OverBudgetRaw: l3.rawBytes > INITIAL_LIMIT_BYTES,
     lod3OverBudgetGzip: l3.gzipBytes > INITIAL_LIMIT_BYTES,
   };
+
+  // Cache the result if DEM has a cache key
+  if (dem.__cacheKey) {
+    __measureLodBytesCache[dem.__cacheKey] = result;
+  }
+
+  return result;
 }
 
 export function measureAll() {
