@@ -23,17 +23,18 @@
 //                                            measured log, both sorted by tMs; each shown entry must be an arrived level, the highest arrived
 //                                            so far, and never followed by a lower one; overtaken levels are skipped, never filled in)
 //                                            simulateBurst(scenario, { seed }) -> { arrivals, shown, violations }  (uses simulateClients)
-//   Burst scenario: every client's levels 0..burstLevels-1 carry ONE tMs (one latency draw), so they arrive together.
+//   Burst scenario: every client's levels 0..burstLevels-1 carry ONE tMs (묶음 지연 최댓값), so they arrive together.
 //   First frame (one definition, clients and slow_link): tMs of the first payload of level 0 that arrived and was drawn.
 //   T16.7  bench/load/slow_link/index.mjs    simulateSlowLink(scenario, { seed }) -> { events: ClientEvent[], maxQueueBytes, undeliveredBytes, dropped }
 //                                            (sender queue bounded by backpressure; bytes are delayed, never invented; at the end the bytes still
-//                                            queued are reported as undeliveredBytes, dropped = bytes discarded by the queue limit, latencyMs is
-//                                            measured from the moment the payload was wanted, including time waiting on backpressure)
+//                                            queued are reported as undeliveredBytes, dropped = 백프레셔에서 막혀 있다가 close 때 버려진 payload의 크기, latencyMs은
+//                                            payload를 원한 순간부터 측정되며 백프레셔로 인한 대기 시간을 포함함)
 //   T16.8  tools/load_report/index.mjs       loadReport(result) -> markdown table string (SPEC section 4 rows)
 //   T16.9  bench/thresholds/index.mjs        checkThresholds(records, thresholds) -> string[] violations; thresholds.json beside it
 //   T16.10 bench/load/run_all/run.mjs        node run.mjs -> runs every scenario, writes result JSON, exits non-zero on violations
-//                                            runScenario(scenario, { commit, thresholds, statsClock }) and main(outDir, opts) take injected thresholds
-//                                            and a stats clock; violations are checked on the SAME measured log; a result carries serverSamples.
+//                                            runScenario(scenario, opts) 및 main(outDir, opts): opts.commit (기본값: commitHash()), opts.thresholds (기본값: loadThresholds()),
+//                                            opts.statsClock (선택사항), opts.events (대체 로그, 기본값: 시뮬레이션), opts.show (기본값: showFromArrivals) 주입 가능.
+//                                            burst 시나리오에서 arrivals는 burstArrivals로 생성됨. 위반은 동일한 측정 로그에서 확인되며, result는 serverSamples를 포함함.
 import { LEVEL_COUNT } from '../asset/index.mjs';
 
 export const EVENT_KINDS = ['connect', 'bytes', 'level', 'first_frame', 'close'];
