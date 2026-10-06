@@ -35,6 +35,7 @@ export function h32PieceBytes(tile) {
 
 /** 전역 격자 양자화: { k0, off(Int32Array), range, stepF32 }. */
 export function quantize(heights, step) {
+  if (heights.length === 0) throw new RangeError('heights 가 비어 있다');
   const stepF32 = Math.fround(step);
   if (!Number.isFinite(stepF32) || !(stepF32 > 0)) throw new RangeError(`step must be finite and > 0, got ${step}`);
   const n = heights.length;

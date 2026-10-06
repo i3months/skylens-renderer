@@ -33,6 +33,8 @@ test('quantize 와 encodeQuantized 는 비유한 높이·잘못된 step·길이 
   assert.throws(() => quantize([1, Infinity, 3], 1), RangeError);
   for (const bad of [0, -1, NaN, Infinity]) assert.throws(() => quantize([1, 2], bad), RangeError, `step ${bad}`);
   assert.equal(quantize([1, 2, 3], 1).range, 2);
+  assert.throws(() => quantize([], 1), /heights 가 비어 있다/);
+  assert.throws(() => quantize(new Float32Array(0), 0), /heights 가 비어 있다/); // 빈 입력 메시지가 step 검사보다 먼저
   const tile = { tx: 0, ty: 0, cells: 2, heights: Float32Array.from([0, 1, 2]) };
   assert.throws(() => encodeQuantized(tile, 0.01), /cells\^2/);
   assert.throws(() => quantize([0, 3e9], 1), RangeError);

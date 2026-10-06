@@ -17,13 +17,13 @@ const EXPECTED_MODULES = [
 const MIN_ENTRY_GZIP = 50; // an entry that bundles to fewer bytes is empty/broken
 // Floor for the whole bundle. Measured with only the entry files counted
 // (bundle:false, shared chunks dropped, or every import external) the total is
-// ~16,280 B; the real graph is 68,062 B. 32,000 B is about twice the
+// ~16,280 B; the real graph is 68,060 B. 32,000 B is about twice the
 // entry-files-only value, so any measurement that stops following imports
 // falls below it, while it stays well under the real total so ordinary
 // refactors do not trip it.
 const MIN_TOTAL_GZIP = 32_000;
-// Shared chunks alone. Measured on the real graph: 13 chunks, 32,630 B gzip
-// (entries alone: 35,432 B). 16,000 B is about half of that, so a measurement
+// Shared chunks alone. Measured on the real graph: 13 chunks, 32,930 B gzip
+// (entries alone: 35,130 B). 16,000 B is about half of that, so a measurement
 // that keeps only some of the chunks (e.g. one) falls well below it, while
 // ordinary refactors that move code between chunks do not trip it.
 const MIN_CHUNK_GZIP = 16_000;
