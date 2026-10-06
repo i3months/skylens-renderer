@@ -11,11 +11,15 @@
 // Module signatures (default export is none; use the named export):
 //   T16.1  bench/load/clients/index.mjs      simulateClients(scenario, { seed }) -> ClientEvent[]   (sorted by tMs, then id)
 //   T16.2  bench/load/server_stats/index.mjs createStatsSampler({ cpuUsage, memoryUsage, now, clock, source, cpuStub }) -> { tick(), samples() }
-//                                            samples() -> [{ tS, cpuPct, rssMiB, source, clock }] one per tick; clock 'simulated' defaults source to 'simulated', clock 'real' defaults to 'harness-process' (server run passes 'server-process'); cpuStub true makes cpuPct null and source 'stub'.
-//                                            checkServerSamples(samples) -> string[] violation strings, never throws; a non-finite sample is a violation.
+//                                            samples() -> [{ tS, cpuPct, rssMiB, source, clock, cpuSource }] one per tick. clock 'simulated' defaults source to 'simulated' and
+//                                            cpuSource to 'simulated'; clock 'real' defaults source to 'harness-process' (a server run passes 'server-process') and cpuSource to 'measured'.
+//                                            cpuStub true makes cpuPct null and cpuSource 'stub' (source is unchanged).
+//                                            checkServerSamples(samples, { durationS }?) -> string[] violation strings, never throws; a non-finite sample is a violation;
+//                                            cpuSource must be 'measured' | 'stub' | 'simulated', and 'measured' needs clock 'real' (a simulated clock never carries a measured CPU).
+//                                            With durationS given and clock 'real': the last tS must be within 1 s of durationS and every non-final interval between 0.5 s and 1.5 s.
 //   T16.3  bench/load/per_client/index.mjs   perClientFromEvents(events, clients) -> perClient[] (validateResult shape)
-//   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[] }
-//   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS }
+//   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[], missing }; a first_frame counts only with a level-0 arrival of the same id at tMs <= the first_frame tMs, otherwise that client's perClientMs is Infinity and firstFrameViolations says `client N: first_frame without level-0 arrival`
+//   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS, invalid }; bandwidthViolations(stats) -> string[]
 //   T16.6  bench/load/burst/index.mjs        showFromArrivals(events, clients) -> shown [{id, tMs, level}]  (feeds each 'level' event of the
 //                                            measured log into the product level machine client/levels createLevelMachine, one segment per
 //                                            client; the harness never computes a max itself)
@@ -29,12 +33,14 @@
 //                                            (sender queue bounded by backpressure; bytes are delayed, never invented; at the end the bytes still
 //                                            queued are reported as undeliveredBytes, dropped = size of payload held back by backpressure then discarded at close; latencyMs
 //                                            measured from payload request time, including wait time due to backpressure)
-//   T16.8  tools/load_report/index.mjs       loadReport(result) -> markdown table string (SPEC section 4 rows)
+//   T16.8  tools/load_report/index.mjs       loadReport(result, opts) -> markdown table string (SPEC section 4 rows); opts.serverSamples (checked with checkServerSamples first) feeds a separate `cpu/rss source:` line; the `source:` line is 'simulated' whenever a record method is 'sim'
 //   T16.9  bench/thresholds/index.mjs        checkThresholds(records, thresholds) -> string[] violations; thresholds.json beside it
 //   T16.10 bench/load/run_all/run.mjs        node run.mjs -> runs every scenario, writes result JSON, exits non-zero on violations
 //                                            runScenario(scenario, opts) and main(outDir, opts): opts.commit (default: commitHash()), opts.thresholds (default: loadThresholds()),
 //                                            opts.statsClock (optional), opts.events (alternate log, default: simulated), opts.show (default: showFromArrivals) injectable.
-//                                            In burst scenarios arrivals are generated from burstArrivals. Violations checked against the same measurement log; result includes serverSamples.
+//                                            In burst scenarios arrivals are generated from burstArrivals. Violations checked against the same measurement log; runScenario returns { result, violations, serverSamples } (serverSamples is NOT part of result).
+//                                            An injected log also goes through validateScenario(scenario) first. statsClock: both now and cpuUsage or neither, unknown keys throw; source/clock are NOT pre-filled (createStatsSampler defaults apply);
+//                                            a 'real' statsClock is checked by checkServerSamples(samples, { durationS }). checkBurstInvariants additionally reports `client N: burst level K missing` and `burst levels not at one instant`.
 import { LEVEL_COUNT } from '../asset/index.mjs';
 
 export const EVENT_KINDS = ['connect', 'bytes', 'level', 'first_frame', 'close'];
