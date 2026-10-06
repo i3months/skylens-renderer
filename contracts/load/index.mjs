@@ -36,7 +36,7 @@ export function validateScenario(s) {
   if (!(typeof s.name === 'string' && /^[a-z0-9_]+$/.test(s.name))) errs.push('bad name');
   if (!SCENARIO_KINDS.includes(s.kind)) errs.push('bad kind');
   if (!(Number.isInteger(s.clients) && s.clients >= 1 && s.clients <= MAX_CLIENTS)) errs.push('bad clients');
-  if (!(Number.isFinite(s.durationS) && s.durationS > 0)) errs.push('bad durationS');
+  if (!(Number.isFinite(s.durationS) && s.durationS > 0 && s.durationS <= MAX_DURATION_S)) errs.push('bad durationS');
   checkPath(s.path, s.durationS, errs);
   if (s.kind === 'burst' && !(Number.isInteger(s.burstLevels) && s.burstLevels >= 1 && s.burstLevels <= LEVEL_COUNT)) errs.push('burst needs burstLevels');
   if (s.kind === 'slow_link' && !(Number.isFinite(s.linkBytesPerS) && s.linkBytesPerS > 0)) errs.push('slow_link needs linkBytesPerS');
