@@ -23,6 +23,10 @@ function methodSource(records) {
 // Methods that approximate a cloud deployment locally; their verdict is a local one.
 export const CLOUD_APPROXIMATION_METHODS = ['loopback-socket'];
 
+// For a cloud-approximation source the first-frame p95 runs from the connect event (handshake
+// completion), not the connect attempt, so it is not an S5 value. Annotate that row only.
+export const FIRST_FRAME_P95_CLOUD_NOTE = '(handshake-complete basis, not an S5 value)';
+
 function sourceLine(source) {
   if (source === 'simulated') return 'source: simulated, S5/S8 verdict [local]';
   if (source === 'unknown') return 'source: unknown, S5/S8 verdict origin unknown';
@@ -60,9 +64,14 @@ export function loadReport(result, opts) {
   rows.push('| metric | value | unit | device | method |');
   rows.push('| --- | --- | --- | --- | --- |');
 
+  const methodSrc = cell(methodSource(result.records));
+  const cloudApprox = CLOUD_APPROXIMATION_METHODS.includes(methodSrc);
   for (const record of result.records) {
+    const metricLabel = cloudApprox && /first_frame_p95$/.test(String(record.metric))
+      ? `${record.metric} ${FIRST_FRAME_P95_CLOUD_NOTE}`
+      : record.metric;
     const value = String(record.value);
-    rows.push(`| ${[record.metric, value, record.unit, record.device, record.method].map(cell).join(' | ')} |`);
+    rows.push(`| ${[metricLabel, value, record.unit, record.device, record.method].map(cell).join(' | ')} |`);
   }
 
   const totalBytes = result.perClient.reduce((sum, client) => sum + client.bytes, 0);
