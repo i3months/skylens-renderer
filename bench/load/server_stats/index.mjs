@@ -21,6 +21,7 @@ export function createStatsSampler({
   if (Boolean(cpuIn) !== Boolean(nowIn)) throw new Error('createStatsSampler: inject both now and cpuUsage, or neither');
   const cpuUsage = cpuIn ?? (() => process.cpuUsage());
   const now = nowIn ?? (() => performance.now());
+  const cpuSource = cpuStub ? 'stub' : clock === 'simulated' ? 'simulated' : 'measured';
   const out = [];
   const t0 = now();
   let prevT = t0;
@@ -32,10 +33,13 @@ export function createStatsSampler({
       // Zero, negative or non-finite elapsed time: skip the tick, keep the baseline so the next tick spans it.
       if (!(wallUs > 0 && Number.isFinite(wallUs))) return;
       const c = cpuUsage();
+      const m = memoryUsage();
+      // A usage source that returned null/undefined: skip the tick, keep the baseline.
+      if (c === null || typeof c !== 'object' || m === null || typeof m !== 'object') return;
       const cpuUs = (c.user - prevCpu.user) + (c.system - prevCpu.system);
-      const rssMiB = Math.round((memoryUsage().rss / 1048576) * 100) / 100;
+      const rssMiB = Math.round((m.rss / 1048576) * 100) / 100;
       const cpuPct = cpuStub ? null : (cpuUs / wallUs) * 100;
-      out.push({ tS: (t - t0) / 1000, cpuPct, rssMiB, source, clock, cpuSource: cpuStub ? 'stub' : 'measured' });
+      out.push({ tS: (t - t0) / 1000, cpuPct, rssMiB, source, clock, cpuSource });
       prevT = t; prevCpu = c;
     },
     samples() { return out.map((s) => ({ ...s })); },
@@ -44,12 +48,16 @@ export function createStatsSampler({
 
 // Returns violation strings for samples that are not usable as evidence. Never throws on bad input.
 // cpuPct must be finite and >= 0, except for stub samples (cpuSource 'stub') where it must be exactly null.
-export function checkServerSamples(samples) {
+// cpuSource is 'measured' | 'stub' | 'simulated'; 'measured' needs a real clock, 'simulated' a simulated one.
+// With durationS (finite) and real-clock samples: the last tS is within 1 s of durationS and every
+// non-final interval is between 0.5 and 1.5 s.
+export function checkServerSamples(samples, { durationS } = {}) {
   if (!Array.isArray(samples)) return ['server samples: not an array'];
   const v = [];
   let prevT = -Infinity;
-  samples.forEach((s, i) => {
-    if (s === null || typeof s !== 'object') { v.push(`server sample ${i}: not an object`); return; }
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i];
+    if (s === null || typeof s !== 'object') { v.push(`server sample ${i}: not an object`); continue; }
     if (!Number.isFinite(s.tS)) v.push(`server sample ${i}: tS is not finite (${s.tS})`);
     else {
       if (s.tS < 0) v.push(`server sample ${i}: tS is negative (${s.tS})`);
@@ -63,7 +71,21 @@ export function checkServerSamples(samples) {
     if (!Number.isFinite(s.rssMiB)) v.push(`server sample ${i}: rssMiB is not finite (${s.rssMiB})`);
     else if (s.rssMiB < 0) v.push(`server sample ${i}: rssMiB is negative (${s.rssMiB})`);
     for (const k of ['source', 'clock']) if (typeof s[k] !== 'string' || s[k] === '') v.push(`server sample ${i}: missing ${k}`);
-    if (s.cpuSource !== 'measured' && s.cpuSource !== 'stub') v.push(`server sample ${i}: bad cpuSource`);
-  });
+    if (s.cpuSource !== 'measured' && s.cpuSource !== 'stub' && s.cpuSource !== 'simulated') v.push(`server sample ${i}: bad cpuSource`);
+    else if (s.cpuSource === 'measured' && s.clock === 'simulated') v.push(`server sample ${i}: measured cpu with simulated clock`);
+    else if (s.cpuSource === 'simulated' && s.clock === 'real') v.push(`server sample ${i}: simulated cpu with real clock`);
+  }
+  if (Number.isFinite(durationS)) {
+    const last = samples.length - 1;
+    const isReal = (s) => s !== null && typeof s === 'object' && s.clock === 'real';
+    if (last >= 0 && isReal(samples[last]) && Number.isFinite(samples[last].tS) && Math.abs(samples[last].tS - durationS) > 1) {
+      v.push(`server samples: last tS ${samples[last].tS} is not within 1 s of durationS ${durationS}`);
+    }
+    for (let i = 1; i < last; i++) {
+      if (!isReal(samples[i]) || !isReal(samples[i - 1])) continue;
+      const d = samples[i].tS - samples[i - 1].tS;
+      if (Number.isFinite(d) && (d < 0.5 || d > 1.5)) v.push(`server sample ${i}: interval ${d} s outside 0.5..1.5`);
+    }
+  }
   return v;
 }

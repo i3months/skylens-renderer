@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createStatsSampler, checkServerSamples } from './index.mjs';
 import { runScenario } from '../run_all/run.mjs';
 
-const L = { source: 'simulated', clock: 'simulated', cpuSource: 'measured' };
+const L = { source: 'simulated', clock: 'simulated', cpuSource: 'simulated' };
 function fake() {
   const st = { t: 0, user: 0, system: 0, rss: 104857600 };
   return {
@@ -115,14 +115,17 @@ test('F-537: 모의 시계 표본은 source harness-process 로 라벨되지 않
   const sim = createStatsSampler({ ...inj, now: () => t, clock: 'simulated' });
   t = 1000; sim.tick();
   assert.equal(sim.samples()[0].source, 'simulated');
-  const real = createStatsSampler({ clock: 'real' });
-  assert.equal(real.samples().length, 0);
+  let rt = 0;
+  const real = createStatsSampler({ ...inj, now: () => rt, clock: 'real' });
+  rt = 1000; real.tick();
+  assert.equal(real.samples()[0].source, 'harness-process');
+  assert.equal(real.samples()[0].cpuSource, 'measured');
   const steady = { name: 'steady30', kind: 'steady', clients: 30, durationS: 3, path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 3, e: 15, n: 0, u: 100 }] };
   const { serverSamples } = runScenario(steady, { commit: 'abcdef1' });
   assert.deepEqual(serverSamples.map((x) => [x.source, x.clock]), [['simulated', 'simulated'], ['simulated', 'simulated'], ['simulated', 'simulated']]);
 });
 
-const OK = { cpuPct: 1, rssMiB: 10, source: 's', clock: 'simulated', cpuSource: 'measured' };
+const OK = { cpuPct: 1, rssMiB: 10, source: 's', clock: 'simulated', cpuSource: 'simulated' };
 const mk = (nowSeq, extra = {}) => {
   let i = 0;
   return createStatsSampler({ cpuUsage: () => ({ user: 0, system: 0 }), memoryUsage: () => ({ rss: 104857600 }), now: () => nowSeq[Math.min(i++, nowSeq.length - 1)], clock: 'simulated', ...extra });
@@ -170,7 +173,79 @@ test('F-538: tS must be finite, non-negative, strictly increasing', () => {
 
 test('F-538: stub vs measured cpuPct null handling', () => {
   assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, cpuPct: null, cpuSource: 'stub' }]), []);
-  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, cpuPct: null, cpuSource: 'measured' }]), ['server sample 0: cpuPct is not finite (null)']);
+  assert.deepEqual(checkServerSamples([{ ...OK, clock: 'real', tS: 1, cpuPct: null, cpuSource: 'measured' }]), ['server sample 0: cpuPct is not finite (null)']);
   assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, cpuPct: 3, cpuSource: 'stub' }]), ['server sample 0: cpuPct must be null for stub (3)']);
   assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, cpuSource: 'x' }]), ['server sample 0: bad cpuSource']);
+});
+
+const REAL = { cpuPct: 1, rssMiB: 10, source: 'server-process', clock: 'real', cpuSource: 'measured' };
+
+test('F-543: cpuSource is stub / simulated / measured by cpuStub and clock', () => {
+  const inj = { cpuUsage: () => ({ user: 0, system: 0 }), memoryUsage: () => ({ rss: 1048576 }) };
+  const one = (extra) => { let t = 0; const s = createStatsSampler({ ...inj, now: () => t, ...extra }); t = 1000; s.tick(); return s.samples()[0].cpuSource; };
+  assert.equal(one({ clock: 'simulated' }), 'simulated');
+  assert.equal(one({ clock: 'real' }), 'measured');
+  assert.equal(one({ clock: 'real', cpuStub: true }), 'stub');
+  assert.equal(one({ clock: 'simulated', cpuStub: true }), 'stub');
+});
+
+test('F-543: checkServerSamples cpuSource/clock consistency', () => {
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, cpuSource: 'measured' }]), ['server sample 0: measured cpu with simulated clock']);
+  assert.deepEqual(checkServerSamples([{ ...REAL, tS: 1, cpuSource: 'simulated' }]), ['server sample 0: simulated cpu with real clock']);
+  assert.deepEqual(checkServerSamples([{ ...REAL, tS: 1 }]), []);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1 }]), []);
+  assert.deepEqual(checkServerSamples([{ ...REAL, tS: 1, cpuPct: null, cpuSource: 'stub' }]), []);
+});
+
+test('F-543: durationS - performance.now sampling in ~1 ms is a violation', () => {
+  const s = createStatsSampler({ clock: 'real' });
+  for (let i = 0; i < 60; i++) { const e = performance.now() + 0.01; while (performance.now() < e); s.tick(); }
+  const v = checkServerSamples(s.samples(), { durationS: 60 });
+  assert.ok(v.length >= 1);
+  assert.ok(v.some((x) => /not within 1 s of durationS 60/.test(x)));
+  assert.ok(v.some((x) => /interval .* s outside 0\.5\.\.1\.5/.test(x)));
+});
+
+test('F-543: durationS - proper 1 s spacing passes; bad interval and bad end reported', () => {
+  const good = Array.from({ length: 60 }, (_, i) => ({ ...REAL, tS: i + 1 }));
+  assert.deepEqual(checkServerSamples(good, { durationS: 60 }), []);
+  assert.deepEqual(checkServerSamples(good, {}), []);
+  assert.deepEqual(checkServerSamples(good, { durationS: 'x' }), []);
+  assert.deepEqual(checkServerSamples(good, { durationS: 58.9 }), ['server samples: last tS 60 is not within 1 s of durationS 58.9']);
+  assert.deepEqual(checkServerSamples(good, { durationS: 59 }), []);
+  const gap = [1, 2, 4, 5].map((tS) => ({ ...REAL, tS }));
+  assert.deepEqual(checkServerSamples(gap, { durationS: 5 }), ['server sample 2: interval 2 s outside 0.5..1.5']);
+  const fast = [1, 1.2, 2.5, 3.5].map((tS) => ({ ...REAL, tS }));
+  assert.deepEqual(checkServerSamples(fast, { durationS: 3.5 }), ['server sample 1: interval 0.19999999999999996 s outside 0.5..1.5']);
+  // final interval is exempt; simulated clock is not checked
+  assert.deepEqual(checkServerSamples([{ ...REAL, tS: 1 }, { ...REAL, tS: 1.1 }], { durationS: 1 }), []);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 0.001 }], { durationS: 60 }), []);
+});
+
+test('F-548: null/undefined memoryUsage or cpuUsage skips the tick, keeps baseline', () => {
+  for (const bad of [null, undefined]) {
+    let t = 0; let mem = { rss: 104857600 }; let cpu = { user: 0, system: 0 };
+    const s = createStatsSampler({ cpuUsage: () => cpu, memoryUsage: () => mem, now: () => t, clock: 'simulated' });
+    t = 1000; mem = bad; assert.doesNotThrow(() => s.tick());
+    assert.equal(s.samples().length, 0);
+    t = 2000; mem = { rss: 104857600 }; cpu = bad; assert.doesNotThrow(() => s.tick());
+    assert.equal(s.samples().length, 0);
+    t = 3000; cpu = { user: 300000, system: 0 }; s.tick();
+    assert.deepEqual(s.samples(), [{ tS: 3, cpuPct: 10, rssMiB: 100, ...L }]);
+  }
+});
+
+test('F-548: sparse arrays are reported, not skipped', () => {
+  // eslint-disable-next-line no-sparse-arrays
+  assert.deepEqual(checkServerSamples([,]), ['server sample 0: not an object']);
+  // eslint-disable-next-line no-sparse-arrays
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1 }, , { ...OK, tS: 2 }]), ['server sample 1: not an object']);
+});
+
+test('F-548: rssMiB non-finite and empty source violations', () => {
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, rssMiB: NaN }]), ['server sample 0: rssMiB is not finite (NaN)']);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, rssMiB: Infinity }]), ['server sample 0: rssMiB is not finite (Infinity)']);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, rssMiB: undefined }]), ['server sample 0: rssMiB is not finite (undefined)']);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, source: '' }]), ['server sample 0: missing source']);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, clock: '' }]), ['server sample 0: missing clock']);
 });
