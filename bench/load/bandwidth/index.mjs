@@ -48,6 +48,9 @@ export function bandwidthStats(events, durationS) {
   // Peak is a rate: each bucket's bytes are divided by the bucket's width in seconds. All buckets are 1 s wide
   // except the last one, whose width is durationS - lastBucket (in (0, 1]; exactly 1 for integral durationS).
   // Dividing by the real width keeps peak >= mean (mean is the width-weighted average of the bucket rates).
+  // Definition (deliberate): peak is the highest bucket RATE, so a short last bin (e.g. durationS 2.01 -> 10 ms wide)
+  // can dominate the peak with few bytes. It is not "most bytes in any full 1 s window"; callers who want only full
+  // 1 s bins must use an integral durationS.
   let peakBytesPerS = 0;
   for (const [k, v] of buckets) {
     const widthS = k === lastBucket ? durationS - lastBucket : 1;
@@ -58,9 +61,15 @@ export function bandwidthStats(events, durationS) {
   return { totalBytes, meanBytesPerS: totalBytes / durationS, peakBytesPerS, invalid };
 }
 
-/** Violation strings for a bandwidthStats result: one `bytes event i: bad tMs` per invalid event. */
+/**
+ * Violation strings for a bandwidthStats result: one `bytes event i: bad tMs` per invalid event.
+ * Never throws and never reports a malformed input as clean: a non-object (undefined, null, 5, ...) gives
+ * `bandwidth stats: not an object`; an object whose `invalid` is missing or not an array (e.g. {}) gives
+ * `bandwidth stats: invalid is not an array`.
+ */
 export function bandwidthViolations(bw) {
-  const inv = bw?.invalid ?? [];
+  if (bw === null || typeof bw !== 'object') return ['bandwidth stats: not an object'];
+  const inv = bw.invalid;
   if (!Array.isArray(inv)) return ['bandwidth stats: invalid is not an array'];
   return inv.map((i) => `bytes event ${i}: bad tMs`);
 }
