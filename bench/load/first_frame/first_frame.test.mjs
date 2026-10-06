@@ -22,14 +22,14 @@ test('limit constant is 3000 ms', () => {
   assert.equal(FIRST_FRAME_P95_LIMIT_MS, 3000);
 });
 
-test('FIXTURE_EVENTS: Infinity for the client without a first frame', () => {
+test('FIXTURE_EVENTS: every client has a first frame, p95 matches the contract comment', () => {
   const s = firstFrameStats(FIXTURE_EVENTS, 3);
-  assert.deepEqual(s.perClientMs, [1200, 2000, Infinity]);
-  assert.deepEqual(s.missing, [2]);
+  assert.deepEqual(s.perClientMs, [1200, 2000, 2800]);
+  assert.deepEqual(s.missing, []);
   assert.deepEqual(s.noArrival, []);
   assert.equal(s.p50Ms, 2000);
-  assert.equal(s.p95Ms, Infinity);
-  assert.deepEqual(firstFrameViolations(s), ['client 2: no first frame']);
+  assert.equal(s.p95Ms, 2800);
+  assert.deepEqual(firstFrameViolations(s), []);
 });
 
 test('20 clients, nearest-rank p50 = 10th and p95 = 19th smallest', () => {

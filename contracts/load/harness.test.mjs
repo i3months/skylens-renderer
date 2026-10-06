@@ -87,8 +87,9 @@ test('F-550: FIXTURE_EVENTS validate, are sorted, and carry level-0 arrivals bef
     assert.ok(ff, `client ${id} first_frame`);
     assert.ok(lv0 && lv0.tMs <= ff.tMs, `client ${id} level-0 arrival at or before first_frame`);
   }
-  const c2 = FIXTURE_EVENTS.filter((e) => e.id === 2);
-  assert.ok(!c2.some((e) => e.kind === 'first_frame' || e.kind === 'level'));
+  const l2 = FIXTURE_EVENTS.find((e) => e.id === 2 && e.kind === 'level');
+  const f2 = FIXTURE_EVENTS.find((e) => e.id === 2 && e.kind === 'first_frame');
+  assert.ok(l2 && f2 && l2.tMs <= f2.tMs && f2.tMs === 2800);
 });
 
 test('F-550: harness header documents noArrival, clock, tMs order and the serverSamples fallback', () => {

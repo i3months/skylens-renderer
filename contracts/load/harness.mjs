@@ -98,13 +98,14 @@ export const FIXTURE_SCENARIO = {
   name: 'fixture', kind: 'steady', clients: 3, durationS: 10,
   path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 10, e: 30, n: 0, u: 100 }],
 };
-/** Tiny valid log for FIXTURE_SCENARIO: client 0 level-0 arrival and first frame at 1200 ms, 1 at 2000 ms, 2 never (bytes only, no level 0). */
+/** Tiny valid log for FIXTURE_SCENARIO: client 0 level-0 arrival and first frame at 1200 ms, 1 at 2000 ms, 2 at 2800 ms. */
 export const FIXTURE_EVENTS = [
   { id: 0, tMs: 0, kind: 'connect' }, { id: 1, tMs: 0, kind: 'connect' }, { id: 2, tMs: 0, kind: 'connect' },
   { id: 0, tMs: 1000, kind: 'bytes', bytes: 5000, latencyMs: 100 },
   { id: 0, tMs: 1200, kind: 'level', level: 0 }, { id: 0, tMs: 1200, kind: 'first_frame' },
   { id: 1, tMs: 1800, kind: 'bytes', bytes: 3000, latencyMs: 300 },
   { id: 1, tMs: 2000, kind: 'level', level: 0 }, { id: 1, tMs: 2000, kind: 'first_frame' },
+  { id: 2, tMs: 2800, kind: 'level', level: 0 }, { id: 2, tMs: 2800, kind: 'first_frame' },
   { id: 2, tMs: 4000, kind: 'bytes', bytes: 1000, latencyMs: 900 },
   { id: 0, tMs: 9000, kind: 'close' }, { id: 1, tMs: 9000, kind: 'close' }, { id: 2, tMs: 9000, kind: 'close' },
 ];
