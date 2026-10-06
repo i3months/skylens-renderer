@@ -24,14 +24,14 @@ function nearestRank(sortedAsc, p) {
  * missing = ascending ids whose perClientMs is Infinity (no usable first frame).
  * noArrival = ascending ids that had a first_frame but no level-0 arrival at or before it (subset of missing).
  * perClientMs[id] = first 'first_frame' tMs minus the client's 'connect' tMs.
- * A first_frame counts only if the same id has a 'level' event with level 0 at tMs <= that first_frame's tMs;
+ * A first_frame counts only if the same id has a 'level' event (any level) at tMs <= that first_frame's tMs;
  * otherwise the client gets Infinity (never filled in) and, if it had a first_frame, its id is in noArrival.
  * A client with no first_frame (or no connect) gets Infinity; it is never dropped or filled in,
  * so it ranks above every finite value in the percentiles. A first_frame earlier than the client's
  * connect is impossible data and also gets Infinity (never a negative latency).
  * outOfOrder = ascending-id list of { id, reason } for impossible orderings, never silently discarded:
  * 'before_connect' = some first_frame tMs < the client's connect tMs (client needs a connect);
- * 'before_level0' = some first_frame tMs < the client's earliest level-0 arrival (min over all level-0 events, not first seen),
+ * 'before_level0' = some first_frame tMs < the client's earliest level-0 arrival (min over all level events of any level, not first seen),
  * including the case where that client has no level-0 arrival at all. before_connect takes precedence per client.
  * If no client reached a first frame at all, p50Ms and p95Ms are NaN (nothing was measured).
  */
@@ -53,10 +53,10 @@ export function firstFrameStats(events, clients) {
   for (const e of events) {
     if (!Number.isInteger(e.id) || e.id < 0 || e.id >= clients) continue;
     if (e.kind === 'connect' && e.tMs < connect[e.id]) connect[e.id] = e.tMs;
-    else if (e.kind === 'level' && e.level === 0 && e.tMs < level0[e.id]) level0[e.id] = e.tMs;
+    else if (e.kind === 'level' && e.tMs < level0[e.id]) level0[e.id] = e.tMs;
     else if (e.kind === 'first_frame') frames[e.id].push(e.tMs);
   }
-  // A first_frame counts only if a level-0 arrival of the same id is at tMs <= the first_frame tMs.
+  // A first_frame counts only if a level arrival (any level) of the same id is at tMs <= the first_frame tMs.
   const frame = new Array(clients).fill(Infinity);
   const noArrival = [];
   frames.forEach((list, id) => {
@@ -98,7 +98,7 @@ export function firstFrameViolations(stats) {
   }
   const noArrival = Array.isArray(stats.noArrival) ? stats.noArrival : [];
   const order = new Map();
-  if (Array.isArray(stats.outOfOrder)) for (const o of stats.outOfOrder) order.set(o.id, o.reason);
+  if (Array.isArray(stats.outOfOrder)) for (const o of stats.outOfOrder) if (o !== null && typeof o === 'object') order.set(o.id, o.reason);
   // Per client, in id order, exactly one message:
   //  before_connect (missing or not): `client N: first_frame before connect (out of order)`, replaces 'no first frame';
   //  missing otherwise: 'first_frame without level-0 arrival' / 'no first frame' as before;

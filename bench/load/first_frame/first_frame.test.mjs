@@ -199,9 +199,9 @@ test('F-544: first_frame without a level-0 arrival is Infinity and reported', ()
   ]);
 });
 
-test('F-544: level 1 only, or level 0 arriving after the first_frame, does not count', () => {
+test('F-544: a level arriving after the first_frame, or no level at all, does not count', () => {
   const ev = [
-    { id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 100, kind: 'level', level: 1 }, { id: 0, tMs: 500, kind: 'first_frame' },
+    { id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 600, kind: 'level', level: 1 }, { id: 0, tMs: 500, kind: 'first_frame' },
     { id: 1, tMs: 0, kind: 'connect' }, { id: 1, tMs: 600, kind: 'level', level: 0 }, { id: 1, tMs: 500, kind: 'first_frame' },
     { id: 2, tMs: 0, kind: 'connect' }, { id: 2, tMs: 500, kind: 'level', level: 0 }, { id: 2, tMs: 500, kind: 'first_frame' },
     { id: 3, tMs: 0, kind: 'connect' },
@@ -257,4 +257,30 @@ test('F-553: unsorted level-0 arrivals, the earliest one counts', () => {
   const s = firstFrameStats(ev, 1);
   assert.deepEqual(s.perClientMs, [500]);
   assert.deepEqual(firstFrameViolations(s), []);
+});
+
+test('F-556: any level arrival at or before first_frame accepts it; later level 0 is irrelevant', () => {
+  const ev = [
+    { id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 500, kind: 'level', level: 1 },
+    { id: 0, tMs: 500, kind: 'first_frame' }, { id: 0, tMs: 900, kind: 'level', level: 0 },
+  ];
+  const s = firstFrameStats(ev, 1);
+  assert.deepEqual(s.perClientMs, [500]);
+  assert.equal(s.p95Ms, 500);
+  assert.deepEqual(s.outOfOrder, []);
+  assert.deepEqual(firstFrameViolations(s), []);
+});
+
+test('F-560: firstFrameViolations tolerates minimal stats and null outOfOrder entries', () => {
+  assert.deepEqual(firstFrameViolations({ p95Ms: 100 }), []);
+  assert.doesNotThrow(() => firstFrameViolations({ p95Ms: 100, outOfOrder: [null] }));
+  assert.deepEqual(firstFrameViolations({ p95Ms: 100, outOfOrder: [null] }), []);
+});
+
+test('F-560: connect uses the minimum tMs, not the first value seen', () => {
+  const ev = [
+    { id: 0, tMs: 400, kind: 'connect' }, { id: 0, tMs: 100, kind: 'connect' },
+    { id: 0, tMs: 700, kind: 'level', level: 0 }, { id: 0, tMs: 700, kind: 'first_frame' },
+  ];
+  assert.deepEqual(firstFrameStats(ev, 1).perClientMs, [600]);
 });
