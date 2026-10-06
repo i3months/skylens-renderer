@@ -17,8 +17,8 @@
 //                                       emitted when a LEVEL_PAYLOADS message arrives (level = recovered from payload length via LEVEL_PAYLOAD_BYTES.indexOf, not from arrival order); first_frame is emitted once per client at
 //                                       the arrival of its first level event (any level); every connection stays open until durationS then closes, unless the server closes it first (the close is then recorded at that time). Events sorted by tMs, then id.
 //   bench/load/socket/proc_stats.mjs    readProcStats(pid) -> { cpuUsage: { user, system } (microseconds), rssBytes }   from /proc/<pid>/stat and statm
-//                                       (returns null when the process is gone); createProcSampler({ pid, now }) -> createStatsSampler (clock 'real', source 'server-process').
-//   bench/load/socket/run.mjs           runSocketLoad({ clients = 30, durationS = 10, commit?, deps? }) -> Promise<{ result, violations, serverSamples, report }>
+//                                       (returns null when the process is gone); createProcSampler({ pid, now, t0? }) -> createStatsSampler (clock 'real', source 'server-process').
+//   bench/load/socket/run.mjs           runSocketLoad({ clients = 30, durationS = 10, commit?, deps? }) -> Promise<{ result, violations, notes, serverSamples, report }>
 //                                       deps = { startServerProcess, runSocketClients, createProcSampler, now, setTimeout? } (all injectable; missing ones come from the real modules / performance.now / global setTimeout).
 //                                       starts the server process, samples it once per real second while runSocketClients runs, then builds the result with
 //                                       runScenario(scenario, { events, commit }) and the real serverSamples checked with checkServerSamples(samples, { durationS }),
