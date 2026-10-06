@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { measureBundle, modules } from './bundle.mjs';
+import { measureBundle, reachableInputs, modules } from './bundle.mjs';
 import { CONTROLVIEW_LIMITS } from '../../contracts/controlview/index.mjs';
 
 const LIMIT = CONTROLVIEW_LIMITS.bundleBytes;
@@ -27,6 +27,11 @@ const MIN_TOTAL_GZIP = 32_000;
 // that keeps only some of the chunks (e.g. one) falls well below it, while
 // ordinary refactors that move code between chunks do not trip it.
 const MIN_CHUNK_GZIP = 16_000;
+// Number of shared chunks. Measured on the real graph: 13. Keeping only the
+// few large chunks (and adjusting outputs to match) still passes the gzip
+// floor above, so the count is checked too. 10 leaves a margin of 3 for
+// chunks merging in ordinary refactors while rejecting a handful of survivors.
+const MIN_CHUNK_COUNT = 10;
 // e2e wires the other tower modules together; its graph must include them.
 const MIN_E2E_INPUTS = 10;
 
@@ -67,6 +72,7 @@ test('tower client bundle gzip size <= CONTROLVIEW_LIMITS.bundleBytes', { timeou
   assert.equal(r.entries.length + r.chunks.length, r.outputs, 'emit count = entries + chunks (no emitted file left unmeasured)');
   const chunkGzip = r.chunks.reduce((s, x) => s + x.gzip, 0);
   assert.ok(chunkGzip >= MIN_CHUNK_GZIP, `shared chunks gzip ${chunkGzip} below floor ${MIN_CHUNK_GZIP}`);
+  assert.ok(r.chunks.length >= MIN_CHUNK_COUNT, `shared chunk count ${r.chunks.length} below floor ${MIN_CHUNK_COUNT}`);
   const entriesOnly = r.entries.reduce((s, x) => s + x.gzip, 0);
   assert.ok(r.totalGzip > entriesOnly, 'total must exceed the entry files alone');
   assert.ok(r.totalGzip >= MIN_TOTAL_GZIP, `total gzip ${r.totalGzip} below floor ${MIN_TOTAL_GZIP}`);
@@ -89,4 +95,15 @@ test('positive control: a small entry importing a large module is judged over th
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('guard: reachableInputs throws for an entry that is not a metafile.inputs key', () => {
+  const metafile = { inputs: { 'a.mjs': { imports: [] } } };
+  assert.equal(reachableInputs(metafile, 'a.mjs'), 1);
+  assert.throws(() => reachableInputs(metafile, 'missing.mjs'), /not found in metafile\.inputs/);
+});
+
+test('guard: measureBundle rejects an empty or non-array entry list', async () => {
+  await assert.rejects(() => measureBundle([]), /at least one entry module/);
+  await assert.rejects(() => measureBundle('client/raster'), /at least one entry module/);
 });

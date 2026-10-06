@@ -36,7 +36,11 @@ export function h32PieceBytes(tile) {
 /** 전역 격자 양자화: { k0, off(Int32Array), range, stepF32 }. */
 export function quantize(heights, step) {
   const stepF32 = Math.fround(step);
+  if (!Number.isFinite(stepF32) || !(stepF32 > 0)) throw new RangeError(`step must be finite and > 0, got ${step}`);
   const n = heights.length;
+  for (let k = 0; k < n; k++) {
+    if (!Number.isFinite(heights[k])) throw new RangeError(`heights[${k}] is not finite: ${heights[k]}`);
+  }
   const q = new Float64Array(n);
   let k0 = Infinity, kMax = -Infinity;
   for (let k = 0; k < n; k++) {
@@ -138,6 +142,9 @@ export function planarRestore(z, cells) {
  *   heights = 세 형식 공통 복원값(BPO·BPP 복호 결과가 Q16 과 같은지 verify 가 참이면 확인한다).
  */
 export function encodeQuantized(tile, step, { verify = false } = {}) {
+  if (tile.heights.length !== tile.cells * tile.cells) {
+    throw new RangeError(`heights.length ${tile.heights.length} != cells^2 ${tile.cells * tile.cells}`);
+  }
   const { k0, off, range, stepF32 } = quantize(tile.heights, step);
   if (range > 0xffff) throw new RangeError(`Q16 overflow: 타일 (${tile.tx},${tile.ty}) 오프셋 범위 ${range} > 65535 (step ${step})`);
   const n = off.length;
