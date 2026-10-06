@@ -249,9 +249,10 @@ test('two time bases: latencyMs runs from the connect attempt, the connect event
     // latencyMs = recv - attempt; bytes.tMs - connect.tMs = recv - connectedMs; the difference is connectedMs - attempt.
     const handshakeMs = bytes.latencyMs - (bytes.tMs - connect.tMs);
     assert.equal(handshakeMs, connect.tMs - (attempt - start));
-    // The server holds the 101 for 40 ms of real time; the constant offset cancels, so the measurement is tight: 40 +/- 5
-    // (timers may fire ~1 ms early, each integer rounding costs up to 1 ms, and a few ms of loopback / scheduler lateness).
-    assert.ok(Math.abs(handshakeMs - HANDSHAKE_MS) <= 5, `handshake ${handshakeMs}`);
+    // The server holds the 101 for 40 ms of real time; the constant offset cancels, so the lower side is tight: at least 40 - 5
+    // (timers may fire ~1 ms early, each integer rounding costs up to 1 ms). The upper side is scheduler lateness, which grows under
+    // CPU contention, so it only has +150 ms of room (46-48 ms seen with 2 busy loops, 85-106 ms with 8).
+    assert.ok(handshakeMs >= HANDSHAKE_MS - 5 && handshakeMs <= HANDSHAKE_MS + 150, `handshake ${handshakeMs}`);
     assert.ok(bytes.latencyMs >= handshakeMs); // latency spans the handshake (equal when the payload shares the data event with the 101)
   } finally {
     await srv.close();

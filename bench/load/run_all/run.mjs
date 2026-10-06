@@ -137,12 +137,12 @@ export function runScenario(scenario, opts = {}) {
   // The 3 s limit is a regression threshold of the mock harness (SPEC S5 value); slow_link only reports.
   // A cloud-approximation first_frame p95 is not an S5 value (handshake-complete basis), so its threshold result is a reference note, not a verdict.
   if (scenario.kind !== 'slow_link') {
-    if (cloud && thresholds !== null && typeof thresholds === 'object' && !Array.isArray(thresholds)) {
+    if (cloud && thresholds !== null && typeof thresholds === 'object' && !Array.isArray(thresholds) && Object.keys(thresholds).length > 0) {
       // Only the first_frame_p95 threshold is a reference note; every other threshold (e.g. bandwidth) stays a verdict.
       const isFirstFrame = ([metric]) => metric === 'load.first_frame_p95';
       const firstFrameOnly = Object.fromEntries(Object.entries(thresholds).filter(isFirstFrame));
       const rest = Object.fromEntries(Object.entries(thresholds).filter((e) => !isFirstFrame(e)));
-      // checkThresholds rejects an empty thresholds object, so an empty side is skipped.
+      // checkThresholds rejects an empty thresholds object, so an empty side is skipped (an empty whole object takes the else branch and throws).
       if (Object.keys(firstFrameOnly).length > 0) appendAll(notes, checkThresholds(records, firstFrameOnly), referenceOnly);
       if (Object.keys(rest).length > 0) appendAll(violations, checkThresholds(records, rest), `${name}: `);
     } else {

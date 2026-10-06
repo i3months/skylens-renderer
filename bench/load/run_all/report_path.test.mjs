@@ -126,3 +126,10 @@ test('S5 3 s limit on a loopback-socket run is a reference note matching the rep
 test('runScenario rejects an empty or non-string method', () => {
   for (const method of ['', 7, null]) assert.throws(() => runScenario(scenario(1, 1), { commit: COMMIT, method }), /method must be a non-empty string/);
 });
+
+test('an empty thresholds object throws the same error under both methods', () => {
+  const events = slowFirstFrameLog(3, 4);
+  for (const method of [METHOD, undefined]) {
+    assert.throws(() => runScenario(scenario(3, 4), { events, commit: COMMIT, method, thresholds: {} }), /thresholds object must not be empty/);
+  }
+});

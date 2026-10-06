@@ -21,7 +21,7 @@
 //   bench/load/socket/run.mjs           runSocketLoad({ clients = 30, durationS = 10, commit?, deps? }) -> Promise<{ result, violations, notes, serverSamples, report }>
 //                                       deps = { startServerProcess, runSocketClients, createProcSampler, now, setTimeout? } (all injectable; missing ones come from the real modules / performance.now / global setTimeout).
 //                                       starts the server process, samples it once per real second while runSocketClients runs, then builds the result with
-//                                       runScenario(scenario, { events, commit }) and the real serverSamples checked with checkServerSamples(samples, { durationS }),
+//                                       runScenario(scenario, { events, commit, method: SOCKET_METHOD }) and the real serverSamples checked with checkServerSamples(samples, { durationS }),
 //                                       and loadReport(result, { serverSamples }). With no samples at all it adds exactly one violation, 'server samples: 0 samples ...'. CLI: node bench/load/socket/run.mjs [outDir] [durationS].
 export const LEVEL_PAYLOAD_BYTES = Object.freeze([2048, 8192, 32768, 131072]); // level 0..3 payload sizes, one binary message each
 export const SOCKET_HOST = '127.0.0.1';
