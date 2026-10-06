@@ -33,11 +33,26 @@ function gzipBytes(bytes) {
   return gzipSync(bytes, { level: 9 }).length;
 }
 
+// Number of distinct source files bundled into an entry's import graph
+// (esbuild metafile; external imports are not followed, so they do not count).
+function reachableInputs(metafile, entryInput) {
+  const seen = new Set();
+  const stack = [entryInput];
+  while (stack.length) {
+    const f = stack.pop();
+    if (seen.has(f) || !metafile.inputs[f]) continue;
+    seen.add(f);
+    for (const imp of metafile.inputs[f].imports) if (!imp.external) stack.push(imp.path);
+  }
+  return seen.size;
+}
+
 /**
  * Bundle all entries together (code splitting, minified ESM) so modules shared
  * between entries are counted once, then gzip every emitted file.
  * Returns { entries, chunks, totalGzip, totalMinified }.
- *   entries: one row per requested module, { module, minified, gzip }
+ *   entries: one row per requested module, { module, minified, gzip, inputs }
+ *            (inputs = source files in the entry's bundled import graph)
  *   chunks:  shared chunks emitted by splitting, { file, minified, gzip }
  * Throws when esbuild is missing or a bundle fails; never falls back.
  */
@@ -53,6 +68,7 @@ async function measureBundle(entryModules = modules, { root = ROOT, esbuild } = 
     format: 'esm',
     splitting: true,
     write: false,
+    metafile: true,
     outdir,
     absWorkingDir: root,
     logLevel: 'silent',
@@ -64,7 +80,7 @@ async function measureBundle(entryModules = modules, { root = ROOT, esbuild } = 
     const name = rel.replace(/\.js$/, '');
     const minified = file.contents.length;
     const gzip = gzipBytes(file.contents);
-    if (entryModules.includes(name)) entries.push({ module: name, minified, gzip });
+    if (entryModules.includes(name)) entries.push({ module: name, minified, gzip, inputs: reachableInputs(result.metafile, relative(root, resolve(root, name, 'index.mjs')).split(sep).join('/')) });
     else chunks.push({ file: rel, minified, gzip });
   }
   entries.sort((a, b) => entryModules.indexOf(a.module) - entryModules.indexOf(b.module));

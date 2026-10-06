@@ -15,7 +15,15 @@ const EXPECTED_MODULES = [
   'client/raster',
 ];
 const MIN_ENTRY_GZIP = 50; // an entry that bundles to fewer bytes is empty/broken
-const MIN_TOTAL_GZIP_PER_MODULE = 1024;
+// Floor for the whole bundle. Measured with only the entry files counted
+// (bundle:false, shared chunks dropped, or every import external) the total is
+// ~16,280 B; the real graph is 68,057 B. 32,000 B is about twice the
+// entry-files-only value, so any measurement that stops following imports
+// falls below it, while it stays well under the real total so ordinary
+// refactors do not trip it.
+const MIN_TOTAL_GZIP = 32_000;
+// e2e wires the other tower modules together; its graph must include them.
+const MIN_E2E_INPUTS = 10;
 
 // esbuild is a pinned devDependency; if it is missing the measurement throws
 // and these tests fail (no fallback measurement exists).
@@ -40,23 +48,32 @@ test('tower client bundle gzip size <= CONTROLVIEW_LIMITS.bundleBytes', { timeou
   }
   const sum = [...r.entries, ...r.chunks].reduce((s, x) => s + x.gzip, 0);
   assert.equal(r.totalGzip, sum, 'total equals sum of emitted files');
-  assert.ok(
-    r.totalGzip >= modules.length * MIN_TOTAL_GZIP_PER_MODULE,
-    `total gzip ${r.totalGzip} below floor ${modules.length * MIN_TOTAL_GZIP_PER_MODULE}`
-  );
+  // every entry's bundled import graph spans more than its own index file
+  for (const e of r.entries) {
+    assert.ok(e.inputs > 1, `${e.module} bundles ${e.inputs} source file(s); imports were not followed`);
+  }
+  const e2e = r.entries.find((e) => e.module === 'client/tower/e2e');
+  assert.ok(e2e.inputs >= MIN_E2E_INPUTS, `e2e bundles ${e2e.inputs} files, expected >= ${MIN_E2E_INPUTS}`);
+  // code shared between entries must be emitted and counted, not dropped
+  assert.ok(r.chunks.length >= 1, 'shared chunks must be emitted and counted');
+  const entriesOnly = r.entries.reduce((s, x) => s + x.gzip, 0);
+  assert.ok(r.totalGzip > entriesOnly, 'total must exceed the entry files alone');
+  assert.ok(r.totalGzip >= MIN_TOTAL_GZIP, `total gzip ${r.totalGzip} below floor ${MIN_TOTAL_GZIP}`);
 
   assert.ok(r.totalGzip <= LIMIT, `Total gzip size ${r.totalGzip} bytes exceeds limit of ${LIMIT} bytes`);
 });
 
-test('positive control: a large input is judged over the limit', { timeout: 120_000 }, async () => {
+test('positive control: a small entry importing a large module is judged over the limit', { timeout: 120_000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'bundle-control-'));
   try {
     mkdirSync(join(root, 'big'));
-    // incompressible payload well above the limit
+    // incompressible payload well above the limit, living in a separate module
     const payload = randomBytes(Math.ceil(LIMIT * 1.5)).toString('base64');
-    writeFileSync(join(root, 'big', 'index.mjs'), `export const blob = ${JSON.stringify(payload)};\n`);
+    writeFileSync(join(root, 'big', 'payload.mjs'), `export const blob = ${JSON.stringify(payload)};\n`);
+    writeFileSync(join(root, 'big', 'index.mjs'), `import { blob } from './payload.mjs';\nexport const len = blob.length;\n`);
     const r = await measureBundle(['big'], { root });
     assert.equal(r.entries.length, 1);
+    assert.equal(r.entries[0].inputs, 2, 'entry graph must include the imported module');
     assert.ok(r.totalGzip > LIMIT, `control gzip ${r.totalGzip} should exceed ${LIMIT}`);
   } finally {
     rmSync(root, { recursive: true, force: true });
