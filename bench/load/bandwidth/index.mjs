@@ -1,46 +1,34 @@
-// Bandwidth statistics calculation for T16.5.
-// Analyzes event logs to compute bandwidth metrics over 1-second buckets.
+// Bandwidth statistics for T16.5 over 1-second buckets of the event log.
 
 /**
- * Calculate bandwidth statistics from a client event log.
- * @param {Array} events - Array of client events
- * @param {number} durationS - Total duration in seconds
- * @returns {Object} {totalBytes, meanBytesPerS, peakBytesPerS}
- * @throws {RangeError} if durationS <= 0
+ * @param {Array} events - client events
+ * @param {number} durationS - scenario duration in seconds, finite and > 0
+ * @returns {{totalBytes: number, meanBytesPerS: number, peakBytesPerS: number}}
+ *   totalBytes in bytes; meanBytesPerS and peakBytesPerS in bytes per second (B/s);
+ *   peak = most bytes received in any one 1 s bucket [1000k, 1000k+1000) ms.
+ * @throws {RangeError} durationS not a finite number > 0, or a bytes event with non-finite/negative bytes
  */
 export function bandwidthStats(events, durationS) {
-  if (durationS <= 0) {
-    throw new RangeError("durationS must be positive");
+  if (!(typeof durationS === 'number' && Number.isFinite(durationS) && durationS > 0)) {
+    throw new RangeError('durationS must be a finite number > 0');
   }
+  if (!Array.isArray(events)) throw new TypeError('events must be an array');
 
-  // Filter to only "bytes" events (skip connect, level, first_frame, close)
-  const byteEvents = events.filter(e => e.kind === "bytes");
-
-  // Calculate total bytes
-  const totalBytes = byteEvents.reduce((sum, e) => sum + e.bytes, 0);
-
-  // Calculate mean bytes per second
-  const meanBytesPerS = totalBytes / durationS;
-
-  // Calculate peak bytes per second (max bytes in any 1-second bucket)
-  // Bucket k contains events where tMs is in [1000k, 1000k+1000)
-  const buckets = {};
-  for (const event of byteEvents) {
-    const bucket = Math.floor(event.tMs / 1000);
-    if (!buckets[bucket]) {
-      buckets[bucket] = 0;
+  let totalBytes = 0;
+  const buckets = new Map();
+  for (const e of events) {
+    if (!e || e.kind !== 'bytes') continue;
+    if (!(typeof e.bytes === 'number' && Number.isFinite(e.bytes) && e.bytes >= 0)) {
+      throw new RangeError('bytes must be a finite number >= 0');
     }
-    buckets[bucket] += event.bytes;
+    totalBytes += e.bytes;
+    const k = Math.floor(e.tMs / 1000);
+    buckets.set(k, (buckets.get(k) ?? 0) + e.bytes);
   }
+  if (!Number.isFinite(totalBytes)) throw new RangeError('totalBytes overflowed');
 
-  // Find the maximum bytes in any single bucket
-  const peakBytesPerS = Object.values(buckets).length > 0
-    ? Math.max(...Object.values(buckets))
-    : 0;
+  let peakBytesPerS = 0; // loop, not Math.max(...spread): no argument-count limit
+  for (const v of buckets.values()) if (v > peakBytesPerS) peakBytesPerS = v;
 
-  return {
-    totalBytes,
-    meanBytesPerS,
-    peakBytesPerS
-  };
+  return { totalBytes, meanBytesPerS: totalBytes / durationS, peakBytesPerS };
 }

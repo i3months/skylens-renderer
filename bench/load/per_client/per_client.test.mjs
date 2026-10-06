@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { perClientFromEvents } from './index.mjs';
+import { perClientFromEvents, unreachableClients } from './index.mjs';
 import { FIXTURE_SCENARIO, FIXTURE_EVENTS } from '../../../contracts/load/harness.mjs';
 import { validateResult } from '../../../contracts/load/index.mjs';
 
@@ -14,12 +14,25 @@ test('FIXTURE_EVENTS produces expected per-client results', () => {
   assert.deepEqual(result[2], { id: 2, bytes: 1000, latencyMs: [900] });
 });
 
-test('client with no bytes events throws', () => {
-  const eventsNoClient1 = FIXTURE_EVENTS.filter((e) => e.id !== 1);
-  assert.throws(
-    () => perClientFromEvents(eventsNoClient1, 3),
-    (err) => err.message === 'client 1 has no bytes events'
-  );
+test('client with no bytes events is left out, not thrown', () => {
+  const ev = FIXTURE_EVENTS.filter((e) => e.id !== 1);
+  const r = perClientFromEvents(ev, 3);
+  assert.deepEqual(r.map((c) => c.id), [0, 2]);
+  assert.deepEqual(unreachableClients(ev, 3), [1]);
+  assert.deepEqual(unreachableClients(FIXTURE_EVENTS, 3), []);
+});
+
+test('all clients silent gives empty array and every id unreachable', () => {
+  assert.deepEqual(perClientFromEvents([], 3), []);
+  assert.deepEqual(unreachableClients([], 3), [0, 1, 2]);
+});
+
+test('clients outside integer 1..30 throws at entry', () => {
+  for (const bad of [0, -1, 31, 1.5, NaN, Infinity, undefined, '3', null]) {
+    assert.throws(() => perClientFromEvents(FIXTURE_EVENTS, bad), RangeError, String(bad));
+    assert.throws(() => unreachableClients(FIXTURE_EVENTS, bad), RangeError, String(bad));
+  }
+  assert.equal(perClientFromEvents(FIXTURE_EVENTS, 30).length, 3);
 });
 
 test('result with FIXTURE_SCENARIO and valid record passes validateResult', () => {

@@ -51,3 +51,28 @@ test("bandwidthStats throws RangeError for durationS <= 0", () => {
     "should throw RangeError for durationS < 0"
   );
 });
+
+test("bandwidthStats throws for NaN, undefined, non-finite, non-number durationS", () => {
+  for (const bad of [NaN, undefined, Infinity, -Infinity, null, "10"]) {
+    assert.throws(() => bandwidthStats([], bad), RangeError, String(bad));
+  }
+});
+
+test("bandwidthStats throws for non-finite or negative bytes", () => {
+  for (const bad of [NaN, Infinity, -5, undefined, "7"]) {
+    const ev = [{ id: 0, tMs: 0, kind: "bytes", bytes: bad, latencyMs: 1 }];
+    assert.throws(() => bandwidthStats(ev, 10), RangeError, String(bad));
+  }
+  const big = [1e308, 1e308].map((b) => ({ id: 0, tMs: 0, kind: "bytes", bytes: b, latencyMs: 1 }));
+  assert.throws(() => bandwidthStats(big, 10), RangeError);
+});
+
+test("bandwidthStats handles 300000 buckets at durationS=1e6 without stack overflow", () => {
+  const n = 300000;
+  const events = [];
+  for (let k = 0; k < n; k++) events.push({ id: 0, tMs: k * 1000, kind: "bytes", bytes: k === 123456 ? 7000 : 10, latencyMs: 1 });
+  const r = bandwidthStats(events, 1e6);
+  assert.strictEqual(r.totalBytes, 7000 + 10 * (n - 1));
+  assert.strictEqual(r.meanBytesPerS, (7000 + 10 * (n - 1)) / 1e6);
+  assert.strictEqual(r.peakBytesPerS, 7000);
+});
