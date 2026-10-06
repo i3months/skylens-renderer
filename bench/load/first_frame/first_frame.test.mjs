@@ -75,3 +75,42 @@ test('boundary: p95 exactly 3000 passes, 3001 fails', () => {
   assert.equal(bad.p95Ms, 3001);
   assert.equal(firstFrameViolations(bad).length, 1);
 });
+
+test('n=15 nearest-rank: p50 = 8th, p95 = 15th smallest (ceil, not round)', () => {
+  // ceil(0.5*15)=8, ceil(0.95*15)=15; round would give 8 and 14.
+  const times = [1500, 300, 1200, 900, 100, 1400, 700, 500, 1100, 200, 1300, 600, 1000, 400, 800];
+  const s = firstFrameStats(log(times), 15);
+  assert.deepEqual(s.perClientMs, times);
+  assert.equal(s.p50Ms, 800);
+  assert.equal(s.p95Ms, 1500);
+});
+
+test('zero first frames: NaN percentiles and a violation', () => {
+  const none = firstFrameStats(log([null, null, null]), 3);
+  assert.ok(Number.isNaN(none.p50Ms));
+  assert.ok(Number.isNaN(none.p95Ms));
+  assert.deepEqual(none.perClientMs, [Infinity, Infinity, Infinity]);
+  assert.equal(firstFrameViolations(none).length, 1);
+  const empty = firstFrameStats([], 2);
+  assert.ok(Number.isNaN(empty.p95Ms));
+  assert.equal(firstFrameViolations(empty).length, 1);
+});
+
+test('first_frame before the client connect gives Infinity, not a negative value', () => {
+  const ev = [
+    { id: 0, tMs: 1000, kind: 'connect' }, { id: 0, tMs: 400, kind: 'first_frame' },
+    { id: 1, tMs: 0, kind: 'connect' }, { id: 1, tMs: 700, kind: 'first_frame' },
+  ];
+  const s = firstFrameStats(ev, 2);
+  assert.deepEqual(s.perClientMs, [Infinity, 700]);
+  assert.equal(s.p95Ms, Infinity);
+  assert.equal(firstFrameViolations(s).length, 1);
+});
+
+test('clients must be an integer in 1..30', () => {
+  for (const bad of [0, -1, 31, 1e9, 2.5, NaN, Infinity, '3', undefined, null]) {
+    assert.throws(() => firstFrameStats([], bad), RangeError, String(bad));
+  }
+  assert.doesNotThrow(() => firstFrameStats(log([100]), 1));
+  assert.doesNotThrow(() => firstFrameStats(log(Array(30).fill(100)), 30));
+});
