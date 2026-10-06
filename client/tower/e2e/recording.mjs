@@ -55,6 +55,16 @@ function checkFrame(f, i) {
   }
 }
 
+const VIEW_METHODS = ['keyDown', 'keyUp', 'releaseAll', 'step', 'setDrones', 'setDetections', 'setPath', 'setAvailable', 'arrived', 'failed', 'snapshot'];
+
+// view 가 createControlView 결과 모양인지 확인한다(없는 메서드는 재생 중간이 아니라 처음에 'view' 로 알린다).
+function checkView(view) {
+  if (view === null || typeof view !== 'object') throw new TypeError('view 는 createControlView 결과 객체여야 한다');
+  for (const m of VIEW_METHODS) {
+    if (typeof view[m] !== 'function') throw new TypeError(`view.${m} 는 함수여야 한다(view 는 createControlView 결과여야 한다)`);
+  }
+}
+
 /**
  * replayRecording(view, recording, size) -> Snapshot[]
  * view 는 createControlView 결과. 프레임마다 한 개의 snapshot(size) 를 돌려준다.
@@ -62,6 +72,7 @@ function checkFrame(f, i) {
 export function replayRecording(view, recording, size) {
   const sz = copySize(size);
   checkSizeLight(sz);
+  checkView(view);
   const frames = readFrames(framesOf(recording));
   frames.forEach(checkFrame);
   const out = [];
