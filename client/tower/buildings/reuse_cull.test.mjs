@@ -71,7 +71,7 @@ const CAM_BEHIND = lookAt([0, 0, 500], [0, 0, 1000]); // 하늘 쪽(전부 카�
 
 // 벽시계 대신 스레드 CPU 시간(threadCpuUsage, 없으면 프로세스 cpuUsage)으로 잰다: 다른 프로세스가 CPU 를 빼앗아 생기는 대기는 포함하지 않는다(fallback/perf.test.mjs 와 같은 방식).
 // 문턱 1/3 은 측정에 맞춘 값이 아니라 원래 약속(②의 묶음 수 ≤ 33/100 과 같은 비율)이다. 컬링이 동작하면 1/10 은 전체의 약 1/10 일(묶음 수 비례)을 하므로 3배 여유가 있고,
-// 컬링을 끄면 1/10 도 전체와 같은 일을 하므로 비율이 약 1 이 되어 실패한다.
+// 컬링을 끄면 1/10 도 전체와 같은 일을 하므로 비율이 약 0.41~0.56 이 되어 실패한다.
 function cpuMs() { const u = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : process.cpuUsage(); return (u.user + u.system) / 1000; }
 function median(a) { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; }
 function covered(r) { let n = 0; for (let i = 0; i < r.index.length; i += 1) if (r.index[i] !== EMPTY_INDEX) n += 1; return n; }
