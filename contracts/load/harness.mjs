@@ -22,7 +22,7 @@
 //                                            durationS not finite-positive is a violation.
 //   T16.3  bench/load/per_client/index.mjs   perClientFromEvents(events, clients) -> perClient[] (validateResult shape)
 //   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[], missing, noArrival, outOfOrder };
-//                                            noArrival lists ascending ids with a first_frame but no level arrival (a subset of missing); a first_frame counts only with an arrival of any level of the same id at tMs <= the first_frame tMs, otherwise that client's perClientMs is Infinity and firstFrameViolations says `client N: first_frame without level-0 arrival` (message text kept);
+//                                            noArrival lists ascending ids with a first_frame but no level arrival (a subset of missing); a first_frame counts only with an arrival of any level of the same id at tMs <= the first_frame tMs, otherwise that client's perClientMs is Infinity and firstFrameViolations says `client N: first_frame without level arrival (any level)`;
 //                                            outOfOrder = ascending-id list of { id, reason } for impossible orderings: 'before_connect' (first_frame before client's connect), 'before_firstArrival' (first_frame before earliest level arrival of any level); firstFrameViolations reports any other reason as a violation
 //   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS, invalid }; bandwidthViolations(stats) -> string[]
 //   T16.6  bench/load/burst/index.mjs        showFromArrivals(events, clients) -> shown [{id, tMs, level}]  (feeds each 'level' event of the
@@ -39,6 +39,7 @@
 //                                            queued are reported as undeliveredBytes, dropped = size of payload held back by backpressure then discarded at close; latencyMs
 //                                            measured from payload request time, including wait time due to backpressure)
 //   T16.8  tools/load_report/index.mjs       loadReport(result, opts) -> markdown table string (SPEC section 4 rows); opts.serverSamples (checked with checkServerSamples first, passing result.scenario.durationS) feeds a separate `cpu/rss source:` line; the `source:` line is 'simulated' whenever a record method is 'sim'
+//                                            cloud-approximation: when the source is a cloud approximation, first_frame_p95 is measured on a handshake-complete basis (not an S5 value).
 //   T16.9  bench/thresholds/index.mjs        checkThresholds(records, thresholds) -> string[] violations; thresholds.json beside it
 //   T16.10 bench/load/run_all/run.mjs        node run.mjs -> runs every scenario, writes result JSON, exits non-zero on violations
 //                                            runScenario(scenario, opts) and main(outDir, opts): opts.commit (default: commitHash()), opts.thresholds (default: loadThresholds()),
