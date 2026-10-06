@@ -1,4 +1,5 @@
 import { validateResult } from '../../contracts/load/index.mjs';
+import { checkServerSamples } from '../../bench/load/server_stats/index.mjs';
 
 const cell = (s) => String(s)
   .replace(/\\/g, '\\\\')         // Escape every backslash first
@@ -7,22 +8,43 @@ const cell = (s) => String(s)
 
 const nonEmpty = (v) => (typeof v === 'string' && v !== '' ? v : null);
 
-// Source label precedence: server samples (embedded or via opts) > first record's method > 'unknown'.
-// Record method 'sim' is the harness label for simulated runs and maps to source 'simulated'.
-// The '[local]' verdict wording is only true for the simulated source; any other source says
-// where the verdict was measured instead.
-function sourceLine(result, opts) {
-  const samples = opts?.serverSamples ?? result.serverSamples;
-  const fromSamples = nonEmpty(samples?.[0]?.source);
-  const fromMethod = nonEmpty(result.records?.[0]?.method);
-  // Sanitized like table cells so a method with line breaks cannot add report lines.
-  const source = cell(fromSamples ?? (fromMethod === 'sim' ? 'simulated' : fromMethod) ?? 'unknown');
+// The `source:` line comes from the records' method only. Any record with method 'sim' (the harness
+// label for simulated runs) makes it 'simulated'. Otherwise the first record's method is used; a
+// different non-empty method on another record (mixed) or an unusable first method gives 'unknown'.
+// Server samples never feed this line, so a sample cannot hide a simulated run.
+function methodSource(records) {
+  if (records.some((r) => r?.method === 'sim')) return 'simulated';
+  const first = nonEmpty(records[0]?.method);
+  if (first === null) return 'unknown';
+  if (records.some((r) => nonEmpty(r?.method) !== null && r.method !== first)) return 'unknown';
+  return first;
+}
+
+function sourceLine(source) {
   if (source === 'simulated') return 'source: simulated, S5/S8 verdict [local]';
   if (source === 'unknown') return 'source: unknown, S5/S8 verdict origin unknown';
   return `source: ${source}, S5/S8 verdict measured on ${source}`;
 }
 
-export function loadReport(result, opts = {}) {
+// Separate cpu/rss line, only when server samples were supplied (opts wins over result). Samples that
+// fail checkServerSamples, or have no usable source, give 'unknown' with no 'measured on'. With several
+// samples the first sample's source is used.
+function cpuRssLine(result, opts, source) {
+  const samples = opts.serverSamples ?? result.serverSamples;
+  if (samples === undefined || samples === null) return null;
+  if (Array.isArray(samples) && samples.length === 0) return null;
+  if (checkServerSamples(samples).length > 0) return 'cpu/rss source: unknown';
+  const src = nonEmpty(samples[0]?.source);
+  if (src === null) return 'cpu/rss source: unknown';
+  const label = cell(src);
+  if (label === 'unknown') return 'cpu/rss source: unknown';
+  if (source === 'simulated') return `cpu/rss source: ${label}`;
+  return `cpu/rss source: ${label}, measured on ${label}`;
+}
+
+export function loadReport(result, opts) {
+  if (result === null || typeof result !== 'object') throw new Error('loadReport: result must be an object');
+  if (opts === null || typeof opts !== 'object') opts = {};
   // serverSamples is report-only input; the result contract does not list it, so validate without it.
   const { serverSamples: _ignored, ...contractResult } = result;
   const errors = validateResult(contractResult);
@@ -43,7 +65,10 @@ export function loadReport(result, opts = {}) {
   const clientsCount = result.scenario.clients;
   rows.push(`\nclients: ${clientsCount}, total bytes: ${totalBytes}`);
 
-  rows.push(sourceLine(result, opts));
+  const source = cell(methodSource(result.records));
+  rows.push(sourceLine(source));
+  const cpuLine = cpuRssLine(result, opts, source);
+  if (cpuLine !== null) rows.push(cpuLine);
   if (result.scenario.kind === 'slow_link') {
     rows.push('S5 threshold-excluded scenario');
   }
