@@ -27,8 +27,8 @@ export const TERRAIN_LOD_MAX_SLOPE_ERROR = 0.25;
  * @param {number} cellM
  */
 export function terrainLodMaxErrorM(lod, cellM) {
+  if (!Number.isInteger(lod) || lod < 0 || lod >= TERRAIN_LOD_MAX_ERROR_M.length) throw new RangeError(`lod ${String(lod)}`);
   const abs = TERRAIN_LOD_MAX_ERROR_M[lod];
-  if (abs === undefined) throw new RangeError(`lod ${lod}`);
   if (!(Number.isFinite(cellM) && cellM > 0)) throw new RangeError(`cellM ${cellM}`);
   return Math.min(abs, TERRAIN_LOD_MAX_SLOPE_ERROR * cellM);
 }

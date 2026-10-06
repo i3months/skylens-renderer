@@ -30,6 +30,9 @@ test('LOD 오차 상한 규칙(결정 0057): min(절대표, 기울기 0.25 × ce
   assert.deepEqual([0, 1, 2, 3].map((l) => c.terrainLodMaxErrorM(l, 0.5)), [0, 0.125, 0.125, 0.125]);
   for (const l of [0, 1, 2, 3]) assert.ok(c.terrainLodMaxErrorM(l, 3) <= c.TERRAIN_LOD_MAX_ERROR_M[l]);
   assert.throws(() => c.terrainLodMaxErrorM(4, 1), RangeError);
+  // F-484 ⑥: lod 는 0~3 정수만. 배열 속성 이름·문자열·배열·소수·음수는 거부한다.
+  for (const bad of ['length', '1', [1], 'constructor', -1, 1.5, NaN, Infinity, null, undefined, 4])
+    assert.throws(() => c.terrainLodMaxErrorM(bad, 1), RangeError, String(bad));
   assert.throws(() => c.terrainLodMaxErrorM(1, 0), RangeError);
 });
 

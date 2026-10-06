@@ -347,7 +347,10 @@ test('F-315 ③·F-314 ⑥: 유한하지 않은 높이 → 즉시 TowerAssetErro
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.equal(terrainLodStride(d, lod), terrainLodStride(clean, lod));
   // 결측 판정이 상한과 무관하게 동작함을 명목 간격에서도 본다: 같은 무늬를 2 m 셀로(상한 0.5 m) 두면 명목 간격이고, 결측을 넣어도 같다.
   const d2 = { ...DEMS.noise(), cellM: 2 };
-  d2.heights[10] = NaN;
+  d2.heights[10] = NaN; // 타일 (0,0)
+  d2.heights[200 * N + 130] = Infinity; // 다른 타일: 결측을 거르지 않으면 오차가 무한대가 되어 간격이 1 로 떨어진다
+  d2.heights[100 * N + 200] = -Infinity;
+  assert.equal(terrainMissingTiles(d2).length, 3);
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.equal(terrainLodStride(d2, lod), 1 << lod);
 });
 
