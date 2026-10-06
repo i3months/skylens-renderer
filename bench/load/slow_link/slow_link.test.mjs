@@ -10,12 +10,11 @@ const mk = (linkBytesPerS) => ({
 const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
 const lat = (r) => r.events.filter((e) => e.kind === 'bytes').map((e) => e.latencyMs);
 
-test('slow link: queue bounded, nothing dropped, delivery capped by link rate', () => {
+test('slow link: queue bounded, delivery capped by link rate', () => {
   const sc = mk(50000);
   const r = simulateSlowLink(sc, { seed: 7 });
   assert.ok(r.maxQueueBytes <= QUEUE_LIMIT_BYTES);
   assert.ok(r.maxQueueBytes > 0);
-  assert.equal(r.dropped, 0);
   const total = new Array(30).fill(0);
   for (const e of r.events) {
     assert.deepEqual(validateEvent(e, 30), []);
@@ -51,6 +50,41 @@ test('deterministic per seed, different across seeds', () => {
   const a = simulateSlowLink(mk(50000), { seed: 11 });
   assert.deepEqual(simulateSlowLink(mk(50000), { seed: 11 }), a);
   assert.notDeepEqual(simulateSlowLink(mk(50000), { seed: 12 }).events, a.events);
+});
+
+const mk2 = (clients, durationS, linkBytesPerS) => ({
+  name: 'slow', kind: 'slow_link', clients, durationS, linkBytesPerS,
+  path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: durationS, e: 30, n: 0, u: 100 }],
+});
+
+test('30 clients, 60 s, seed 1, 50000 B/s: conservation, undelivered and dropped pinned', () => {
+  const r = simulateSlowLink(mk2(30, 60, 50000), { seed: 1 });
+  const bytesEvents = r.events.filter((e) => e.kind === 'bytes');
+  const delivered = bytesEvents.reduce((a, e) => a + e.bytes, 0);
+  assert.equal(bytesEvents.length, 3932);
+  assert.equal(delivered, 89265994);
+  assert.equal(r.undeliveredBytes, 7325738);
+  assert.equal(r.dropped, 504828);
+  assert.ok(r.undeliveredBytes > 0);
+  assert.equal(delivered + r.undeliveredBytes + r.dropped, 97096560);
+  assert.equal(r.maxQueueBytes, 262143);
+});
+
+test('latency is measured from wanted time, including backpressure wait (pinned)', () => {
+  const r = simulateSlowLink(mk2(30, 60, 50000), { seed: 1 });
+  const lats = r.events.filter((e) => e.kind === 'bytes').map((e) => e.latencyMs);
+  assert.ok(Math.abs(Math.max(...lats) - 5884.9577936409405) < 1e-6);
+  assert.ok(Math.abs(lats.reduce((a, b) => a + b, 0) - 18696370.16254823) < 1e-3);
+  for (const e of r.events) if (e.kind === 'bytes') assert.ok(e.latencyMs >= e.bytes / 50 - 1e-9, 'at least transit time');
+});
+
+test('no client receives a byte: no throw, log intact, no first_frame', () => {
+  const r = simulateSlowLink(mk2(2, 10, 1000), { seed: 1 });
+  assert.equal(r.events.length, 4);
+  assert.deepEqual(r.events.map((e) => e.kind), ['connect', 'connect', 'close', 'close']);
+  assert.equal(r.events.filter((e) => e.kind === 'first_frame').length, 0);
+  assert.equal(r.undeliveredBytes, 508898);
+  assert.equal(r.dropped, 59240);
 });
 
 test('rejects non slow_link scenario', () => {
