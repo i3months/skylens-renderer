@@ -178,3 +178,25 @@ test('F-506 ④: {length:0} 유사배열은 RangeError, 3.5e38 step 은 빈 q �
     assert.throws(() => h.dequantizeHeights(0, step, []), RangeError, `step ${step}`);
   }
 });
+
+test('F-508: 최소 쪽 복원 검사는 실제 최소 격자 번호 round(min/s)·s 로 한다(floor 한 칸 아래 kbase·s 가 비유한이어도 양자화)', () => {
+  const r = h.quantizeHeights([-2.8e38], 2e38);
+  assert.notEqual(r, null);
+  const d = h.dequantizeHeights(r.kbase, r.step, r.q);
+  const g = h.snapHeightsToGrid([-2.8e38], 2e38);
+  assert.equal(d[0], g[0]);
+  assert.equal(new Uint32Array(d.buffer)[0], new Uint32Array(g.buffer)[0]);
+});
+
+test('F-508: 실제 최소 격자 복원값이 f32 범위를 넘으면 null(최소 쪽 검사 제거 변이 M3)', () => {
+  assert.equal(h.quantizeHeights([-3.4e38, 0], 2e38), null);
+  assert.equal(h.quantizeHeights([-3.4e38, -3.0e38], 2e38), null);
+});
+
+test('F-510 ④: BigInt64Array·BigUint64Array 는 세 함수 모두 RangeError', () => {
+  for (const A of [BigInt64Array, BigUint64Array]) {
+    assert.throws(() => h.quantizeHeights(new A(2), 0.03), RangeError);
+    assert.throws(() => h.snapHeightsToGrid(new A(2), 0.03), RangeError);
+    assert.throws(() => h.dequantizeHeights(0, 0.03, new A(2)), RangeError);
+  }
+});

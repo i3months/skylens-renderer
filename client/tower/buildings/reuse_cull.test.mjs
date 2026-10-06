@@ -11,6 +11,7 @@ const W = 1280, H = 720;
 const COLS = 60, ROWS = 50, SPACING = 50, TILE_C = 6, TILE_R = 5;
 const GROUPS = (COLS / TILE_C) * (ROWS / TILE_R); // 100
 const RUNS = 7;
+const PTS_PER_GROUP = TILE_C * TILE_R * 20; // 묶음당 점 수: 30동 × 동당 20점 = 600
 
 const BOX_TRIS = [[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6], [0, 5, 1], [0, 4, 5], [2, 7, 3], [2, 6, 7], [0, 3, 7], [0, 7, 4], [1, 5, 6], [1, 6, 2]];
 const BOX_EDGES = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
@@ -196,7 +197,7 @@ test('② 묶음 번호 유지: index 는 accept 순서 묶음 번호이고 컬�
   assert.ok(Math.max(...seen) < GROUPS);
 });
 
-/** stats() 중 묶음 수만 본다(래스터 호출·화소 수는 perf.test.mjs 가 맡는다). */
+/** stats() 중 묶음 수만 본다. 래스터에 넘어간 양은 points 모드의 rasterPixels(= 검사한 점 수)로 따로 단정한다. */
 const groupStats = (l) => { const { groupsTotal, groupsDrawn } = l.stats(); return { groupsTotal, groupsDrawn }; };
 
 test('② 경계: 한 묶음이라도 화면에 걸치면 포함(보수적), 전부 밖이면 0', () => {
@@ -205,6 +206,19 @@ test('② 경계: 한 묶음이라도 화면에 걸치면 포함(보수적), 전
   assert.deepEqual(groupStats(l), { groupsTotal: 100, groupsDrawn: 0 });
   l.render(CAM_ALL);
   assert.deepEqual(groupStats(l), { groupsTotal: 100, groupsDrawn: 100 });
+});
+
+test('③ 컬링 결정적 단정: points 모드 rasterPixels 는 CAM_BEHIND 에서 0, CAM_EDGE 에서 groupsDrawn × 600', () => {
+  const l = layer('points', true);
+  l.render(CAM_BEHIND);
+  assert.equal(l.stats().groupsDrawn, 0);
+  assert.equal(l.stats().rasterPixels, 0);
+  l.render(CAM_ALL);
+  assert.equal(l.stats().rasterPixels, GROUPS * PTS_PER_GROUP);
+  l.render(CAM_EDGE);
+  const { groupsDrawn, rasterPixels } = l.stats();
+  assert.ok(groupsDrawn >= 1 && groupsDrawn <= 33, `묶음 ${groupsDrawn}/100`);
+  assert.equal(rasterPixels, groupsDrawn * PTS_PER_GROUP);
 });
 
 test('③ 도시 1/10 만 보면 래스터에 넘어간 묶음 수 ≤ 1/3, black 시간 ≤ 1/3(중앙값)', () => {

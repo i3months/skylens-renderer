@@ -36,9 +36,9 @@ export function terrainH32Bytes(cells, quantized) {
   return TERRAIN_H32_HEADER_BYTES + (quantized ? TERRAIN_H32_QUANT_EXTRA_BYTES + 2 * cells * cells : 4 * cells * cells);
 }
 
-/** 배열(Array) 또는 TypedArray 만 받는다. length 만 있는 유사배열·문자열·DataView(length 없음, 빈 배열처럼 조용히 통과하던 입력)는 RangeError. */
+/** 배열(Array) 또는 TypedArray 만 받는다. BigInt64Array·BigUint64Array 는 원소가 bigint 라 산술에서 TypeError 가 나므로 RangeError 로 거부한다. length 만 있는 유사배열·문자열·DataView(length 없음, 빈 배열처럼 조용히 통과하던 입력)는 RangeError. */
 function checkArray(a, name) {
-  if (!Array.isArray(a) && !(ArrayBuffer.isView(a) && !(a instanceof DataView))) throw new RangeError(`${name} 가 배열이 아니다: ${String(a)}`);
+  if (!Array.isArray(a) && !(ArrayBuffer.isView(a) && !(a instanceof DataView) && !(a instanceof BigInt64Array) && !(a instanceof BigUint64Array))) throw new RangeError(`${name} 가 배열이 아니다: ${String(a)}`);
 }
 
 /** step 이 number 가 아니면(문자열·불리언 등 암묵 변환 대상) RangeError. 유효한 number 면 f32 로 반올림한 값, 0 이하·비유한(f32 반올림 후 포함)이면 null. */
@@ -49,7 +49,7 @@ function checkStep(step) {
 }
 
 /**
- * 높이 배열을 전역 격자로 양자화한다. 양자화할 수 없으면(비유한 높이·step ≤ 0·비유한 step·빈 배열·격자 범위 초과·i32 초과·복원값 fround(K·step) 이 비유한(f32 범위 초과, dequantizeHeights 가 던지는 입력)) null. step 이 number 가 아니면 RangeError.
+ * 높이 배열을 전역 격자로 양자화한다. 양자화할 수 없으면(비유한 높이·step ≤ 0·비유한 step·빈 배열·격자 범위 초과·i32 초과·복원값 fround(K·step)(K = 최소·최대의 격자 번호) 이 비유한(f32 범위 초과, dequantizeHeights 가 던지는 입력)) null. step 이 number 가 아니면 RangeError.
  * 반환 base 는 kbase 와 같은 값이다(옛 필드 이름 호환: dequantizeHeights(r.base, r.step, r.q) 호출이 그대로 동작한다).
  * @param {Float32Array} heights
  * @param {number} [step]
@@ -66,11 +66,11 @@ export function quantizeHeights(heights, step = TERRAIN_H32_STEP_M) {
     if (h > max) max = h;
   }
   const kbase = Math.floor(min / s);
-  const kmax = Math.round(max / s);
+  const kmin = Math.round(min / s), kmax = Math.round(max / s);
   if (kbase < I32_MIN || kbase > I32_MAX || kmax > I32_MAX) return null;
   if (kmax - kbase > TERRAIN_H32_MAX_Q) return null;
-  // 복원 단조성: 양 끝(kbase·s, kmax·s)의 f32 복원값이 유한하면 사이 값도 유한하다. 아니면 dequantizeHeights 가 던지므로 여기서 거른다.
-  if (!Number.isFinite(Math.fround(kbase * s)) || !Number.isFinite(Math.fround(kmax * s))) return null;
+  // 복원 단조성: 양 끝(실제 최소 격자 번호 kmin·s, kmax·s)의 f32 복원값이 유한하면 사이 값도 유한하다. kbase(floor)는 kmin 보다 1 작을 수 있고 그 복원값은 쓰이지 않으므로 kbase·s 로 검사하지 않는다. 아니면 dequantizeHeights 가 던지므로 여기서 거른다.
+  if (!Number.isFinite(Math.fround(kmin * s)) || !Number.isFinite(Math.fround(kmax * s))) return null;
   const q = new Uint16Array(heights.length);
   // 나눗셈이 단조이므로 min ≤ h ≤ max 이면 kbase ≤ round(h/s) ≤ kmax, q 는 0..65535 안이다.
   for (let k = 0; k < heights.length; k++) q[k] = Math.round(heights[k] / s) - kbase;
