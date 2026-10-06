@@ -501,3 +501,32 @@ test('e2e: removePath 는 overlay·fallback 양쪽에서 빼고, 조립 층이 �
   };
   assertMatch(replayRecording(view, [{ dtSec: 0.25 }, { dtSec: 0.25, available: true }], size), [h2Row, h3Row]);
 });
+
+// 'overlay 검사 ⊆ 폴백 검사' 고정: 폴백이 받아들이는 경계 입력을 조립이 거부하면(= 오버레이 쪽 검사만 거부) 실패한다.
+// 오버레이 단독 거부는 조립에서 폴백이 먼저 반영된 뒤에 던져 폴백만 새 값을 갖는 불일치를 만든다(되돌리기 코드는 없다).
+// 그래서 검사 규칙이 오버레이에만 더 생기면 이 시험이 알린다. 경계: 개수 상한·id 64 코드포인트(서로게이트 쌍)·|e|,|n| = 1e6·yaw 음수/큰 값·alert·confidence 0/1.
+test('e2e: 폴백이 받는 경계 입력을 오버레이 쪽 검사가 단독으로 거부하지 않는다(오버레이 검사 ⊆ 폴백 검사)', () => {
+  const size = { width: 200, height: 100 };
+  const view = createControlView();
+  const id64 = '\u{1F6E9}'.repeat(64); // 코드포인트 64 개(UTF-16 128 단위)
+  const drones = [
+    { id: id64, enu: [1e6, -1e6, 0], yaw: -1e9 },
+    { id: 'a', enu: [-1e6, 1e6, -1e5], yaw: 0 },
+    { id: 'b', enu: [0, 0, 1e9] },
+  ];
+  for (let i = 0; i < 253; i++) drones.push({ id: `n${i}`, enu: [i, -i, 0] }); // 총 256 = maxDrones
+  assert.doesNotThrow(() => view.setDrones(drones), 'setDrones 경계');
+  const dets = [
+    { id: id64, enu: [1e6, 1e6, 0], kind: 'alert', confidence: 0 },
+    { id: 'c1', enu: [-1e6, -1e6, 0], kind: 'detection', confidence: 1 },
+  ];
+  for (let i = 0; i < 4094; i++) dets.push({ id: `k${i}`, enu: [i % 1000, -(i % 1000), 5] }); // 총 4096 = maxDetections
+  assert.doesNotThrow(() => view.setDetections(dets), 'setDetections 경계');
+  assert.doesNotThrow(() => view.setPath({ id: id64, points: [[1e6, 1e6, 0], [-1e6, -1e6, 1e5]] }), 'setPath 경계');
+  view.setAvailable(false); // 폴백 모드에서 폴백 층이 받은 것을 본다
+  const snap = view.step(0.25, size);
+  assert.equal(snap.mode, 'fallback');
+  assert.equal(snap.fallback.drones.length, 256);
+  assert.equal(snap.fallback.detections.length, 4096);
+  assert.equal(snap.fallback.paths.length, 1);
+});
