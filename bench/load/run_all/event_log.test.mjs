@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FIXTURE_EVENTS } from '../../../contracts/load/harness.mjs';
 import { checkEventLog, guarded } from './event_log.mjs';
+import { simulateClients } from '../clients/index.mjs';
 
 test('fixture log is valid', () => {
   assert.deepEqual(checkEventLog(FIXTURE_EVENTS, 3), []);
@@ -63,4 +64,41 @@ test('guarded failure with thrown string', () => {
     guarded('scn', () => { throw 'oops'; }), // eslint-disable-line no-throw-literal
     { violation: 'scn: bad event log: oops' },
   );
+});
+
+test('reversed log reports tMs going backwards, not close without connect', () => {
+  const log = [{ id: 0, tMs: 20, kind: 'close' }, { id: 0, tMs: 0, kind: 'connect' }];
+  assert.deepEqual(checkEventLog(log, 3), ['event 1: tMs goes backwards']);
+});
+
+test('equal tMs is allowed; invalid tMs does not reset the monotonic baseline', () => {
+  const ok = [{ id: 0, tMs: 5, kind: 'connect' }, { id: 1, tMs: 5, kind: 'connect' }];
+  assert.deepEqual(checkEventLog(ok, 3), []);
+  const log = [{ id: 0, tMs: 10, kind: 'connect' }, { id: 0, tMs: NaN, kind: 'close' }, { id: 1, tMs: 3, kind: 'connect' }];
+  assert.deepEqual(checkEventLog(log, 3), ['event 1: bad tMs', 'event 2: tMs goes backwards']);
+});
+
+test('simulated logs satisfy the monotonic check', () => {
+  const base = { name: 'steady', kind: 'steady', clients: 30, durationS: 10, path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 10, e: 30, n: 0, u: 100 }] };
+  const scenarios = [
+    base,
+    { ...base, kind: 'burst', burstLevels: 2 },
+    { ...base, kind: 'burst', burstLevels: 4 },
+    { ...base, kind: 'slow_link', linkBytesPerS: 50000 },
+    { ...base, durationS: 1, path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 1, e: 30, n: 0, u: 100 }] },
+  ];
+  for (const sc of scenarios) {
+    for (let seed = 0; seed < 20; seed++) assert.deepEqual(checkEventLog(simulateClients(sc, { seed }), 30), [], `${sc.kind} ${seed}`);
+  }
+});
+
+test('throwing getter (Proxy) becomes a violation, not an exception', () => {
+  const evil = new Proxy({}, { get() { throw new Error('trap'); } });
+  let r;
+  assert.doesNotThrow(() => { r = checkEventLog([{ id: 0, tMs: 0, kind: 'connect' }, evil], 3); });
+  assert.deepEqual(r, ['event 1: trap']);
+  const getter = { get id() { throw new RangeError('getter boom'); }, tMs: 0, kind: 'connect' };
+  assert.deepEqual(checkEventLog([getter], 3), ['event 0: getter boom']);
+  const nonError = new Proxy({}, { get() { throw 'str'; } }); // eslint-disable-line no-throw-literal
+  assert.deepEqual(checkEventLog([nonError], 3), ['event 0: str']);
 });

@@ -100,6 +100,14 @@ export function checkBurstInvariants(arrivals, shown, scenario) {
     const a = arrById[id];
     const s = shownById[id];
     if (a.length === 0) errs.push(`client ${id}: no burst arrivals`);
+    else {
+      // Burst contract: every level 0..burstLevels-1 arrives, all of them at one tMs. At most burstLevels + 1 messages per client.
+      const present = new Set(a.map((e) => e.level));
+      for (let k = 0; k < scenario.burstLevels; k++) {
+        if (!present.has(k)) errs.push(`client ${id}: burst level ${k} missing`);
+      }
+      if (new Set(a.map((e) => e.tMs)).size > 1) errs.push(`client ${id}: burst levels not at one instant`);
+    }
     if (a.length > 0 && s.length === 0) {
       errs.push(`client ${id}: levels arrived but never shown`);
       continue;

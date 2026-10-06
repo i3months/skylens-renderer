@@ -10,6 +10,8 @@ const mk = (burstLevels, clients = 30) => ({
 });
 const lv = (id, tMs, level) => ({ id, tMs, kind: 'level', level });
 const at = (id, tMs, level) => ({ id, tMs, level });
+// Drops the burst-completeness messages so a test can focus on the show/arrival checks of hand-built logs.
+const showOnly = (v) => v.filter((m) => !/burst level/.test(m));
 
 test('scenario helper is valid', () => assert.deepEqual(validateScenario(mk(2)), []));
 
@@ -36,12 +38,12 @@ test('checker: shown with no arrivals is a violation', () => {
 });
 
 test('checker: arrivals that are never shown is a violation', () => {
-  const v = checkBurstInvariants([at(0, 100, 0), at(0, 101, 3)], [], mk(4, 1));
+  const v = checkBurstInvariants([at(0, 100, 0), at(0, 100, 1), at(0, 100, 2), at(0, 100, 3)], [], mk(4, 1));
   assert.deepEqual(v, ['client 0: levels arrived but never shown']);
 });
 
 test('checker: missed replacement is a violation', () => {
-  const v = checkBurstInvariants([at(0, 100, 0), at(0, 101, 3)], [at(0, 100, 0)], mk(4, 1));
+  const v = showOnly(checkBurstInvariants([at(0, 100, 0), at(0, 101, 3)], [at(0, 100, 0)], mk(4, 1)));
   assert.deepEqual(v, ['client 0: level 3 arrived at 101ms but was not shown']);
 });
 
@@ -52,7 +54,7 @@ test('checker: decrease in unsorted shown input is caught after sorting', () => 
 });
 
 test('checker: unsorted but valid input has no violations', () => {
-  assert.deepEqual(checkBurstInvariants([at(0, 200, 1), at(0, 100, 3)], [at(0, 100, 3)], mk(4, 1)), []);
+  assert.deepEqual(showOnly(checkBurstInvariants([at(0, 200, 1), at(0, 100, 3)], [at(0, 100, 3)], mk(4, 1))), []);
 });
 
 test('checker: shown before arrival is a violation', () => {
@@ -77,22 +79,22 @@ test('checker: out-of-range entries are violations', () => {
   // client 1 is healthy so only the injected entry is reported
   const base = [at(1, 100, 1)];
   for (const level of [4, -1, 1.5, NaN]) {
-    const v = checkBurstInvariants([at(0, 100, 1), ...base], [at(0, 100, 1), at(0, 150, level), ...base], s);
+    const v = showOnly(checkBurstInvariants([at(0, 100, 1), ...base], [at(0, 100, 1), at(0, 150, level), ...base], s));
     assert.equal(v.length, 1, `level ${level}`);
     assert.match(v[0], /^shown: client 0 level .* out of range 0\.\.3$/);
   }
   for (const id of [2, -1, 0.5]) {
-    assert.deepEqual(checkBurstInvariants([at(0, 100, 1), ...base], [at(0, 100, 1), ...base, at(id, 100, 1)], s), [`shown: id ${id} out of range 0..1`]);
+    assert.deepEqual(showOnly(checkBurstInvariants([at(0, 100, 1), ...base], [at(0, 100, 1), ...base, at(id, 100, 1)], s)), [`shown: id ${id} out of range 0..1`]);
   }
-  assert.deepEqual(checkBurstInvariants([at(0, 100, 1), ...base], [at(0, 100, 1), ...base, at(0, Infinity, 1)], s), ['shown: client 0 tMs Infinity not finite']);
-  assert.deepEqual(checkBurstInvariants([at(0, 100, 7), ...base], [at(1, 100, 1)], s),
+  assert.deepEqual(showOnly(checkBurstInvariants([at(0, 100, 1), ...base], [at(0, 100, 1), ...base, at(0, Infinity, 1)], s)), ['shown: client 0 tMs Infinity not finite']);
+  assert.deepEqual(showOnly(checkBurstInvariants([at(0, 100, 7), ...base], [at(1, 100, 1)], s)),
     ['arrival: client 0 level 7 at 100ms out of range 0..3', 'client 0: no burst arrivals']);
 });
 
 test('checker: valid inputs have no violations', () => {
   const s = mk(4, 2);
-  const arrivals = [at(0, 100, 0), at(0, 100, 1), at(1, 100, 2), at(0, 200, 3), at(0, 300, 2), at(1, 400, 3)];
-  const shown = [at(0, 100, 1), at(1, 100, 2), at(0, 200, 3), at(1, 400, 3)];
+  const arrivals = [at(0, 100, 0), at(0, 100, 1), at(0, 100, 2), at(0, 100, 3), at(1, 400, 0), at(1, 400, 1), at(1, 400, 2), at(1, 400, 3)];
+  const shown = [at(0, 100, 3), at(1, 400, 3)];
   assert.deepEqual(checkBurstInvariants(arrivals, shown, s), []);
   assert.deepEqual(showFromArrivals(arrivals.map((a) => ({ ...a, kind: 'level' })), 2), shown);
 });
@@ -159,7 +161,7 @@ test('showFromArrivals: a hand-built overtaken late lower level is never shown',
   const arrivals = [lv(0, 100, 2), lv(0, 200, 1)];
   const shown = showFromArrivals(arrivals, 1);
   assert.deepEqual(shown, [at(0, 100, 2)]);
-  assert.deepEqual(checkBurstInvariants(arrivals, shown, mk(4, 1)), []);
+  assert.deepEqual(showOnly(checkBurstInvariants(arrivals, shown, mk(4, 1))), []);
   assert.ok(checkBurstInvariants(arrivals, [at(0, 100, 2), at(0, 200, 1)], mk(4, 1))
     .includes('client 0: level 1 at 200ms shown after level 2'));
 });
@@ -209,7 +211,7 @@ test('checker: cost does not scale as clients * events', () => {
       }
       arrivals.push(e);
     }
-    assert.deepEqual(checkBurstInvariants(arrivals, [], s), Array.from({ length: 30 }, (_, id) => `client ${id}: levels arrived but never shown`));
+    assert.deepEqual(showOnly(checkBurstInvariants(arrivals, [], s)), Array.from({ length: 30 }, (_, id) => `client ${id}: levels arrived but never shown`));
     return c.id + c.tMs + c.level;
   };
   const N = 6000;
@@ -217,4 +219,40 @@ test('checker: cost does not scale as clients * events', () => {
   const r2 = reads(2 * N);
   assert.ok(r1 <= 8 * N, `reads ${r1} for ${N} entries (linear cost is about 6 per entry)`);
   assert.ok(r2 <= 8 * 2 * N && r2 <= 2 * r1 + 100, `reads grew from ${r1} to ${r2} when entries doubled`);
+});
+
+test('checker: missing burst levels and split instants are reported per client (repro)', () => {
+  // client 0: levels 1 and 2 missing, levels 0 and 3 at different times
+  const arrivals = [at(0, 100, 0), at(0, 200, 3)];
+  const shown = [at(0, 100, 0), at(0, 200, 3)];
+  assert.deepEqual(checkBurstInvariants(arrivals, shown, mk(4, 1)), [
+    'client 0: burst level 1 missing',
+    'client 0: burst level 2 missing',
+    'client 0: burst levels not at one instant',
+  ]);
+});
+
+test('checker: missing burst level alone (all at one instant)', () => {
+  const arrivals = [at(0, 100, 0), at(0, 100, 1), at(0, 100, 3), at(1, 100, 0), at(1, 100, 1), at(1, 100, 2), at(1, 100, 3)];
+  const shown = [at(0, 100, 3), at(1, 100, 3)];
+  assert.deepEqual(checkBurstInvariants(arrivals, shown, mk(4, 2)), ['client 0: burst level 2 missing']);
+});
+
+test('checker: split instant alone, only the offending client is reported', () => {
+  const arrivals = [at(0, 100, 0), at(0, 100, 1), at(0, 100, 2), at(0, 100, 3), at(1, 100, 0), at(1, 100, 1), at(1, 150, 2), at(1, 150, 3)];
+  const shown = [at(0, 100, 3), at(1, 100, 1), at(1, 150, 3)];
+  assert.deepEqual(checkBurstInvariants(arrivals, shown, mk(4, 2)), ['client 1: burst levels not at one instant']);
+});
+
+test('checker: simulated burst scenarios of every burstLevels have no violations, cost bounded', () => {
+  for (let b = 1; b <= 4; b++) {
+    for (const seed of [1, 2, 3]) {
+      const sc = mk(b);
+      const arrivals = burstArrivals(simulateClients(sc, { seed }), b);
+      assert.deepEqual(checkBurstInvariants(arrivals, showFromArrivals(arrivals, 30), sc), []);
+    }
+  }
+  // many bad clients: at most burstLevels + 1 completeness messages per client
+  const v = checkBurstInvariants([at(0, 1, 0), at(0, 2, 1)], [], mk(4, 30));
+  assert.ok(v.length <= 30 * 6);
 });

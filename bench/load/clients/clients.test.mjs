@@ -228,3 +228,16 @@ test('countOpenConnections ignores a close for an id that is not open', () => {
   ];
   assert.deepEqual(countOpenConnections(ev), { min: 1, max: 1 });
 });
+
+test('connectionViolations: bad clients returns immediately without looping', () => {
+  const t0 = performance.now();
+  const huge = connectionViolations([], 1e7);
+  assert.ok(performance.now() - t0 < 1000);
+  assert.deepEqual(huge, ['bad clients: 10000000 (must be an integer in 1..30)']);
+  for (const bad of [NaN, 0, 1.5, -1, 31, Infinity, '3', undefined]) {
+    const r = connectionViolations([], bad);
+    assert.equal(r.length, 1);
+    assert.ok(r[0].startsWith('bad clients: '), String(bad));
+  }
+  assert.equal(connectionViolations([], 30).length, 30);
+});

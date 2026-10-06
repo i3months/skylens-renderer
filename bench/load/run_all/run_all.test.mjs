@@ -33,7 +33,7 @@ test('T16.10: 문턱 주입이 slow_link 는 면제', () => {
   assert.deepEqual(violations, []);
 });
 test('T16.10: 서버 샘플 시계가 끊기면 샘플 부족 위반', () => {
-  const { violations, serverSamples } = runScenario(steady, { commit: 'abcdef1', statsClock: { now: () => 0, cpuUsage: () => ({ user: 0, system: 0 }) } });
+  const { violations, serverSamples } = runScenario(steady, { commit: 'abcdef1', statsClock: { clock: 'simulated', now: () => 0, cpuUsage: () => ({ user: 0, system: 0 }) } });
   assert.equal(serverSamples.length, 0);
   assert.deepEqual(violations, ['steady30: 0 server samples, expected 60']);
 });
@@ -93,14 +93,14 @@ test('F-529: burst scenarios with burstLevels 1..4 have 0 violations', () => {
 test('F-529 / F-539: a non-integer arrival level is rejected by the event log check (exact string)', () => {
   // Since F-539 the injected log is checked first, so the burst checker never sees level 1.5.
   const s = burstOf(2);
-  const events = [...simulateClients(s, { seed: 1 }), { id: 0, tMs: 5, kind: 'level', level: 1.5 }];
+  const events = [...simulateClients(s, { seed: 1 }), { id: 0, tMs: 1e9, kind: 'level', level: 1.5 }];
   const { violations } = runScenario(s, { ...OPTS, events });
   assert.deepEqual(violations, [`burst2: event ${events.length - 1}: bad level`]);
 });
 test('F-529: burst invariant violations: levels beyond burstLevels are not arrivals', () => {
   // a level-3 event in a burstLevels 2 run belongs to the post-burst part and must not be flagged
   const s = burstOf(2);
-  const events = [...simulateClients(s, { seed: 1 }), { id: 0, tMs: 5000, kind: 'level', level: 3 }];
+  const events = [...simulateClients(s, { seed: 1 }), { id: 0, tMs: 1e9, kind: 'level', level: 3 }];
   assert.deepEqual(runScenario(s, { ...OPTS, events }).violations, []);
 });
 const const3 = (ev, c) => showFromArrivals(ev, c).map((x) => ({ ...x, level: 3 }));
@@ -185,21 +185,21 @@ test('F-538: unknown statsClock keys throw', () => {
     { message: 'runScenario: statsClock has unknown key nowMs' });
 });
 test('F-538: now returning Infinity yields no non-finite tS sample and a missing-sample violation', () => {
-  const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { now: () => Infinity, cpuUsage: zeroCpu } });
+  const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => Infinity, cpuUsage: zeroCpu } });
   assert.ok(serverSamples.every((x) => Number.isFinite(x.tS)));
   assert.deepEqual(violations, ['steady30: 0 server samples, expected 60']);
 });
 test('F-538: injected now and cpuUsage give measured samples', () => {
   let t = 0;
-  const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { now: () => (t += 1000), cpuUsage: zeroCpu } });
+  const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: zeroCpu } });
   assert.deepEqual(violations, []);
   assert.deepEqual(serverSamples.map((x) => x.tS).slice(0, 3), [1, 2, 3]);
-  assert.ok(serverSamples.every((x) => x.cpuPct === 0 && x.cpuSource === 'measured' && x.clock === 'simulated'));
+  assert.ok(serverSamples.every((x) => x.cpuPct === 0 && x.cpuSource === 'simulated' && x.clock === 'simulated'));
 });
 
 // ---- F-539: injected event logs are checked first, stats throws become violations ----
 test('F-539: a bad injected log returns its violations without running stats', () => {
-  const events = [...baseSteady(), { id: 99, tMs: 0, kind: 'connect' }];
+  const events = [...baseSteady(), { id: 99, tMs: 1e9, kind: 'connect' }];
   const r = runScenario(steady, { ...OPTS, events });
   assert.deepEqual(r.violations, [`steady30: event ${events.length - 1}: bad id`]);
   assert.deepEqual(r.result, { scenario: steady, records: [], perClient: [] });
@@ -244,4 +244,100 @@ test('F-542: main reports more than 200000 violations without RangeError', () =>
 test('F-542: run.mjs never spreads into push', () => {
   const src = readFileSync(new URL('./run.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(src, /\.push\(\s*\.\.\./);
+});
+
+// ---- F-543 / F-546 / F-547 / F-548 ----
+test('F-543: statsClock needs an explicit clock; source/clock are not pre-filled', () => {
+  const msg = "runScenario: statsClock.clock must be 'simulated' or 'real'";
+  assert.throws(() => runScenario(steady, { ...OPTS, statsClock: { now: () => 0, cpuUsage: zeroCpu } }), { message: msg });
+  assert.throws(() => runScenario(steady, { ...OPTS, statsClock: { now: () => 0, cpuUsage: zeroCpu, clock: 'fake' } }), { message: msg });
+  let t = 0;
+  const r = runScenario(steady, { ...OPTS, statsClock: { clock: 'real', now: () => (t += 1000), cpuUsage: zeroCpu } });
+  assert.ok(r.serverSamples.length > 0);
+  for (const x of r.serverSamples) { assert.equal(x.clock, 'real'); assert.equal(x.source, 'harness-process'); }
+  t = 0;
+  const sim = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: zeroCpu } });
+  for (const x of sim.serverSamples) { assert.equal(x.clock, 'simulated'); assert.equal(x.source, 'simulated'); }
+});
+test('F-543: a real clock advancing 1 s per call has 0 violations', () => {
+  let t = 0;
+  const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { clock: 'real', now: () => t++ * 1000, cpuUsage: zeroCpu } });
+  assert.equal(serverSamples.length, 60);
+  assert.deepEqual(violations, []);
+});
+test('F-543: a real clock that finishes in milliseconds violates the durationS rule ', () => {
+  const { violations } = runScenario(steady, { ...OPTS, statsClock: { clock: 'real', now: () => performance.now(), cpuUsage: () => process.cpuUsage() } });
+  assert.ok(violations.some((v) => v.startsWith('steady30: server sample')), violations.join('\n'));
+});
+
+test('F-546: a log with only a duplicate connect reports it (exact string)', () => {
+  const one = { ...steady, clients: 1 };
+  const events = [{ id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 1, kind: 'connect' }];
+  const { violations } = runScenario(one, { ...OPTS, events });
+  assert.ok(violations.includes('steady30: client 0: duplicate connect'), violations.join('\n'));
+});
+test('F-546: durationS 1.2 gives ticks [1, 1.2]', () => {
+  const r = runScenario({ ...steady, name: 'steady1_2', durationS: 1.2, clients: 5, path: shortPath }, OPTS);
+  assert.deepEqual(r.violations, []);
+  assert.deepEqual(r.serverSamples.map((x) => x.tS), [1, 1.2]);
+});
+test('F-546: durationS 0 is rejected by the scenario check before any stats run', () => {
+  const { violations } = runScenario({ ...steady, durationS: 0 }, { ...OPTS, events: baseSteady() });
+  assert.ok(violations.every((v) => v.startsWith('steady30: bad durationS')) || violations[0] === 'steady30: bad durationS', violations.join('\n'));
+  assert.equal(violations[0], 'steady30: bad durationS');
+});
+// Each stats function throws only while it is the running one (detected through the stack), so every run() guard is exercised.
+function throwingLog(fnName) {
+  const base = baseSteady();
+  const trap = (v) => (key) => ({ enumerable: true, configurable: true, get() {
+    if (new Error().stack.split('\n').some((l) => l.includes(`at ${fnName} `) || l.includes(`at ${fnName}.`))) throw new Error(`boom ${fnName}`);
+    return v[key];
+  } });
+  const wrapped = base.map((e) => { const o = {}; for (const k of Object.keys(e)) Object.defineProperty(o, k, trap(e)(k)); return o; });
+  return wrapped;
+}
+for (const [fn, sc] of [['firstFrameStats', steady], ['bandwidthStats', steady], ['countOpenConnections', steady], ['connectionViolations', steady],
+  ['unreachableClients', steady], ['perClientFromEvents', steady], ['burstArrivals', SCENARIOS[1]]]) {
+  test(`F-546: ${fn} throwing becomes a bad-event-log violation`, () => {
+    const events = throwingLog(fn);
+    if (sc.kind === 'burst') {
+      for (let i = 0; i < events.length; i++) { /* same log shape for burst */ }
+    }
+    const log = sc.kind === 'burst' ? (() => { const b = simulateClients(sc, { seed: 1 }); return b.map((e) => { const o = {}; for (const k of Object.keys(e)) Object.defineProperty(o, k, { enumerable: true, configurable: true, get() { if (new Error().stack.includes(`at ${fn} `)) throw new Error(`boom ${fn}`); return e[k]; } }); return o; }); })() : events;
+    const { violations } = runScenario(sc, { ...OPTS, events: log });
+    assert.ok(violations.includes(`${sc.name}: bad event log: boom ${fn}`), `${fn}: ${violations.join('\n')}`);
+  });
+}
+
+test('F-547: a huge clients count is rejected fast by the scenario check', () => {
+  const t0 = Date.now();
+  const a = runScenario({ ...SCENARIOS[0], clients: 1e9 }, { ...OPTS, events: [] });
+  const b = runScenario({ ...SCENARIOS[0], clients: 1e9 }, OPTS);
+  assert.ok(Date.now() - t0 < 1000);
+  assert.deepEqual(a.violations, ['steady30: bad clients']);
+  assert.deepEqual(b.violations, ['steady30: bad clients']);
+  assert.deepEqual(a.result.records, []);
+});
+test('F-548: null memoryUsage / cpuUsage becomes a server stats violation, not a TypeError', () => {
+  let t = 0;
+  const mem = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: zeroCpu, memoryUsage: () => null } });
+  assert.equal(mem.violations.length, 1);
+  assert.match(mem.violations[0], /^steady30: (server stats: |0 server samples)/);
+  let n = 0;
+  const cpu = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: () => (n++ === 0 ? zeroCpu() : null) } });
+  assert.equal(cpu.violations.length, 1);
+  assert.match(cpu.violations[0], /^steady30: (server stats: |\d+ server samples)/);
+});
+test('F-548: runScenario(null / undefined) throws a clear error', () => {
+  for (const s of [null, undefined]) assert.throws(() => runScenario(s), { message: 'runScenario: scenario must be an object' });
+});
+test('F-543: main passes the server samples to loadReport (cpu/rss line follows the samples, source line follows the records)', () => {
+  const lines = []; const log = console.log;
+  console.log = (m) => lines.push(String(m));
+  let t = 0;
+  const statsClock = { clock: 'simulated', source: 'server-process', now: () => (t += 1000), cpuUsage: zeroCpu };
+  try { assert.equal(main(mkdtempSync(join(tmpdir(), 'load-')), { ...OPTS, statsClock }), 0); } finally { console.log = log; }
+  assert.equal(lines.join('\n').split('cpu/rss source: server-process').length - 1, 3);
+  assert.ok(!lines.join('\n').includes('measured on'));  // simulated clock: no measured claim
+  assert.equal(lines.join('\n').split('source: simulated, S5/S8 verdict [local]').length - 1, 3);
 });
