@@ -1,0 +1,59 @@
+// T15.10 지형 LOD 바이트 측정 시험.
+// 아래 범위·정확값은 사후에 맞춘 값이다: 결정적 합성 DEM(완만 / noiseBig 시드 0)을 먼저 측정(2026-10)한 뒤 그 결과 둘레에 범위를 박았다.
+// SPEC 기준에서 나온 수치가 아니라 회귀 감시용이다. 예산(INITIAL_LIMIT_BYTES)은 SPEC S6 초기 ≤ 15 MB 이며 시험이 바꾸지 않는다.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { measureLodBytes, smoothDem, noiseBigDem, measureAll } from './lod_bytes.mjs';
+import { INITIAL_LIMIT_BYTES } from '../tower_assets/index.mjs';
+
+const smooth = measureLodBytes(smoothDem());
+const rough = measureLodBytes(noiseBigDem(0));
+const raw = (r) => r.levels.map((l) => l.rawBytes);
+
+test('예산 상수는 SPEC S6 초기 15 MB 그대로', () => {
+  assert.equal(INITIAL_LIMIT_BYTES, 15_000_000);
+});
+
+test('완만 DEM: 정점 수 65/33/17/9, 단계마다 약 1/4(사후 측정 범위)', () => {
+  assert.deepEqual(smooth.levels.map((l) => l.cells), [65, 33, 17, 9]);
+  assert.deepEqual(raw(smooth), [38158848, 9650688, 2474496, 655872]); // 측정 후 고정(정확값)
+  for (const l of smooth.levels) assert.equal(l.tiles, 256);
+  assert.ok(smooth.ratios.lod3OverLod2.raw > 0.25 && smooth.ratios.lod3OverLod2.raw < 0.28);
+  assert.ok(smooth.ratios.lod3OverLod0.raw > 0.016 && smooth.ratios.lod3OverLod0.raw < 0.019);
+  assert.ok(smooth.ratios.lod3OverLod2.gzip > 0.27 && smooth.ratios.lod3OverLod2.gzip < 0.30);
+  assert.ok(smooth.ratios.lod3OverLod0.gzip > 0.018 && smooth.ratios.lod3OverLod0.gzip < 0.021);
+  assert.equal(smooth.lod3NotSmallerThanLod2, false);
+  assert.equal(smooth.lod3OverBudgetRaw, false);
+  assert.equal(smooth.lod3OverBudgetGzip, false);
+});
+
+test('완만 DEM: gzip 은 raw 보다 작고 단계가 거칠수록 줄어든다', () => {
+  for (const l of smooth.levels) assert.ok(l.gzipBytes < l.rawBytes);
+  for (let k = 1; k < 4; k++) assert.ok(smooth.levels[k].gzipBytes < smooth.levels[k - 1].gzipBytes);
+  assert.ok(smooth.levels[0].gzipBytes > 12_500_000 && smooth.levels[0].gzipBytes < 13_500_000);
+});
+
+test('거친 DEM(noiseBig): 상한 1 m 로는 LOD1~3 이 모두 원본으로 물러나 LOD3 = LOD2 = LOD0 (0046 다시 볼 조건 해당)', () => {
+  assert.deepEqual(rough.levels.map((l) => l.cells), [65, 65, 65, 65]);
+  assert.deepEqual(raw(rough), [38158848, 38158848, 38158848, 38158848]);
+  assert.equal(rough.ratios.lod3OverLod2.raw, 1);
+  assert.equal(rough.ratios.lod3OverLod0.gzip, 1);
+  assert.equal(rough.lod3NotSmallerThanLod2, true);
+  assert.equal(rough.lod3OverBudgetRaw, true);
+  // gzip 은 이 합성 잡음에서 15 MB 아래(잡음 폭이 좁아 압축이 잘 됨). 사후 측정 범위.
+  assert.ok(rough.levels[3].gzipBytes > 11_500_000 && rough.levels[3].gzipBytes < 12_700_000);
+  assert.equal(rough.lod3OverBudgetGzip, false);
+});
+
+test('결정성: 같은 입력 → 같은 바이트, 시드가 달라도 거친 DEM 은 LOD3 = LOD0 크기', () => {
+  assert.deepEqual(measureLodBytes(noiseBigDem(0)), rough);
+  const r1 = measureLodBytes(noiseBigDem(1));
+  assert.equal(r1.levels[3].rawBytes, r1.levels[0].rawBytes);
+  assert.notEqual(r1.levels[0].gzipBytes, rough.levels[0].gzipBytes);
+});
+
+test('measureAll 은 JSON 직렬화 가능하고 상한표 [0, 0.5, 1, 1] 을 싣는다', () => {
+  const a = measureAll();
+  assert.deepEqual(a.maxErrorM, [0, 0.5, 1, 1]);
+  assert.deepEqual(JSON.parse(JSON.stringify(a.dems.smooth)), smooth);
+});
