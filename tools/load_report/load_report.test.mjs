@@ -747,3 +747,13 @@ test('loadReport: non-object result throws', () => {
     assert.throws(() => loadReport(bad), { message: 'loadReport: result must be an object' });
   }
 });
+
+test('cpu/rss line: mixed sample sources give unknown', () => {
+  const out = loadReport(srcResult({ method: 'wrk', serverSamples: [sample('server-process'), sample('harness-process', { tS: 1 })] }));
+  assert.equal(cpuOf(out), 'cpu/rss source: unknown');
+});
+
+test('cpu/rss line: sample source is escaped for the markdown cell', () => {
+  const out = loadReport(srcResult({ method: 'wrk', serverSamples: samples('a|b\nc\\d') }));
+  assert.equal(cpuOf(out), 'cpu/rss source: a\\|b c\\\\d, measured on a\\|b c\\\\d');
+});

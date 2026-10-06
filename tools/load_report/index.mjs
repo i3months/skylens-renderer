@@ -27,8 +27,8 @@ function sourceLine(source) {
 }
 
 // Separate cpu/rss line, only when server samples were supplied (opts wins over result). Samples that
-// fail checkServerSamples, or have no usable source, give 'unknown' with no 'measured on'. With several
-// samples the first sample's source is used.
+// fail checkServerSamples, or have no usable source, give 'unknown' with no 'measured on'. Samples with
+// mixed sources give 'unknown'.
 function cpuRssLine(result, opts, source) {
   const samples = opts.serverSamples ?? result.serverSamples;
   if (samples === undefined || samples === null) return null;
@@ -36,6 +36,7 @@ function cpuRssLine(result, opts, source) {
   if (checkServerSamples(samples).length > 0) return 'cpu/rss source: unknown';
   const src = nonEmpty(samples[0]?.source);
   if (src === null) return 'cpu/rss source: unknown';
+  if (samples.some((x) => x?.source !== src)) return 'cpu/rss source: unknown';
   const label = cell(src);
   if (label === 'unknown') return 'cpu/rss source: unknown';
   if (source === 'simulated') return `cpu/rss source: ${label}`;
