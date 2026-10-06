@@ -109,6 +109,8 @@ git config core.hooksPath .githooks
 
 부하 시험 계약 `contracts/load/`: 시나리오(종류 steady·burst·slow_link, 접속 1~30, 시간, GeoAnchor 기준 ENU 경로)와 결과(측정 기록 + 클라이언트별 바이트·지연) 검증기. 결정은 연구 저장소 decisions/0060.
 
+부하 모의 하네스(시뮬레이션, 소켓 없음): `bench/load/` 의 clients(30개 모의 클라이언트)·server_stats·per_client·first_frame·bandwidth·burst(수준 교체·추월 건너뛰기 불변식)·slow_link(역압), `tools/load_report/`(결과→표), `bench/thresholds/`(회귀 문턱), 한 명령 재현 `node bench/load/run_all/run.mjs [출력 디렉터리]`(위반 시 종료 코드 1). 이벤트 계약은 `contracts/load/harness.mjs`.
+
 ### 컬링 (T08)
 - 컬링 단계는 모두 보수적이다(보여야 할 리프를 버리지 않는다). 결과는 길이 leafCount 의 0/1 마스크이고 `contracts/cull` 에 서명이 있다.
 - `server/cull/frustum`(절두체), `backface`(법선 원뿔), `occlusion`(CPU 깊이 피라미드), `distance`(거리 컷), `predict`(이동 방향 예측), `priority`(화면 기여 순 정렬), `degenerate`(퇴화 시점은 던지지 않고 빈 결과), `combine`(`cullAndSelect`: 마스크 AND 뒤 LOD 단계 선택). `client/cull`: 서버와 같은 마스크를 내는 절두체 컬링. `bench/cull`: 시점당 CPU 시간.
@@ -270,6 +272,8 @@ The hooks block commits and pushes whose message, added content or branch name c
 A single binary WebSocket (TCP) framing: 8-byte header plus payload, nine message types (hello, view update, piece request, ack, welcome, piece, level arrived, missing, error). The contract is `contracts/proto/`; encode/decode lives in `server/proto/codec/` and `client/proto/` (same check order and error codes). The server skeleton is `server/ws/` (dependency-free RFC 6455; host and port come from the environment variables `SKYLENS_WS_HOST` and `SKYLENS_WS_PORT`), with backpressure in `server/ws/backpressure/`, reconnect in `server/ws/resume/`, the send scheduler in `server/scheduler/` (priority, byte budget, overtaken-level drop) and the initial bundle in `server/scheduler/initial/`, the skylens event adapter in `server/adapter/core/`, a mock client in `tools/mock_client/`, a fuzzer in `server/proto/fuzz/` and byte accounting in `bench/proto/`. Scheduler operation counts and timing are measured by `bench/scheduler/index.mjs` (report-only, exit code always 0, output includes Node version, core count and load). `server/ws/session` — provides wiring modules (emit recording, resumption resend, connection handling): they record adapter emissions to the continuation storage (server/ws/resume) and resend them on HELLO reception. LEVEL_ARRIVED is recorded before sending and resent via resendPlan on resumption. Connecting them at the server entry point (createWsServer onConnection) is not wired yet (used only in tests).
 
 Load test contract `contracts/load/`: validators for scenarios (kinds steady, burst, slow_link; 1-30 clients; duration; GeoAnchor-relative ENU path) and results (metric records plus per-client bytes and latency). Decision recorded in the research repo, decisions/0060.
+
+Load simulation harness (pure simulation, no sockets): `bench/load/` modules clients (30 mock clients), server_stats, per_client, first_frame, bandwidth, burst (replacement and overtake-skip invariants) and slow_link (backpressure); `tools/load_report/` (result to table); `bench/thresholds/` (regression thresholds); one-command run `node bench/load/run_all/run.mjs [outDir]` (exit code 1 on violations). Event contract: `contracts/load/harness.mjs`.
 
 ### Culling (T08)
 - Every culling stage is conservative (never drops a leaf that should be visible). Each returns a 0/1 mask of length leafCount; signatures live in `contracts/cull`.
