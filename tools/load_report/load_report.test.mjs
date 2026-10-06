@@ -68,7 +68,7 @@ test('loadReport: basic functionality with 2 clients and 2 records', () => {
     '| latency_p95 | 45.5 | ms | test_device | measure |',
     '',
     'clients: 2, total bytes: 8000',
-    'source: simulated, S5/S8 verdict [local]',
+    'source: measure, S5/S8 verdict measured on measure',
   ].join('\n');
 
   assert.equal(output, expected);
@@ -295,7 +295,7 @@ test('loadReport: throws on invalid result (clients mismatch)', () => {
   assert.throws(() => loadReport(result), /perClient length != clients/);
 });
 
-test('MUTATION TEST: removing pipe escape breaks table structure', () => {
+test('regression: removing pipe escape breaks table structure', () => {
   // This test ensures that escaping pipes is necessary.
   // If the escaping logic is removed or broken, this test will fail
   // because the table will have too many unescaped pipes.
@@ -335,7 +335,7 @@ test('MUTATION TEST: removing pipe escape breaks table structure', () => {
   assert.equal(dataRowPipes, 6, 'data row must have exactly 6 unescaped pipes; if more, pipe escaping is broken');
 });
 
-test('MUTATION TEST: removing newline escape breaks table structure', () => {
+test('regression: removing newline escape breaks table structure', () => {
   // This test ensures that escaping newlines is necessary.
   // If the newline escaping logic is removed, this test will fail
   // because the table structure will be broken (extra lines).
@@ -372,10 +372,10 @@ test('MUTATION TEST: removing newline escape breaks table structure', () => {
   // If newline escaping is removed, there will be extra lines
   // Expected: 5 lines (header, separator, 1 data, empty, summary, source)
   // With broken newline escape: 8+ lines
-  assert.equal(lines.length, 6, 'output must have exactly 5 lines; if more, newline escaping is broken');
+  assert.equal(lines.length, 6, 'output must have exactly 6 lines; if more, newline escaping is broken');
 });
 
-test('MUTATION TEST: removing both pipe and newline escape breaks table completely', () => {
+test('regression: removing both pipe and newline escape breaks table completely', () => {
   // This test ensures both escaping mechanisms are necessary.
   // If both are removed, the table becomes corrupted.
 
@@ -409,14 +409,14 @@ test('MUTATION TEST: removing both pipe and newline escape breaks table complete
   const lines = output.split('\n');
 
   // Check line count - should be 5, not more
-  assert.equal(lines.length, 6, 'output must have exactly 5 lines');
+  assert.equal(lines.length, 6, 'output must have exactly 6 lines');
 
   // Check pipe count - should be 6 per row, not more
   const dataRowPipes = countUnescapedPipes(lines[2]);
   assert.equal(dataRowPipes, 6, 'data row must have exactly 6 unescaped pipes');
 });
 
-test('MUTATION TEST: using /\\n/ regex fails with \\r\\n line breaks', () => {
+test('regression: using /\\n/ regex fails with \\r\\n line breaks', () => {
   // This test ensures that the regex handles \r\n sequences correctly.
   // If someone changes the regex to only /\n/ and ignores \r, this test will fail.
   // The device field has a \r\n sequence which must be converted to a space.
@@ -450,15 +450,15 @@ test('MUTATION TEST: using /\\n/ regex fails with \\r\\n line breaks', () => {
   const output = loadReport(result);
   const lines = output.split('\n');
 
-  // Must have exactly 5 lines (header, separator, 1 data, empty, summary, source)
+  // Must have exactly 6 lines (header, separator, 1 data, empty, summary, source)
   // If \r\n is not properly handled, there will be more lines
-  assert.equal(lines.length, 6, 'output with \\r\\n should have exactly 5 lines');
+  assert.equal(lines.length, 6, 'output with \\r\\n should have exactly 6 lines');
 
   // Check that the device field has the \r\n converted to a space
   assert.match(lines[2], /device name/, 'carriage return + newline should be converted to space');
 });
 
-test('MUTATION TEST: using /\\n/ regex fails with lone \\r line breaks', () => {
+test('regression: using /\\n/ regex fails with lone \\r line breaks', () => {
   // This test ensures that the regex handles lone \r (carriage return) correctly.
   // If someone changes the regex to only /\n/, it will not match lone \r, causing test failure.
   // A lone \r character must be treated as a line break like \n.
@@ -492,9 +492,9 @@ test('MUTATION TEST: using /\\n/ regex fails with lone \\r line breaks', () => {
   const output = loadReport(result);
   const lines = output.split('\n');
 
-  // Must have exactly 5 lines (header, separator, 1 data, empty, summary, source)
+  // Must have exactly 6 lines (header, separator, 1 data, empty, summary, source)
   // If lone \r is not properly handled, the split('\n') will create more lines or malformed output
-  assert.equal(lines.length, 6, 'output with lone \\r should have exactly 5 lines');
+  assert.equal(lines.length, 6, 'output with lone \\r should have exactly 6 lines');
 
   // Check that the device field has the \r converted to a space
   assert.match(lines[2], /device name/, 'lone carriage return should be converted to space');
@@ -534,8 +534,8 @@ test('loadReport: handles already-escaped backslash-pipe correctly', () => {
   const output = loadReport(result);
   const lines = output.split('\n');
 
-  // Must have exactly 5 lines (header, separator, 1 data, empty, summary, source)
-  assert.equal(lines.length, 6, 'output should have exactly 5 lines');
+  // Must have exactly 6 lines (header, separator, 1 data, empty, summary, source)
+  assert.equal(lines.length, 6, 'output should have exactly 6 lines');
 
   // The data row should have exactly 6 unescaped pipes (5 columns)
   const dataRowPipes = countUnescapedPipes(lines[2]);
@@ -589,12 +589,72 @@ function reportLines(kind) {
 
 test('loadReport: slow_link marks S5 threshold exclusion', () => {
   const lines = reportLines('slow_link');
-  assert.ok(lines.includes('source: simulated, S5/S8 verdict [local]'));
-  assert.ok(lines.includes('S5 문턱 제외 시나리오'));
+  assert.ok(lines.includes('source: x, S5/S8 verdict measured on x'));
+  assert.ok(lines.includes('S5 threshold-excluded scenario'));
 });
 
 test('loadReport: non slow_link has source line and no exclusion mark', () => {
   const lines = reportLines('steady');
-  assert.equal(lines.at(-1), 'source: simulated, S5/S8 verdict [local]');
-  assert.ok(!lines.some((l) => l.includes('S5 문턱 제외')));
+  assert.equal(lines.at(-1), 'source: x, S5/S8 verdict measured on x');
+  assert.ok(!lines.some((l) => l.includes('S5 threshold-excluded')));
+});
+
+function srcResult({ method = 'x', serverSamples } = {}) {
+  const r = {
+    scenario: { name: 's', kind: 'steady', clients: 1, durationS: 10, path: basePath },
+    records: [{ metric: 'm', value: 1, unit: 'ms', device: 'd', method, commit: 'abc1234567890' }],
+    perClient: [{ id: 0, bytes: 1, latencyMs: [1] }],
+  };
+  if (serverSamples) r.serverSamples = serverSamples;
+  return r;
+}
+const sample = (source) => [{ tS: 0, cpuPct: 1, rssMiB: 1, source, clock: 'real' }];
+const lastLine = (out) => out.split('\n').at(-1);
+
+test('source line: server-process samples in result give no "simulated" at all', () => {
+  const out = loadReport(srcResult({ method: 'sim', serverSamples: sample('server-process') }));
+  assert.equal(lastLine(out), 'source: server-process, S5/S8 verdict measured on server-process');
+  assert.equal(out.split('simulated').length - 1, 0);
+});
+
+test('source line: opts.serverSamples is accepted and wins over method', () => {
+  const out = loadReport(srcResult({ method: 'sim' }), { serverSamples: sample('server-process') });
+  assert.equal(lastLine(out), 'source: server-process, S5/S8 verdict measured on server-process');
+  assert.ok(!out.includes('simulated'));
+});
+
+test('source line: harness-process samples', () => {
+  const out = loadReport(srcResult({ serverSamples: sample('harness-process') }));
+  assert.equal(lastLine(out), 'source: harness-process, S5/S8 verdict measured on harness-process');
+});
+
+test('source line: simulated samples keep the [local] wording', () => {
+  const out = loadReport(srcResult({ method: 'measure', serverSamples: sample('simulated') }));
+  assert.equal(lastLine(out), 'source: simulated, S5/S8 verdict [local]');
+});
+
+test('source line: no samples, method sim maps to simulated', () => {
+  assert.equal(lastLine(loadReport(srcResult({ method: 'sim' }))), 'source: simulated, S5/S8 verdict [local]');
+});
+
+test('source line: no samples, other method is used as source', () => {
+  assert.equal(lastLine(loadReport(srcResult({ method: 'wrk' }))), 'source: wrk, S5/S8 verdict measured on wrk');
+});
+
+test('source line: empty samples array falls back to method', () => {
+  assert.equal(lastLine(loadReport(srcResult({ method: 'wrk', serverSamples: [] }))), 'source: wrk, S5/S8 verdict measured on wrk');
+});
+
+test('source line: sample without a string source falls back to method', () => {
+  assert.equal(lastLine(loadReport(srcResult({ method: 'wrk', serverSamples: [{ tS: 0 }] }))), 'source: wrk, S5/S8 verdict measured on wrk');
+});
+
+test('source line: no usable source gives unknown', () => {
+  const r = srcResult();
+  r.records[0].method = '';
+  assert.equal(lastLine(loadReport(r)), 'source: unknown, S5/S8 verdict origin unknown');
+});
+
+test('source line: literal unknown sample source', () => {
+  assert.equal(lastLine(loadReport(srcResult({ serverSamples: sample('unknown') }))), 'source: unknown, S5/S8 verdict origin unknown');
 });
