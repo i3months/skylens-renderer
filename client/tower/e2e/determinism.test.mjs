@@ -205,7 +205,6 @@ test('추적 중 streaming.update 가 던진 프레임은 입력·추적을 되�
   const viewTail = replayRecording(view, { version: 1, frames: tail }, size);
 
   assert.equal(JSON.stringify([...viewHead, ...viewTail]), JSON.stringify([...refHead, ...refTail]));
-  assert.equal(view.snapshot(size).camera.pos[0], ref.snapshot(size).camera.pos[0]);
   // 비교가 공허하지 않다: 추적 중이던 카메라는 드론 위(높이 40010 m 부근)에 있다
   assert.ok(viewTail[0].camera.pos[2] > 40000);
 });

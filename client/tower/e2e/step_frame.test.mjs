@@ -34,7 +34,7 @@ test('재생의 모든 프레임에서 step 반환값은 직후 snapshot(size) �
   assert.notEqual(stepped[2].r, stepped[3].r);
 });
 
-test('재생 중 step 이 RangeError 를 던지면 그 오류가 그대로 나오고, releaseAll 이 없거나 던지는 view 여도 가려지지 않는다', () => {
+test('잘못된 프레임은 재생 전 검사에서, 재생 중 step 이 RangeError 를 던지면 그 오류가 그대로 나오고, releaseAll 이 없거나 던지는 view 여도 가려지지 않는다', () => {
   const frames = [{ dtSec: 0.1 }, { dtSec: 0.1 }];
   // 1) 실제 view: 두 번째 step 의 dt 가 잘못된 프레임은 검사 단계에서 RangeError (재생 시작 전)
   assert.throws(() => replayRecording(createControlView(), { version: 1, frames: [{ dtSec: 0.1 }, { dtSec: -1 }] }, SIZE), RangeError);

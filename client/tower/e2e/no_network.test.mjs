@@ -78,7 +78,7 @@ test('e2e: 통합 모듈 사용 중 전역 fetch·타이머·WebSocket 호출 0'
         { dtSec: 0.25, arrivedTiles: [[0, 0], [0, 2]] }, // F7 y=160 → (0,0) 내보냄, 내보낸 (0,0) 도착은 버리고 (0,2) held
         { dtSec: 0.25, keys: { up: ['ArrowUp'] }, drones, detections, paths: [path] }, // F8 데이터는 step 뒤에 들어옴
         { dtSec: 0.25, available: false }, // F9 step 은 live 라 추적 카메라로 update, 그 뒤 폴백
-        { dtSec: 0.25, drones: [{ id: 'drone-a', enu: [10, 200, 30], yaw: 0.5 }, drones[1], drones[2]] }, // F10 폴백: update 건너뜀. 데이터(드론 a 를 북으로 150 m 이동)는 step 뒤에 들어옴
+        { dtSec: 0.25, drones: [{ id: 'drone-a', enu: [10, 200, 30], yaw: 0.5 }, drones[1], drones[2]] }, // F10 폴백: update 건너뜀. 데이터(드론 a 를 북으로 180 m 이동)는 step 뒤에 들어옴
         { dtSec: 0.25, available: true }, // F11 step 은 폴백 중이라 update 를 건너뛴다 → F9 의 update 결과가 그대로(F10 에서 드론이 옮겨 가 있어 update 했다면 달라진다)
       ],
     };
