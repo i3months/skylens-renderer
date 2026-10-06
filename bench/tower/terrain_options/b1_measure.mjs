@@ -6,9 +6,10 @@
 // DEM 집합(측정 전에 정함, 모두 bench/tower/lod_bytes.mjs 와 같은 1024 m·1 m 셀·64 m 타일 256 장 격자):
 //   - smooth: lod_bytes.mjs smoothDem() 그대로(20 + 25·sin(x/300)·cos(y/400)).
 //   - noiseBig:s (s = 1..12): lod_bytes.mjs noiseBigDem(s) 그대로(±1 m 화소 해시 잡음, 언덕 없음).
-//   - lowNoise:s (s = 1..12): smooth + 0.3·hashNoise(i,j,s) = ±0.15 m 화소 잡음. '잡음 진폭 < Δd' 장면이다.
-//     Δd 는 renderer_basis §3-7 의 깊이 해상도 표 값 0.33 m(d = 45.3 m, 1위 이웃 기선 8.26 m, 1 px 시차)를 쓴다.
-//     ±0.15 m 는 ssim_views 시험의 잡음 진폭(진폭 10 m × 0.015)과 같은 값이며 0.33 m 보다 작다.
+//   - lowNoise:s (s = 1..12): smooth + 0.3·hashNoise(i,j,s) = ±0.15 m 화소 잡음.
+//     ±0.15 m 는 ssim_views 시험의 잡음 진폭(진폭 10 m × 0.015)과 같은 값이다(셀은 1 m, ssim_views 는 2 m).
+//     참고: 이 촬영 조건의 Δd(renderer_basis §3-7 표, d = 45.3 m·1위 이웃 기선 8.26 m·1 px 시차)는 0.33 m 다. 합성 DEM 에는
+//     촬영 조건이 없으므로 판정 문턱으로 쓰지 않는다(결정 0056).
 //     (noiseBig 의 ±1 m 는 F-458 이 'Δd 규모' 라 부른 장면이다.)
 //
 // 바이트(lod_bytes.mjs 와 같은 정의, raw 만): 256 타일 합. 간격이 DEM 전역 하나라 타일마다 cells 가 같다.
@@ -54,7 +55,7 @@ const VIEW_TILE_MIN = -2, VIEW_TILE_MAX = 1;
 const TERRAIN_TOP_M = TOWER_EYE_MIN_U_M - 2;
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 const LOW_NOISE_HALF_M = 0.15; // ±0.15 m
-const DELTA_D_M = 0.33; // renderer_basis §3-7 표(1 px 시차, d = 45.3 m, b = 8.26 m)
+const DELTA_D_M = 0.33; // 참고값만(판정에 쓰지 않음): renderer_basis §3-7 표(1 px 시차, d = 45.3 m, b = 8.26 m)
 
 /** lod_bytes.mjs 의 hashNoise 와 같은 식(내보내지 않아 옮김). ∈ [−0.5, 0.5]. */
 function hashNoise(i, j, seed = 0) {
