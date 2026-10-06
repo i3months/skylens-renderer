@@ -9,7 +9,9 @@ import { MAX_DURATION_S } from '../../../contracts/load/index.mjs';
  *   totalBytes in bytes; meanBytesPerS and peakBytesPerS in bytes per second (B/s);
  *   invalid = indexes of bytes events with non-finite/negative tMs or tMs > durationS*1000 (excluded from totals);
  *   tMs === durationS*1000 is folded into the last bucket.
- *   peak = most bytes received in any one 1 s bucket [1000k, 1000k+1000) ms.
+ *   peak = highest per-bucket rate in B/s: bucket bytes / bucket width in seconds, over buckets [1000k, 1000k+1000) ms.
+ *   Full buckets are 1 s wide (peak = most bytes in one second). With fractional durationS the last bucket is only
+ *   durationS - floor-part wide, so its rate is bytes / that width; this guarantees peak >= mean always.
  * @throws {RangeError} durationS not a finite number in (0, MAX_DURATION_S], or a bytes event with non-finite/negative bytes
  *   (bad tMs does not throw, see invalid)
  */
@@ -41,8 +43,15 @@ export function bandwidthStats(events, durationS) {
   }
   if (!Number.isFinite(totalBytes)) throw new RangeError('totalBytes overflowed');
 
+  // Peak is a rate: each bucket's bytes are divided by the bucket's width in seconds. All buckets are 1 s wide
+  // except the last one, whose width is durationS - lastBucket (in (0, 1]; exactly 1 for integral durationS).
+  // Dividing by the real width keeps peak >= mean (mean is the width-weighted average of the bucket rates).
   let peakBytesPerS = 0;
-  for (const v of buckets.values()) if (v > peakBytesPerS) peakBytesPerS = v;
+  for (const [k, v] of buckets) {
+    const widthS = k === lastBucket ? durationS - lastBucket : 1;
+    const rate = v / widthS;
+    if (rate > peakBytesPerS) peakBytesPerS = rate;
+  }
 
   return { totalBytes, meanBytesPerS: totalBytes / durationS, peakBytesPerS, invalid };
 }

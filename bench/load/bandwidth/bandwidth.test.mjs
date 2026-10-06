@@ -118,6 +118,51 @@ test("bandwidthStats flags tMs beyond durationS*1000, accepts exactly durationS*
   assert.strictEqual(bandwidthStats(at(10000), 10).totalBytes, 10);
 });
 
+test("bandwidthStats counts bytes in the last partial bucket (durationS 2.5)", () => {
+  const ev = [
+    { id: 0, tMs: 100, kind: "bytes", bytes: 10, latencyMs: 1 },
+    { id: 0, tMs: 2200, kind: "bytes", bytes: 90, latencyMs: 1 },
+    { id: 0, tMs: 2500, kind: "bytes", bytes: 10, latencyMs: 1 },
+  ];
+  const r = bandwidthStats(ev, 2.5);
+  assert.strictEqual(r.totalBytes, 110);
+  assert.deepStrictEqual(r.invalid, []);
+  // bucket 2 (the partial one) holds 100 bytes over 0.5 s -> 200 B/s; with floor() the last bucket would
+  // be index 1, the partial bytes would be merged into a 1.5 s bucket and peak would not be 200.
+  assert.strictEqual(r.peakBytesPerS, 200);
+  assert.strictEqual(r.meanBytesPerS, 44);
+});
+
+test("bandwidthStats peak >= mean with fractional durationS", () => {
+  const ev = [
+    { id: 0, tMs: 0, kind: "bytes", bytes: 10, latencyMs: 1 },
+    { id: 0, tMs: 500, kind: "bytes", bytes: 10, latencyMs: 1 },
+  ];
+  const r = bandwidthStats(ev, 0.5);
+  assert.strictEqual(r.meanBytesPerS, 40);
+  assert.strictEqual(r.peakBytesPerS, 40);
+  assert.ok(r.peakBytesPerS >= r.meanBytesPerS);
+});
+
+test("bandwidthStats property: peak >= mean for several durations and event placements", () => {
+  const durations = [0.1, 0.5, 0.999, 1, 1.25, 2.5, 3.7, 10.01, 59.9];
+  let seed = 12345;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  for (const d of durations) {
+    for (let trial = 0; trial < 20; trial++) {
+      const ev = [];
+      const n = 1 + Math.floor(rnd() * 8);
+      for (let i = 0; i < n; i++) {
+        const tMs = trial % 5 === 0 ? d * 1000 : rnd() * d * 1000;
+        ev.push({ id: 0, tMs, kind: "bytes", bytes: Math.floor(rnd() * 1000), latencyMs: 1 });
+      }
+      const r = bandwidthStats(ev, d);
+      assert.deepStrictEqual(r.invalid, [], `d=${d}`);
+      assert.ok(r.peakBytesPerS >= r.meanBytesPerS * (1 - 1e-12), `d=${d} peak ${r.peakBytesPerS} < mean ${r.meanBytesPerS}`);
+    }
+  }
+});
+
 test("bandwidthStats applies the MAX_DURATION_S upper bound", () => {
   const ev = [{ id: 0, tMs: 0, kind: "bytes", bytes: 10, latencyMs: 1 }];
   assert.strictEqual(bandwidthStats(ev, MAX_DURATION_S).totalBytes, 10);
