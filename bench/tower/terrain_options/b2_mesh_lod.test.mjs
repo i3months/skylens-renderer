@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createLodRule, tileMinNormalCos, tileMinVertexNormalCos, vertexNormalGrid, cosToDeg } from './b2_mesh_lod.mjs';
 import { terrainLodStride, buildTerrainTile, terrainTileToMesh } from '../../../server/terrain/mesh_lod/index.mjs';
+import { terrainLodMaxErrorM } from '../../../contracts/tower_assets/index.mjs';
 import { makeHillDem } from '../../../client/tower/terrain/fixtures.mjs';
 import { buildLayerMesh } from '../../../client/tower/terrain/mesh.mjs';
 
@@ -13,11 +14,11 @@ const TILES = [];
 for (let ty = -1; ty < 1; ty++) for (let tx = -1; tx < 1; tx++) TILES.push([tx, ty]);
 const smallDem = (seed, noiseRatio) => makeHillDem({ tilesX: 2, tilesY: 2, tileMinX: -1, tileMinY: -1, seed, noiseRatio });
 
-test('(1) 높이 상한 [0,0.5,1,1] 복사본은 서버와 간격·타일 높이가 같다', () => {
+test('(1) 서버 실효 상한(결정 0057, 셀 크기 반영) 복사본은 서버와 간격·타일 높이가 같다', () => {
   for (const r of [0, 0.015]) {
     for (const seed of [1, 5, 7, 10, 12]) {
       const dem = makeHillDem({ seed, noiseRatio: r });
-      const rule = createLodRule({ name: 't', heightCapsM: [0, 0.5, 1, 1] });
+      const rule = createLodRule({ name: 't', heightCapsM: [0, 1, 2, 3].map((l) => terrainLodMaxErrorM(l, dem.cellM)) });
       for (let lod = 0; lod < 4; lod++) {
         assert.equal(rule.lodStride(dem, lod), terrainLodStride(dem, lod), `시드 ${seed} 잡음 ${r} LOD${lod}`);
         assert.deepEqual(rule.buildTile(dem, 0, -1, lod).heights, buildTerrainTile(dem, 0, -1, lod).heights);

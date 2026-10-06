@@ -37,7 +37,7 @@ import { smoothDem, noiseBigDem, measureLodBytes } from '../lod_bytes.mjs';
 import { INITIAL_LIMIT_BYTES } from '../../tower_assets/index.mjs';
 import { PIECE_FRAME_OVERHEAD_BYTES } from '../../../server/scheduler/initial/index.mjs';
 import { buildTerrainTile, terrainTileToMesh, terrainLodStride } from '../../../server/terrain/mesh_lod/index.mjs';
-import { TERRAIN_LOD_COUNT, TERRAIN_LOD_MAX_ERROR_M } from '../../../contracts/tower_assets/index.mjs';
+import { TERRAIN_LOD_COUNT, TERRAIN_LOD_MAX_ERROR_M, terrainLodMaxErrorM } from '../../../contracts/tower_assets/index.mjs';
 import { TERRAIN_SSIM_MIN, TERRAIN_DEFAULTS } from '../../../contracts/controlview/terrain.mjs';
 import { EMPTY_INDEX } from '../../../contracts/raster/index.mjs';
 import { ssimDetailed } from '../../../server/metrics/ssim/index.mjs';
@@ -167,7 +167,11 @@ export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
   const n0 = Math.round(64 / dem.cellM);
   const per = {};
   for (const [opt, bounds] of Object.entries(optionTable)) per[opt] = lodStrides(dem, bounds);
-  if (check) checkAgainstServer(dem, per.i.strides);
+  // 결정 0057 이후 서버 상한은 셀 크기에 따라 줄어든다. 현행 절대표 사본(i)과 서버가 같은 셀 크기에서만 대조한다(그 밖은 b6_rule.mjs 가 새 규칙으로 대조).
+  const serverCaps = [0, 1, 2, 3].map((l) => terrainLodMaxErrorM(l, dem.cellM));
+  const sameAsTable = serverCaps.every((c, l) => c === optionTable.i[l]);
+  if (check && sameAsTable) checkAgainstServer(dem, per.i.strides);
+  else if (check) console.error(`[b1] ${entry.name ?? ''} 서버 대조 생략: 셀 ${dem.cellM} m 의 서버 실효 상한 ${JSON.stringify(serverCaps)} ≠ 사본 i`);
 
   // SSIM: 기준 영상(LOD 0)과 간격별 층 영상.
   const order = viewTileOrder();
