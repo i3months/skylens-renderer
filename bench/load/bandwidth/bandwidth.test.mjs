@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { bandwidthStats } from "./index.mjs";
+import { bandwidthStats, bandwidthViolations } from "./index.mjs";
 import { MAX_DURATION_S } from "../../../contracts/load/index.mjs";
 import { FIXTURE_EVENTS } from "../../../contracts/load/harness.mjs";
 
@@ -78,11 +78,32 @@ test("bandwidthStats handles MAX_DURATION_S buckets at the durationS limit", () 
   assert.strictEqual(r.peakBytesPerS, 7000);
 });
 
-test("bandwidthStats throws for non-finite or negative tMs on bytes events", () => {
-  for (const bad of [NaN, Infinity, -Infinity, -1, undefined, "5"]) {
-    const ev = [{ id: 0, tMs: bad, kind: "bytes", bytes: 10, latencyMs: 1 }];
-    assert.throws(() => bandwidthStats(ev, 10), RangeError, String(bad));
+test("bandwidthStats reports bad tMs in invalid instead of throwing", () => {
+  for (const bad of [NaN, Infinity, -Infinity, -1, undefined, null, "5", 10001]) {
+    const ev = [
+      { id: 0, tMs: 500, kind: "bytes", bytes: 100, latencyMs: 1 },
+      { id: 0, tMs: bad, kind: "bytes", bytes: 10, latencyMs: 1 },
+    ];
+    const r = bandwidthStats(ev, 10);
+    assert.deepStrictEqual(r.invalid, [1], String(bad));
+    assert.strictEqual(r.totalBytes, 100, String(bad));
+    assert.strictEqual(r.peakBytesPerS, 100, String(bad));
+    assert.deepStrictEqual(bandwidthViolations(r), ["bytes event 1: bad tMs"]);
   }
+  assert.deepStrictEqual(bandwidthStats(FIXTURE_EVENTS, 10).invalid, []);
+  assert.deepStrictEqual(bandwidthViolations(bandwidthStats([], 10)), []);
+});
+
+test("bandwidthStats folds tMs === durationS*1000 into the last bucket", () => {
+  const ev = [
+    { id: 0, tMs: 1500, kind: "bytes", bytes: 100, latencyMs: 1 },
+    { id: 0, tMs: 2000, kind: "bytes", bytes: 250, latencyMs: 1 },
+  ];
+  const r = bandwidthStats(ev, 2);
+  assert.strictEqual(r.totalBytes, 350);
+  assert.strictEqual(r.peakBytesPerS, 350); // both in bucket 1
+  assert.strictEqual(r.meanBytesPerS, 175);
+  assert.deepStrictEqual(r.invalid, []);
 });
 
 test("bandwidthStats ignores tMs of non-bytes events", () => {
@@ -90,10 +111,10 @@ test("bandwidthStats ignores tMs of non-bytes events", () => {
   assert.strictEqual(bandwidthStats(ev, 10).totalBytes, 0);
 });
 
-test("bandwidthStats rejects tMs beyond durationS*1000, accepts exactly durationS*1000", () => {
+test("bandwidthStats flags tMs beyond durationS*1000, accepts exactly durationS*1000", () => {
   const at = (t) => [{ id: 0, tMs: t, kind: "bytes", bytes: 10, latencyMs: 1 }];
-  assert.throws(() => bandwidthStats(at(10001), 10), RangeError);
-  assert.throws(() => bandwidthStats(at(10000.5), 10), RangeError);
+  assert.deepStrictEqual(bandwidthStats(at(10001), 10).invalid, [0]);
+  assert.deepStrictEqual(bandwidthStats(at(10000.5), 10).invalid, [0]);
   assert.strictEqual(bandwidthStats(at(10000), 10).totalBytes, 10);
 });
 

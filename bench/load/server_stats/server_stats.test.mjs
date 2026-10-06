@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createStatsSampler, checkServerSamples } from './index.mjs';
 import { runScenario } from '../run_all/run.mjs';
 
-const L = { source: 'simulated', clock: 'simulated' };
+const L = { source: 'simulated', clock: 'simulated', cpuSource: 'measured' };
 function fake() {
   const st = { t: 0, user: 0, system: 0, rss: 104857600 };
   return {
@@ -90,11 +90,13 @@ test('F-530: NaN cpu gives violations from checkServerSamples and runScenario', 
   const { st, s } = fake();
   const bad = createStatsSampler({ cpuUsage: () => ({ user: NaN, system: 0 }), now: () => st.t, clock: 'simulated' });
   st.t = 1000; bad.tick();
-  assert.ok(checkServerSamples(bad.samples()).length >= 1);
+  assert.deepEqual(checkServerSamples(bad.samples()), ['server sample 0: cpuPct is not finite (NaN)']);
   assert.deepEqual(checkServerSamples(s.samples()), []);
-  assert.ok(checkServerSamples([{ tS: 1, cpuPct: 1, rssMiB: 1 }]).length >= 2);
+  assert.deepEqual(checkServerSamples([{ tS: 1, cpuPct: 1, rssMiB: 1 }]), [
+    'server sample 0: missing source', 'server sample 0: missing clock', 'server sample 0: bad cpuSource',
+  ]);
   const steady = { name: 'steady30', kind: 'steady', clients: 30, durationS: 60, path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 30, e: 150, n: 0, u: 100 }] };
-  const { violations } = runScenario(steady, { commit: 'abcdef1', statsClock: { cpuUsage: () => ({ user: NaN, system: 0 }) } });
+  const { violations } = runScenario(steady, { commit: 'abcdef1', statsClock: { cpuUsage: () => ({ user: NaN, system: 0 }), now: (() => { let t = 0; return () => (t += 1000); })() } });
   assert.ok(violations.some((v) => v.startsWith('steady30: server sample') && /not finite/.test(v)));
   assert.deepEqual(runScenario(steady, { commit: 'abcdef1' }).violations, []);
 });
@@ -118,4 +120,57 @@ test('F-537: 모의 시계 표본은 source harness-process 로 라벨되지 않
   const steady = { name: 'steady30', kind: 'steady', clients: 30, durationS: 3, path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 3, e: 15, n: 0, u: 100 }] };
   const { serverSamples } = runScenario(steady, { commit: 'abcdef1' });
   assert.deepEqual(serverSamples.map((x) => [x.source, x.clock]), [['simulated', 'simulated'], ['simulated', 'simulated'], ['simulated', 'simulated']]);
+});
+
+const OK = { cpuPct: 1, rssMiB: 10, source: 's', clock: 'simulated', cpuSource: 'measured' };
+const mk = (nowSeq, extra = {}) => {
+  let i = 0;
+  return createStatsSampler({ cpuUsage: () => ({ user: 0, system: 0 }), memoryUsage: () => ({ rss: 104857600 }), now: () => nowSeq[Math.min(i++, nowSeq.length - 1)], clock: 'simulated', ...extra });
+};
+
+test('F-538: non-finite elapsed time skips the tick (Infinity)', () => {
+  const s = mk([0, Infinity]);
+  s.tick();
+  assert.deepEqual(s.samples(), []);
+});
+
+test('F-538: NaN now is skipped, finite ticks are recorded, no non-finite tS', () => {
+  const s = mk([0, 1000, NaN, 2000]);
+  s.tick(); s.tick(); s.tick();
+  assert.deepEqual(s.samples().map((x) => x.tS), [1, 2]);
+});
+
+test('F-538: cpuStub gives cpuPct null and cpuSource stub, even with real cpuUsage injected', () => {
+  const s = mk([0, 1000], { cpuStub: true });
+  s.tick();
+  assert.deepEqual(s.samples(), [{ tS: 1, cpuPct: null, rssMiB: 100, source: 'simulated', clock: 'simulated', cpuSource: 'stub' }]);
+  assert.deepEqual(checkServerSamples(s.samples()), []);
+});
+
+test('F-538: checkServerSamples negative cpuPct', () => {
+  assert.deepEqual(checkServerSamples([{ ...OK, cpuPct: -5, tS: 1 }]), ['server sample 0: cpuPct is negative (-5)']);
+  assert.deepEqual(checkServerSamples([{ ...OK, rssMiB: -2, tS: 1 }]), ['server sample 0: rssMiB is negative (-2)']);
+});
+
+test('F-538: checkServerSamples does not throw on bad input', () => {
+  assert.deepEqual(checkServerSamples([null]), ['server sample 0: not an object']);
+  assert.deepEqual(checkServerSamples([undefined]), ['server sample 0: not an object']);
+  assert.deepEqual(checkServerSamples(null), ['server samples: not an array']);
+  assert.deepEqual(checkServerSamples(undefined), ['server samples: not an array']);
+  assert.deepEqual(checkServerSamples([5]), ['server sample 0: not an object']);
+});
+
+test('F-538: tS must be finite, non-negative, strictly increasing', () => {
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 2 }, { ...OK, tS: 1 }]), ['server sample 1: tS not increasing']);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1 }, { ...OK, tS: 1 }]), ['server sample 1: tS not increasing']);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: Infinity }]), ['server sample 0: tS is not finite (Infinity)']);
+  assert.deepEqual(checkServerSamples([{ ...OK }]), ['server sample 0: tS is not finite (undefined)']);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: -1 }]), ['server sample 0: tS is negative (-1)']);
+});
+
+test('F-538: stub vs measured cpuPct null handling', () => {
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, cpuPct: null, cpuSource: 'stub' }]), []);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, cpuPct: null, cpuSource: 'measured' }]), ['server sample 0: cpuPct is not finite (null)']);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, cpuPct: 3, cpuSource: 'stub' }]), ['server sample 0: cpuPct must be null for stub (3)']);
+  assert.deepEqual(checkServerSamples([{ ...OK, tS: 1, cpuSource: 'x' }]), ['server sample 0: bad cpuSource']);
 });
