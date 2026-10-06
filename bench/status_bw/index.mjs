@@ -15,15 +15,15 @@ import { generate as generateLevels, levelCloud } from '../../fixtures/scenes/le
 import { encodeMessage } from '../../server/proto/codec/index.mjs';
 import { encodeFrame, OPCODES } from '../../server/ws/frame/index.mjs';
 import { encodeChunk } from '../../server/codec/chunk/index.mjs';
-import { createSpatialThinner, fitSegmentBudget } from '../../server/scheduler/segment_budget/index.mjs';
+import { createSpatialThinner, fitSegmentBudget, makeFloorAllocate, S6_LOW_LEVEL_FLOOR } from '../../server/scheduler/segment_budget/index.mjs';
 import { packCloudPieces } from '../proto/measure.mjs';
 import { INITIAL_BUDGET_BYTES, SEGMENT_BUDGET_BYTES } from '../proto/index.mjs';
 
 // S6 문턱(10^6 B 기준). bench/proto 의 고정 상수를 그대로 쓴다.
 export const STATUS_BW_LIMITS = Object.freeze({ initialBytes: INITIAL_BUDGET_BYTES, perSegmentBytes: SEGMENT_BUDGET_BYTES });
 
-// S6 송출 구성(결정 0043): codec 1 + 구간 바이트 예산(S6 구간당 문턱 그대로) 안에서 공간 균일 솎기.
-export const S6_SEND_CONFIG = Object.freeze({ codec: 1, segmentByteBudget: SEGMENT_BUDGET_BYTES });
+// S6 송출 구성(결정 0043·0050): codec 1 + 구간 바이트 예산(S6 구간당 문턱 그대로) 안에서 공간 균일 솎기, 낮은 수준은 원본의 2% 만 보장하고 나머지는 최고 수준에 준다.
+export const S6_SEND_CONFIG = Object.freeze({ codec: 1, segmentByteBudget: SEGMENT_BUDGET_BYTES, allocate: makeFloorAllocate(S6_LOW_LEVEL_FLOOR) });
 
 const frameLen = (msg) => encodeFrame(OPCODES.BINARY, encodeMessage(msg)).length;
 

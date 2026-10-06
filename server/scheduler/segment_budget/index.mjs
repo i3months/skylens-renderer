@@ -88,6 +88,42 @@ export function levelPointTargets(counts, total) {
 }
 
 /**
+ * 수준별 점 배분(T13.T, 결정 0050): 최고 수준(마지막)을 뺀 낮은 수준은 원본의 frac 만 보장하고 남는 예산을 최고 수준에 준다.
+ * 정상 상태에 보이는 수준이 최고 수준이라 화질(8시점 SSIM)에 유리하다. 최고 수준이 원본에 닿으면 남는 예산은 낮은 수준에 돌린다.
+ * @param {number|number[]} frac  낮은 수준 보장 비율(수) 또는 수준별 비율(길이 = 수준 수 - 1)
+ * @returns {(counts:number[], total:number) => number[]}
+ */
+export function makeFloorAllocate(frac) {
+  return (counts, total) => {
+    if (!Array.isArray(counts) || counts.length < 1 || !counts.every((c) => Number.isInteger(c) && c >= 1)) throw new RangeError('counts 는 1 이상 정수 배열');
+    if (!Number.isInteger(total) || total < counts.length) throw new RangeError(`total 은 수준 수 이상 정수: ${total}`);
+    const n = counts.length;
+    const sum = counts.reduce((s, c) => s + c, 0);
+    if (total >= sum) return counts.slice();
+    const top = n - 1;
+    const f = (i) => (Array.isArray(frac) ? frac[i] ?? frac[frac.length - 1] : frac);
+    const out = counts.map((c, i) => (i === top ? 1 : Math.min(c, Math.max(1, Math.floor(c * f(i))))));
+    // 보장 합이 total 을 넘으면 비례로 줄인다(최소 1).
+    let low = out.slice(0, top).reduce((s, t) => s + t, 0);
+    if (low + 1 > total) {
+      const room = Math.max(0, total - 1);
+      for (let i = 0; i < top; i++) out[i] = Math.max(1, Math.floor((out[i] * room) / low));
+      low = out.slice(0, top).reduce((s, t) => s + t, 0);
+      let ex = low + 1 - total;
+      for (let i = top - 1; i >= 0 && ex > 0; i--) { const c = Math.min(ex, out[i] - 1); out[i] -= c; ex -= c; }
+    }
+    out[top] = Math.min(counts[top], total - out.slice(0, top).reduce((s, t) => s + t, 0));
+    // 최고 수준이 원본에 닿아 남은 예산은 낮은 수준에 빈 만큼 채운다(낮은 수준 큰 쪽부터 아닌 낮은 번호부터).
+    let rest = total - out.reduce((s, t) => s + t, 0);
+    for (let i = 0; i < top && rest > 0; i++) { const add = Math.min(rest, counts[i] - out[i]); out[i] += add; rest -= add; }
+    return out;
+  };
+}
+
+// S6 송출 구성의 낮은 수준 보장 비율(결정 0050): 수준 0..2 는 원본의 2%(250만 점 구간에서 6,250 / 12,500 / 25,000 점).
+export const S6_LOW_LEVEL_FLOOR = 0.02;
+
+/**
  * 구간 송출 바이트가 maxBytes 이하가 되는 가장 큰(찾은 범위에서) 점 예산을 고른다.
  * measure(targets) 는 수준별 점 수 targets 로 실제 송출 경로를 돌려 구간 바이트 합(정수)을 돌려줘야 한다.
  * 절차: 원본 그대로가 맞으면 끝. 아니면 초기 추정 점 예산에서 시작해 실제 바이트 비로 예산을 고치고(안전 계수 safety),
