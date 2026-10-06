@@ -1,5 +1,7 @@
 // 구간 송출 바이트 예산(T13.B, SPEC S6 구간당 ≤ 3 MB). 새로 작성한 코드이며 외부 코드를 차용하지 않았다.
 //
+// (이 머리 주석의 배분·솎기 설명은 기본값 기준이다. S6 송출 구성은 낮은 수준 2% 보장 + 블루노이즈이며 결정 0065 를 본다.)
+//
 // 한 구간의 4수준 송출 바이트 합이 maxBytes 를 넘으면 수준마다 원본 점의 부분집합만 보낸다(점 예산).
 //   - 점을 새로 만들거나 옮기거나 메우지 않는다. 고른 점의 위치·법선·색은 원본 그대로다(RULES §1.2, renderer_basis §7-3).
 //   - 수준 사이 관계를 가정하지 않는다: 각 수준은 자기 점군에서 따로 고른다(낮은 수준이 높은 수준의 부분집합일 필요 없음).
@@ -88,13 +90,59 @@ export function levelPointTargets(counts, total) {
 }
 
 /**
+ * 수준별 점 배분(T13.T, 결정 0065): 최고 수준(마지막)을 뺀 낮은 수준은 원본의 frac 만 보장하고 남는 예산을 최고 수준에 준다.
+ * 정상 상태에 보이는 수준이 최고 수준이라 화질(8시점 SSIM)에 유리하다. 최고 수준이 원본에 닿으면 남는 예산은 낮은 수준에 돌린다.
+ * total 이 낮은 수준 보장 합 + 1 보다 작으면 낮은 수준을 비례로 줄이고 최고 수준은 1 점으로 둔다(의도된 퇴화 구간, 근거는 본문 주석).
+ * 결과는 total 에 대해 수준마다 줄지 않고(단조), 각 수준 ≥ 1·원본 이하, 합 ≤ total 이다.
+ * @param {number|number[]} frac  낮은 수준 보장 비율(수) 또는 수준별 비율(길이 = 수준 수 - 1)
+ * @returns {(counts:number[], total:number) => number[]}
+ */
+export function makeFloorAllocate(frac) {
+  const fr = Array.isArray(frac) ? frac : [frac];
+  if (fr.length < 1 || !fr.every((x) => Number.isFinite(x) && x >= 0 && x <= 1)) throw new RangeError('frac 는 [0, 1] 유한수 또는 그 배열(길이 1 이상)');
+  return (counts, total) => {
+    if (!Array.isArray(counts) || counts.length < 1 || !counts.every((c) => Number.isInteger(c) && c >= 1)) throw new RangeError('counts 는 1 이상 정수 배열');
+    if (!Number.isInteger(total) || total < counts.length) throw new RangeError(`total 은 수준 수 이상 정수: ${total}`);
+    const n = counts.length;
+    const sum = counts.reduce((s, c) => s + c, 0);
+    if (total >= sum) return counts.slice();
+    const top = n - 1;
+    const f = (i) => (Array.isArray(frac) ? frac[i] ?? frac[frac.length - 1] : frac);
+    const out = counts.map((c, i) => (i === top ? 1 : Math.min(c, Math.max(1, Math.floor(c * f(i))))));
+    // 보장 합 + 최고 수준 1 점이 total 을 넘는 구간(S6 counts 에서 total ≤ 43,750)은 보장 비율을 지킬 수 없다. 의도한 처리:
+    // 최고 수준은 1 점으로 두고 낮은 수준을 비례로 줄인다(최소 1). 내림으로 남는 몇 점은 쓰지 않는다(합 ≤ total).
+    // 남는 점을 최고 수준이나 특정 낮은 수준에 몰아주면 total 이 늘 때 그 수준의 점 수가 줄었다 늘어 단조가 아니게 되기 때문이다.
+    // 이렇게 하면 total 이 늘 때 어느 수준의 점 수도 줄지 않는다.
+    let low = out.slice(0, top).reduce((s, t) => s + t, 0);
+    if (low + 1 > total) {
+      const guarantee = out.slice(0, top);
+      const room = Math.max(0, total - 1);
+      for (let i = 0; i < top; i++) out[i] = Math.max(1, Math.floor((guarantee[i] * room) / low));
+      low = out.slice(0, top).reduce((s, t) => s + t, 0);
+      let ex = low + 1 - total;
+      for (let i = top - 1; i >= 0 && ex > 0; i--) { const c = Math.min(ex, out[i] - 1); out[i] -= c; ex -= c; }
+      return out;
+    }
+    out[top] = Math.min(counts[top], total - low);
+    // 최고 수준이 원본에 닿아 남은 예산은 낮은 수준에 빈 만큼 채운다(낮은 번호부터).
+    let rest = total - out.reduce((s, t) => s + t, 0);
+    for (let i = 0; i < top && rest > 0; i++) { const add = Math.min(rest, counts[i] - out[i]); out[i] += add; rest -= add; }
+    return out;
+  };
+}
+
+// S6 송출 구성의 낮은 수준 보장 비율(결정 0065): 수준 0..2 는 원본의 2%(250만 점 구간에서 6,250 / 12,500 / 25,000 점).
+export const S6_LOW_LEVEL_FLOOR = 0.02;
+
+/**
  * 구간 송출 바이트가 maxBytes 이하가 되는 가장 큰(찾은 범위에서) 점 예산을 고른다.
  * measure(targets) 는 수준별 점 수 targets 로 실제 송출 경로를 돌려 구간 바이트 합(정수)을 돌려줘야 한다.
  * 절차: 원본 그대로가 맞으면 끝. 아니면 초기 추정 점 예산에서 시작해 실제 바이트 비로 예산을 고치고(안전 계수 safety),
  *       maxBytes 이하이면서 tolerance 안(≥ (1-tolerance)·maxBytes)이면 멈춘다. maxIter 안에 못 맞추면 그때까지 맞은 것 중
  *       가장 큰 예산을 쓰고, 맞은 것이 하나도 없으면 예산을 줄여 가며 맞을 때까지 잰다.
  * @param {{counts:number[], maxBytes:number, measure:(targets:number[]) => number,
- *   bytesPerPointGuess?:number, safety?:number, tolerance?:number, maxIter?:number}} opts
+ *   bytesPerPointGuess?:number, safety?:number, tolerance?:number, maxIter?:number,
+ *   allocate?:(counts:number[], total:number) => number[]}} opts  allocate 는 구간 점 예산을 수준별로 나누는 함수(기본 levelPointTargets)
  * @returns {{budgetPoints:number, targets:number[], bytes:number, thinned:boolean, tries:{points:number, bytes:number}[]}}
  */
 export function fitSegmentBudget(opts) {
@@ -113,7 +161,7 @@ export function fitSegmentBudget(opts) {
   const sum = counts.reduce((s, c) => s + c, 0);
   const tries = [];
   const run = (points) => {
-    const targets = levelPointTargets(counts, points);
+    const targets = (opts.allocate ?? levelPointTargets)(counts, points);
     const bytes = measure(targets);
     if (!Number.isInteger(bytes) || bytes < 0) throw new TypeError(`measure 는 0 이상 정수를 돌려줘야 한다: ${bytes}`);
     tries.push({ points, bytes });

@@ -1,0 +1,200 @@
+// 후보 9(푸아송 원반 근사 솎기) 시험: 결정성·부분집합·색인 범위·모턴 순·k ≥ n 처리·최소 거리.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createBlueNoiseThinner, createThinner } from './blue_noise_thinner.mjs';
+import { createSpatialThinner } from './index.mjs';
+
+function scene(n, seed = 7) {
+  const p = new Float32Array(3 * n);
+  let s = seed;
+  const rnd = () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
+  for (let i = 0; i < n; i++) {
+    if (i % 4 === 0) { p[3 * i] = 10 * rnd(); p[3 * i + 1] = 5 * rnd(); p[3 * i + 2] = 10; } // 벽
+    else { p[3 * i] = 50 * rnd(); p[3 * i + 1] = 0; p[3 * i + 2] = 50 * rnd(); } // 바닥
+  }
+  return p;
+}
+
+function minDist(p, sel) {
+  let best = Infinity;
+  for (let a = 0; a < sel.length; a++) for (let b = a + 1; b < sel.length; b++) {
+    const i = sel[a], j = sel[b];
+    const d = Math.hypot(p[3 * i] - p[3 * j], p[3 * i + 1] - p[3 * j + 1], p[3 * i + 2] - p[3 * j + 2]);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+test('결정성: 같은 입력·같은 k 는 요청 순서와 무관하게 같은 결과', () => {
+  const p = scene(20000);
+  const a = createThinner(p);
+  const b = createThinner(p);
+  const ka = [3000, 500, 7000].map((k) => a.select(k));
+  const kb = [7000, 3000, 500].map((k) => b.select(k));
+  assert.deepEqual(ka[0], kb[1]);
+  assert.deepEqual(ka[1], kb[2]);
+  assert.deepEqual(ka[2], kb[0]);
+  assert.deepEqual(a.select(3000), ka[0]);
+});
+
+test('부분집합·색인 범위·중복 없음·정확히 k 개·모턴 순', () => {
+  const n = 20000;
+  const p = scene(n);
+  const t = createBlueNoiseThinner(p);
+  const rank = new Uint32Array(n);
+  createSpatialThinner(p).select(n).forEach((s, r) => { rank[s] = r; });
+  for (const k of [1, 2, 37, 1000, 2600, 9999, 19999]) {
+    const sel = t.select(k);
+    assert.ok(sel instanceof Uint32Array);
+    assert.equal(sel.length, k);
+    const seen = new Uint8Array(n);
+    for (let j = 0; j < k; j++) {
+      assert.ok(sel[j] < n);
+      assert.equal(seen[sel[j]], 0);
+      seen[sel[j]] = 1;
+      if (j > 0) assert.ok(rank[sel[j - 1]] < rank[sel[j]]);
+    }
+  }
+});
+
+test('k ≥ n 이면 전부(모턴 순), k = 0 이면 빈 배열, 잘못된 k 는 RangeError', () => {
+  const p = scene(500);
+  const t = createThinner(p);
+  const all = createSpatialThinner(p).select(500);
+  assert.deepEqual(t.select(500), all);
+  assert.deepEqual(t.select(10000), all);
+  assert.equal(t.select(0).length, 0);
+  assert.throws(() => t.select(-1), RangeError);
+  assert.throws(() => t.select(1.5), RangeError);
+  assert.throws(() => createThinner(new Float32Array(4)), TypeError);
+});
+
+test('같은 점·한 점·퇴화 입력도 k 개를 돌려준다', () => {
+  const same = new Float32Array(300).fill(1.25);
+  const t = createThinner(same);
+  assert.equal(t.select(40).length, 40);
+  assert.equal(createThinner(new Float32Array([1, 2, 3])).select(1).length, 1);
+  const dup = scene(2000);
+  const twice = new Float32Array(2 * dup.length);
+  twice.set(dup); twice.set(dup, dup.length);
+  assert.equal(new Set(createThinner(twice).select(3500)).size, 3500);
+});
+
+// 칸 경계에 걸친 점이 많은 장면: 패스 반경 r_i 의 칸 경계 평면(x = m·r_i, 칸 좌표는 최소점 기준) 양쪽에 점을 몰아 둔다.
+// 첫 반경은 span·n 만으로 정해지므로 같은 n·span 의 탐침 장면에서 반경을 미리 읽을 수 있다(모서리 두 점으로 span 고정).
+function straddleScene(n) {
+  const base = scene(n);
+  base.set([0, 0, 0, 50, 0, 50], 0);
+  const radii = (() => { const t = createThinner(base); t.select(3000); return t.stats().radii.slice(0, 4); })();
+  const p = new Float32Array(3 * n);
+  p.set([0, 0, 0, 50, 0, 50], 0);
+  let s = 99;
+  const rnd = () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
+  for (let i = 2; i < n; i++) {
+    const r = radii[i % radii.length];
+    const m = 1 + Math.floor(rnd() * Math.floor(49 / r));
+    p[3 * i] = m * r + (rnd() - 0.5) * 0.4 * r; // 경계 양쪽 0.2r 안
+    p[3 * i + 2] = 50 * rnd();
+  }
+  return p;
+}
+
+// 가장 가까운 두 점의 거리(x 정렬 뒤 쓸기, 현재 최소보다 x 가 멀어지면 중단).
+function minDistFast(p, sel) {
+  const ids = Array.from(sel).sort((a, b) => p[3 * a] - p[3 * b]);
+  let best = Infinity;
+  for (let a = 0; a < ids.length; a++) {
+    for (let b = a + 1; b < ids.length; b++) {
+      const dx = p[3 * ids[b]] - p[3 * ids[a]];
+      if (dx >= best) break;
+      const d = Math.hypot(dx, p[3 * ids[b] + 1] - p[3 * ids[a] + 1], p[3 * ids[b] + 2] - p[3 * ids[a] + 2]);
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
+
+// (a) 불변식: 패스 i 의 수락점은 앞 패스 점을 포함한 모든 수락점과 r_i 이상 떨어진다.
+//   - k 가 패스 끝 누적 수 passEnd[j] 와 같으면 출력은 패스 0..j 전체이므로 최소 거리 ≥ radii[j].
+//   - 그 밖의 k 는 출력의 모든 점이 반경 radii[p](p = k 를 처음 넘는 패스) 이상으로 수락됐으므로 최소 거리 ≥ radii[p].
+// 부동소수 오차 허용 eps 는 좌표 범위(span)의 1e-9 배(float64 연산 반올림 규모)로만 잡는다.
+for (const [name, make] of [['무작위 장면', () => scene(20000)], ['칸 경계 장면', () => straddleScene(20000)]]) {
+  test(`최소 거리 불변식 (${name}): 완결 패스와 임의 k 에서 거리 ≥ 그 패스 반경 − eps`, () => {
+    const p = make();
+    const t = createThinner(p);
+    const eps = 1e-9 * 50;
+    for (const k of [800, 3000]) {
+      t.select(k);
+      const { radii, passEnd } = t.stats();
+      let q = 0;
+      while (passEnd[q] < k) q++;
+      assert.ok(radii[q] > 0);
+      const d = minDistFast(p, t.select(k));
+      assert.ok(d >= radii[q] - eps, `k=${k} 최소 거리 ${d} < 반경 ${radii[q]}`);
+    }
+    const { radii, passEnd } = t.stats();
+    assert.ok(passEnd.length >= 2, '완결 패스가 둘 이상이어야 의미가 있다');
+    for (let j = 0; j < passEnd.length && passEnd[j] < 20000; j++) {
+      const d = minDistFast(p, t.select(passEnd[j]));
+      assert.ok(d >= radii[j] - eps, `패스 ${j} (k=${passEnd[j]}) 최소 거리 ${d} < 반경 ${radii[j]}`);
+    }
+  });
+}
+
+// (b) 마지막 패스를 일부만 뽑을 때의 공간 고름.
+//   방문 순서는 모턴 순을 BLOCK 점 블록으로 나눠 블록 안에서만 섞은 것이므로, 패스 p 의 수락 순서는 모턴 블록 b 의 수락점 c_b 개가
+//   연속 구간을 이룬다. 등간격 추출(위치 floor((j+0.5)·len/want))은 길이 c_b 의 정수 구간에서 want·c_b/len 개 ± 1 미만을 고른다.
+//   그래서 블록마다 |고른 수 − want·c_b/len| ≤ 1 이어야 한다. 앞에서부터 추출하면 뒤 블록이 0 개라 이 한도를 깬다.
+const BLOCK = 4096; // blue_noise_thinner.mjs 의 방문 블록 크기와 같아야 한다
+test('마지막 패스 부분 추출은 모턴 블록마다 비율대로(등간격) 고른다', () => {
+  const n = 40000;
+  const p = scene(n);
+  const t = createThinner(p);
+  const rank = new Uint32Array(n);
+  createSpatialThinner(p).select(n).forEach((s, r) => { rank[s] = r; });
+  t.select(Math.floor(0.6 * n));
+  const { passEnd } = t.stats();
+  let checked = 0;
+  for (let q = 1; q < passEnd.length; q++) {
+    const start = passEnd[q - 1];
+    const len = passEnd[q] - start;
+    if (len < 8) continue;
+    const prev = new Set(t.select(start));
+    const full = t.select(passEnd[q]);
+    const cnt = new Float64Array(Math.ceil(n / BLOCK));
+    for (const s of full) if (!prev.has(s)) cnt[Math.floor(rank[s] / BLOCK)]++;
+    for (const f of [0.3, 0.5, 0.8]) {
+      const want = Math.round(f * len);
+      const picked = new Float64Array(cnt.length);
+      for (const s of t.select(start + want)) if (!prev.has(s)) picked[Math.floor(rank[s] / BLOCK)]++;
+      for (let b = 0; b < cnt.length; b++) {
+        const expect = (want * cnt[b]) / len;
+        assert.ok(Math.abs(picked[b] - expect) <= 1, `패스 ${q} want=${want}/${len} 블록 ${b}: 고른 ${picked[b]} 기대 ${expect}`);
+      }
+      checked++;
+    }
+  }
+  assert.ok(checked >= 3);
+});
+
+// (c) 캐시 적중 사본: 같은 k 를 두 번 받아 두 번째를 고친 뒤 세 번째가 첫 번째와 같아야 한다.
+test('캐시 적중 사본: 두 번째 결과를 고쳐도 세 번째는 첫 번째와 같다', () => {
+  const t = createThinner(scene(5000));
+  const first = t.select(700);
+  const second = t.select(700);
+  const keep = first.slice();
+  second.fill(0);
+  const third = t.select(700);
+  assert.deepEqual(third, keep);
+  assert.deepEqual(third, first);
+  assert.notStrictEqual(third, second);
+});
+
+test('출력 사본: 돌려받은 배열을 고쳐도 다음 결과가 바뀌지 않는다', () => {
+  const p = scene(3000);
+  const t = createThinner(p);
+  const a = t.select(400);
+  const copy = a.slice();
+  a.fill(0);
+  assert.deepEqual(t.select(400), copy);
+});
