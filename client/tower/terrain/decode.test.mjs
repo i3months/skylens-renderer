@@ -78,7 +78,7 @@ test('골든 바이트(양자화, 음수 kbase): kbase=-3, step=fround(0.03) →
   assert.deepEqual(Array.from(decodeTerrainTileH32(bytes).heights), [-0.08999999612569809, -0.05999999865889549, -0.05999999865889549, 1965.9599609375]);
 });
 
-test('음성(F-496 ①): lod 0 + 양자화 flag, f32 본문 NaN·Inf, 복원값 비유한은 RangeError', () => {
+test('음성(F-496 ①): lod 0 + 양자화 flag, f32 본문 NaN·Inf 던짐. 복원값 검사는 도달 불가 방어 코드(계약 step 검사 후)', () => {
   assert.throws(() => decodeTerrainTileH32(assemble({ flags: 1, lod: 0, cells: 2, base: 0, step: Math.fround(TERRAIN_H32_STEP_M), q: [0, 1, 2, 3] })), RangeError);
   assert.throws(() => decodeTerrainTileH32(assemble({ lod: 0, cells: 2, heights: f32([0, NaN, 1, 2]) })), RangeError);
   assert.throws(() => decodeTerrainTileH32(assemble({ lod: 2, cells: 2, heights: f32([0, 1, Infinity, 2]) })), RangeError);
