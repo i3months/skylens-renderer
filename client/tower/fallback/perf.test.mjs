@@ -3,7 +3,7 @@
 // 같은 프로세스의 기준 연산(setView frame) 대비 비율 상한, 맞춤 순회 몫(자동 − setView frame)이 독립 기준 순회의 FIT_SHARE_RATIO 배 이하,
 // 결과 개수가 입력과 같다(결정적), 자동 맞춤이 점마다 배열을 만들지 않는다(push 호출 0), 옛 구현과 결과가 같다,
 // 맞춤 순회가 저장소 points 배열을 점당 1회 읽는다(시간이 아니라 접근 횟수 계수. 배열 읽기·좌표 읽기·setView frame 읽기를 센다).
-// 시간은 벽시계가 아니라 이 프로세스의 CPU 시간으로 잰다: 시험이 동시에 여러 개 돌아 CPU 를 나눠 써도 흔들리지 않는다.
+// 시간은 벽시계가 아니라 이 스레드의 CPU 시간(threadCpuUsage, 없으면 프로세스 cpuUsage)으로 잰다: 시험이 동시에 여러 개 돌아 CPU 를 나눠 써도 흔들리지 않는다.
 // 상한을 측정에 맞춰 낮추지 않는다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
