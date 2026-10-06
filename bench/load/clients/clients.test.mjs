@@ -161,7 +161,7 @@ function referenceDraws(scenario, seed) {
   return out;
 }
 
-test('bytes latencyMs equals arrival minus request time (burst sharing and pushes included)', () => {
+test('bytes latencyMs equals arrival minus request time (burst group sharing included)', () => {
   for (const sc of [steady(30, 60), burst30, { ...burst30, burstLevels: 2 }]) {
     for (const seed of [1, 2, 3, 11, 42]) {
       const ref = referenceDraws(sc, seed);
