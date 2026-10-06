@@ -38,7 +38,9 @@ export function createStatsSampler({
       if (c === null || typeof c !== 'object' || m === null || typeof m !== 'object') return;
       // No usable CPU baseline yet (the creation-time cpuUsage returned null/undefined): this reading becomes
       // the baseline and the tick is skipped, since there is nothing to measure CPU time against.
-      if (prevCpu === null || typeof prevCpu !== 'object') { prevT = t; prevCpu = c; return; }
+      // Non-numeric cpu/rss fields (e.g. memoryUsage() => {}): skip the tick like a null source, keep the baseline.
+      if (typeof c.user !== 'number' || typeof c.system !== 'number' || typeof m.rss !== 'number') return;
+      if (prevCpu === null || typeof prevCpu !== 'object' || typeof prevCpu.user !== 'number' || typeof prevCpu.system !== 'number') { prevT = t; prevCpu = c; return; }
       const cpuUs = (c.user - prevCpu.user) + (c.system - prevCpu.system);
       const rssMiB = Math.round((m.rss / 1048576) * 100) / 100;
       const cpuPct = cpuStub ? null : (cpuUs / wallUs) * 100;
