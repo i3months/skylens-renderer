@@ -46,7 +46,8 @@ test('부분집합·색인 범위·중복 없음·정확히 k 개·모턴 순', 
   for (const k of [1, 2, 37, 1000, 2600, 9999, 19999]) {
     const sel = t.select(k);
     assert.ok(sel instanceof Uint32Array);
-    assert.equal(sel.length, k);
+    assert.equal(new Set(sel).size, k, `k=${k} 중복 색인`); // 길이는 new Uint32Array(k) 라 항상 k 이므로 서로 다른 색인 수로 본다
+    for (const s of sel) assert.ok(s < n, `k=${k} 범위 밖 색인 ${s}`);
     const seen = new Uint8Array(n);
     for (let j = 0; j < k; j++) {
       assert.ok(sel[j] < n);
@@ -72,8 +73,9 @@ test('k ≥ n 이면 전부(모턴 순), k = 0 이면 빈 배열, 잘못된 k �
 test('같은 점·한 점·퇴화 입력도 k 개를 돌려준다', () => {
   const same = new Float32Array(300).fill(1.25);
   const t = createThinner(same);
-  assert.equal(t.select(40).length, 40);
-  assert.equal(createThinner(new Float32Array([1, 2, 3])).select(1).length, 1);
+  assert.equal(new Set(t.select(40)).size, 40);
+  assert.ok(t.select(40).every((s) => s < 100));
+  assert.deepEqual([...createThinner(new Float32Array([1, 2, 3])).select(1)], [0]);
   const dup = scene(2000);
   const twice = new Float32Array(2 * dup.length);
   twice.set(dup); twice.set(dup, dup.length);
@@ -82,6 +84,7 @@ test('같은 점·한 점·퇴화 입력도 k 개를 돌려준다', () => {
 
 // 칸 경계에 걸친 점이 많은 장면: 패스 반경 r_i 의 칸 경계 평면(x = m·r_i, 칸 좌표는 최소점 기준) 양쪽에 점을 몰아 둔다.
 // 첫 반경은 span·n 만으로 정해지므로 같은 n·span 의 탐침 장면에서 반경을 미리 읽을 수 있다(모서리 두 점으로 span 고정).
+// 이 전제는 아래 '첫 반경은 span·n 만으로 정해진다' 시험이 단언한다.
 function straddleScene(n) {
   const base = scene(n);
   base.set([0, 0, 0, 50, 0, 50], 0);
@@ -98,6 +101,19 @@ function straddleScene(n) {
   }
   return p;
 }
+
+test('첫 반경은 span·n 만으로 정해진다: 점 배치가 달라도 같다', () => {
+  const n = 20000;
+  const a = scene(n, 7);
+  const b = scene(n, 123);
+  const c = straddleScene(n);
+  for (const q of [a, b, c]) q.set([0, 0, 0, 50, 0, 50], 0); // 모서리 두 점으로 span 고정
+  const first = (p) => { const t = createThinner(p); t.select(3000); return t.stats().radii[0]; };
+  const r = first(a);
+  assert.ok(r > 0);
+  assert.equal(first(b), r);
+  assert.equal(first(c), r);
+});
 
 // 가장 가까운 두 점의 거리(x 정렬 뒤 쓸기, 현재 최소보다 x 가 멀어지면 중단).
 function minDistFast(p, sel) {

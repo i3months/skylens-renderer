@@ -232,7 +232,7 @@ export function createBlueNoiseThinner(positions, _attrs, opts = {}) {
   const cache = new Map();
   return {
     count: n,
-    stats: () => ({ passes: radii.length, radii: radii.slice(), passEnd: passEnd.slice() }),
+    stats: () => ({ passes: radii.length, radii: radii.slice(), passEnd: passEnd.slice(), cacheSize: cache.size }),
     select(k) {
       if (!Number.isInteger(k) || k < 0) throw new RangeError(`k 는 0 이상 정수: ${k}`);
       prepare();

@@ -26,6 +26,12 @@ function cube(m) {
   return p;
 }
 
+/** 색인 배열이 정확히 k 개의 서로 다른 색인이며 모두 [0, n) 범위인지(길이는 구조상 항상 k 라 의미가 없다). */
+function assertDistinctInRange(sel, k, n) {
+  assert.equal(new Set(sel).size, k, '중복 색인');
+  for (const s of sel) assert.ok(Number.isInteger(s) && s >= 0 && s < n, `범위 밖 색인 ${s}`);
+}
+
 /** 고른 점 가운데 4-이웃(상하좌우) 중 하나라도 같이 고른 점의 비율. */
 function fourNeighborRatio(sel, w, h) {
   const on = new Uint8Array(w * h);
@@ -38,7 +44,7 @@ function fourNeighborRatio(sel, w, h) {
   return c / sel.length;
 }
 
-test('1 cm 평면 400×400: 수락 0 패스에서 남은 점을 쏟지 않고, select(40000) 의 4-이웃 비율 < 10%', () => {
+test('1 cm 평면 400×400: 수락 0 패스에서 남은 점을 쏟지 않고, select(40000) 에 4-이웃 쌍이 없다(반경 > 간격)', () => {
   const w = 400, h = 400, n = w * h;
   const t = createBlueNoiseThinner(plane(w, h));
   const sel = t.select(40000);
@@ -50,8 +56,11 @@ test('1 cm 평면 400×400: 수락 0 패스에서 남은 점을 쏟지 않고, s
   while (passEnd[p] < 40000) p++;
   assert.ok(radii[p] > 0, `radii ${radii.join(' ')} passEnd ${passEnd.join(' ')}`);
   assert.ok(passEnd[p] < n, `passEnd ${passEnd.join(' ')}`);
+  // 불변식: 출력의 모든 점은 반경 radii[p] 이상으로 수락됐으므로 서로 거리 ≥ radii[p]. 반경이 격자 간격보다 크면 4-이웃 쌍(거리 STEP)은 0 쌍이어야 한다.
+  // (float32 좌표 반올림 허용으로 1e-6 여유를 둔다.)
+  assert.ok(radii[p] > STEP + 1e-6, `radii[p] ${radii[p]} 가 격자 간격 ${STEP} 이하라 불변식이 적용되지 않는다`);
   const ratio = fourNeighborRatio(sel, w, h);
-  assert.ok(ratio < 0.1, `4-이웃 비율 ${ratio}`);
+  assert.equal(ratio, 0, `반경 ${radii[p]} > 간격 ${STEP} 인데 4-이웃 쌍이 있다(비율 ${ratio})`);
   // 전부 요청하면 반경이 격자 간격 아래로 내려가 남은 점을 정상 패스로 다 받는다.
   t.select(n - 1);
   const s2 = t.stats();
@@ -92,13 +101,19 @@ test('firstFraction·kHint 가 0·NaN·음수·범위 밖이면 RangeError', () 
   const p = plane(10, 10);
   for (const firstFraction of [0, -0.1, NaN, 1.5, Infinity]) assert.throws(() => createBlueNoiseThinner(p, null, { firstFraction }), RangeError, `firstFraction ${firstFraction}`);
   for (const kHint of [0, -5, NaN, Infinity]) assert.throws(() => createBlueNoiseThinner(p, null, { kHint }), RangeError, `kHint ${kHint}`);
-  assert.equal(createBlueNoiseThinner(p, null, { firstFraction: 1, kHint: 0.4 }).select(30).length, 30);
+  assertDistinctInRange(createBlueNoiseThinner(p, null, { firstFraction: 1, kHint: 0.4 }).select(30), 30, 100);
 });
 
-test('결과 보관은 최근 2개 k 만: 오래된 k 를 다시 물어도 같은 결과', () => {
+test('결과 보관은 최근 2개 k 만(stats.cacheSize ≤ 2): 오래된 k 를 다시 물어도 같은 결과', () => {
   const p = plane(100, 100);
   const t = createThinner(p);
   const first = t.select(1500);
-  for (const k of [2000, 2500, 3000]) t.select(k);
+  assert.equal(t.stats().cacheSize, 1);
+  for (const k of [2000, 2500, 3000]) {
+    t.select(k);
+    assert.ok(t.stats().cacheSize <= 2, `보관 ${t.stats().cacheSize} 개 > 2`);
+  }
+  assert.equal(t.stats().cacheSize, 2);
   assert.deepEqual(t.select(1500), first);
+  assert.ok(t.stats().cacheSize <= 2);
 });
