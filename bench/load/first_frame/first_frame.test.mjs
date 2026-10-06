@@ -135,3 +135,18 @@ test('clients > MAX_CLIENTS throws', () => {
 test('clients = MAX_CLIENTS ok', () => {
   assert.doesNotThrow(() => firstFrameStats(log(Array(30).fill(100)), 30));
 });
+
+test('undefined event is rejected like null, with an Error not a TypeError', () => {
+  for (const bad of [undefined, null]) {
+    assert.throws(() => firstFrameStats([bad], 1), (e) => e instanceof Error && !(e instanceof TypeError));
+  }
+});
+
+test('firstFrameViolations reports invalid stats input, not "p95 undefined"', () => {
+  for (const bad of [{}, { p95Ms: undefined }, { p95Ms: '10' }, null, undefined]) {
+    const v = firstFrameViolations(bad);
+    assert.equal(v.length, 1);
+    assert.match(v[0], /input invalid/);
+    assert.doesNotMatch(v[0], /undefined/);
+  }
+});
