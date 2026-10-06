@@ -129,7 +129,6 @@ test('양자화 복원 오차 ≤ step/2 + f32 반올림', () => {
   for (let k = 0; k < q.length; k++) worst = Math.max(worst, Math.abs(back[k] - h[k]));
   assert.ok(worst <= tol, `worst ${worst}`);
   assert.ok(worst > 0.001, '양자화가 실제로 일어났다');
-  assert.equal(kbase, Math.floor(Math.min(...h) / step));
 });
 
 test('음성 입력 거부 (12종)', () => {
@@ -167,4 +166,12 @@ test('고정 입력 전체 바이트 골든 (cells=3)', () => {
   assert.equal(hex(q), '48020101feffffff05000000030000004d0100008fc2f53c000002000400090011001900220032004300');
   const f = encodeTerrainTileH32({ tx: -2, ty: 5, lod: 0, cells: 3, heights });
   assert.equal(hex(f), '48020000feffffff050000000300000000002041cdcc20419a992141000024410000284100002c41000030410000384100004041');
+});
+
+test('F-499 ③: kbase 는 floor — 최솟값 10.049(÷0.03 = 334.97) 면 334 (round 면 335), 구현 식을 쓰지 않은 리터럴', () => {
+  const h = new Float32Array([10.049, 10.2, 10.3, 10.5]);
+  const b = encodeTerrainTileH32({ tx: 0, ty: 0, lod: 1, cells: 2, heights: h });
+  const dv = new DataView(b.buffer);
+  assert.equal(dv.getFloat32(20, true), Math.fround(0.03)); // 이 리터럴은 step 0.03 가정
+  assert.equal(dv.getInt32(16, true), 334);
 });

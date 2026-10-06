@@ -70,6 +70,7 @@ export function quantizeHeights(heights, step = TERRAIN_H32_STEP_M) {
 
 /** 양자화 복원: fround((kbase + q)·step). kbase 는 i32 정수. */
 export function dequantizeHeights(kbase, step, q) {
+  if (typeof step !== 'number' || !Number.isFinite(step) || !(step > 0)) throw new RangeError(`step ${String(step)} 가 유한한 양수가 아니다`);
   if (!Number.isInteger(kbase) || kbase < I32_MIN || kbase > I32_MAX) throw new RangeError(`kbase ${String(kbase)} 가 i32 정수가 아니다`);
   const out = new Float32Array(q.length);
   for (let k = 0; k < q.length; k++) out[k] = Math.fround((kbase + q[k]) * step);
@@ -87,7 +88,8 @@ export function snapHeightsToGrid(heights, step = TERRAIN_H32_STEP_M) {
   const out = new Float32Array(heights.length);
   for (let k = 0; k < heights.length; k++) {
     if (!Number.isFinite(heights[k])) return null;
-    const v = Math.fround(Math.round(heights[k] / s) * s);
+    // + 0: h ∈ (−s/2, 0) 이면 round 가 −0 을 내 비트가 0x80000000 이 된다. 양자화 복원 경로는 +0 이므로 +0 으로 맞춘다(−0 + 0 = +0).
+    const v = Math.fround(Math.round(heights[k] / s) * s) + 0;
     if (!Number.isFinite(v)) return null;
     out[k] = v;
   }
