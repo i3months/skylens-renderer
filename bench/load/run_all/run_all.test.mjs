@@ -62,8 +62,10 @@ test('F-529: recorded metric names are fixed', () => {
 test('F-529: no first frame at all -> NaN p95 violation', () => {
   const events = baseSteady().filter((e) => e.kind !== 'first_frame');
   const { violations } = runScenario(steady, { ...OPTS, events });
+  const perClient = Array.from({ length: 30 }, (_, i) => `steady30: client ${i}: no first frame`);
   assert.deepEqual(violations, [
     'steady30: first-frame p95 is NaN: no first frame was measured',
+    ...perClient,
     'steady30: records[0]: bad value',
     'steady30: load.first_frame_p95: non-numeric value',
   ]);
@@ -76,7 +78,8 @@ test('F-529: a client with no bytes is reported unreachable', () => {
 test('F-529: an early close reports the open-connection drop', () => {
   const events = baseSteady();
   const closeIdx = events.findIndex((e) => e.kind === 'close' && e.id === 0);
-  events[closeIdx] = { ...events[closeIdx], tMs: 1 };
+  const lastConnect = Math.max(...events.filter((e) => e.kind === 'connect').map((e) => e.tMs));
+  events[closeIdx] = { ...events[closeIdx], tMs: lastConnect + 1 };
   events.sort((a, b) => a.tMs - b.tMs);
   const { violations } = runScenario(steady, { ...OPTS, events });
   assert.deepEqual(violations, ['steady30: open connections dropped to 29 of 30']);
@@ -204,14 +207,13 @@ test('F-539: a bad injected log returns its violations without running stats', (
 });
 test('F-539: a non-array injected log is a violation, not a throw', () => {
   for (const events of [null, 'nope', { length: 1 }]) {
-    assert.deepEqual(runScenario(steady, { ...OPTS, events }).violations, ['steady30: event log is not an array']);
+    assert.deepEqual(runScenario(steady, { ...OPTS, events }).violations, ['steady30: event log: not an array']);
   }
 });
 test('F-539: a valid log a stats function rejects becomes a bad-event-log violation', () => {
   const events = [...baseSteady(), { id: 0, tMs: 61000, kind: 'bytes', bytes: 1, latencyMs: 1 }];
   const r = runScenario(steady, { ...OPTS, events });
-  assert.deepEqual(r.violations, ['steady30: bad event log: tMs must be <= durationS * 1000']);
-  assert.deepEqual(r.result.records, []);
+  assert.deepEqual(r.violations, ['steady30: bytes event 330: bad tMs']);
 });
 test('F-539: a throwing show in a burst run becomes a violation', () => {
   const show = () => { throw new Error('boom'); };

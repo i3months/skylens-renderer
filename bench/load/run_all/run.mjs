@@ -5,13 +5,13 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { validateResult } from '../../../contracts/load/index.mjs';
-import { simulateClients, countOpenConnections } from '../clients/index.mjs';
+import { simulateClients, countOpenConnections, connectionViolations } from '../clients/index.mjs';
 import { simulateSlowLink } from '../slow_link/index.mjs';
 import { showFromArrivals, checkBurstInvariants, burstArrivals } from '../burst/index.mjs';
 import { createStatsSampler, checkServerSamples } from '../server_stats/index.mjs';
 import { perClientFromEvents, unreachableClients } from '../per_client/index.mjs';
 import { firstFrameStats, firstFrameViolations } from '../first_frame/index.mjs';
-import { bandwidthStats } from '../bandwidth/index.mjs';
+import { bandwidthStats, bandwidthViolations } from '../bandwidth/index.mjs';
 import { checkThresholds, loadThresholds } from '../../thresholds/index.mjs';
 import { loadReport } from '../../../tools/load_report/index.mjs';
 import { checkEventLog, guarded } from './event_log.mjs';
@@ -90,6 +90,7 @@ export function runScenario(scenario, opts = {}) {
   const ff = run(() => firstFrameStats(events, scenario.clients));
   const bw = run(() => bandwidthStats(events, scenario.durationS));
   const open = run(() => countOpenConnections(events));
+  const connViol = run(() => connectionViolations(events, scenario.clients));
   const unreachable = run(() => unreachableClients(events, scenario.clients));
   const burst = scenario.kind === 'burst' ? run(() => {
     const arrivals = burstArrivals(events, scenario.burstLevels);
@@ -104,6 +105,8 @@ export function runScenario(scenario, opts = {}) {
     rec('load.bandwidth_peak_bytes_per_s', bw.peakBytesPerS, 'B') // contract units have no B/s: the name carries the per-second meaning,
   ];
   appendAll(violations, firstFrameViolations(ff), `${name}: `);
+  appendAll(violations, connViol, `${name}: `);
+  appendAll(violations, bandwidthViolations(bw), `${name}: `);
   if (open.min !== scenario.clients) violations.push(`${name}: open connections dropped to ${open.min} of ${scenario.clients}`);
   for (const id of unreachable) violations.push(`${name}: client ${id} received no bytes`);
   appendAll(violations, burst, `${name}: `);
