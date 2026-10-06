@@ -287,10 +287,10 @@ test('checker: same-instant duplicate arrival of one level is a violation (F-553
   assert.ok(w.includes('client 0: burst levels not at one instant'));
 });
 
-test('checker: 40000 arrivals of one client finish quickly and match the small-case results (F-553 13)', () => {
+test('checker: 40000 shown events of one client finish quickly and match the small-case results (F-553 13)', () => {
   const N = 40000;
   const sc = { ...mk(2, 30), clients: 30 };
-  // one client with N arrivals of level 0 at distinct instants: the shown level never arrived before -> repeated first-arrival lookups
+  // 40000 shown events of level 0 at distinct instants, but arrivals only contain level 1: tests repeated first-arrival lookups
   const arrivals = [];
   const shown = [];
   for (let i = 0; i < N; i++) arrivals.push(at(0, 1000 + i, 1));
@@ -309,4 +309,17 @@ test('checker: a level arriving twice reports the FIRST arrival time', () => {
   const w = checkBurstInvariants([at(0, 200, 1), at(0, 300, 1)], [at(0, 100, 1)], mk(2, 1));
   assert.ok(w.includes('client 0: level 1 shown at 100ms before it arrived at 200ms'), w.join('|'));
   assert.ok(!w.some((m) => /arrived at 300ms/.test(m)));
+});
+
+test('burst firstArrival stores the FIRST arrival of a level when same level arrives twice (F-559)', () => {
+  // When the same level arrives at multiple times, violation messages must reference the first arrival
+  const v = checkBurstInvariants(
+    [at(0, 100, 0), at(0, 200, 0), at(0, 100, 1)],
+    [at(0, 50, 0)],
+    mk(2, 1)
+  );
+  // Level 0 is shown at 50ms but arrives at 100ms (first) and 200ms (second)
+  assert.ok(v.includes('client 0: level 0 shown at 50ms before it arrived at 100ms'), v.join('|'));
+  // Must not reference the second arrival time
+  assert.ok(!v.some((m) => /arrived at 200ms/.test(m)));
 });
