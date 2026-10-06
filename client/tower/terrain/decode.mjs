@@ -1,6 +1,6 @@
 // 지형 H32 타일 디코더(T15.1.10e, 계약 contracts/tower_assets/terrain_h32.mjs). 좌표: GeoAnchor 기준 ENU, 1 unit = 1 m.
 // decodeTerrainTileH32(bytes) -> { tx, ty, lod, cells, heights:Float32Array }. 머리·길이가 계약과 한 바이트라도 어긋나면 RangeError 를 던진다.
-// 양자화 머리는 i32 kbase · f32 step(전역 격자), 복원은 계약 dequantizeHeights. LOD 0 + 양자화 flag, 비유한 f32 본문·복원값은 던진다.
+// 양자화 머리는 i32 kbase · f32 step(전역 격자), 복원은 계약 dequantizeHeights. LOD 0 + 양자화 flag, 비유한 f32 본문은 던진다. 복원값은 도달 불가 방어 코드(계약 step 검사 후).
 // DataView 로 읽으므로 subarray 처럼 바이트 오프셋이 4의 배수가 아닌 입력에서도 동작한다. heights 는 입력 버퍼와 별도 복사다.
 // 클라이언트 코드이므로 server/ 를 가져오지 않고 contracts/ 만 가져온다.
 import {
