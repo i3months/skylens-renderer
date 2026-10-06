@@ -788,3 +788,33 @@ test('source line: cloud approximation method reports [local], not measured on',
 test('source line: non-approximation method still says measured on', () => {
   assert.equal(srcOf(loadReport(srcResult({ method: 'wrk' }))), 'source: wrk, S5/S8 verdict measured on wrk');
 });
+
+function ffResult(method) {
+  const r = srcResult({ method });
+  r.records[0].metric = 'load.first_frame_p95';
+  return r;
+}
+const NOTE = '(handshake-complete basis, not an S5 value)';
+
+test('first-frame p95: loopback-socket row carries the handshake-complete annotation', () => {
+  const out = loadReport(ffResult('loopback-socket'));
+  assert.ok(out.includes(`| load.first_frame_p95 ${NOTE} | 1 | ms | d | loopback-socket |`));
+});
+
+test('first-frame p95: non-cloud output has no annotation', () => {
+  const out = loadReport(ffResult('x'));
+  assert.ok(!out.includes(NOTE));
+  assert.ok(out.includes('| load.first_frame_p95 | 1 | ms | d | x |'));
+});
+
+test('first-frame p95: annotation only on the p95 row of a cloud report', () => {
+  const out = loadReport(srcResult({ method: 'loopback-socket' }));
+  assert.ok(!out.includes(NOTE));
+});
+
+test('cloud approximation report: labeled approximation and [local], never measured on loopback-socket', () => {
+  const out = loadReport(ffResult('loopback-socket'));
+  assert.ok(out.includes('(cloud approximation)'));
+  assert.ok(out.includes('[local]'));
+  assert.ok(!out.includes('measured on loopback-socket'));
+});

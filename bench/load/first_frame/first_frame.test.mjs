@@ -195,7 +195,7 @@ test('F-544: first_frame without a level-0 arrival is Infinity and reported', ()
   assert.deepEqual(s.missing, [0]);
   assert.deepEqual(firstFrameViolations(s), [
     'first-frame p95 is NaN: no first frame was measured',
-    'client 0: first_frame without level-0 arrival',
+    'client 0: first_frame without level arrival (any level)',
   ]);
 });
 
@@ -210,8 +210,8 @@ test('F-544: a level arriving after the first_frame, or no level at all, does no
   assert.deepEqual(s.perClientMs, [Infinity, Infinity, 500, Infinity]);
   assert.deepEqual(s.missing, [0, 1, 3]);
   assert.deepEqual(firstFrameViolations(s).filter((v) => v.startsWith('client')), [
-    'client 0: first_frame without level-0 arrival',
-    'client 1: first_frame without level-0 arrival',
+    'client 0: first_frame without level arrival (any level)',
+    'client 1: first_frame without level arrival (any level)',
     'client 3: no first frame',
   ]);
 });
@@ -238,7 +238,7 @@ test('F-553: first_frame before level-0 arrival is reported even when a later on
   ];
   const s = firstFrameStats(ev, 1);
   assert.deepEqual(s.perClientMs, [500]);
-  assert.deepEqual(firstFrameViolations(s), ['client 0: first_frame before level-0 arrival (out of order)']);
+  assert.deepEqual(firstFrameViolations(s), ['client 0: first_frame before level arrival (any level) (out of order)']);
 });
 
 test('F-553: first_frame before connect reports order, not "no first frame"', () => {
@@ -314,7 +314,7 @@ test('F-563: a level event without a valid level 0..3 is not an arrival', () => 
     const s = firstFrameStats(ev, 1);
     assert.deepEqual(s.perClientMs, [Infinity], JSON.stringify(lv));
     assert.deepEqual(s.noArrival, [0]);
-    assert.ok(firstFrameViolations(s).includes('client 0: first_frame without level-0 arrival'), JSON.stringify(lv));
+    assert.ok(firstFrameViolations(s).includes('client 0: first_frame without level arrival (any level)'), JSON.stringify(lv));
   }
   const ok = firstFrameStats([
     { id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 100, kind: 'level', level: 3 }, { id: 0, tMs: 100, kind: 'first_frame' },

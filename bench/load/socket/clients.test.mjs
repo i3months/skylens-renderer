@@ -121,10 +121,12 @@ test('programmer errors reject', async () => {
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-/** Raw server: valid handshake (optionally after delayMs), then onOpen(socket). */
+/** Raw server: valid handshake (optionally after delayMs, a number or a function of the accept index), then onOpen(socket). */
 function rawServer({ delayMs = 0, onOpen = () => {} } = {}) {
   const sockets = new Set();
+  let accepted = 0;
   const server = net.createServer((socket) => {
+    const delay = typeof delayMs === 'function' ? delayMs(accepted++) : delayMs;
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => {});
@@ -141,7 +143,7 @@ function rawServer({ delayMs = 0, onOpen = () => {} } = {}) {
         if (socket.destroyed) return;
         socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
         onOpen(socket);
-      }, delayMs);
+      }, delay);
     });
   });
   return new Promise((resolve) => {
@@ -201,23 +203,51 @@ test('a non-level first message yields bytes only and no first_frame', async () 
   }
 });
 
-test('latencyMs is measured from the attempt time; a first payload delayed 50 ms gives >= 45', async () => {
+test('latencyMs is measured from the attempt time; a first payload delayed 50 ms arrives after the attempt', async () => {
   const srv = await rawServer({
     onOpen(socket) {
       setTimeout(() => socket.write(encodeFrame(OPCODES.BINARY, new Uint8Array(LEVEL_PAYLOAD_BYTES[0]))), 50);
     },
   });
   try {
+    // Deterministic clock that advances 1 ms on every call, so start, attempt and every later reading are all distinct.
     const readings = [];
-    const now = () => { const v = Math.round(performance.now()); readings.push(v); return v; }; // integer ms: exact arithmetic
-    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.port, clients: 1, durationS: 0.4, now });
+    let tick = 0;
+    const now = () => { tick += 1; readings.push(tick); return tick; };
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.port, clients: 1, durationS: 0.3, now });
     const [start, attempt] = readings; // start reading first, then the single client's attempt reading
     const bytes = events.filter((e) => e.kind === 'bytes');
     assert.equal(bytes.length, 1);
-    assert.ok(bytes[0].latencyMs >= 45, `latency ${bytes[0].latencyMs}`);
+    assert.ok(attempt - start > 0, `attempt-start ${attempt - start}`); // a non-zero base, so the equality below is not circular
     assert.equal(bytes[0].latencyMs, bytes[0].tMs - (attempt - start));
+    assert.ok(bytes[0].latencyMs < bytes[0].tMs);
     const connect = events.find((e) => e.kind === 'connect');
     assert.ok(connect.tMs >= attempt - start && connect.tMs <= bytes[0].tMs);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('two time bases: latencyMs runs from the connect attempt, the connect event tMs is handshake completion', async () => {
+  const HANDSHAKE_MS = 40;
+  const srv = await rawServer({
+    delayMs: HANDSHAKE_MS,
+    onOpen(socket) { socket.write(encodeFrame(OPCODES.BINARY, new Uint8Array(LEVEL_PAYLOAD_BYTES[0]))); },
+  });
+  try {
+    const readings = [];
+    const now = () => { const v = Math.round(performance.now()); readings.push(v); return v; }; // integer ms: exact arithmetic
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.port, clients: 1, durationS: 0.3, now });
+    const [start, attempt] = readings;
+    const connect = events.find((e) => e.kind === 'connect');
+    const bytes = events.find((e) => e.kind === 'bytes');
+    // latencyMs = recv - attempt; bytes.tMs - connect.tMs = recv - connectedMs; the difference is connectedMs - attempt.
+    const handshakeMs = bytes.latencyMs - (bytes.tMs - connect.tMs);
+    assert.equal(handshakeMs, connect.tMs - (attempt - start));
+    // The server holds the 101 for 40 ms of real time. Lower bound 35: timers may fire up to ~1 ms early and each integer
+    // rounding costs up to 1 ms. Upper bound 40 + 150: scheduler / loopback jitter on a loaded CI host, far below durationS.
+    assert.ok(handshakeMs >= HANDSHAKE_MS - 5 && handshakeMs <= HANDSHAKE_MS + 150, `handshake ${handshakeMs}`);
+    assert.ok(bytes.latencyMs >= handshakeMs); // latency spans the handshake (equal when the payload shares the data event with the 101)
   } finally {
     await srv.close();
   }
@@ -233,17 +263,25 @@ test('a handshake that finishes after durationS adds no events', async () => {
   }
 });
 
-test('ties on tMs are ordered by id, and events of one id keep their order', async () => {
-  const srv = await startServer(sendLevels);
+test('ties on tMs are ordered by id even when arrival order is reversed; closes land exactly at durationS', async () => {
+  const CLIENTS_TIE = 4;
+  // The k-th accepted connection waits (CLIENTS_TIE - 1 - k) * 15 ms, so handshakes finish roughly in reverse id order.
+  const srv = await rawServer({
+    delayMs: (k) => (CLIENTS_TIE - 1 - k) * 15,
+    onOpen(socket) { for (const n of LEVEL_PAYLOAD_BYTES) socket.write(encodeFrame(OPCODES.BINARY, new Uint8Array(n))); },
+  });
   try {
     let clock = 0;
-    const timer = setTimeout(() => { clock = 1000; }, 300);
-    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.address().port, clients: 4, durationS: 1, now: () => clock });
+    const timer = setTimeout(() => { clock = 1000; }, 400);
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.port, clients: CLIENTS_TIE, durationS: 1, now: () => clock });
     clearTimeout(timer);
     assert.ok(events.every((e) => e.tMs === 0 || e.tMs === 1000));
-    assert.ok(events.filter((e) => e.tMs === 0).length > 4 * 4);
+    assert.ok(events.filter((e) => e.tMs === 0).length > CLIENTS_TIE * 4);
+    const closes = events.filter((e) => e.kind === 'close');
+    assert.equal(closes.length, CLIENTS_TIE);
+    for (const c of closes) assert.equal(c.tMs, 1000); // exactly durationS * 1000, never earlier
     for (let i = 1; i < events.length; i++) assert.ok(events[i - 1].tMs < events[i].tMs || events[i - 1].id <= events[i].id, `id order at ${i}`);
-    for (let id = 0; id < 4; id++) {
+    for (let id = 0; id < CLIENTS_TIE; id++) {
       const mine = events.filter((e) => e.id === id);
       assert.equal(mine[0].kind, 'connect');
       assert.equal(mine.at(-1).kind, 'close');
