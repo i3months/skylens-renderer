@@ -23,14 +23,13 @@ test('limit constant is 3000 ms', () => {
 });
 
 test('FIXTURE_EVENTS: Infinity for the client without a first frame', () => {
-  // FIXTURE_EVENTS carries no level events; add the level-0 arrivals a real log has.
-  const withLevels = [...FIXTURE_EVENTS,
-    { id: 0, tMs: 1200, kind: 'level', level: 0 }, { id: 1, tMs: 2000, kind: 'level', level: 0 }];
-  const s = firstFrameStats(withLevels, 3);
+  const s = firstFrameStats(FIXTURE_EVENTS, 3);
   assert.deepEqual(s.perClientMs, [1200, 2000, Infinity]);
+  assert.deepEqual(s.missing, [2]);
+  assert.deepEqual(s.noArrival, []);
   assert.equal(s.p50Ms, 2000);
   assert.equal(s.p95Ms, Infinity);
-  assert.equal(firstFrameViolations(s).length, 1);
+  assert.deepEqual(firstFrameViolations(s), ['client 2: no first frame']);
 });
 
 test('20 clients, nearest-rank p50 = 10th and p95 = 19th smallest', () => {
@@ -230,4 +229,32 @@ test('F-548: violations derive missing from perClientMs when stats carry no miss
   assert.deepEqual(firstFrameViolations({ p95Ms: 100, perClientMs: [100, Infinity, 50, NaN] }),
     ['client 1: no first frame', 'client 3: no first frame']);
   assert.deepEqual(firstFrameViolations({ p95Ms: 100, perClientMs: [100, 50] }), []);
+});
+
+test('F-553: first_frame before level-0 arrival is reported even when a later one is valid', () => {
+  const ev = [
+    { id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 400, kind: 'first_frame' },
+    { id: 0, tMs: 450, kind: 'level', level: 0 }, { id: 0, tMs: 500, kind: 'first_frame' },
+  ];
+  const s = firstFrameStats(ev, 1);
+  assert.deepEqual(s.perClientMs, [500]);
+  assert.deepEqual(firstFrameViolations(s), ['client 0: first_frame before level-0 arrival (out of order)']);
+});
+
+test('F-553: first_frame before connect reports order, not "no first frame"', () => {
+  const ev = [{ id: 0, tMs: 1000, kind: 'connect' }, { id: 0, tMs: 500, kind: 'first_frame' }];
+  const v = firstFrameViolations(firstFrameStats(ev, 1));
+  assert.ok(v.length >= 1);
+  assert.ok(v.includes('client 0: first_frame before connect (out of order)'));
+  assert.ok(v.every((m) => !/no first frame$/.test(m)));
+});
+
+test('F-553: unsorted level-0 arrivals, the earliest one counts', () => {
+  const ev = [
+    { id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 600, kind: 'level', level: 0 },
+    { id: 0, tMs: 100, kind: 'level', level: 0 }, { id: 0, tMs: 500, kind: 'first_frame' },
+  ];
+  const s = firstFrameStats(ev, 1);
+  assert.deepEqual(s.perClientMs, [500]);
+  assert.deepEqual(firstFrameViolations(s), []);
 });
