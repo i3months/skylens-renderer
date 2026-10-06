@@ -43,9 +43,9 @@ export function simulateClients(scenario, { seed } = {}) {
       } else {
         tMs = Math.round(d.t + d.latencyMs);
       }
-      tMs = Math.max(tMs, prev);
+      tMs = Math.max(tMs, prev); // defensive monotonic guard: not reachable with the current draw ranges (step >= 200 ms > latency spread)
       if (tMs > closeMs) break; // arrives after close: not delivered, never clamped to closeMs
-      // Observed latency: arrival minus request time, so group sharing and the Math.max push are included.
+      // Observed latency: arrival minus request time, so burst group sharing is included.
       const latencyMs = Math.round((tMs - d.t) * 10) / 10;
       events.push({ id, tMs, kind: 'bytes', bytes: d.bytes, latencyMs });
       events.push({ id, tMs, kind: 'level', level });

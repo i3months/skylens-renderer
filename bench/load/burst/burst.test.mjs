@@ -154,11 +154,32 @@ test('checker: clients validated, bad scenario/arrays throw a clear Error', () =
   assert.throws(() => checkBurstInvariants([], {}, mk(2)), (e) => e.constructor === Error && /shown/.test(e.message));
 });
 
+test('checker: burstLevels outside 1..LEVEL_COUNT integer throws a clear Error', () => {
+  for (const burstLevels of [0, 5, -1, 1.5, NaN, undefined, '2', null]) {
+    assert.throws(() => checkBurstInvariants([], [], { ...mk(2), burstLevels }), (e) => e.constructor === Error && /burstLevels/.test(e.message), String(burstLevels));
+  }
+});
+
+test('showFromArrivals: bad clients or events argument throws', () => {
+  for (const clients of ['x', 0, 31, 1.5, NaN, undefined, null]) {
+    assert.throws(() => showFromArrivals([lv(0, 1, 0)], clients), (e) => e.constructor === Error && /clients/.test(e.message), String(clients));
+  }
+  for (const ev of [undefined, null, {}, 'x']) {
+    assert.throws(() => showFromArrivals(ev, 1), (e) => e.constructor === Error && /events/.test(e.message));
+  }
+});
+
 test('checker: cost does not scale as clients * events', () => {
   const s = mk(2, 30);
+  const N = 6000;
+  let reads = 0;
   const arrivals = [];
-  for (let i = 0; i < 60000; i++) arrivals.push(at(i % 30, i, 0));
-  const t0 = Date.now();
-  checkBurstInvariants(arrivals, [], s);
-  assert.ok(Date.now() - t0 < 2000);
+  for (let i = 0; i < N; i++) {
+    // Counts reads of the field the checker touches per entry; a pass per client over all events would read it clients * N times.
+    const e = { id: i % 30, tMs: i };
+    Object.defineProperty(e, 'level', { enumerable: true, get() { reads++; return 0; } });
+    arrivals.push(e);
+  }
+  assert.deepEqual(checkBurstInvariants(arrivals, [], s), Array.from({ length: 30 }, (_, id) => `client ${id}: levels arrived but never shown`));
+  assert.ok(reads <= 10 * N, `level reads ${reads} for ${N} entries`);
 });
