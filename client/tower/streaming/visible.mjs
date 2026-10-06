@@ -111,6 +111,7 @@ function halfSpaces(view, opts, cam0) {
 function vertices(planes, stats) {
   const pts = [];
   const m = planes.length;
+  if (stats && typeof stats.vertexCalls === 'number') stats.vertexCalls += 1; // vertices() 호출 횟수(한 번이어야 한다)
   for (let i = 0; i < m; i += 1) {
     for (let j = i + 1; j < m; j += 1) {
       for (let k = j + 1; k < m; k += 1) {
@@ -232,7 +233,7 @@ function discYRange(poly, cx, cy, r) {
  * 시점에서 보이는 타일 번호.
  * @param {{R:number[], t:number[], K:{fx:number, fy:number, cx:number, cy:number}, width:number, height:number}} view  poseToView 결과
  * @param {{maxDistM:number, zRangeM:number[], nearM:number}} opts
- * @param {{rows:number, cells:number, combos?:number, edges?:number}} [stats] 시험용 작업량 계수기. 행·칸 방문 수를 rows·cells 에 더하고,
+ * @param {{rows:number, cells:number, combos?:number, edges?:number, vertexCalls?:number}} [stats] 시험용 작업량 계수기. 행·칸 방문 수를 rows·cells 에 더하고,
  *   combos·edges 가 숫자로 있으면 vertices 안 i/j/k 루프가 실제로 푼 연립 조합 수·원판 교차에서 본 다각형 변 수도 더한다. 읽고 더하기만 하므로 결과에는 영향이 없다.
  * @returns {{tx:number, ty:number}[]} 카메라 (x,y) 에서 타일 중심까지 거리 오름차순, 같으면 (tx,ty) 사전순
  */

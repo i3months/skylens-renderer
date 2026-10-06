@@ -119,11 +119,13 @@ for (const [mname, make, minFail] of MUTANTS) {
     }
     assert.ok(failed.length >= minFail, `${mname}: 실패 ${failed.length}/15 (${failed.join(', ')})`);
 
-    // m3, m4 는 orderViolations 에만 걸린다(계약: needed 는 가까운 순, request 는 그 순서).
-    // 대조: orderViolations 를 뺀 실패 수는 문턱 미만이어야 한다. 다른 지표로도 문턱을 채우면 이 단언이 순서 지표를 검증한다고 할 수 없다.
+    // m3, m4 는 주로 orderViolations 에 걸린다(계약: needed 는 가까운 순, request 는 그 순서). 다른 지표에도 일부 걸린다:
+    // orderViolations 를 뺀 실패는 측정상 m3 1/15, m4 4/15 이고 모두 maxStreak(기아 문턱) 지표에서 나온다.
+    // 대조: 뺀 실패 수는 측정값 상한 4 이하여야 한다. 이 상한을 넘으면 순서 지표 없이도 문턱(10·15)을 채우기 쉬워져
+    // 이 단언이 순서 지표를 검증한다고 할 수 없다. orderViolations 를 빼면 m3(1/15)·m4(4/15)는 문턱 미만이라 시험이 실패한다.
     if (mname === '(m3) 오래 보류된 타일을 뒤로 미는 반노화' || mname === '(m4) 먼 순 요청') {
-      assert.ok(failedWithoutOrder.length < minFail,
-        `${mname}: orderViolations 를 뺀 실패 ${failedWithoutOrder.length}/15 가 문턱 ${minFail} 이상 (${failedWithoutOrder.join(', ')})`);
+      assert.ok(failedWithoutOrder.length <= 4,
+        `${mname}: orderViolations 를 뺀 실패 ${failedWithoutOrder.length}/15 가 측정 상한 4 초과 (${failedWithoutOrder.join(', ')})`);
     }
   });
 }
