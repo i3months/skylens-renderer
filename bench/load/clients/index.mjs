@@ -88,17 +88,22 @@ export function countOpenConnections(events) {
 /**
  * Per-id connection violations, deterministic: first in event order `client N: duplicate connect` (connect while
  * already open) and `client N: close without connect` (close while not open), then `client N: never connected` for
- * ids 0..clients-1 with no connect at all. Output is sorted by id, then by event order within an id.
+ * ids 0..clients-1 with no connect at all. Never throws: a non-array log gives `event log: not an array`, and a
+ * null/non-object entry gives `event i: not an object` (listed first). Output is sorted by id, then by event order within an id.
  */
 export function connectionViolations(events, clients) {
   if (!(Number.isInteger(clients) && clients >= 1 && clients <= MAX_CLIENTS)) {
     return [`bad clients: ${String(clients)} (must be an integer in 1..${MAX_CLIENTS})`];
   }
+  if (!Array.isArray(events)) return ['event log: not an array'];
   const open = new Set();
   const everConnected = new Set();
   const perId = new Map();
   const add = (id, msg) => { if (!perId.has(id)) perId.set(id, []); perId.get(id).push(msg); };
-  for (const e of events) {
+  const malformed = [];
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]; // index access so sparse holes are visited as undefined
+    if (e === null || typeof e !== 'object' || Array.isArray(e)) { malformed.push(`event ${i}: not an object`); continue; }
     if (e.kind === 'connect') {
       if (open.has(e.id)) add(e.id, `client ${e.id}: duplicate connect`);
       open.add(e.id);
@@ -109,5 +114,5 @@ export function connectionViolations(events, clients) {
     }
   }
   for (let id = 0; id < clients; id++) if (!everConnected.has(id)) add(id, `client ${id}: never connected`);
-  return [...perId.keys()].sort((a, b) => a - b).flatMap((id) => perId.get(id));
+  return [...malformed, ...[...perId.keys()].sort((a, b) => a - b).flatMap((id) => perId.get(id))];
 }
