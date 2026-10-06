@@ -332,10 +332,13 @@ test('perf: 맞춤 순회는 저장소 points 배열을 점당 정확히 1회 �
   const auto = fbOf(scene);
   const view = fbOf(scene);
   view.setView({ centerE: 0, centerN: 0, metersPerPx: 0.5 });
-  let a = null, again = null, v = null;
-  countPointReads((c) => { auto.frame(SIZE); a = { arr: c.arr, coord: c.coord }; c.arr = 0; c.coord = 0; auto.frame(SIZE); again = { arr: c.arr, coord: c.coord }; });
-  countPointReads((c) => { view.frame(SIZE); v = { arr: c.arr, coord: c.coord }; });
-  assert.ok(v.arr > 0 && v.coord > 0, '계수가 동작하지 않는다(setView frame 의 points 읽기 0)');
+  let a = null, again = null, v = null, storedAuto = -1, storedView = -1;
+  countPointReads((c) => { auto.frame(SIZE); storedAuto = c.stored.length; a = { arr: c.arr, coord: c.coord }; c.arr = 0; c.coord = 0; auto.frame(SIZE); again = { arr: c.arr, coord: c.coord }; });
+  countPointReads((c) => { view.frame(SIZE); storedView = c.stored.length; v = { arr: c.arr, coord: c.coord }; });
+  // 계수기가 저장소 경로 목록을 가로채지 못하면(Array.from(Map 반복자) 경로가 바뀐 경우) 읽기 수가 0 이 되므로 원인을 먼저 가린다.
+  assert.equal(storedAuto, N_PATHS, `계수기가 가로챈 저장소 경로 ${storedAuto} 개(자동 맞춤 frame), 기대 ${N_PATHS}: 저장소 경로를 Array.from(Map 반복자)로 읽지 않게 바뀌었는지 확인`);
+  assert.equal(storedView, N_PATHS, `계수기가 가로챈 저장소 경로 ${storedView} 개(setView frame), 기대 ${N_PATHS}: 저장소 경로를 Array.from(Map 반복자)로 읽지 않게 바뀌었는지 확인`);
+  assert.ok(v.arr > 0 && v.coord > 0, `계수가 동작하지 않는다(setView frame 의 points 읽기 배열 ${v.arr}·좌표 ${v.coord}, 가로챈 경로 ${storedView} 개)`);
   assert.equal(v.arr, total, `setView frame 의 배열 읽기 ${v.arr} 번, 기대 ${total}(buildPaths 1회)`);
   assert.equal(v.coord, 2 * total, `setView frame 의 좌표 읽기 ${v.coord} 번, 기대 ${2 * total}`);
   assert.equal(a.arr - v.arr, total, `맞춤 순회 배열 읽기 ${a.arr - v.arr} 번, 기대 ${total}(순회 ${((a.arr - v.arr) / total).toFixed(2)} 회)`);
