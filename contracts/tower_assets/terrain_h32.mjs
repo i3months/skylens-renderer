@@ -36,11 +36,12 @@ export function terrainH32Bytes(cells, quantized) {
   return TERRAIN_H32_HEADER_BYTES + (quantized ? TERRAIN_H32_QUANT_EXTRA_BYTES + 2 * cells * cells : 4 * cells * cells);
 }
 
-/** 유효한 step 이면 f32 로 반올림한 값, 아니면 null. */
+/** 배열(Array) 또는 TypedArray 만 받는다. length 만 있는 유사배열·문자열은 RangeError. */
 function checkArray(a, name) {
-  if (a === null || a === undefined || typeof a !== 'object' || !Number.isInteger(a.length) || a.length < 0) throw new RangeError(`${name} 가 배열이 아니다: ${String(a)}`);
+  if (!Array.isArray(a) && !ArrayBuffer.isView(a)) throw new RangeError(`${name} 가 배열이 아니다: ${String(a)}`);
 }
 
+/** 유효한 step 이면 f32 로 반올림한 값, 아니면 null. */
 function checkStep(step) {
   const s = Math.fround(step);
   return s > 0 && Number.isFinite(s) ? s : null;
@@ -73,7 +74,7 @@ export function quantizeHeights(heights, step = TERRAIN_H32_STEP_M) {
   return { kbase, base: kbase, step: s, q };
 }
 
-/** 양자화 복원: fround((kbase + q)·step). kbase 는 i32 정수. */
+/** 양자화 복원: fround((kbase + q)·step). kbase 는 i32 정수. step·q 가 잘못됐거나 복원값이 비유한(f32 범위 초과)이면 RangeError. */
 export function dequantizeHeights(kbase, step, q) {
   if (typeof step !== 'number' || !Number.isFinite(step) || !(step > 0)) throw new RangeError(`step ${String(step)} 가 유한한 양수가 아니다`);
   if (!Number.isInteger(kbase) || kbase < I32_MIN || kbase > I32_MAX) throw new RangeError(`kbase ${String(kbase)} 가 i32 정수가 아니다`);
@@ -85,7 +86,9 @@ export function dequantizeHeights(kbase, step, q) {
   for (let k = 0; k < q.length; k++) {
     const v = q[k];
     if (!Number.isInteger(v) || v < 0 || v > TERRAIN_H32_MAX_Q) throw new RangeError(`q[${k}] ${String(v)} 가 0..65535 정수가 아니다`);
-    out[k] = Math.fround((kbase + v) * s);
+    const r = Math.fround((kbase + v) * s);
+    if (!Number.isFinite(r)) throw new RangeError(`복원값이 비유한이다: (${kbase} + ${v})·${String(step)}`);
+    out[k] = r;
   }
   return out;
 }
