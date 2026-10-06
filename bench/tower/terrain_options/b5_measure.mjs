@@ -5,7 +5,7 @@
 // 상한표(m):
 //   i   [0, 0.5, 1, 1]      결정 0057 이전의 절대표(b1 안 (i) 과 같은 값). 서버 실효 상한은 셀에 따라 더 작으므로(1 m 셀 0.25 m) 서버와 같다는 뜻이 아니다
 //   v1  [0, 0.25, 0.5, 0.5] F-470 이 예로 든 'LOD1 0.25 m' 에 LOD2·3 을 현행의 절반으로(측정 전에 정함)
-//   v2  [0, 0.25, 0.25, 0.25] LOD1~3 모두 0.25 m. b1 출력에서 lowNoise 의 간격 2 최대 오차가 0.2960~0.2991 m 인 것을 보고
+//   v2  [0, 0.25, 0.25, 0.25] LOD1~3 모두 0.25 m. b1 출력에서 lowNoise 의 간격 2 최대 오차가 0.2960~0.2980 m(시드 1..12 실측 0.29597~0.29796, 안 i 의 LOD1) 인 것을 보고
 //       그 아래로 정한 값이다(SSIM 결과를 보고 고른 값이 아님). 이 표에서 lowNoise 는 LOD1~3 이 원본 간격이 된다.
 //
 // DEM 집합:
@@ -67,7 +67,8 @@ export function measureB5({ only = null } = {}) {
     // 서버 대조는 모든 그룹(lowNoise2m·hill 포함)에서 항상 켠다. 대조 타일 좌표는 DEM 격자에서 구한다.
     const r = measureDem(d, cams, { check: true, optionTable: B5_OPTIONS });
     r.group = d.group;
-    r.cellM = GROUP_CELL_M[d.group] ?? 1;
+    // cellM 은 measureDem 이 실제 dem.cellM 으로 채운다. 그룹 표와 어긋나면 표가 틀린 것이므로 던진다.
+    if (r.cellM !== (GROUP_CELL_M[d.group] ?? 1)) throw new Error(`cellM 불일치 ${d.name}: DEM ${r.cellM} 그룹표 ${GROUP_CELL_M[d.group]}`);
     results.push(r);
     console.error(`[b5] ${d.name} ${r.ms} ms`);
   }

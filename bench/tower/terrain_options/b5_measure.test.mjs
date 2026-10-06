@@ -1,7 +1,7 @@
 // b5_measure 의 --only 검증과 열 머리 단위 표기 시험(느린 측정 없음).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseOnly, summarize, formatB5, B5_OPTIONS } from './b5_measure.mjs';
+import { parseOnly, summarize, formatB5, measureB5, B5_OPTIONS } from './b5_measure.mjs';
 
 test('parseOnly: 정상 이름은 통과', () => {
   assert.deepEqual(parseOnly('lowNoise:1,hill:1/0.015'), ['lowNoise:1', 'hill:1/0.015']);
@@ -54,4 +54,11 @@ test('formatB5: 열 머리에 간격(셀)·cellM 표기', () => {
   assert.match(out, /cellM\(m\)/);
   assert.match(out, /lowNoise2m \| i \| 1 \| 2 \|/);
   assert.match(out, /cellM 2 m/);
+});
+
+test('measureB5: 결과 cellM 은 실제 DEM 셀이고 서버 대조가 돌았다(hill 은 2 m 셀)', () => {
+  const all = measureB5({ only: ['hill:1/0'] });
+  assert.equal(all.results.length, 1);
+  assert.equal(all.results[0].cellM, 2);
+  assert.ok(all.results[0].serverCheck.tiles > 0);
 });
