@@ -107,10 +107,18 @@ function halfSpaces(view, opts, cam0) {
   return out;
 }
 
+let vertexCallTotal = 0;
+
+/** 시험용: 모듈 수준 vertices() 누적 호출 수. stats 를 넘겼는지와 무관하게 모든 호출을 센다. 결과에는 영향이 없다. */
+export function vertexCallCount() {
+  return vertexCallTotal;
+}
+
 /** 반공간 교집합의 꼭짓점(세 면 연립). 허용 오차 안에서 모든 반공간을 만족하는 것만. */
 function vertices(planes, stats) {
   const pts = [];
   const m = planes.length;
+  vertexCallTotal += 1;
   if (stats && typeof stats.vertexCalls === 'number') stats.vertexCalls += 1; // vertices() 호출 횟수(한 번이어야 한다)
   for (let i = 0; i < m; i += 1) {
     for (let j = i + 1; j < m; j += 1) {
