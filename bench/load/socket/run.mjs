@@ -50,7 +50,8 @@ export const MAX_TICK_LATE_MS = 1000;
  * A tick that is more than MAX_TICK_LATE_MS past its target (the event loop was blocked) is skipped rather than
  * run in a burst with the backed-up ones; the missing sample shows up in checkServerSamples' count.
  * Rejects with a RangeError if now() does not advance across a timer (a stopped injected clock would re-arm forever).
- * Also rejects (never throws synchronously) with a RangeError for a non-finite or non-positive durationS.
+ * Also rejects (rather than throwing) with a RangeError for a non-finite or non-positive durationS; the default
+ * t0 = now() is evaluated before that check, so a now() that throws still throws synchronously (runSocketLoad passes t0).
  * Resolves after the last tick.
  */
 export function tickOnRealClock(sampler, durationS, now, onError, t0 = now(), schedule = setTimeout) {
