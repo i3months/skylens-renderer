@@ -174,6 +174,9 @@ export function terrainLodStride(dem, lod) {
   const limit = terrainLodMaxErrorM(lod, dem.cellM); // 결정 0057: min(절대 상한, 기울기 상한 · cellM)
   // 결측 타일(terrainMissingTiles)은 명시적으로 빼고 판정한다.
   const tiles = coveredTileOrigins(dem, n0).filter(([i0, j0]) => !tileHasNonFinite(dem, i0, j0, n0));
+  // 판정할 타일이 하나도 없으면(DEM 이 타일 하나도 못 덮거나 덮는 타일이 전부 결측) 오차를 확인한 적 없는 공칭 간격을 돌려주지 않고 던진다.
+  // 1 을 돌려주면 안전은 하지만 '검증됨' 처럼 보이고 buildTerrainTile 이 쓸모없는 최대 정점 타일을 만든다. 던지면 호출자가 입력 결함을 바로 안다.
+  if (tiles.length === 0) throw new TowerAssetError('간격을 판정할 타일이 없다: DEM 이 덮는 타일이 없거나 전부 결측이다');
   let stride = nominalStride(n0, lod);
   while (stride > 1) {
     let ok = true;

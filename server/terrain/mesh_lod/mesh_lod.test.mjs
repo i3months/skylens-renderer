@@ -354,6 +354,20 @@ test('F-315 ③·F-314 ⑥: 유한하지 않은 높이 → 즉시 TowerAssetErro
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.equal(terrainLodStride(d2, lod), 1 << lod);
 });
 
+test('F-491 ⑦: 덮는 타일이 0 이거나 전부 결측이면 공칭 간격을 돌려주지 않고 TowerAssetError', () => {
+  // 10×10 DEM 은 64 m 타일 하나도 덮지 못한다.
+  const small = { originX: 0, originY: 0, cellM: 1, width: 10, height: 10, heights: new Float32Array(100) };
+  assert.deepEqual(terrainMissingTiles(small), []);
+  for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.throws(() => terrainLodStride(small, lod), TowerAssetError);
+  assert.throws(() => buildTerrainTile(small, 0, 0, 1), TowerAssetError);
+  // 전부 NaN 인 65×65 DEM: 덮는 타일 1 개가 모두 결측이다.
+  const nan = singleTileDem(() => NaN);
+  assert.equal(terrainMissingTiles(nan).length, 1);
+  for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.throws(() => terrainLodStride(nan, lod), TowerAssetError);
+  // 같은 크기의 정상 DEM 은 영향이 없다.
+  assert.equal(terrainLodStride(singleTileDem(() => 3), 3), 8);
+});
+
 // ---- 변형 시험 보강(F-318 ①②③) ----
 function singleTileDem(f) {
   const W = 65, h = new Float32Array(W * W);
