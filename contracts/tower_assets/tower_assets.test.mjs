@@ -33,7 +33,9 @@ test('LOD 오차 상한 규칙(결정 0057): min(절대표, 기울기 0.25 × ce
   // F-484 ⑥: lod 는 0~3 정수만. 배열 속성 이름·문자열·배열·소수·음수는 거부한다.
   for (const bad of ['length', '1', [1], 'constructor', -1, 1.5, NaN, Infinity, null, undefined, 4])
     assert.throws(() => c.terrainLodMaxErrorM(bad, 1), RangeError, String(bad));
-  assert.throws(() => c.terrainLodMaxErrorM(1, 0), RangeError);
+  // cellM 은 유한·양수 숫자만. subnormal(5e-324)은 기울기 항이 0 으로 언더플로하므로 거부한다.
+  for (const bad of [NaN, undefined, -1, Infinity, '2', 0, 5e-324])
+    for (const l of [0, 1, 3]) assert.throws(() => c.terrainLodMaxErrorM(l, bad), RangeError, `lod ${l} cellM ${String(bad)}`);
 });
 
 test('부호 있는 넓이: 반시계 양수', () => {

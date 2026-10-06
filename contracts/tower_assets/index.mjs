@@ -16,8 +16,8 @@ export const TERRAIN_LOD_MAX_ERROR_M = Object.freeze([0, 0.5, 1, 1]);
  * 높이 오차 상한은 셀 크기와 무관한 절대값이라, 같은 높이 오차라도 셀이 작을수록 이웃 표본 사이 기울기(곧 정점 법선 음영)가
  * 크게 흔들린다(1 m 셀 ±0.15 m 잡음에서 현행표가 SSIM 0.95 를 어김). 그래서 LOD k ≥ 1 의 실제 상한은
  * min(TERRAIN_LOD_MAX_ERROR_M[k], TERRAIN_LOD_MAX_SLOPE_ERROR · cellM) 이다(terrainLodMaxErrorM).
- * 0.25 = 현행표 LOD1 상한 0.5 m ÷ 그 표가 검증된 장면(ssim_views makeHillDem)의 셀 2 m. 곧 이미 검증된 'LOD1 상한/셀' 비를
- * 모든 LOD·모든 셀 크기에 적용한다(lowNoise 측정을 보고 고른 값이 아니다. 근거·대가는 결정 0057).
+ * 0.25 = 사후 비례 상수: 현행표 LOD1 상한 0.5 m ÷ 셀 2 m 로 정했지만 lowNoise 결과를 알고 고른 값이며, 근거·한계는 결정 0057 에 있다.
+ * 셀 크기가 다른 DEM 에 일반화된다는 보장은 없다.
  */
 export const TERRAIN_LOD_MAX_SLOPE_ERROR = 0.25;
 
@@ -29,8 +29,10 @@ export const TERRAIN_LOD_MAX_SLOPE_ERROR = 0.25;
 export function terrainLodMaxErrorM(lod, cellM) {
   if (!Number.isInteger(lod) || lod < 0 || lod >= TERRAIN_LOD_MAX_ERROR_M.length) throw new RangeError(`lod ${String(lod)}`);
   const abs = TERRAIN_LOD_MAX_ERROR_M[lod];
-  if (!(Number.isFinite(cellM) && cellM > 0)) throw new RangeError(`cellM ${cellM}`);
-  return Math.min(abs, TERRAIN_LOD_MAX_SLOPE_ERROR * cellM);
+  // 유한·양수가 아니거나 기울기 항이 0 이하(subnormal 언더플로)이면 거부한다. LOD 0 의 결과 0 은 표 값이라 허용된다.
+  const slope = TERRAIN_LOD_MAX_SLOPE_ERROR * cellM;
+  if (!(Number.isFinite(cellM) && slope > 0)) throw new RangeError(`cellM ${cellM}`);
+  return Math.min(abs, slope);
 }
 /** 드레이프 밉 단계 수. 0 = 가장 세밀. */
 export const DRAPE_MIP_COUNT = 4;
