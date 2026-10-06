@@ -16,9 +16,13 @@
 //                                            cpuStub true makes cpuPct null and cpuSource 'stub' (source is unchanged).
 //                                            checkServerSamples(samples, { durationS }?) -> string[] violation strings, never throws; a non-finite sample is a violation;
 //                                            cpuSource must be 'measured' | 'stub' | 'simulated', and 'measured' needs clock 'real' (a simulated clock never carries a measured CPU).
-//                                            With durationS given and clock 'real': the last tS must be within 1 s of durationS and every non-final interval between 0.5 s and 1.5 s.
+//                                            With durationS given and clock 'real' (when every sample has clock 'real'; mixed clock/source is a violation):
+//                                            count = ceil(durationS), first tS ≈ min(1,durationS)±0.5, last tS within [durationS-0.25, durationS+0.25],
+//                                            every interval incl. first is 0.5..1.5 s except the last (final bucket width ±0.5). durationS non-finite is a violation.
 //   T16.3  bench/load/per_client/index.mjs   perClientFromEvents(events, clients) -> perClient[] (validateResult shape)
-//   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[], missing, noArrival }; noArrival lists ascending ids with a first_frame but no level-0 arrival (a subset of missing); a first_frame counts only with a level-0 arrival of the same id at tMs <= the first_frame tMs, otherwise that client's perClientMs is Infinity and firstFrameViolations says `client N: first_frame without level-0 arrival`
+//   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[], missing, noArrival, outOfOrder };
+//                                            noArrival lists ascending ids with a first_frame but no level-0 arrival (a subset of missing); a first_frame counts only with a level-0 arrival of the same id at tMs <= the first_frame tMs, otherwise that client's perClientMs is Infinity and firstFrameViolations says `client N: first_frame without level-0 arrival`;
+//                                            outOfOrder = ascending-id list of { id, reason } for impossible orderings: 'before_connect' (first_frame before client's connect), 'before_level0' (first_frame before earliest level-0 arrival)
 //   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS, invalid }; bandwidthViolations(stats) -> string[]
 //   T16.6  bench/load/burst/index.mjs        showFromArrivals(events, clients) -> shown [{id, tMs, level}]  (feeds each 'level' event of the
 //                                            measured log into the product level machine client/levels createLevelMachine, one segment per
@@ -42,7 +46,8 @@
 //                                            Injected logs must have non-decreasing tMs (checkEventLog rejects the whole log otherwise); statsClock.clock is required whenever statsClock is given;
 //                                            loadReport(result, opts) also accepts result.serverSamples as a fallback when opts.serverSamples is absent (opts wins).
 //                                            An injected log also goes through validateScenario(scenario) first. statsClock: both now and cpuUsage or neither, unknown keys throw; source/clock are NOT pre-filled (createStatsSampler defaults apply);
-//                                            a 'real' statsClock is checked by checkServerSamples(samples, { durationS }). checkBurstInvariants additionally reports `client N: burst level K missing` and `burst levels not at one instant`.
+//                                            a 'real' statsClock is checked by checkServerSamples(samples, { durationS }). checkBurstInvariants additionally reports
+//                                            `client N: burst level K missing`, `burst levels not at one instant`, and `level K arrived more than once` for duplicates.
 import { LEVEL_COUNT } from '../asset/index.mjs';
 
 export const EVENT_KINDS = ['connect', 'bytes', 'level', 'first_frame', 'close'];
@@ -105,7 +110,7 @@ export const FIXTURE_EVENTS = [
   { id: 0, tMs: 1200, kind: 'level', level: 0 }, { id: 0, tMs: 1200, kind: 'first_frame' },
   { id: 1, tMs: 1800, kind: 'bytes', bytes: 3000, latencyMs: 300 },
   { id: 1, tMs: 2000, kind: 'level', level: 0 }, { id: 1, tMs: 2000, kind: 'first_frame' },
+  { id: 2, tMs: 2600, kind: 'bytes', bytes: 1000, latencyMs: 900 },
   { id: 2, tMs: 2800, kind: 'level', level: 0 }, { id: 2, tMs: 2800, kind: 'first_frame' },
-  { id: 2, tMs: 4000, kind: 'bytes', bytes: 1000, latencyMs: 900 },
   { id: 0, tMs: 9000, kind: 'close' }, { id: 1, tMs: 9000, kind: 'close' }, { id: 2, tMs: 9000, kind: 'close' },
 ];
