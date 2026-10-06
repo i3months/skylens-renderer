@@ -117,14 +117,14 @@ export function firstFrameViolations(stats) {
   //  before_connect (missing or not): `client N: first_frame before connect (out of order)`, replaces 'no first frame';
   //  missing otherwise: 'first_frame without level arrival (any level)' / 'no first frame' as before;
   //  not missing but an earlier first_frame preceded the level arrival (any level):
-  //  `client N: first_frame before level arrival (any level) (out of order)`.
+  //  `client N: first_frame before level arrival (any level, out of order)`.
   const ids = [...new Set([...missing, ...order.keys()])].sort((a, b) => a - b);
   for (const id of ids) {
     const reason = order.get(id);
     const isMissing = missing.includes(id);
     if (reason === 'before_connect') out.push(`client ${id}: first_frame before connect (out of order)`);
     else if (isMissing) out.push(noArrival.includes(id) ? `client ${id}: first_frame without level arrival (any level)` : `client ${id}: no first frame`);
-    else if (reason === 'before_firstArrival') out.push(`client ${id}: first_frame before level arrival (any level) (out of order)`);
+    else if (reason === 'before_firstArrival') out.push(`client ${id}: first_frame before level arrival (any level, out of order)`);
     else if (reason !== undefined) out.push(`client ${id}: first_frame out of order (unknown reason ${JSON.stringify(reason)})`);
   }
   return out;

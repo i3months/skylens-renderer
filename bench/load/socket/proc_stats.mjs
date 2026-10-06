@@ -39,18 +39,20 @@ export function parseProcStat(line) {
 export function parseStatm(text) {
   if (typeof text !== 'string') return null;
   const f = text.trim().split(/\s+/);
-  if (f.length < 2) return null;
+  // Plain decimal digits only: Number() would also accept '1e3' and '0x10'.
+  if (f.length < 2 || !/^\d+$/.test(f[1])) return null;
   const resident = Number(f[1]);
-  if (!Number.isInteger(resident) || resident < 0) return null;
+  if (!Number.isSafeInteger(resident)) return null;
   return { resident };
 }
 
 // Returns { cpuUsage: { user, system } (microseconds), rssBytes } or null if the process is gone or /proc is unreadable.
-export function readProcStats(pid) {
+// read(path) is injectable for tests; it defaults to a utf8 readFileSync.
+export function readProcStats(pid, read = (p) => readFileSync(p, 'utf8')) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
-    const st = parseProcStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
-    const sm = parseStatm(readFileSync(`/proc/${pid}/statm`, 'utf8'));
+    const st = parseProcStat(read(`/proc/${pid}/stat`));
+    const sm = parseStatm(read(`/proc/${pid}/statm`));
     if (!st || !sm) return null;
     const resident = sm.resident;
     const us = 1e6 / tck();
@@ -59,7 +61,8 @@ export function readProcStats(pid) {
 }
 
 // Stats sampler over another process; a gone process yields null, which the sampler treats as a skipped tick.
-export function createProcSampler({ pid, now } = {}) {
+// t0 (optional) is the caller's shared time origin on the now() clock; see createStatsSampler.
+export function createProcSampler({ pid, now, t0 } = {}) {
   // Resolve getconf values now, before the sampler's clock starts, so the first tick is not delayed by a subprocess.
   tck();
   pgsz();
@@ -69,6 +72,7 @@ export function createProcSampler({ pid, now } = {}) {
     cpuUsage: () => { snap = readProcStats(pid); return snap?.cpuUsage ?? null; },
     memoryUsage: () => (snap ? { rss: snap.rssBytes } : null),
     now: now ?? (() => performance.now()),
+    t0,
     clock: 'real',
     source: 'server-process',
   });

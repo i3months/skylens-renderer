@@ -9,6 +9,19 @@ import { connectWs } from './ws_client.mjs';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
+/** Bounds a wait so a missing callback fails fast instead of hanging the file. */
+async function within(promise, ms, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`timed out after ${ms} ms: ${label}`)), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function payload(n, seed) {
   const b = new Uint8Array(n);
   for (let i = 0; i < n; i++) b[i] = (i * 31 + seed) & 0xff;
@@ -215,14 +228,16 @@ test('handshake: 403 status is rejected with the status line', () => rejectsWith
   s.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
 }, 'handshake failed: unexpected status: HTTP/1.1 403 Forbidden'));
 
-for (const [code, text] of [[100, 'Continue'], [102, 'Processing']]) {
-  test(`handshake: 1xx status ${code} with otherwise valid upgrade headers is rejected`, () => rejectsWith((s, key) => {
+const REJECTED_STATUSES = [[100, 'Continue'], [102, 'Processing'], [103, 'Early Hints'], [200, 'OK'], [1010, 'Nope']];
+
+for (const [code, text] of REJECTED_STATUSES) {
+  test(`handshake: status ${code} with otherwise valid upgrade headers is rejected`, () => rejectsWith((s, key) => {
     s.write(`HTTP/1.1 ${code} ${text}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${acceptOf(key)}\r\n\r\n`);
   }, `handshake failed: unexpected status: HTTP/1.1 ${code} ${text}`));
 }
 
-test('handshake: bare "HTTP/1.1 100" and "HTTP/1.1 102" status lines are rejected as handshake failures', async () => {
-  for (const code of [100, 102]) {
+test('handshake: bare status lines without a reason phrase are rejected as handshake failures', async () => {
+  for (const [code] of REJECTED_STATUSES) {
     await rejectsWith((s, key) => {
       s.write(`HTTP/1.1 ${code}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${acceptOf(key)}\r\n\r\n`);
     }, `handshake failed: unexpected status: HTTP/1.1 ${code}`);
@@ -244,18 +259,48 @@ test('path reaches the server request line', async () => {
   }
 });
 
-test('onMessage gets the receive time read at data-event entry', async () => {
+test('onMessage gets the receive time read at data-event entry, not at delivery', async () => {
   const srv = await levelServer();
   try {
-    const stamps = [];
-    const now = () => { const v = performance.now(); stamps.push(v); return v; };
-    const conn = await connectWs({ host: SOCKET_HOST, port: srv.address().port, now });
+    let tick = 1;
+    const entry = []; // the clock value at the entry of each data event after the handshake
+    const conn = await connectWs({ host: SOCKET_HOST, port: srv.address().port, now: () => tick });
+    // Runs before the client's own data listener, so the client reads a distinct clock value per event.
+    conn.socket.prependListener('data', () => { tick += 1000; entry.push(tick); });
+    // Let the level payloads arrive with no callback set, then move the clock: queued messages keep their entry stamps.
+    await new Promise((r) => setTimeout(r, 200));
+    const afterArrival = tick;
+    tick += 1_000_000;
     const times = [];
-    await new Promise((resolve) => {
+    await within(new Promise((resolve) => {
       conn.onMessage((d, t) => { times.push(t); if (times.length === LEVEL_PAYLOAD_BYTES.length) resolve(); });
-    });
-    assert.ok(times.every((t) => stamps.includes(t)));
+    }), 5000, 'level messages');
+    assert.ok(entry.length > 0);
+    for (const t of times) assert.ok(t === 1 || entry.includes(t), `recvMs ${t} was not read at a data-event entry (${entry})`);
+    assert.ok(times.every((t) => t <= afterArrival));
     assert.ok(times.every((t) => t >= conn.connectedMs));
+    await conn.close();
+  } finally {
+    await srv.close();
+  }
+});
+
+test('onMessage with a live callback: now() is read once per data event, at its entry', async () => {
+  const srv = await levelServer();
+  try {
+    let reads = 0;
+    const conn = await connectWs({ host: SOCKET_HOST, port: srv.address().port, now: () => ++reads });
+    assert.equal(reads, 1); // the handshake data event
+    let dataEvents = 0;
+    conn.socket.on('data', () => { dataEvents++; });
+    const times = [];
+    await within(new Promise((resolve) => {
+      conn.onMessage((d, t) => { times.push(t); if (times.length === LEVEL_PAYLOAD_BYTES.length) resolve(); });
+    }), 5000, 'level messages');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(dataEvents > 0);
+    assert.equal(reads, 1 + dataEvents); // a read at delivery time would add calls
+    for (const t of times) assert.ok(t >= 1 && t <= reads);
     await conn.close();
   } finally {
     await srv.close();
@@ -266,7 +311,7 @@ test('abnormal end without a close frame reports 1006', async () => {
   const srv = await rawServer({ onOpen(socket) { setTimeout(() => socket.destroy(), 20); } });
   try {
     const conn = await connectWs({ host: SOCKET_HOST, port: srv.port });
-    const info = await new Promise((r) => conn.onClose(r));
+    const info = await within(new Promise((r) => conn.onClose(r)), 5000, 'onClose');
     assert.deepEqual(info, { code: 1006, reason: '' });
   } finally {
     await srv.close();
@@ -278,10 +323,27 @@ test('abnormal close: socket destroyed right after the handshake reports 1006 wi
   try {
     const conn = await connectWs({ host: SOCKET_HOST, port: srv.port });
     const infos = [];
-    await new Promise((r) => { conn.onClose((i) => { infos.push(i); r(); }); });
+    await within(new Promise((r) => { conn.onClose((i) => { infos.push(i); r(); }); }), 5000, 'onClose');
     await new Promise((r) => setTimeout(r, 50));
     assert.deepEqual(infos, [{ code: 1006, reason: '' }]);
     await conn.close(); // already gone: resolves
+  } finally {
+    await srv.close();
+  }
+});
+
+test('server close(1000) frame then socket end: onClose is called exactly once, with the close frame code', async () => {
+  const srv = await rawServer({
+    onOpen(socket) { socket.write(encodeFrame(OPCODES.CLOSE, encodeClosePayload(1000))); },
+    onFrames(socket, evs) { if (evs.some((e) => e.type === 'close')) socket.end(); },
+  });
+  try {
+    const conn = await connectWs({ host: SOCKET_HOST, port: srv.port });
+    const infos = [];
+    await within(new Promise((r) => { conn.onClose((i) => { infos.push(i); r(); }); }), 5000, 'onClose');
+    await within(conn.close(), 5000, 'socket gone'); // resolves once the socket emitted close
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(infos, [{ code: 1000, reason: '' }]);
   } finally {
     await srv.close();
   }

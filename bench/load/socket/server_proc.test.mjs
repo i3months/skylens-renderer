@@ -96,7 +96,11 @@ test('the server child exits when its parent is killed', async () => {
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const within = (p, ms) => Promise.race([p, sleep(ms).then(() => { throw new Error(`still pending after ${ms} ms`); })]);
+const within = async (p, ms) => {
+  let timer;
+  const limit = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`still pending after ${ms} ms`)), ms); });
+  try { return await Promise.race([p, limit]); } finally { clearTimeout(timer); }
+};
 const until = async (cond, limitMs) => {
   const end = Date.now() + limitMs;
   while (!cond() && Date.now() < end) await sleep(20);
@@ -106,34 +110,36 @@ function fakeMain(body) {
   const dir = mkdtempSync(join(tmpdir(), 'server_proc_'));
   const mainPath = join(dir, 'fake_main.mjs');
   const pidFile = join(dir, 'pid');
-  writeFileSync(mainPath, `import { writeFileSync } from 'node:fs';\n${body}\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
-  return { dir, mainPath, pid: () => Number(readFileSync(pidFile, 'utf8')) };
+  writeFileSync(mainPath, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n${body}\nsetInterval(() => {}, 1000);\n`);
+  return { dir, mainPath, pidFile, pid: () => Number(readFileSync(pidFile, 'utf8')) };
 }
 
 test('startServerProcess rejects within the timeout and kills a silent child', async () => {
   const f = fakeMain('');
+  let pid;
   try {
     const t0 = Date.now();
-    await assert.rejects(within(startServerProcess({ host: SOCKET_HOST, mainPath: f.mainPath, startTimeoutMs: 600 }), 5000), /did not print a listening line within 600 ms/);
-    assert.ok(Date.now() - t0 < 5000);
-    const pid = f.pid();
+    await assert.rejects(within(startServerProcess({ host: SOCKET_HOST, mainPath: f.mainPath, startTimeoutMs: 600 }), 5000), (e) => { pid = e.pid; return /did not print a listening line within 600 ms/.test(e.message); });
+    assert.ok(Date.now() - t0 < 600 + 1500);
+    assert.ok(Number.isInteger(pid));
     await until(() => !alive(pid), 5000);
     assert.equal(alive(pid), false);
   } finally {
-    try { process.kill(f.pid(), 'SIGKILL'); } catch {}
+    try { process.kill(pid, 'SIGKILL'); } catch {}
     rmSync(f.dir, { recursive: true, force: true });
   }
 });
 
 test('the start timeout SIGKILLs a silent child that ignores SIGTERM', async () => {
   const f = fakeMain("process.on('SIGTERM', () => {});");
+  let pid;
   try {
-    await assert.rejects(within(startServerProcess({ host: SOCKET_HOST, mainPath: f.mainPath, startTimeoutMs: 600 }), 5000), /did not print a listening line/);
-    const pid = f.pid();
+    await assert.rejects(within(startServerProcess({ host: SOCKET_HOST, mainPath: f.mainPath, startTimeoutMs: 600 }), 5000), (e) => { pid = e.pid; return /did not print a listening line/.test(e.message); });
+    assert.ok(Number.isInteger(pid));
     await until(() => !alive(pid), 5000);
     assert.equal(alive(pid), false);
   } finally {
-    try { process.kill(f.pid(), 'SIGKILL'); } catch {}
+    try { process.kill(pid, 'SIGKILL'); } catch {}
     rmSync(f.dir, { recursive: true, force: true });
   }
 });
@@ -145,12 +151,25 @@ test('stop() falls back to SIGKILL when the child ignores SIGTERM', async () => 
     proc = await startServerProcess({ host: SOCKET_HOST, mainPath: f.mainPath, killAfterMs: 400 });
     await until(() => { try { f.pid(); return true; } catch { return false; } }, 5000);
     const t0 = Date.now();
-    const stopped = await Promise.race([proc.stop().then(() => true), sleep(5000).then(() => false)]);
-    assert.ok(stopped, 'stop() did not resolve');
-    assert.ok(Date.now() - t0 < 400 + 3000);
+    await within(proc.stop(), 5000);
+    assert.ok(Date.now() - t0 < 400 + 1500);
     assert.equal(alive(proc.pid), false);
   } finally {
     if (proc && alive(proc.pid)) process.kill(proc.pid, 'SIGKILL');
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test('startServerProcess rejects invalid timeouts with a RangeError and spawns nothing', async () => {
+  const f = fakeMain("console.log('listening 1');");
+  try {
+    for (const opt of [{ startTimeoutMs: NaN }, { startTimeoutMs: -1 }, { startTimeoutMs: 0 }, { startTimeoutMs: Infinity },
+      { killAfterMs: NaN }, { killAfterMs: -5 }, { killAfterMs: 0 }, { killAfterMs: Infinity }]) {
+      await assert.rejects(startServerProcess({ host: SOCKET_HOST, mainPath: f.mainPath, ...opt }), RangeError, JSON.stringify(opt));
+    }
+    await sleep(300);
+    assert.throws(() => readFileSync(f.pidFile), { code: 'ENOENT' });
+  } finally {
     rmSync(f.dir, { recursive: true, force: true });
   }
 });

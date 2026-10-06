@@ -39,26 +39,42 @@ async function realDeps() {
 
 const message = (e) => (e instanceof Error ? e.message : String(e));
 
+// A tick that fires more than this late is skipped instead of run (see tickOnRealClock).
+export const MAX_TICK_LATE_MS = 1000;
+
 /**
  * Ticks sampler on the clock at t0 + i*1000 ms for i = 1..ceil(durationS), the last tick at durationS.
- * t0 is shared with the caller (taken just before the sampler is created). Each timer is aimed at its absolute
- * target, so lateness does not accumulate, and now() is re-checked when a timer fires: an early firing waits
- * again, so a tick never runs before its target. Resolves after the last tick.
+ * t0 is shared with the sampler (runSocketLoad passes the same t0 to createProcSampler), so tS and the tick
+ * targets share one origin. Each timer is aimed at its absolute target, so lateness does not accumulate, and now()
+ * is re-checked when a timer fires: an early firing waits again, so a tick never runs before its target.
+ * A tick that is more than MAX_TICK_LATE_MS past its target (the event loop was blocked) is skipped rather than
+ * run in a burst with the backed-up ones; the missing sample shows up in checkServerSamples' count.
+ * Rejects with a RangeError if now() does not advance across a timer (a stopped injected clock would re-arm forever).
+ * Resolves after the last tick.
  */
 export function tickOnRealClock(sampler, durationS, now, onError, t0 = now(), schedule = setTimeout) {
   const n = Math.ceil(durationS);
   let i = 0;
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const next = () => {
       i += 1;
       if (i > n) { resolve(); return; }
       const targetMs = Math.min(i * 1000, durationS * 1000);
       const arm = () => {
+        const armedAt = now();
         schedule(() => {
-          if (now() - t0 < targetMs) { arm(); return; }
-          try { sampler.tick(); } catch (e) { onError(e); }
+          const at = now();
+          const elapsed = at - t0;
+          if (elapsed < targetMs) {
+            if (!(at > armedAt)) { reject(new RangeError('tickOnRealClock: now() did not advance across a timer')); return; }
+            arm();
+            return;
+          }
+          if (elapsed - targetMs <= MAX_TICK_LATE_MS) {
+            try { sampler.tick(); } catch (e) { onError(e); }
+          }
           next();
-        }, Math.max(0, targetMs - (now() - t0)));
+        }, Math.max(0, targetMs - (armedAt - t0)));
       };
       arm();
     };
@@ -82,16 +98,18 @@ export async function runSocketLoad({ clients = 30, durationS = 10, commit, deps
   const scenario = socketScenario(clients, durationS);
   const prefix = `${SCENARIO_NAME}: `;
   const violations = [];
+  const notes = [];
 
   const server = await d.startServerProcess({ host: SOCKET_HOST });
   let events;
   let serverSamples = [];
   try {
     const t0 = now();
-    const sampler = d.createProcSampler({ pid: server.pid, now });
+    const sampler = d.createProcSampler({ pid: server.pid, now, t0 });
     const ticking = tickOnRealClock(sampler, durationS, now, (e) => violations.push(`${prefix}server stats: ${message(e)}`), t0, d.setTimeout);
     const clientRun = d.runSocketClients({ host: SOCKET_HOST, port: server.port, clients, durationS });
-    const [clientOutcome] = await Promise.allSettled([clientRun, ticking]);
+    const [clientOutcome, tickOutcome] = await Promise.allSettled([clientRun, ticking]);
+    if (tickOutcome.status === 'rejected') violations.push(`${prefix}server stats: ${message(tickOutcome.reason)}`);
     if (clientOutcome.status === 'rejected') violations.push(`${prefix}clients: ${message(clientOutcome.reason)}`);
     else events = clientOutcome.value;
     serverSamples = sampler.samples();
@@ -101,17 +119,19 @@ export async function runSocketLoad({ clients = 30, durationS = 10, commit, deps
 
   let result = { scenario, records: [], perClient: [] };
   if (events !== undefined) {
-    const run = runScenario(scenario, { events, commit });
+    const run = runScenario(scenario, { events, commit, method: SOCKET_METHOD });
     // runScenario's verdicts all read the measured log; its simulated-clock samples are dropped here.
     appendAll(violations, run.violations);
-    result = { ...run.result, records: run.result.records.map((r) => ({ ...r, method: SOCKET_METHOD })) };
+    notes.push(...run.notes);
+    result = run.result;
   }
+  // With no samples checkServerSamples would add a second '0 samples' violation; the one naming the cause replaces it.
   if (serverSamples.length === 0) violations.push(`${prefix}server samples: 0 samples, likely cause: /proc not available (non-Linux?)`);
-  appendAll(violations, checkServerSamples(serverSamples, { durationS }), prefix);
+  else appendAll(violations, checkServerSamples(serverSamples, { durationS }), prefix);
 
   let report = null;
   if (validateResult(result).length === 0) report = loadReport(result, { serverSamples });
-  return { result, violations, serverSamples, report };
+  return { result, violations, notes, serverSamples, report };
 }
 
 export async function main(outDir = 'load_out/socket', durationArg, opts = {}) {
@@ -120,13 +140,13 @@ export async function main(outDir = 'load_out/socket', durationArg, opts = {}) {
     console.error(`usage: node bench/load/socket/run.mjs [outDir] [durationS]  (bad durationS: ${durationArg})`);
     return 2;
   }
-  const { result, violations, serverSamples, report } = await runSocketLoad({ ...opts, durationS });
+  const { result, violations, notes, serverSamples, report } = await runSocketLoad({ ...opts, durationS });
   mkdirSync(outDir, { recursive: true });
   writeFileSync(`${outDir}/${SCENARIO_NAME}.json`, JSON.stringify(result, null, 2) + '\n');
   writeFileSync(`${outDir}/${SCENARIO_NAME}.server.json`, JSON.stringify(serverSamples, null, 2) + '\n');
   const body = report ?? 'no report: result is invalid';
   const violationLines = violations.map((v) => `- ${v}`).join('\n');
-  writeFileSync(`${outDir}/report.md`, `## ${SCENARIO_NAME}\n${body}\n${violations.length ? `\nviolations:\n${violationLines}\n` : ''}`);
+  writeFileSync(`${outDir}/report.md`, `## ${SCENARIO_NAME}\n${body}\n${notes.length ? `\nreference only (not S5 verdicts):\n${notes.map((n) => `- ${n}`).join('\n')}\n` : ''}${violations.length ? `\nviolations:\n${violationLines}\n` : ''}`);
   console.log(`## ${SCENARIO_NAME}\n${body}\n`);
   for (const v of violations) console.error(`VIOLATION ${v}`);
   return violations.length === 0 ? 0 : 1;

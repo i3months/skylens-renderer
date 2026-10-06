@@ -236,16 +236,20 @@ test('two time bases: latencyMs runs from the connect attempt, the connect event
   });
   try {
     const readings = [];
-    const now = () => { const v = Math.round(performance.now()); readings.push(v); return v; }; // integer ms: exact arithmetic
+    // Integer ms (exact arithmetic) and strictly advancing per call, so attempt - start > 0 whatever the real clock rounds to;
+    // otherwise latencyMs = tMs (attempt base lost) would still satisfy the equality below.
+    let calls = 0;
+    const now = () => { calls += 1; const v = Math.round(performance.now()) + calls * 7; readings.push(v); return v; };
     const events = await runSocketClients({ host: SOCKET_HOST, port: srv.port, clients: 1, durationS: 0.3, now });
     const [start, attempt] = readings;
+    assert.ok(attempt - start > 0, `attempt-start ${attempt - start}`);
     const connect = events.find((e) => e.kind === 'connect');
     const bytes = events.find((e) => e.kind === 'bytes');
     // latencyMs = recv - attempt; bytes.tMs - connect.tMs = recv - connectedMs; the difference is connectedMs - attempt.
     const handshakeMs = bytes.latencyMs - (bytes.tMs - connect.tMs);
     assert.equal(handshakeMs, connect.tMs - (attempt - start));
     // The server holds the 101 for 40 ms of real time. Lower bound 35: timers may fire up to ~1 ms early and each integer
-    // rounding costs up to 1 ms. Upper bound 40 + 150: scheduler / loopback jitter on a loaded CI host, far below durationS.
+    // rounding costs up to 1 ms (the fake +7 per reading only adds). Upper bound 40 + 150: scheduler / loopback jitter on a loaded CI host, far below durationS.
     assert.ok(handshakeMs >= HANDSHAKE_MS - 5 && handshakeMs <= HANDSHAKE_MS + 150, `handshake ${handshakeMs}`);
     assert.ok(bytes.latencyMs >= handshakeMs); // latency spans the handshake (equal when the payload shares the data event with the 101)
   } finally {
@@ -271,10 +275,13 @@ test('ties on tMs are ordered by id even when arrival order is reversed; closes 
     onOpen(socket) { for (const n of LEVEL_PAYLOAD_BYTES) socket.write(encodeFrame(OPCODES.BINARY, new Uint8Array(n))); },
   });
   try {
+    // The fake clock advances gradually and stays behind the real timers: every handshake and level event lands at 0, the clock
+    // is still 999 when a single setTimeout(endMs) would fire (real 1000 ms), and reaches 1000 only at real 1100 ms. An early
+    // close (before the clock reaches endMs) or a one-shot timer that skips the re-check would stamp a close below 1000.
     let clock = 0;
-    const timer = setTimeout(() => { clock = 1000; }, 400);
+    const timers = [[400, 500], [700, 999], [1100, 1000]].map(([at, v]) => setTimeout(() => { clock = v; }, at));
     const events = await runSocketClients({ host: SOCKET_HOST, port: srv.port, clients: CLIENTS_TIE, durationS: 1, now: () => clock });
-    clearTimeout(timer);
+    for (const t of timers) clearTimeout(t);
     assert.ok(events.every((e) => e.tMs === 0 || e.tMs === 1000));
     assert.ok(events.filter((e) => e.tMs === 0).length > CLIENTS_TIE * 4);
     const closes = events.filter((e) => e.kind === 'close');

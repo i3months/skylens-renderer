@@ -812,6 +812,29 @@ test('first-frame p95: annotation only on the p95 row of a cloud report', () => 
   assert.ok(!out.includes(NOTE));
 });
 
+function mixedRows(methods) {
+  const r = srcResult({ method: 'loopback-socket' });
+  const metrics = ['load.first_frame_p95', 'load.first_frame_p50', 'load.other_p95', 'load.first_frame_p95_extra'];
+  r.records = metrics.map((metric, i) => ({ ...r.records[0], metric, method: methods[i] }));
+  return r;
+}
+const countNote = (out) => out.split(NOTE).length - 1;
+
+test('first-frame p95: cloud report with p95, p50 and other rows annotates exactly the first_frame p95 row', () => {
+  const out = loadReport(mixedRows(Array(4).fill('loopback-socket')));
+  assert.equal(countNote(out), 1);
+  assert.ok(out.includes(`| load.first_frame_p95 ${NOTE} | 1 | ms | d | loopback-socket |`));
+  assert.ok(out.includes('| load.first_frame_p50 | 1 | ms | d | loopback-socket |'));
+  assert.ok(out.includes('| load.other_p95 | 1 | ms | d | loopback-socket |'));
+  assert.ok(out.includes('| load.first_frame_p95_extra | 1 | ms | d | loopback-socket |'));
+});
+
+test('first-frame p95: mixed-method (unknown source) report has no annotation, even on a cloud-method p95 row', () => {
+  const out = loadReport(mixedRows(['loopback-socket', 'x', 'loopback-socket', 'loopback-socket']));
+  assert.equal(srcOf(out), 'source: unknown, S5/S8 verdict origin unknown');
+  assert.equal(countNote(out), 0);
+});
+
 test('cloud approximation report: labeled approximation and [local], never measured on loopback-socket', () => {
   const out = loadReport(ffResult('loopback-socket'));
   assert.ok(out.includes('(cloud approximation)'));

@@ -1,5 +1,5 @@
 // Server CPU/memory sampler for the load harness (T16.2). Clock and usage sources are injected.
-// tS is the real elapsed time since creation; no nominal interval is used or reported.
+// tS is the real elapsed time since creation (or since the injected t0); no nominal interval is used or reported.
 // cpuPct is total CPU time over wall time, so a fully busy 2-core process reads 200.
 // Samples carry `source` and `clock` labels. `clock` ('simulated' | 'real') is a required explicit
 // argument, never inferred from whether `now` was injected. A simulated clock needs both `now` and
@@ -11,6 +11,7 @@ export function createStatsSampler({
   cpuUsage: cpuIn,
   memoryUsage = () => process.memoryUsage(),
   now: nowIn,
+  t0: t0In,
   clock,
   source,
   cpuStub = false,
@@ -22,9 +23,13 @@ export function createStatsSampler({
   const cpuUsage = cpuIn ?? (() => process.cpuUsage());
   const now = nowIn ?? (() => performance.now());
   const cpuSource = cpuStub ? 'stub' : clock === 'simulated' ? 'simulated' : 'measured';
+  if (t0In !== undefined && !Number.isFinite(t0In)) throw new Error('createStatsSampler: t0 must be a finite number on the now() clock');
   const out = [];
-  const t0 = now();
-  let prevT = t0;
+  // t0 (optional, on the same clock as now) lets a caller that already started its own timeline share it, so tS
+  // is measured from that origin; the baseline for the first interval is still taken here, at creation.
+  const created = now();
+  const t0 = t0In ?? created;
+  let prevT = created;
   let prevCpu = cpuUsage();
   return {
     tick() {
