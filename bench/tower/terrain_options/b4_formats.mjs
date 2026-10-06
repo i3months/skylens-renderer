@@ -146,6 +146,8 @@ export function planarRestore(z, cells, head) {
  *   heights = 세 형식 공통 복원값(BPO·BPP 복호 결과가 Q16 과 같은지 verify 가 참이면 확인한다).
  */
 export function encodeQuantized(tile, step, { verify = false } = {}) {
+  // F-491 ⑧: cells < 2 는 격자 한 점뿐이라 평면 잔차(planarResiduals)·삼각형 수가 정의되지 않는다. 조용히 부호화하지 않고 거부한다.
+  if (!Number.isInteger(tile.cells) || tile.cells < 2) throw new RangeError(`cells 는 2 이상 정수여야 한다: ${tile.cells}`);
   if (tile.heights.length !== tile.cells * tile.cells) {
     throw new RangeError(`heights.length ${tile.heights.length} != cells^2 ${tile.cells * tile.cells}`);
   }
