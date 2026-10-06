@@ -11,8 +11,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 test('tickOnRealClock rejects with RangeError (never throws synchronously) for NaN and Infinity durationS', { timeout: 10000 }, async () => {
   const sampler = { tick() {} };
   const now = () => 0;
-  await assert.rejects(() => tickOnRealClock(sampler, NaN, now, () => {}), RangeError);
-  await assert.rejects(() => tickOnRealClock(sampler, Infinity, now, () => {}), RangeError);
+  for (const durationS of [NaN, Infinity]) {
+    // A schedule limited to a few calls: if validation is missing, the call re-arms until the limit and the test
+    // fails with a clear message instead of re-arming a 1 ms timer forever.
+    const LIMIT = 5;
+    let calls = 0;
+    let exhausted;
+    const limitHit = new Promise((_, rej) => { exhausted = () => rej(new assert.AssertionError({ message: `tickOnRealClock(${durationS}) did not reject; it scheduled ${LIMIT} timers (validation missing)` })); });
+    limitHit.catch(() => {});
+    const schedule = (fn) => {
+      calls += 1;
+      if (calls >= LIMIT) { exhausted(); return; }
+      queueMicrotask(fn);
+    };
+    let call;
+    try { call = tickOnRealClock(sampler, durationS, now, () => {}, 0, schedule); } catch (e) { assert.fail(`threw synchronously: ${e}`); }
+    await assert.rejects(Promise.race([call, limitHit]), RangeError, `durationS=${durationS}`);
+  }
 });
 
 test('main prints each note to stderr as `NOTE <text>`', { timeout: 10000 }, async () => {

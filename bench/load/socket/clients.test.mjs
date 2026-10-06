@@ -251,7 +251,8 @@ test('two time bases: latencyMs runs from the connect attempt, the connect event
     assert.equal(handshakeMs, connect.tMs - (attempt - start));
     // The server holds the 101 for 40 ms of real time; the constant offset cancels, so the lower side is tight: at least 40 - 5
     // (timers may fire ~1 ms early, each integer rounding costs up to 1 ms). The upper side is scheduler lateness, which grows under
-    // CPU contention, so it only has +150 ms of room (46-48 ms seen with 2 busy loops, 85-106 ms with 8).
+    // CPU contention, so it only has +150 ms of room (46-48 ms seen with 2 busy loops, 85-106 ms with 8). Under load the real-time lower
+    // side can miss a connect moved 15 ms earlier; the deterministic injected-clock test above (connect/attempt equality) catches that.
     assert.ok(handshakeMs >= HANDSHAKE_MS - 5 && handshakeMs <= HANDSHAKE_MS + 150, `handshake ${handshakeMs}`);
     assert.ok(bytes.latencyMs >= handshakeMs); // latency spans the handshake (equal when the payload shares the data event with the 101)
   } finally {

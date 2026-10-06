@@ -19,7 +19,12 @@ test('timeouts above 2**31-1 throw RangeError before spawning', { timeout: 10000
   const f = marker();
   try {
     for (const opt of [{ startTimeoutMs: 2 ** 31 }, { killAfterMs: 2 ** 31 }]) {
-      await assert.rejects(startServerProcess({ host: HOST, mainPath: f.mainPath, ...opt }), RangeError, JSON.stringify(opt));
+      await assert.rejects(async () => {
+        const proc = await startServerProcess({ host: HOST, mainPath: f.mainPath, ...opt });
+        // Validation is missing: stop the child so it cannot keep this process alive, then fail.
+        await proc.stop();
+        assert.fail(`startServerProcess resolved instead of throwing RangeError for ${JSON.stringify(opt)}`);
+      }, RangeError, JSON.stringify(opt));
     }
     await new Promise((r) => setTimeout(r, 400));
     assert.equal(existsSync(f.mark), false);

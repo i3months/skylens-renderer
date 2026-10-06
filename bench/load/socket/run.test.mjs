@@ -136,12 +136,11 @@ test('real server process, real sockets and real proc sampler: 30 clients for 2 
   });
   assert.deepEqual(out.violations, []);
   assert.equal(out.serverSamples.length, 2);
-  // The sampler shares run's t0 (getconf must not shift it): a sample is never more than 2 ms before its target (F-574 saw 8-9 ms early);
-  // timer lateness is OS scheduling jitter (2.7 ms idle, 37-43 ms with 3 socket suites + 2 busy loops running), so the late side only has a
-  // loose 0.1 s bound; a t0 skew is caught by the early side (a later sampler t0 makes tS fall before its target) and by the sample spacing.
-  out.serverSamples.forEach((s, i) => { const d = s.tS - Math.min(i + 1, 2); assert.ok(d > -0.002 && d < 0.1, `tS[${i}] = ${s.tS}`); });
-  const spacing = out.serverSamples[1].tS - out.serverSamples[0].tS;
-  assert.ok(Math.abs(spacing - 1) < 0.05, `sample spacing ${spacing}`);
+  // Early side only: a sample is never before its target (F-574 saw 8-9 ms early when the sampler took its own t0), and an idle-state
+  // check only; sharing run's t0 is guaranteed by the deterministic injected-clock tests below (a uniform t0 skew shifts every tS equally,
+  // so spacing cannot detect it). Lateness is OS scheduling jitter (111 ms seen under heavy load) and is covered by the checkServerSamples
+  // sample count, so the late side only has a loose 1 s bound.
+  out.serverSamples.forEach((s, i) => { const d = s.tS - Math.min(i + 1, 2); assert.ok(d > -0.002 && d < 1, `tS[${i}] = ${s.tS}`); });
   assert.equal(out.report.split('(handshake-complete basis, not an S5 value)').length - 1, 1, out.report);
   assert.match(out.report, /first_frame_p95.*\(handshake-complete basis, not an S5 value\)/);
   for (const s of out.serverSamples) {
@@ -239,6 +238,21 @@ test('runSocketLoad passes the t0 it ticks against to the sampler', async () => 
   deps.createProcSampler = (a) => { seen = a; return make(a); };
   await runSocketLoad({ clients: 5, durationS: 1, commit: COMMIT, deps });
   assert.equal(seen.t0, 5000);
+});
+
+test('the sampler t0 equals the t0 run ticks against (a +30 ms or -30 ms skew in either is detected)', async () => {
+  const { deps } = fakeClockDeps();
+  const make = deps.createProcSampler;
+  let samplerT0;
+  const tickTimes = [];
+  deps.createProcSampler = (a) => {
+    samplerT0 = a.t0;
+    const s = make(a);
+    return { samples: () => s.samples(), tick() { tickTimes.push(deps.now()); return s.tick(); } };
+  };
+  await runSocketLoad({ clients: 5, durationS: 2, commit: COMMIT, deps });
+  // The clock never runs late, so each tick lands exactly on t0 + k s when run ticks against the t0 it handed the sampler.
+  assert.deepEqual(tickTimes.map((t) => t - samplerT0), [1000, 2000]);
 });
 
 test('tickOnRealClock with a stopped clock rejects with RangeError instead of re-arming forever', async () => {
