@@ -236,10 +236,11 @@ test('two time bases: latencyMs runs from the connect attempt, the connect event
   });
   try {
     const readings = [];
-    // Integer ms (exact arithmetic) and strictly advancing per call, so attempt - start > 0 whatever the real clock rounds to;
-    // otherwise latencyMs = tMs (attempt base lost) would still satisfy the equality below.
+    // Real clock in integer ms (exact arithmetic) plus a constant +7 offset on every reading after the first, so attempt - start > 0
+    // whatever the real clock rounds to (otherwise latencyMs = tMs, attempt base lost, would still satisfy the equality below).
+    // The offset is constant, not per-call, so it cancels out of handshakeMs and does not inflate it with the poll count.
     let calls = 0;
-    const now = () => { calls += 1; const v = Math.round(performance.now()) + calls * 7; readings.push(v); return v; };
+    const now = () => { calls += 1; const v = Math.round(performance.now()) + (calls > 1 ? 7 : 0); readings.push(v); return v; };
     const events = await runSocketClients({ host: SOCKET_HOST, port: srv.port, clients: 1, durationS: 0.3, now });
     const [start, attempt] = readings;
     assert.ok(attempt - start > 0, `attempt-start ${attempt - start}`);
@@ -248,9 +249,9 @@ test('two time bases: latencyMs runs from the connect attempt, the connect event
     // latencyMs = recv - attempt; bytes.tMs - connect.tMs = recv - connectedMs; the difference is connectedMs - attempt.
     const handshakeMs = bytes.latencyMs - (bytes.tMs - connect.tMs);
     assert.equal(handshakeMs, connect.tMs - (attempt - start));
-    // The server holds the 101 for 40 ms of real time. Lower bound 35: timers may fire up to ~1 ms early and each integer
-    // rounding costs up to 1 ms (the fake +7 per reading only adds). Upper bound 40 + 150: scheduler / loopback jitter on a loaded CI host, far below durationS.
-    assert.ok(handshakeMs >= HANDSHAKE_MS - 5 && handshakeMs <= HANDSHAKE_MS + 150, `handshake ${handshakeMs}`);
+    // The server holds the 101 for 40 ms of real time; the constant offset cancels, so the measurement is tight: 40 +/- 5
+    // (timers may fire ~1 ms early, each integer rounding costs up to 1 ms, and a few ms of loopback / scheduler lateness).
+    assert.ok(Math.abs(handshakeMs - HANDSHAKE_MS) <= 5, `handshake ${handshakeMs}`);
     assert.ok(bytes.latencyMs >= handshakeMs); // latency spans the handshake (equal when the payload shares the data event with the 101)
   } finally {
     await srv.close();
