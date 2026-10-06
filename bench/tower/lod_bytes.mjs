@@ -67,6 +67,12 @@ function serializeMeshPiece(mesh, tx, ty) {
 // Module-level cache for memoization
 const __measureLodBytesCache = {};
 
+/** 깊은 동결: 객체와 모든 중첩 객체를 Object.freeze 한다. */
+function deepFreeze(o) {
+  if (o && typeof o === 'object') { Object.values(o).forEach(deepFreeze); Object.freeze(o); }
+  return o;
+}
+
 /** 측정 캐시를 비운다. 결정성 시험이 캐시를 우회해 독립 계산 두 번을 비교할 때 쓴다. */
 export function clearLodBytesCache() {
   for (const k of Object.keys(__measureLodBytesCache)) delete __measureLodBytesCache[k];
@@ -78,6 +84,11 @@ export function clearLodBytesCache() {
  */
 export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
   // tilesPerSide: 가운데 tilesPerSide x tilesPerSide 타일만 잰다(기본 16 = 256 타일 전부, 작게 주면 시험이 빨라진다).
+  // Validate tilesPerSide: must be positive even integer
+  if (!Number.isInteger(tilesPerSide) || tilesPerSide <= 0 || tilesPerSide % 2 !== 0) {
+    throw new RangeError(`tilesPerSide must be a positive even integer, got ${tilesPerSide}`);
+  }
+
   const cacheKey = dem.__cacheKey ? `${dem.__cacheKey}|${tilesPerSide}` : null;
   if (cacheKey && __measureLodBytesCache[cacheKey]) {
     return __measureLodBytesCache[cacheKey];
@@ -113,6 +124,9 @@ export function measureLodBytes(dem, { tilesPerSide = TILES_PER_SIDE } = {}) {
     lod3OverBudgetRaw: l3.rawBytes > INITIAL_LIMIT_BYTES,
     lod3OverBudgetGzip: l3.gzipBytes > INITIAL_LIMIT_BYTES,
   };
+
+  // Deep freeze the result to prevent cache pollution
+  deepFreeze(result);
 
   // Cache the result if DEM has a cache key
   if (cacheKey) {

@@ -81,3 +81,36 @@ test('measureAll 은 JSON 직렬화 가능하고 상한표 [0, 0.5, 1, 1] 을 �
   assert.deepEqual(all.maxErrorM, [0, 0.5, 1, 1]);
   assert.deepEqual(JSON.parse(JSON.stringify(all.dems.smooth)), smooth);
 });
+
+test('③ tilesPerSide 가 0·음수·홀수·NaN·비정수면 RangeError', () => {
+  const dem = smoothDem();
+  // tilesPerSide = 0
+  assert.throws(() => measureLodBytes(dem, { tilesPerSide: 0 }), RangeError);
+  // tilesPerSide = -4 (음수)
+  assert.throws(() => measureLodBytes(dem, { tilesPerSide: -4 }), RangeError);
+  // tilesPerSide = 3 (홀수)
+  assert.throws(() => measureLodBytes(dem, { tilesPerSide: 3 }), RangeError);
+  // tilesPerSide = NaN
+  assert.throws(() => measureLodBytes(dem, { tilesPerSide: NaN }), RangeError);
+  // tilesPerSide = 4.5 (비정수)
+  assert.throws(() => measureLodBytes(dem, { tilesPerSide: 4.5 }), RangeError);
+});
+
+test('⑤ 캐시가 돌려주는 객체는 깊은 동결로 호출자 변경이 캐시를 오염하지 못한다', () => {
+  clearLodBytesCache();
+  const dem = noiseBigDem(42);
+  const result1 = measureLodBytes(dem, { tilesPerSide: 4 });
+  // 캐시가 저장한 객체를 변경할 수 없다
+  assert.throws(() => {
+    result1.levels[0].rawBytes = 999;
+  }, TypeError);
+  // 캐시에서 다시 받은 객체도 변경할 수 없다
+  const result2 = measureLodBytes(dem, { tilesPerSide: 4 });
+  assert.throws(() => {
+    result2.ratios.lod3OverLod2.raw = 999;
+  }, TypeError);
+  // 둘 다 캐시 객체(같은 참조)
+  assert.equal(result1, result2);
+  // 데이터는 같다
+  assert.deepEqual(result1, result2);
+});
