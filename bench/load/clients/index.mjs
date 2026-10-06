@@ -1,7 +1,7 @@
 // T16.1 mock clients: simulateClients(scenario, { seed }) -> ClientEvent[] (see contracts/load/harness.mjs).
 // Pure and deterministic: all randomness comes from rng(seed), time is the event tMs.
 import { rng } from '../../../contracts/load/harness.mjs';
-import { validateScenario } from '../../../contracts/load/index.mjs';
+import { validateScenario, MAX_CLIENTS } from '../../../contracts/load/index.mjs';
 import { LEVEL_COUNT } from '../../../contracts/asset/index.mjs';
 
 const CONNECT_JITTER_MS = 200;
@@ -91,6 +91,9 @@ export function countOpenConnections(events) {
  * ids 0..clients-1 with no connect at all. Output is sorted by id, then by event order within an id.
  */
 export function connectionViolations(events, clients) {
+  if (!(Number.isInteger(clients) && clients >= 1 && clients <= MAX_CLIENTS)) {
+    return [`bad clients: ${String(clients)} (must be an integer in 1..${MAX_CLIENTS})`];
+  }
   const open = new Set();
   const everConnected = new Set();
   const perId = new Map();
