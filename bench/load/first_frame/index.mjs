@@ -20,9 +20,12 @@ function nearestRank(sortedAsc, p) {
 }
 
 /**
- * firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs, missing }
+ * firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs, missing, noArrival }
  * missing = ascending ids whose perClientMs is Infinity (no usable first frame).
+ * noArrival = ascending ids that had a first_frame but no level-0 arrival at or before it (subset of missing).
  * perClientMs[id] = first 'first_frame' tMs minus the client's 'connect' tMs.
+ * A first_frame counts only if the same id has a 'level' event with level 0 at tMs <= that first_frame's tMs;
+ * otherwise the client gets Infinity (never filled in) and, if it had a first_frame, its id is in noArrival.
  * A client with no first_frame (or no connect) gets Infinity; it is never dropped or filled in,
  * so it ranks above every finite value in the percentiles. A first_frame earlier than the client's
  * connect is impossible data and also gets Infinity (never a negative latency).
@@ -41,25 +44,34 @@ export function firstFrameStats(events, clients) {
     throw new RangeError(`clients must be an integer in 1..${MAX_CLIENTS}`);
   }
   const connect = new Array(clients).fill(Infinity);
-  const frame = new Array(clients).fill(Infinity);
+  const level0 = new Array(clients).fill(Infinity);
+  const frames = Array.from({ length: clients }, () => []);
   for (const e of events) {
     if (!Number.isInteger(e.id) || e.id < 0 || e.id >= clients) continue;
     if (e.kind === 'connect' && e.tMs < connect[e.id]) connect[e.id] = e.tMs;
-    else if (e.kind === 'first_frame' && e.tMs < frame[e.id]) frame[e.id] = e.tMs;
+    else if (e.kind === 'level' && e.level === 0 && e.tMs < level0[e.id]) level0[e.id] = e.tMs;
+    else if (e.kind === 'first_frame') frames[e.id].push(e.tMs);
   }
+  // A first_frame counts only if a level-0 arrival of the same id is at tMs <= the first_frame tMs.
+  const frame = new Array(clients).fill(Infinity);
+  const noArrival = [];
+  frames.forEach((list, id) => {
+    for (const t of list) if (t >= level0[id] && t < frame[id]) frame[id] = t;
+    if (list.length > 0 && frame[id] === Infinity) noArrival.push(id);
+  });
   const perClientMs = connect.map((c, id) =>
     Number.isFinite(c) && Number.isFinite(frame[id]) && frame[id] >= c ? frame[id] - c : Infinity);
   const missing = [];
   perClientMs.forEach((ms, id) => { if (!Number.isFinite(ms)) missing.push(id); });
-  if (!perClientMs.some(Number.isFinite)) return { p50Ms: NaN, p95Ms: NaN, perClientMs, missing };
+  if (!perClientMs.some(Number.isFinite)) return { p50Ms: NaN, p95Ms: NaN, perClientMs, missing, noArrival };
   const sorted = [...perClientMs].sort((a, b) => a - b);
-  return { p50Ms: nearestRank(sorted, 0.5), p95Ms: nearestRank(sorted, 0.95), perClientMs, missing };
+  return { p50Ms: nearestRank(sorted, 0.5), p95Ms: nearestRank(sorted, 0.95), perClientMs, missing, noArrival };
 }
 
 /**
  * Returns violation strings (an input-check violation if stats.p95Ms is not a number). Empty only when p95 is a
  * number <= FIRST_FRAME_P95_LIMIT_MS (NaN fails) and no client lacks a first frame. Every client without one yields
- * `client N: no first frame` in id order; an Infinity p95 caused only by such clients is not reported twice.
+ * `client N: no first frame` in id order (`client N: first_frame without level-0 arrival` if it had a first_frame but no arrival); an Infinity p95 caused only by such clients is not reported twice.
  */
 export function firstFrameViolations(stats) {
   if (stats === null || typeof stats !== 'object' || typeof stats.p95Ms !== 'number') {
@@ -75,6 +87,9 @@ export function firstFrameViolations(stats) {
   else if (stats.p95Ms > FIRST_FRAME_P95_LIMIT_MS && !(stats.p95Ms === Infinity && missing.length > 0)) {
     out.push(`first-frame p95 ${stats.p95Ms} ms exceeds limit ${FIRST_FRAME_P95_LIMIT_MS} ms`);
   }
-  for (const id of missing) out.push(`client ${id}: no first frame`);
+  const noArrival = Array.isArray(stats.noArrival) ? stats.noArrival : [];
+  for (const id of missing) {
+    out.push(noArrival.includes(id) ? `client ${id}: first_frame without level-0 arrival` : `client ${id}: no first frame`);
+  }
   return out;
 }
