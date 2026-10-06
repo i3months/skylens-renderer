@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadReport } from './index.mjs';
+import { loadReport, CLOUD_APPROXIMATION_METHODS } from './index.mjs';
 
 function countUnescapedPipes(line) {
   // Count pipes that are not escaped with a backslash
@@ -775,4 +775,16 @@ test('F-558: loadReport checks the samples against result.scenario.durationS', (
   const sim = (n) => Array.from({ length: n }, (_, i) => sample('simulated', { tS: i + 1, clock: 'simulated', cpuSource: 'simulated' }));
   assert.equal(cpuOf(loadReport(srcResult({ method: 'sim', serverSamples: sim(9) }))), 'cpu/rss source: unknown');
   assert.equal(cpuOf(loadReport(srcResult({ method: 'sim', serverSamples: sim(10) }))), 'cpu/rss source: simulated');
+});
+
+test('source line: cloud approximation method reports [local], not measured on', () => {
+  assert.ok(CLOUD_APPROXIMATION_METHODS.includes('loopback-socket'));
+  const out = loadReport(srcResult({ method: 'loopback-socket' }));
+  assert.equal(srcOf(out), 'source: loopback-socket (cloud approximation), S5/S8 verdict [local]');
+  assert.ok(!out.includes('measured on'));
+  assert.ok(out.includes('[local]'));
+});
+
+test('source line: non-approximation method still says measured on', () => {
+  assert.equal(srcOf(loadReport(srcResult({ method: 'wrk' }))), 'source: wrk, S5/S8 verdict measured on wrk');
 });
