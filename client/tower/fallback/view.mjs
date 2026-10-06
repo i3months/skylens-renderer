@@ -1,9 +1,11 @@
 // 관제탑 폴백 지도 맞춤·화면 변환(T15.8). 계약: contracts/controlview/fallback.mjs TOWER_FALLBACK_FORMULA.fit·toScreen.
 //   맞춤: 받은 모든 점의 (e,n) 경계 상자. center = 상자 중심, span = max(동서 폭, 남북 폭, minSpanM),
 //         m = min(max(marginPx, 1), min(width,height)/4), avail = max(min(width,height) − 2·m, 1),
-//         metersPerPx = span/avail. 점이 없으면 null. 결과가 유한·양수가 아니면 RangeError.
-//   여백 m 은 최소 1px 이라 marginPx=0 이어도 끝 점이 x=width·y=height 에 놓이지 않는다(끝 점 ≤ size−1).
-//   작은 화면에서는 m 을 줄여(min(width,height) < 4m 이면 avail = min/2) 지도가 1px 로 붕괴하지 않고, 축척은 크기에 단조다.
+//         metersPerPx = max(span/avail, minMetersPerPx). 점이 없으면 null.
+//   하한 미만의 span/avail(언더플로 0 포함)은 minMetersPerPx 로 고정한다. 점은 더 안쪽에 놓일 뿐이라 여백 안에 드는 성질은 그대로다.
+//   여백 m 은 최소 1px 이지만 한 변이 4px 미만이면 side/4 로 줄어든다(side/4 < 1). 그래서 marginPx=0 이어도
+//   한 변 ≥ 4px 에서는 끝 점이 ≤ size−1 이고, 한 변 ≥ 2px 에서는 모든 점이 visible 이다(한 변 1px 은 끝 점이 x=width 에 놓일 수 있다).
+//   작은 화면에서는 m 을 줄여(side < 4·max(marginPx,1) 이면 avail = side/2) 지도가 1px 로 붕괴하지 않고, 축척은 크기에 단조다.
 //   변환: x = width/2 + (e − centerE)/metersPerPx, y = height/2 − (n − centerN)/metersPerPx,
 //         visible = 0 ≤ x < width 이고 0 ≤ y < height.
 // 입력은 호출 쪽(validate.mjs)에서 이미 검사했으므로 여기서는 검사하지 않는다. 순회는 한 번이고
@@ -31,11 +33,8 @@ export function fitView(points, size, { minSpanM, marginPx }) {
   const side = Math.min(size.width, size.height);
   const m = Math.min(Math.max(marginPx, 1), side / 4);
   const avail = Math.max(side - 2 * m, 1);
-  const metersPerPx = span / avail;
-  // 하한 미만(언더플로로 0 이 되는 경우 포함)이면 화면 좌표가 비유한이 되므로 던진다.
-  if (!Number.isFinite(metersPerPx) || metersPerPx < TOWER_FALLBACK_LIMITS.minMetersPerPx) {
-    throw new RangeError('metersPerPx 는 유한하고 계약 하한 이상이어야 한다');
-  }
+  // 하한 미만(언더플로로 0 이 되는 경우 포함)은 하한으로 고정한다. 던지지 않는다(입력은 검사를 통과한 값이다).
+  const metersPerPx = Math.max(span / avail, TOWER_FALLBACK_LIMITS.minMetersPerPx);
   return { centerE: (minE + maxE) / 2, centerN: (minN + maxN) / 2, metersPerPx };
 }
 

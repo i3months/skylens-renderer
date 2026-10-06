@@ -89,6 +89,9 @@ export function checkView(view) {
   const centerN = checkFinite(vals.centerN, 'view.centerN');
   const metersPerPx = checkFinite(vals.metersPerPx, 'view.metersPerPx');
 
+  if (Math.abs(centerE) > TOWER_FALLBACK_LIMITS.maxAbsEnuM || Math.abs(centerN) > TOWER_FALLBACK_LIMITS.maxAbsEnuM) {
+    throw new RangeError(`view.centerE, view.centerN 의 절댓값은 ${TOWER_FALLBACK_LIMITS.maxAbsEnuM} 이하여야 한다`);
+  }
   if (metersPerPx < TOWER_FALLBACK_LIMITS.minMetersPerPx) {
     throw new RangeError(`view.metersPerPx 는 ${TOWER_FALLBACK_LIMITS.minMetersPerPx} 이상이어야 한다`);
   }

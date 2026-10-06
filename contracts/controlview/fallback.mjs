@@ -8,12 +8,12 @@
 export const TOWER_FALLBACK_BANNER = '실시간 3D 불가';
 
 /** 기본값·한도. minSpanM: 지도가 덮는 최소 변 길이(m). marginPx: 지도 가장자리 여백(px). maxAbsEnuM: 지도에 쓰는 |e|,|n| 상한(m).
- *  minMetersPerPx: minSpanM 과 metersPerPx 의 하한(m/px, 한 곳 정의). 이보다 작으면 화면 좌표가 비유한이 될 수 있어 RangeError. */
+ *  minMetersPerPx: minSpanM 과 metersPerPx 의 하한(m/px, 한 곳 정의). minSpanM·setView 의 metersPerPx 가 이보다 작으면 RangeError, 자동 맞춤의 span/avail 이 이보다 작으면 이 값으로 고정한다. maxAbsEnuM 는 setView 의 |centerE|,|centerN| 상한도 된다. */
 export const TOWER_FALLBACK_LIMITS = Object.freeze({ minSpanM: 100, marginPx: 16, maxAbsEnuM: 1e6, minMetersPerPx: 1e-6 });
 
 export const TOWER_FALLBACK_FORMULA = Object.freeze({
-  fit: '받은 모든 점(드론·탐지·경로 점)의 (e,n) 경계 상자. centerE = (minE+maxE)/2, centerN = (minN+maxN)/2, span = max(maxE−minE, maxN−minN, minSpanM), m = min(max(marginPx, 1), min(width,height)/4)(여백은 최소 1px, min(width,height) < 4m 인 작은 화면에서는 여백을 줄여 avail = min/2 로 두어 지도가 1px 로 붕괴하지 않게 한다. 한 변 ≥ 2px 에서 모든 점이 visible), avail = max(min(width,height) − 2·m, 1), metersPerPx = span/avail. 결과가 유한·양수가 아니면 RangeError. 받은 점이 없으면 view = null',
-  toScreen: 'x = width/2 + (e − centerE)/metersPerPx;  y = height/2 − (n − centerN)/metersPerPx;  visible = 0 ≤ x < width 이고 0 ≤ y < height. 자동 맞춤에서는 받은 모든 점이 [m, size−m] 안에 들어(marginPx=0 이어도 m ≥ 1 이라 경계 x=width 에 놓이지 않는다) visible 이다',
+  fit: '받은 모든 점(드론·탐지·경로 점)의 (e,n) 경계 상자. centerE = (minE+maxE)/2, centerN = (minN+maxN)/2, span = max(maxE−minE, maxN−minN, minSpanM), m = min(max(marginPx, 1), min(width,height)/4)(여백은 최소 1px 이되 한 변의 1/4 을 넘지 않는다: 한 변 < 4px 에서는 m = min(width,height)/4 < 1. min(width,height) < 4·max(marginPx,1) 인 작은 화면에서는 avail = min/2 라 지도가 1px 로 붕괴하지 않는다. 한 변 ≥ 2px 에서 모든 점이 visible), avail = max(min(width,height) − 2·m, 1), metersPerPx = max(span/avail, minMetersPerPx)(하한 미만은 하한으로 고정하며 던지지 않는다). 받은 점이 없으면 view = null',
+  toScreen: 'x = width/2 + (e − centerE)/metersPerPx;  y = height/2 − (n − centerN)/metersPerPx;  visible = 0 ≤ x < width 이고 0 ≤ y < height. 자동 맞춤에서는 받은 모든 점이 [m, size−m] 안에 들어(marginPx=0 이어도 한 변 ≥ 4px 에서는 m ≥ 1 이라 경계 x=width 에 놓이지 않고, 한 변 ≥ 2px 에서 visible 이다)',
   override: 'setView 로 직접 정한 view 가 있으면 맞춤 대신 그것을 쓴다(null 이면 다시 맞춤). 받은 점이 없어도 view 는 null 이 아니라 그 값이다',
 });
 
@@ -33,7 +33,7 @@ export const TOWER_FALLBACK_API = Object.freeze({
   create: 'createTowerFallback(opts?) -> TowerFallback   opts: {minSpanM?, marginPx?}(TOWER_FALLBACK_LIMITS 기본). 형식 위반 TypeError, 알 수 없는 키·범위 위반(minSpanM < minMetersPerPx, marginPx < 0, 비유한) RangeError',
   availability: 'fallback.setAvailable(available:boolean) -> void   true=서버 렌더 가능(live), false=불가(fallback). 처음은 true. boolean 이 아니면 TypeError.  fallback.mode() -> "live"|"fallback"',
   data: 'fallback.setDrones(list)·setDetections(list)·setPath(path)·removePath(id)·clear()·counts() — overlay 와 같은 규칙(교체, 검사 전부 뒤 반영, 던지면 이전 상태 그대로, 경로 maxPaths). |e|,|n| > maxAbsEnuM 이면 RangeError',
-  view: 'fallback.setView(view:View|null) -> void   형식 위반 TypeError, metersPerPx < minMetersPerPx(≤ 0·비유한 포함) RangeError',
+  view: 'fallback.setView(view:View|null) -> void   형식 위반 TypeError, metersPerPx < minMetersPerPx(≤ 0·비유한 포함)·|centerE| 또는 |centerN| > maxAbsEnuM(비유한 포함) RangeError',
   frame: 'fallback.frame(size:Size) -> 위 형식. 결과는 새 객체이고 상태를 바꾸지 않는다. live 여도 데이터는 계속 받아 둔다(모드를 바꾸면 곧바로 낸다)',
 });
 
