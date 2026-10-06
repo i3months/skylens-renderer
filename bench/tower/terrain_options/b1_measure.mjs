@@ -48,8 +48,6 @@ import { B1_OPTIONS, lodStrides, buildTileWithStride } from './b1_lod.mjs';
 
 const SPAN_M = 1024;
 const MESH_HEADER_BYTES = 16;
-const TILES_PER_SIDE = SPAN_M / 64;
-const TILE_COUNT = TILES_PER_SIDE * TILES_PER_SIDE;
 // SSIM 창: ssim_views 와 같은 4×4 타일.
 const VIEW_TILE_MIN = -2, VIEW_TILE_MAX = 1;
 // 시점 전제의 지형 상한(m) = 눈 높이 하한 17 m − 2 m (fixtures.mjs 머리 주석).
@@ -67,16 +65,16 @@ function hashNoise(i, j, seed = 0) {
 }
 
 /** smooth + ±0.15 m 화소 잡음. lod_bytes.mjs makeDem 과 같은 격자. */
-function lowNoiseDem(seed) {
-  const side = SPAN_M + 1;
+export function lowNoiseDem(seed, cellM = 1) {
+  const side = SPAN_M / cellM + 1;
   const heights = new Float32Array(side * side);
   for (let j = 0; j < side; j++) {
     for (let i = 0; i < side; i++) {
-      const x = i - SPAN_M / 2, y = j - SPAN_M / 2;
+      const x = i * cellM - SPAN_M / 2, y = j * cellM - SPAN_M / 2;
       heights[j * side + i] = 20 + 25 * Math.sin(x / 300) * Math.cos(y / 400) + 2 * LOW_NOISE_HALF_M * hashNoise(i, j, seed);
     }
   }
-  return { originX: -SPAN_M / 2, originY: -SPAN_M / 2, cellM: 1, width: side, height: side, heights };
+  return { originX: -SPAN_M / 2, originY: -SPAN_M / 2, cellM, width: side, height: side, heights };
 }
 
 function demSet() {
@@ -135,11 +133,19 @@ function checkAgainstServer(dem, stridesI) {
   }
 }
 
-function measureDem(entry, cams, { check }) {
+/**
+ * DEM 하나를 상한표 묶음 optionTable 로 잰다. b5_measure.mjs 가 다른 상한표·DEM(2 m 셀 hill 등)으로 다시 쓴다.
+ * 바이트의 타일 수·cells 는 DEM 에서 구한다(1024 m·1 m 셀이면 256 타일·cells = 64/간격+1 로 이전과 같다).
+ * check 는 optionTable.i 가 현행표일 때만 뜻이 있다(서버 함수 대조).
+ */
+export function measureDem(entry, cams, { check, optionTable = B1_OPTIONS }) {
   const t0 = Date.now();
   const dem = entry.make();
+  const n0 = Math.round(64 / dem.cellM);
+  const tileCount = ((dem.width - 1) / n0) * ((dem.height - 1) / n0);
+  if (!Number.isInteger(tileCount)) throw new Error('DEM 이 타일 격자에 맞지 않는다');
   const per = {};
-  for (const [opt, bounds] of Object.entries(B1_OPTIONS)) per[opt] = lodStrides(dem, bounds);
+  for (const [opt, bounds] of Object.entries(optionTable)) per[opt] = lodStrides(dem, bounds);
   if (check) checkAgainstServer(dem, per.i.strides);
 
   // SSIM: 기준 영상(LOD 0)과 간격별 층 영상.
@@ -172,16 +178,16 @@ function measureDem(entry, cams, { check }) {
   };
 
   const options = {};
-  for (const [opt, bounds] of Object.entries(B1_OPTIONS)) {
+  for (const [opt, bounds] of Object.entries(optionTable)) {
     const levels = [];
     for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
       const stride = per[opt].strides[lod];
-      const cells = 64 / stride + 1;
+      const cells = n0 / stride + 1;
       const b = tileBytes(cells);
       const s = ssimFor(lod, stride);
       levels.push({
         lod, boundM: bounds[lod], stride, cells, maxErrorM: per[opt].maxErrorM[lod],
-        meshRawBytes: b.mesh * TILE_COUNT, heightOnlyRawBytes: b.heightOnly * TILE_COUNT,
+        meshRawBytes: b.mesh * tileCount, heightOnlyRawBytes: b.heightOnly * tileCount,
         ssimMin8: s.min, ssim8: s.ssim, ssimFilledMin8: s.filledMin,
       });
     }
@@ -196,7 +202,7 @@ function measureDem(entry, cams, { check }) {
       lod1to3SsimPass: levels.slice(1).every((l) => l.ssimMin8 >= TERRAIN_SSIM_MIN),
     };
   }
-  return { dem: entry.name, zShiftM: zShift, viewMaxZ: maxZ, refFillMin: Math.min(...refFill), refFill, ms: Date.now() - t0, options };
+  return { dem: entry.name, tileCount, zShiftM: zShift, viewMaxZ: maxZ, refFillMin: Math.min(...refFill), refFill, ms: Date.now() - t0, options };
 }
 
 function checkBytesAgainstLodBytes(result) {
