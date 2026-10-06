@@ -35,13 +35,24 @@ export function parseProcStat(line) {
   return { utime, stime };
 }
 
+// Parses /proc/<pid>/statm text into { resident } (pages, field 2), or null if malformed.
+export function parseStatm(text) {
+  if (typeof text !== 'string') return null;
+  const f = text.trim().split(/\s+/);
+  if (f.length < 2) return null;
+  const resident = Number(f[1]);
+  if (!Number.isInteger(resident) || resident < 0) return null;
+  return { resident };
+}
+
 // Returns { cpuUsage: { user, system } (microseconds), rssBytes } or null if the process is gone or /proc is unreadable.
 export function readProcStats(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
     const st = parseProcStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
-    const resident = Number(readFileSync(`/proc/${pid}/statm`, 'utf8').trim().split(/\s+/)[1]);
-    if (!st || !Number.isInteger(resident) || resident < 0) return null;
+    const sm = parseStatm(readFileSync(`/proc/${pid}/statm`, 'utf8'));
+    if (!st || !sm) return null;
+    const resident = sm.resident;
     const us = 1e6 / tck();
     return { cpuUsage: { user: st.utime * us, system: st.stime * us }, rssBytes: resident * pgsz() };
   } catch { return null; }
