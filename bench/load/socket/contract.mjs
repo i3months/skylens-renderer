@@ -13,8 +13,8 @@
 //   bench/load/socket/clients.mjs       runSocketClients({ host, port, clients, durationS, now?: () => ms, path?: '/', connectTimeoutMs? }) -> Promise<ClientEvent[]>
 //                                       opens `clients` connections at the same time, records connect / bytes / level / first_frame / close as
 //                                       contracts/load ClientEvent with tMs = real ms since start (now default performance.now). A level event is
-//                                       emitted when a LEVEL_PAYLOADS message arrives (level = its index); first_frame is emitted once per client at
-//                                       the arrival of its first level payload; every connection stays open until durationS then closes, unless the server closes it first (the close is then recorded at that time). Events sorted by tMs, then id.
+//                                       emitted when a LEVEL_PAYLOADS message arrives (level = recovered from payload length via LEVEL_PAYLOAD_BYTES.indexOf, not from arrival order); first_frame is emitted once per client at
+//                                       the arrival of its first level event (any level); every connection stays open until durationS then closes, unless the server closes it first (the close is then recorded at that time). Events sorted by tMs, then id.
 //   bench/load/socket/proc_stats.mjs    readProcStats(pid) -> { cpuUsage: { user, system } (microseconds), rssBytes }   from /proc/<pid>/stat and statm
 //                                       (returns null when the process is gone); createProcSampler({ pid, now }) -> createStatsSampler (clock 'real', source 'server-process').
 //   bench/load/socket/run.mjs           runSocketLoad({ clients = 30, durationS = 10, commit?, deps? }) -> Promise<{ result, violations, serverSamples, report }>
