@@ -64,7 +64,7 @@ export function simulateSlowLink(scenario, { seed } = {}) {
   let undeliveredBytes = 0;
   let dropped = 0;
   for (let id = 0; id < scenario.clients; id++) {
-    const r = simulateClient(id, scenario, rng((seed >>> 0) + Math.imul(id + 1, 0x9e3779b1)));
+    const r = simulateClient(id, scenario, rng(((seed >>> 0) + Math.imul(id + 1, 0x9e3779b1)) >>> 0));
     for (const e of r.events) events.push(e);
     undeliveredBytes += r.undelivered;
     dropped += r.dropped;
