@@ -3,6 +3,8 @@
 // First frame = the time the first level-0 payload arrived and was drawn (contract header definition);
 // the 'first_frame' event carries that time, and latency is measured from the client's 'connect'.
 
+import { MAX_CLIENTS } from '../../../contracts/load/index.mjs';
+
 /**
  * Regression threshold of the mock harness (the SPEC S5 value is reused as is).
  * Verdicts against a real server are a separate [local] follow-up.
@@ -26,8 +28,16 @@ function nearestRank(sortedAsc, p) {
  * If no client reached a first frame at all, p50Ms and p95Ms are NaN (nothing was measured).
  */
 export function firstFrameStats(events, clients) {
-  if (!Number.isInteger(clients) || clients < 1 || clients > 30) {
-    throw new RangeError('clients must be an integer in 1..30');
+  if (!Array.isArray(events)) {
+    throw new Error('events must be an array');
+  }
+  for (const e of events) {
+    if (e === null) {
+      throw new Error('events array contains null');
+    }
+  }
+  if (!Number.isInteger(clients) || clients < 1 || clients > MAX_CLIENTS) {
+    throw new RangeError(`clients must be an integer in 1..${MAX_CLIENTS}`);
   }
   const connect = new Array(clients).fill(Infinity);
   const frame = new Array(clients).fill(Infinity);

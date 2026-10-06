@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { simulateBurst, checkBurstInvariants, showFromArrivals } from './index.mjs';
+import { simulateBurst, checkBurstInvariants, showFromArrivals, burstArrivals } from './index.mjs';
 import { validateScenario } from '../../../contracts/load/index.mjs';
 
 const mk = (burstLevels, clients = 30) => ({
@@ -119,4 +119,46 @@ test('simulateBurst: rejects non-burst and invalid scenarios', () => {
   assert.throws(() => simulateBurst({ ...mk(2), kind: 'steady' }, { seed: 1 }));
   assert.throws(() => simulateBurst({ ...mk(2), burstLevels: 5 }, { seed: 1 }));
   assert.throws(() => simulateBurst({ ...mk(2), clients: 0 }, { seed: 1 }));
+});
+
+test('showFromArrivals: ascending same-instant input still ends on the highest level of that instant', () => {
+  // harness policy: the instant is re-ordered highest first before the machine sees it
+  const shown = showFromArrivals([lv(0, 100, 0), lv(0, 100, 1), lv(0, 100, 2)], 1);
+  assert.deepEqual(shown, [at(0, 100, 2)]);
+});
+
+test('showFromArrivals: a hand-built overtaken late lower level is never shown', () => {
+  // The simulator itself never generates overtaking (burst levels share one instant); this log is hand built.
+  const arrivals = [lv(0, 100, 2), lv(0, 200, 1)];
+  const shown = showFromArrivals(arrivals, 1);
+  assert.deepEqual(shown, [at(0, 100, 2)]);
+  assert.deepEqual(checkBurstInvariants(arrivals, shown, mk(4, 1)), []);
+  assert.ok(checkBurstInvariants(arrivals, [at(0, 100, 2), at(0, 200, 1)], mk(4, 1))
+    .includes('client 0: level 1 at 200ms shown after level 2'));
+});
+
+test('burstArrivals: keeps level events below burstLevels, drops post-burst levels, keeps invalid ones', () => {
+  const ev = [lv(0, 1, 0), lv(0, 1, 1), lv(0, 2, 2), lv(0, 3, 3), { id: 0, tMs: 4, kind: 'bytes' }, lv(0, 5, 1.5), lv(0, 6, 9)];
+  assert.deepEqual(burstArrivals(ev, 2), [lv(0, 1, 0), lv(0, 1, 1), lv(0, 5, 1.5), lv(0, 6, 9)]);
+  assert.deepEqual(burstArrivals(ev, 4).length, 6);
+});
+
+test('checker: clients validated, bad scenario/arrays throw a clear Error', () => {
+  for (const clients of [0, 31, 1.5, NaN, undefined, '2']) {
+    assert.throws(() => checkBurstInvariants([], [], { ...mk(2), clients }), (e) => e instanceof Error && !(e instanceof TypeError) && /clients/.test(e.message));
+  }
+  for (const sc of [undefined, null, 5]) {
+    assert.throws(() => checkBurstInvariants([], [], sc), (e) => e.constructor === Error && /scenario/.test(e.message));
+  }
+  assert.throws(() => checkBurstInvariants(null, [], mk(2)), (e) => e.constructor === Error && /arrivals/.test(e.message));
+  assert.throws(() => checkBurstInvariants([], {}, mk(2)), (e) => e.constructor === Error && /shown/.test(e.message));
+});
+
+test('checker: cost does not scale as clients * events', () => {
+  const s = mk(2, 30);
+  const arrivals = [];
+  for (let i = 0; i < 60000; i++) arrivals.push(at(i % 30, i, 0));
+  const t0 = Date.now();
+  checkBurstInvariants(arrivals, [], s);
+  assert.ok(Date.now() - t0 < 2000);
 });

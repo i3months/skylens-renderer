@@ -5,6 +5,7 @@ import { LEVEL_COUNT } from '../asset/index.mjs';
 
 export const SCENARIO_KINDS = ['steady', 'burst', 'slow_link'];
 export const MAX_CLIENTS = 30;
+export const MAX_DURATION_S = 3600;
 const ALLOWED = new Set(['name', 'kind', 'clients', 'durationS', 'path', 'burstLevels', 'linkBytesPerS']);
 const WAYPOINT_KEYS = new Set(['t', 'e', 'n', 'u']);
 const RESULT_KEYS = new Set(['scenario', 'records', 'perClient']);
@@ -35,7 +36,7 @@ export function validateScenario(s) {
   if (!(typeof s.name === 'string' && /^[a-z0-9_]+$/.test(s.name))) errs.push('bad name');
   if (!SCENARIO_KINDS.includes(s.kind)) errs.push('bad kind');
   if (!(Number.isInteger(s.clients) && s.clients >= 1 && s.clients <= MAX_CLIENTS)) errs.push('bad clients');
-  if (!(Number.isFinite(s.durationS) && s.durationS > 0)) errs.push('bad durationS');
+  if (!(Number.isFinite(s.durationS) && s.durationS > 0 && s.durationS <= MAX_DURATION_S)) errs.push('bad durationS');
   checkPath(s.path, s.durationS, errs);
   if (s.kind === 'burst' && !(Number.isInteger(s.burstLevels) && s.burstLevels >= 1 && s.burstLevels <= LEVEL_COUNT)) errs.push('burst needs burstLevels');
   if (s.kind === 'slow_link' && !(Number.isFinite(s.linkBytesPerS) && s.linkBytesPerS > 0)) errs.push('slow_link needs linkBytesPerS');

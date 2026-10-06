@@ -1,6 +1,9 @@
 import { validateResult } from '../../contracts/load/index.mjs';
 
-const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+const cell = (s) => String(s)
+  .replace(/\\(?=\|)/g, '\\\\')  // Escape backslashes before pipes
+  .replace(/\|/g, '\\|')          // Escape pipes
+  .replace(/\r\n|\r|\n/g, ' ');  // Replace line breaks with spaces
 
 export function loadReport(result) {
   const errors = validateResult(result);

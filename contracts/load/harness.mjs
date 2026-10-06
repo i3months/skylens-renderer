@@ -10,8 +10,9 @@
 //
 // Module signatures (default export is none; use the named export):
 //   T16.1  bench/load/clients/index.mjs      simulateClients(scenario, { seed }) -> ClientEvent[]   (sorted by tMs, then id)
-//   T16.2  bench/load/server_stats/index.mjs createStatsSampler({ intervalMs, cpuUsage, memoryUsage, now }) -> { tick(), samples() }
-//                                            samples() -> [{ tS, cpuPct, rssMB }] at intervalMs (default 1000)
+//   T16.2  bench/load/server_stats/index.mjs createStatsSampler({ cpuUsage, memoryUsage, now }) -> { tick(), samples() }
+//                                            samples() -> [{ tS, cpuPct, rssMiB, source, clock }] one per tick; source 'harness-process' and clock 'simulated'
+//                                            in the mock (real server values come from T16.12); a non-finite sample is a violation
 //   T16.3  bench/load/per_client/index.mjs   perClientFromEvents(events, clients) -> perClient[] (validateResult shape)
 //   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[] }
 //   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS }

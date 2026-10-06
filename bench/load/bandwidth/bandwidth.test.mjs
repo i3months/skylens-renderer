@@ -76,3 +76,22 @@ test("bandwidthStats handles 300000 buckets at durationS=1e6 without stack overf
   assert.strictEqual(r.meanBytesPerS, (7000 + 10 * (n - 1)) / 1e6);
   assert.strictEqual(r.peakBytesPerS, 7000);
 });
+
+test("bandwidthStats throws for non-finite or negative tMs on bytes events", () => {
+  for (const bad of [NaN, Infinity, -Infinity, -1, undefined, "5"]) {
+    const ev = [{ id: 0, tMs: bad, kind: "bytes", bytes: 10, latencyMs: 1 }];
+    assert.throws(() => bandwidthStats(ev, 10), RangeError, String(bad));
+  }
+});
+
+test("bandwidthStats ignores tMs of non-bytes events", () => {
+  const ev = [{ id: 0, tMs: NaN, kind: "close" }, { id: 0, tMs: 99999, kind: "connect" }];
+  assert.strictEqual(bandwidthStats(ev, 10).totalBytes, 0);
+});
+
+test("bandwidthStats rejects tMs beyond durationS*1000, accepts exactly durationS*1000", () => {
+  const at = (t) => [{ id: 0, tMs: t, kind: "bytes", bytes: 10, latencyMs: 1 }];
+  assert.throws(() => bandwidthStats(at(10001), 10), RangeError);
+  assert.throws(() => bandwidthStats(at(10000.5), 10), RangeError);
+  assert.strictEqual(bandwidthStats(at(10000), 10).totalBytes, 10);
+});
