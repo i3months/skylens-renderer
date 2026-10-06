@@ -140,9 +140,9 @@ export function hillScenes(seeds = B6_SEEDS) {
 export const lowNoiseScenes = (seeds = B6_SEEDS) => seeds.map((s) => ({ name: `lowNoise:${s}`, make: () => lowNoiseDem(s, 1) }));
 
 /** 집단별 지표(현행 절대표). 집단 = hill, lowNoise 전체, lowNoise 중 SSIM 미달 조건, lowNoise 중 통과 조건. */
-export function measureGroups({ hill = hillScenes(), low = lowNoiseScenes(), table = TERRAIN_LOD_MAX_ERROR_M, log = () => {} } = {}) {
+export function measureGroups({ hill = hillScenes(), low = lowNoiseScenes(), table = TERRAIN_LOD_MAX_ERROR_M, log = () => {}, measureScene = measureMetricScene } = {}) {
   const cams = towerViewpoints();
-  const run = (scenes) => scenes.map((e) => { const r = measureMetricScene(e, cams, table); log(`[b7] ${e.name}`); return r; });
+  const run = (scenes) => scenes.map((e) => { const r = measureScene(e, cams, table); log(`[b7] ${e.name}`); return r; });
   const hr = run(hill), lr = run(low);
   const hc = hr.flatMap((x) => x.conditions), lc = lr.flatMap((x) => x.conditions);
   const failing = (cs) => cs.filter((c) => ssimShort(c.ssimMin8) && !c.dup).length;
@@ -156,11 +156,11 @@ export function measureGroups({ hill = hillScenes(), low = lowNoiseScenes(), tab
 }
 
 /** lowNoise012 반폭 인자 변형(결정 0057 규칙 상한): 간격·최소 SSIM·미달/조건·최악 e. */
-export function measureHalves({ halves = B7_HALVES_M, seeds = B6_SEEDS, log = () => {} } = {}) {
+export function measureHalves({ halves = B7_HALVES_M, seeds = B6_SEEDS, log = () => {}, measureRule = measureRuleDem } = {}) {
   const cams = towerViewpoints();
   return halves.map((half) => {
     const rs = seeds.map((s) => {
-      const r = measureRuleDem({ name: `noise${half}:${s}`, group: 'lowNoise012', make: () => noiseHalfDem(s, half, 1) }, cams, { withBaseline: false });
+      const r = measureRule({ name: `noise${half}:${s}`, group: 'lowNoise012', make: () => noiseHalfDem(s, half, 1) }, cams, { withBaseline: false });
       log(`[b7] ±${half} seed ${s}`);
       return r;
     });

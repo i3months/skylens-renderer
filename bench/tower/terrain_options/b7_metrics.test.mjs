@@ -194,3 +194,21 @@ test('F-496 ⑤: SSIM 미달 판정은 NaN 을 미달로 센다', () => {
   assert.equal(ssimShort(TERRAIN_SSIM_MIN - 1e-9), true);
   assert.equal(ssimShort(1), false);
 });
+
+test('F-499 ⑦: measureGroups 는 NaN SSIM 조건을 미달(failing·lowNoiseFail)로 세고 통과 집단에서 뺀다', () => {
+  const cond = (ssimMin8, dup = false) => ({ scene: 's', lod: 1, stride: 2, cellM: 2, maxErrorM: 0.5, eOverCell: 0.25, meanDeg: 1, rmsDeg: 1, maxDeg: 1, ssimMin8, dup });
+  const fake = (e) => ({ scene: e.name, strides: [1, 2, 4, 8], conditions: [cond(NaN), cond(0.99), cond(NaN, true)] });
+  const res = measureGroups({ hill: [{ name: 'h' }], low: [{ name: 'l' }], measureScene: fake });
+  assert.equal(res.groups.hill.failing, 1, 'hill: NaN 1건(dup 제외)이 미달');
+  assert.equal(res.groups.lowNoise.failing, 1, 'lowNoise: NaN 1건(dup 제외)이 미달');
+  assert.equal(res.groups.lowNoiseFail.n, 1, 'lowNoiseFail 에 NaN(비 dup)이 들어간다');
+  assert.equal(res.groups.lowNoisePass.n, 1, 'lowNoisePass 에는 NaN 이 없다');
+});
+
+test('F-499 ⑦: measureHalves 는 NaN SSIM 수준을 fail 로 센다', () => {
+  const lv = (ssimMin8) => ({ stride: 2, ssimMin8, maxErrorM: 0.5 });
+  const fake = () => ({ cellM: 2, options: { rule: { bounds: [1, 2, 3], levels: [lv(1), lv(NaN), lv(0.99), lv(NaN)] } } });
+  const [r] = measureHalves({ halves: [0.1], seeds: [1, 2], measureRule: fake });
+  assert.equal(r.conditions, 6);
+  assert.equal(r.fail, 4, 'NaN 2건 x 시드 2 = 4');
+});

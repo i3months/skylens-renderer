@@ -16,7 +16,7 @@ export const TERRAIN_LOD_MAX_ERROR_M = Object.freeze([0, 0.5, 1, 1]);
  * 높이 오차 상한은 셀 크기와 무관한 절대값이라, 같은 높이 오차라도 셀이 작을수록 이웃 표본 사이 기울기(곧 정점 법선 음영)가
  * 크게 흔들린다(1 m 셀 ±0.15 m 잡음에서 현행표가 SSIM 0.95 를 어김). 그래서 LOD k ≥ 1 의 실제 상한은
  * min(TERRAIN_LOD_MAX_ERROR_M[k], TERRAIN_LOD_MAX_SLOPE_ERROR · cellM) 이다(terrainLodMaxErrorM).
- * 0.25 = 사후 비례 상수: 현행표 LOD1 상한 0.5 m ÷ 셀 2 m 로 정했지만 lowNoise 결과를 알고 고른 값이며, 근거·한계는 결정 0057 에 있다.
+ * 0.25 = 현행표 LOD1 상한 0.5 m ÷ 셀 2 m 와 같은 값이나 선택 근거는 아니다(lowNoise 결과를 알고 고른 사후 상수, 결정 0057:28). 근거·한계는 결정 0057 에 있다.
  * 셀 크기가 다른 DEM 에 일반화된다는 보장은 없다.
  */
 export const TERRAIN_LOD_MAX_SLOPE_ERROR = 0.25;
