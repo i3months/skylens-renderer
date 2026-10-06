@@ -55,6 +55,17 @@ test('F-494 ⑤: quantizeHeights 음성 — NaN·Inf·step ≤ 0·비유한 step
   assert.throws(() => h.dequantizeHeights(0.5, 0.05, new Uint16Array(1)), RangeError);
 });
 
+test('F-520 ⑧: kbase i32 음수 경계 — -2^31 은 양자화, -2^31-1 은 null (일반 배열: f32 로는 -2^31-1 을 못 쓴다)', () => {
+  assert.equal(h.quantizeHeights([-2147483649, -2147483649], 1), null);
+  const r = h.quantizeHeights([-2147483648, -2147483647], 1);
+  assert.ok(r);
+  assert.equal(r.kbase, -2147483648);
+  assert.equal(r.base, -2147483648);
+  assert.equal(r.step, 1);
+  assert.deepEqual(Array.from(r.q), [0, 1]);
+  assert.ok(r.q instanceof Uint16Array);
+});
+
 test('F-494 ⑤·F-496 ②: terrainH32ErrorBoundM 값(f32 반올림 항 제외)', () => {
   assert.equal(h.terrainH32ErrorBoundM(0, false), 0);
   assert.equal(h.terrainH32ErrorBoundM(0.1, false), 0.1);
@@ -70,13 +81,14 @@ test('F-494 ⑤·F-496 ②: terrainH32ErrorBoundM 값(f32 반올림 항 제외)'
 });
 
 test('F-499 ①: snapHeightsToGrid 는 h ∈ (−s/2, 0) 에서 −0 이 아니라 +0 을 낸다', () => {
-  const out = h.snapHeightsToGrid(new Float32Array([-0.01, -0.0149, 0, -0]), 0.03);
+  const inp = new Float32Array([-0.01, -0.0149, 0, -0]);
+  const out = h.snapHeightsToGrid(inp, 0.03);
   const bits = new Uint32Array(out.buffer);
   // 양자화 복원 경로(kbase −1 + q 1 = 0)가 내는 값과 비트 비교(+0 삭제 변이에서 snap 만 −0 이 되어 실패한다)
   const qz = h.quantizeHeights(new Float32Array([-0.01, 0.2]), 0.03);
   const ref = h.dequantizeHeights(qz.kbase, qz.step, qz.q)[0];
   assert.equal(new Uint32Array(Float32Array.of(ref).buffer)[0], 0);
-  for (let k = 0; k < out.length; k++) assert.ok(Object.is(out[k], ref), `[${k}] 비트 ${bits[k].toString(16)}`);
+  for (let k = 0; k < out.length; k++) assert.ok(Object.is(out[k], ref), `[${k}] 입력 ${String(inp[k])} 비트 ${bits[k].toString(16)}`);
 });
 
 test('F-499 ③: quantizeHeights kbase 는 floor — 소수부 ≥ 0.5 인 최솟값(명시 step, 손 계산 리터럴)', () => {
