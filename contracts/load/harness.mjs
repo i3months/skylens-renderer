@@ -15,13 +15,24 @@
 //   T16.3  bench/load/per_client/index.mjs   perClientFromEvents(events, clients) -> perClient[] (validateResult shape)
 //   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[] }
 //   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS }
-//   T16.6  bench/load/burst/index.mjs        simulateBurst(scenario, { seed }) -> { shown: [{id, tMs, level}], violations: string[] }
-//                                            (levels arriving together: only the highest is shown, overtaken ones are skipped, never filled in)
-//   T16.7  bench/load/slow_link/index.mjs    simulateSlowLink(scenario, { seed }) -> { events: ClientEvent[], maxQueueBytes, dropped: 0 }
-//                                            (sender queue bounded by backpressure; bytes are delayed, never invented)
+//   T16.6  bench/load/burst/index.mjs        showFromArrivals(events, clients) -> shown [{id, tMs, level}]  (feeds each 'level' event of the
+//                                            measured log into the product level machine client/levels createLevelMachine, one segment per
+//                                            client; the harness never computes a max itself)
+//                                            checkBurstInvariants(arrivals, shown, scenario) -> string[]  (arrivals = 'level' events of the
+//                                            measured log, both sorted by tMs; each shown entry must be an arrived level, the highest arrived
+//                                            so far, and never followed by a lower one; overtaken levels are skipped, never filled in)
+//                                            simulateBurst(scenario, { seed }) -> { arrivals, shown, violations }  (uses simulateClients)
+//   Burst scenario: every client's levels 0..burstLevels-1 carry ONE tMs (one latency draw), so they arrive together.
+//   First frame (one definition, clients and slow_link): tMs of the first payload of level 0 that arrived and was drawn.
+//   T16.7  bench/load/slow_link/index.mjs    simulateSlowLink(scenario, { seed }) -> { events: ClientEvent[], maxQueueBytes, undeliveredBytes, dropped }
+//                                            (sender queue bounded by backpressure; bytes are delayed, never invented; at the end the bytes still
+//                                            queued are reported as undeliveredBytes, dropped = bytes discarded by the queue limit, latencyMs is
+//                                            measured from the moment the payload was wanted, including time waiting on backpressure)
 //   T16.8  tools/load_report/index.mjs       loadReport(result) -> markdown table string (SPEC section 4 rows)
 //   T16.9  bench/thresholds/index.mjs        checkThresholds(records, thresholds) -> string[] violations; thresholds.json beside it
 //   T16.10 bench/load/run_all/run.mjs        node run.mjs -> runs every scenario, writes result JSON, exits non-zero on violations
+//                                            runScenario(scenario, { commit, thresholds, statsClock }) and main(outDir, opts) take injected thresholds
+//                                            and a stats clock; violations are checked on the SAME measured log; a result carries serverSamples.
 import { LEVEL_COUNT } from '../asset/index.mjs';
 
 export const EVENT_KINDS = ['connect', 'bytes', 'level', 'first_frame', 'close'];
