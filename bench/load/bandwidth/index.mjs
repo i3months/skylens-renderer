@@ -23,6 +23,8 @@ export function bandwidthStats(events, durationS) {
 
   let totalBytes = 0;
   const invalid = [];
+  // Round to 1e-6 ms so float error (1.005 * 1000 = 1004.9999999999999) cannot reject an event at the exact end.
+  const endMs = Math.round(durationS * 1000 * 1e6) / 1e6;
   const lastBucket = Math.ceil(durationS) - 1;
   const buckets = new Map();
   for (let i = 0; i < events.length; i++) {
@@ -33,7 +35,7 @@ export function bandwidthStats(events, durationS) {
     }
     // bad tMs never throws: the event is reported in `invalid` and excluded from every total.
     // tMs === durationS*1000 is accepted and folded into the last bucket.
-    if (!(typeof e.tMs === 'number' && Number.isFinite(e.tMs) && e.tMs >= 0 && e.tMs <= durationS * 1000)) {
+    if (!(typeof e.tMs === 'number' && Number.isFinite(e.tMs) && e.tMs >= 0 && e.tMs <= endMs)) {
       invalid.push(i);
       continue;
     }

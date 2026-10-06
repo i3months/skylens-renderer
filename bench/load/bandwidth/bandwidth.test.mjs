@@ -170,3 +170,15 @@ test("bandwidthStats applies the MAX_DURATION_S upper bound", () => {
   assert.throws(() => bandwidthStats(ev, MAX_DURATION_S + 1e-9), RangeError);
   assert.throws(() => bandwidthStats(ev, 1e6), RangeError);
 });
+
+test("fractional durationS 1.005: event at tMs 1005 is valid and counted (float-safe end)", () => {
+  const r = bandwidthStats([{ id: 0, kind: "bytes", tMs: 1005, bytes: 1, latencyMs: 0 }], 1.005);
+  assert.deepStrictEqual(r.invalid, []);
+  assert.strictEqual(r.totalBytes, 1);
+});
+
+test("fractional durationS 1.005: event at tMs 1006 is still invalid", () => {
+  const r = bandwidthStats([{ id: 0, kind: "bytes", tMs: 1006, bytes: 1, latencyMs: 0 }], 1.005);
+  assert.deepStrictEqual(r.invalid, [0]);
+  assert.strictEqual(r.totalBytes, 0);
+});
