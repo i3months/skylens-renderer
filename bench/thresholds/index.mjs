@@ -17,6 +17,13 @@ function assertThresholds(thresholds) {
   }
 }
 
+function assertRecords(records) {
+  if (!Array.isArray(records)) throw new Error('records must be an array');
+  records.forEach((r, i) => {
+    if (r === null || typeof r !== 'object' || Array.isArray(r)) throw new Error(`records[${i}] must be an object`);
+  });
+}
+
 /**
  * Returns a list of violation strings; empty means all thresholds hold.
  * A threshold key with no matching record is a violation; records without a
@@ -24,14 +31,19 @@ function assertThresholds(thresholds) {
  */
 export function checkThresholds(records, thresholds) {
   assertThresholds(thresholds);
+  assertRecords(records);
   const out = [];
   for (const [name, t] of Object.entries(thresholds)) {
-    const matches = records.filter((r) => r && r.metric === name);
+    const matches = records.filter((r) => r.metric === name);
     if (matches.length === 0) {
       out.push(`${name}: missing`);
       continue;
     }
     for (const r of matches) {
+      if (typeof r.value !== 'number' || Number.isNaN(r.value)) {
+        out.push(`${name}: non-numeric value`);
+        continue;
+      }
       if ('max' in t && r.value > t.max) out.push(`${name}: ${r.value} > max ${t.max}`);
       if ('min' in t && r.value < t.min) out.push(`${name}: ${r.value} < min ${t.min}`);
     }
