@@ -108,12 +108,13 @@ function halfSpaces(view, opts, cam0) {
 }
 
 /** 반공간 교집합의 꼭짓점(세 면 연립). 허용 오차 안에서 모든 반공간을 만족하는 것만. */
-function vertices(planes) {
+function vertices(planes, stats) {
   const pts = [];
   const m = planes.length;
   for (let i = 0; i < m; i += 1) {
     for (let j = i + 1; j < m; j += 1) {
       for (let k = j + 1; k < m; k += 1) {
+        if (stats && typeof stats.combos === 'number') stats.combos += 1; // 실제로 연립한 조합만 센다(공식으로 미리 계산하지 않는다)
         const p = planes[i].a; const q = planes[j].a; const r = planes[k].a;
         // q×r, r×p, p×q 로 크라메르 공식
         const qr = [q[1] * r[2] - q[2] * r[1], q[2] * r[0] - q[0] * r[2], q[0] * r[1] - q[1] * r[0]];
@@ -232,7 +233,7 @@ function discYRange(poly, cx, cy, r) {
  * @param {{R:number[], t:number[], K:{fx:number, fy:number, cx:number, cy:number}, width:number, height:number}} view  poseToView 결과
  * @param {{maxDistM:number, zRangeM:number[], nearM:number}} opts
  * @param {{rows:number, cells:number, combos?:number, edges?:number}} [stats] 시험용 작업량 계수기. 행·칸 방문 수를 rows·cells 에 더하고,
- *   combos·edges 가 숫자로 있으면 꼭짓점 연립 조합 수·원판 교차에서 본 다각형 변 수도 더한다. 읽고 더하기만 하므로 결과에는 영향이 없다.
+ *   combos·edges 가 숫자로 있으면 vertices 안 i/j/k 루프가 실제로 푼 연립 조합 수·원판 교차에서 본 다각형 변 수도 더한다. 읽고 더하기만 하므로 결과에는 영향이 없다.
  * @returns {{tx:number, ty:number}[]} 카메라 (x,y) 에서 타일 중심까지 거리 오름차순, 같으면 (tx,ty) 사전순
  */
 export function tilesInView(view, opts, stats) {
@@ -253,8 +254,7 @@ export function tilesInView(view, opts, stats) {
   // z 판이 구 밖이면 어떤 타일도 구와 만나지 않는다(빈 행을 수백만 번 도는 일을 막는다)
   if (dz > D) return [];
   const planes = halfSpaces(view, opts, cam0);
-  if (stats && typeof stats.combos === 'number') stats.combos += (planes.length * (planes.length - 1) * (planes.length - 2)) / 6;
-  const poly = hull(vertices(planes));
+  const poly = hull(vertices(planes, stats));
   if (poly.length === 0) return [];
 
   // 행 범위 좁히기(결과 불변): 행이 타일을 내려면 그 행 띠(±여유) 안에 껍질 점 q 가 있고 |q.x − camX| ≤ hx 여야 한다.
