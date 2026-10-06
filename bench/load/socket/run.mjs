@@ -40,11 +40,12 @@ async function realDeps() {
 const message = (e) => (e instanceof Error ? e.message : String(e));
 
 /**
- * Ticks sampler on the real clock at t0 + i*1000 ms for i = 1..ceil(durationS), the last tick at durationS.
- * Each timer is aimed at its absolute target, so timer lateness does not accumulate. Resolves after the last tick.
+ * Ticks sampler on the clock at t0 + i*1000 ms for i = 1..ceil(durationS), the last tick at durationS.
+ * t0 is shared with the caller (taken just before the sampler is created). Each timer is aimed at its absolute
+ * target, so lateness does not accumulate, and now() is re-checked when a timer fires: an early firing waits
+ * again, so a tick never runs before its target. Resolves after the last tick.
  */
-function tickOnRealClock(sampler, durationS, now, onError) {
-  const t0 = now();
+export function tickOnRealClock(sampler, durationS, now, onError, t0 = now(), schedule = setTimeout) {
   const n = Math.ceil(durationS);
   let i = 0;
   return new Promise((resolve) => {
@@ -52,10 +53,14 @@ function tickOnRealClock(sampler, durationS, now, onError) {
       i += 1;
       if (i > n) { resolve(); return; }
       const targetMs = Math.min(i * 1000, durationS * 1000);
-      setTimeout(() => {
-        try { sampler.tick(); } catch (e) { onError(e); }
-        next();
-      }, Math.max(0, targetMs - (now() - t0)));
+      const arm = () => {
+        schedule(() => {
+          if (now() - t0 < targetMs) { arm(); return; }
+          try { sampler.tick(); } catch (e) { onError(e); }
+          next();
+        }, Math.max(0, targetMs - (now() - t0)));
+      };
+      arm();
     };
     next();
   });
@@ -82,8 +87,9 @@ export async function runSocketLoad({ clients = 30, durationS = 10, commit, deps
   let events;
   let serverSamples = [];
   try {
+    const t0 = now();
     const sampler = d.createProcSampler({ pid: server.pid, now });
-    const ticking = tickOnRealClock(sampler, durationS, now, (e) => violations.push(`${prefix}server stats: ${message(e)}`));
+    const ticking = tickOnRealClock(sampler, durationS, now, (e) => violations.push(`${prefix}server stats: ${message(e)}`), t0, d.setTimeout);
     const clientRun = d.runSocketClients({ host: SOCKET_HOST, port: server.port, clients, durationS });
     const [clientOutcome] = await Promise.allSettled([clientRun, ticking]);
     if (clientOutcome.status === 'rejected') violations.push(`${prefix}clients: ${message(clientOutcome.reason)}`);
@@ -100,6 +106,7 @@ export async function runSocketLoad({ clients = 30, durationS = 10, commit, deps
     appendAll(violations, run.violations);
     result = { ...run.result, records: run.result.records.map((r) => ({ ...r, method: SOCKET_METHOD })) };
   }
+  if (serverSamples.length === 0) violations.push(`${prefix}server samples: 0 samples, likely cause: /proc not available (non-Linux?)`);
   appendAll(violations, checkServerSamples(serverSamples, { durationS }), prefix);
 
   let report = null;

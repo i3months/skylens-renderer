@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateResult } from '../../../contracts/load/index.mjs';
 import { createStatsSampler } from '../server_stats/index.mjs';
-import { runSocketLoad, main, socketScenario, SOCKET_METHOD } from './run.mjs';
+import { runSocketLoad, main, socketScenario, tickOnRealClock, SOCKET_METHOD } from './run.mjs';
 
 const COMMIT = 'abc1234';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -160,4 +160,44 @@ test('main writes result, samples and report.md and returns 0', async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('zero server samples names the likely cause: /proc not available (non-Linux?)', async () => {
+  const { deps } = fakeDeps();
+  deps.createProcSampler = () => ({ samples: () => [], tick() {} });
+  const out = await runSocketLoad({ clients: 5, durationS: 1, commit: COMMIT, deps });
+  assert.ok(out.violations.some((v) => v.startsWith('socket30: ') && v.includes('/proc not available (non-Linux?)')), out.violations.join('\n'));
+});
+
+test('tick times are anchored to the shared t0 despite late and early timer firings', async () => {
+  let t = 5000;
+  const now = () => t;
+  const t0 = now();
+  const ticks = [];
+  const lateness = [30, 0, 400, 0];
+  let k = 0;
+  const schedule = (fn, delay) => {
+    // Fire 'late' by lateness[k], or 'early' by 10 ms on the 4th timer (re-check must re-arm it).
+    const extra = lateness[k++] ?? 0;
+    t += delay + extra - (k === 4 ? 10 : 0);
+    fn();
+  };
+  const sampler = { tick() { ticks.push(t - t0); } };
+  await tickOnRealClock(sampler, 3.5, now, (e) => { throw e; }, t0, schedule);
+  // 4 ticks (ceil 3.5); tick 3 fired 400 ms late, so tick 4 (target 3500) is not pushed out further than its target.
+  assert.equal(ticks.length, 4);
+  assert.deepEqual(ticks.slice(0, 2), [1030, 2000]);
+  assert.ok(ticks[2] >= 3000 && ticks[2] === 3400, String(ticks[2]));
+  assert.ok(ticks[3] >= 3500, String(ticks[3]));
+});
+
+test('report states the cloud approximation and the literal loopback-socket method, not a device measurement', async () => {
+  const { deps } = fakeDeps();
+  const out = await runSocketLoad({ clients: 5, durationS: 1, commit: COMMIT, deps });
+  assert.equal(SOCKET_METHOD, 'loopback-socket');
+  assert.ok(out.report.includes('(cloud approximation)'), out.report);
+  assert.ok(out.report.includes('[local]'), out.report);
+  assert.ok(!out.report.includes('measured on loopback-socket'), out.report);
+  assert.ok(out.report.includes('loopback-socket'), out.report);
+  assert.ok(out.result.records.every((r) => r.method === 'loopback-socket'));
 });
