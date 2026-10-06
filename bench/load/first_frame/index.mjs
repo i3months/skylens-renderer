@@ -33,7 +33,7 @@ function nearestRank(sortedAsc, p) {
  * outOfOrder = ascending-id list of { id, reason } for impossible orderings, never silently discarded:
  * 'before_connect' = some first_frame tMs < the client's connect tMs (client needs a connect);
  * 'before_firstArrival' = some first_frame tMs < the client's earliest first level arrival (any level; min over all valid level events, not first seen),
- * including the case where that client has no level-0 arrival at all. before_connect takes precedence per client.
+ * including the case where that client has no level arrival (any level) at all. before_connect takes precedence per client.
  * If no client reached a first frame at all, p50Ms and p95Ms are NaN (nothing was measured).
  */
 export function firstFrameStats(events, clients) {
@@ -125,6 +125,7 @@ export function firstFrameViolations(stats) {
     if (reason === 'before_connect') out.push(`client ${id}: first_frame before connect (out of order)`);
     else if (isMissing) out.push(noArrival.includes(id) ? `client ${id}: first_frame without level-0 arrival` : `client ${id}: no first frame`);
     else if (reason === 'before_firstArrival') out.push(`client ${id}: first_frame before level-0 arrival (out of order)`);
+    else if (reason !== undefined) out.push(`client ${id}: first_frame out of order (unknown reason ${JSON.stringify(reason)})`);
   }
   return out;
 }

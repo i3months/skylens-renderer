@@ -8,16 +8,17 @@
 //                                       exits 0 on SIGTERM. No address or port is written in code.
 //   bench/load/socket/server_proc.mjs   startServerProcess({ host: '127.0.0.1', env? }) -> Promise<{ port, pid, stop(): Promise<void> }>
 //                                       spawns server_main.mjs with port 0 chosen by the OS (passes the port back via the `listening` line).
-//   bench/load/socket/ws_client.mjs     connectWs({ host, port, path?: '/' }) -> Promise<{ onMessage(cb(Uint8Array)), onClose(cb), close(), socket }>
+//   bench/load/socket/ws_client.mjs     connectWs({ host, port, path?: '/', timeoutMs? }) -> Promise<{ onMessage(cb(Uint8Array)), onClose(cb), close(), socket }>
 //                                       minimal RFC 6455 client (masked frames) built on server/ws/frame, node:net only.
-//   bench/load/socket/clients.mjs       runSocketClients({ host, port, clients, durationS, now?: () => ms }) -> Promise<ClientEvent[]>
+//   bench/load/socket/clients.mjs       runSocketClients({ host, port, clients, durationS, now?: () => ms, path?: '/', connectTimeoutMs? }) -> Promise<ClientEvent[]>
 //                                       opens `clients` connections at the same time, records connect / bytes / level / first_frame / close as
 //                                       contracts/load ClientEvent with tMs = real ms since start (now default performance.now). A level event is
 //                                       emitted when a LEVEL_PAYLOADS message arrives (level = its index); first_frame is emitted once per client at
-//                                       the arrival of its first level payload; every connection stays open until durationS then closes. Events sorted by tMs, then id.
+//                                       the arrival of its first level payload; every connection stays open until durationS then closes, unless the server closes it first (the close is then recorded at that time). Events sorted by tMs, then id.
 //   bench/load/socket/proc_stats.mjs    readProcStats(pid) -> { cpuUsage: { user, system } (microseconds), rssBytes }   from /proc/<pid>/stat and statm
 //                                       (returns null when the process is gone); createProcSampler({ pid, now }) -> createStatsSampler (clock 'real', source 'server-process').
-//   bench/load/socket/run.mjs           runSocketLoad({ clients = 30, durationS = 10, commit? }) -> Promise<{ result, violations, serverSamples, report }>
+//   bench/load/socket/run.mjs           runSocketLoad({ clients = 30, durationS = 10, commit?, deps? }) -> Promise<{ result, violations, serverSamples, report }>
+//                                       deps = { startServerProcess, runSocketClients, createProcSampler, now } (all injectable; missing ones come from the real modules / performance.now).
 //                                       starts the server process, samples it once per real second while runSocketClients runs, then builds the result with
 //                                       runScenario(scenario, { events, commit }) and the real serverSamples checked with checkServerSamples(samples, { durationS }),
 //                                       and loadReport(result, { serverSamples }). CLI: node bench/load/socket/run.mjs [outDir] [durationS].
