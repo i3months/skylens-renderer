@@ -68,6 +68,7 @@ test('loadReport: basic functionality with 2 clients and 2 records', () => {
     '| latency_p95 | 45.5 | ms | test_device | measure |',
     '',
     'clients: 2, total bytes: 8000',
+    'source: simulated, S5/S8 verdict [local]',
   ].join('\n');
 
   assert.equal(output, expected);
@@ -148,7 +149,7 @@ test('loadReport: escapes newline characters in device and method names', () => 
   const lines = output.split('\n');
 
   // Newlines should be converted to spaces, so we should only have 5 lines (header, separator, 1 data, summary - no empty line)
-  assert.equal(lines.length, 5, 'newlines in cells should be converted to spaces, not causing line breaks');
+  assert.equal(lines.length, 6, 'newlines in cells should be converted to spaces, not causing line breaks');
 
   // Each table row must have exactly 6 unescaped pipes
   const headerUnescapedPipes = countUnescapedPipes(lines[0]);
@@ -191,7 +192,7 @@ test('loadReport: handles both pipes and newlines in same fields', () => {
   const lines = output.split('\n');
 
   // Should still only have 5 lines (newlines converted to spaces)
-  assert.equal(lines.length, 5, 'all newlines should be converted to spaces');
+  assert.equal(lines.length, 6, 'all newlines should be converted to spaces');
 
   // Each table row must have exactly 6 unescaped pipes
   const headerUnescapedPipes = countUnescapedPipes(lines[0]);
@@ -369,9 +370,9 @@ test('MUTATION TEST: removing newline escape breaks table structure', () => {
   const lines = output.split('\n');
 
   // If newline escaping is removed, there will be extra lines
-  // Expected: 5 lines (header, separator, 1 data, empty, summary)
+  // Expected: 5 lines (header, separator, 1 data, empty, summary, source)
   // With broken newline escape: 8+ lines
-  assert.equal(lines.length, 5, 'output must have exactly 5 lines; if more, newline escaping is broken');
+  assert.equal(lines.length, 6, 'output must have exactly 5 lines; if more, newline escaping is broken');
 });
 
 test('MUTATION TEST: removing both pipe and newline escape breaks table completely', () => {
@@ -408,7 +409,7 @@ test('MUTATION TEST: removing both pipe and newline escape breaks table complete
   const lines = output.split('\n');
 
   // Check line count - should be 5, not more
-  assert.equal(lines.length, 5, 'output must have exactly 5 lines');
+  assert.equal(lines.length, 6, 'output must have exactly 5 lines');
 
   // Check pipe count - should be 6 per row, not more
   const dataRowPipes = countUnescapedPipes(lines[2]);
@@ -449,9 +450,9 @@ test('MUTATION TEST: using /\\n/ regex fails with \\r\\n line breaks', () => {
   const output = loadReport(result);
   const lines = output.split('\n');
 
-  // Must have exactly 5 lines (header, separator, 1 data, empty, summary)
+  // Must have exactly 5 lines (header, separator, 1 data, empty, summary, source)
   // If \r\n is not properly handled, there will be more lines
-  assert.equal(lines.length, 5, 'output with \\r\\n should have exactly 5 lines');
+  assert.equal(lines.length, 6, 'output with \\r\\n should have exactly 5 lines');
 
   // Check that the device field has the \r\n converted to a space
   assert.match(lines[2], /device name/, 'carriage return + newline should be converted to space');
@@ -491,9 +492,9 @@ test('MUTATION TEST: using /\\n/ regex fails with lone \\r line breaks', () => {
   const output = loadReport(result);
   const lines = output.split('\n');
 
-  // Must have exactly 5 lines (header, separator, 1 data, empty, summary)
+  // Must have exactly 5 lines (header, separator, 1 data, empty, summary, source)
   // If lone \r is not properly handled, the split('\n') will create more lines or malformed output
-  assert.equal(lines.length, 5, 'output with lone \\r should have exactly 5 lines');
+  assert.equal(lines.length, 6, 'output with lone \\r should have exactly 5 lines');
 
   // Check that the device field has the \r converted to a space
   assert.match(lines[2], /device name/, 'lone carriage return should be converted to space');
@@ -502,7 +503,7 @@ test('MUTATION TEST: using /\\n/ regex fails with lone \\r line breaks', () => {
 test('loadReport: handles already-escaped backslash-pipe correctly', () => {
   // This test ensures that cells containing a backslash followed by pipe (\|)
   // are handled correctly and render identically in markdown.
-  // The escaping should not double-escape the backslash.
+  // Every backslash is doubled before pipes are escaped, so \| becomes \\\|.
 
   const result = {
     scenario: {
@@ -533,8 +534,8 @@ test('loadReport: handles already-escaped backslash-pipe correctly', () => {
   const output = loadReport(result);
   const lines = output.split('\n');
 
-  // Must have exactly 5 lines (header, separator, 1 data, empty, summary)
-  assert.equal(lines.length, 5, 'output should have exactly 5 lines');
+  // Must have exactly 5 lines (header, separator, 1 data, empty, summary, source)
+  assert.equal(lines.length, 6, 'output should have exactly 5 lines');
 
   // The data row should have exactly 6 unescaped pipes (5 columns)
   const dataRowPipes = countUnescapedPipes(lines[2]);
@@ -543,4 +544,57 @@ test('loadReport: handles already-escaped backslash-pipe correctly', () => {
   // The device field should properly render the backslash and pipe
   // In the output, backslash-pipe should appear as \\\| (escaped backslash and escaped pipe)
   assert.match(lines[2], /device\\\\\\\|name/, 'backslash-pipe should be properly escaped');
+});
+
+function splitRow(line) {
+  const cells = [];
+  let cur = '';
+  for (let i = 1; i < line.length; i++) {
+    const c = line[i];
+    if (c === '\\') { cur += c + line[i + 1]; i++; continue; }
+    if (c === '|') { cells.push(cur.trim()); cur = ''; continue; }
+    cur += c;
+  }
+  return cells;
+}
+const unescapeCell = (s) => s.replace(/\\([\\|])/g, '$1');
+
+const basePath = [{ t: 0, e: 0, n: 0, u: 0 }, { t: 10, e: 100, n: 200, u: 300 }];
+
+for (const n of [0, 1, 2, 3]) {
+  test(`loadReport: ${n} backslashes before pipe round-trip`, () => {
+    const original = `a${'\\'.repeat(n)}|b`;
+    const result = {
+      scenario: { name: 's', kind: 'steady', clients: 1, durationS: 10, path: basePath },
+      records: [{ metric: 'm', value: 1, unit: 'ms', device: original, method: 'x', commit: 'abc1234567890' }],
+      perClient: [{ id: 0, bytes: 1, latencyMs: [1] }],
+    };
+    const line = loadReport(result).split('\n')[2];
+    assert.equal(countUnescapedPipes(line), 6);
+    const cells = splitRow(line);
+    assert.equal(cells.length, 5);
+    assert.equal(unescapeCell(cells[3]), original);
+  });
+}
+
+function reportLines(kind) {
+  const scenario = { name: 's', kind, clients: 1, durationS: 10, path: basePath };
+  if (kind === 'slow_link') scenario.linkBytesPerS = 1000;
+  return loadReport({
+    scenario,
+    records: [{ metric: 'm', value: 1, unit: 'ms', device: 'd', method: 'x', commit: 'abc1234567890' }],
+    perClient: [{ id: 0, bytes: 1, latencyMs: [1] }],
+  }).split('\n');
+}
+
+test('loadReport: slow_link marks S5 threshold exclusion', () => {
+  const lines = reportLines('slow_link');
+  assert.ok(lines.includes('source: simulated, S5/S8 verdict [local]'));
+  assert.ok(lines.includes('S5 문턱 제외 시나리오'));
+});
+
+test('loadReport: non slow_link has source line and no exclusion mark', () => {
+  const lines = reportLines('steady');
+  assert.equal(lines.at(-1), 'source: simulated, S5/S8 verdict [local]');
+  assert.ok(!lines.some((l) => l.includes('S5 문턱 제외')));
 });
