@@ -1,0 +1,131 @@
+// Real-socket load run (T16.12): node bench/load/socket/run.mjs [outDir] [durationS]
+// Starts the product transport in a child process on loopback, connects `clients` real sockets, samples the server
+// process once per real second, then builds the load result from the measured event log. See ./contract.mjs.
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { validateResult } from '../../../contracts/load/index.mjs';
+import { runScenario, appendAll } from '../run_all/run.mjs';
+import { checkServerSamples } from '../server_stats/index.mjs';
+import { loadReport } from '../../../tools/load_report/index.mjs';
+import { SOCKET_HOST } from './contract.mjs';
+
+export const SCENARIO_NAME = 'socket30';
+// Record method for a run over real sockets. loadReport treats only 'sim' as simulated, so this label is what the
+// report's `source:` line shows. It names the cloud approximation (loopback), not a device measurement.
+export const SOCKET_METHOD = 'loopback-socket';
+
+/**
+ * Scenario for a real-socket run. The path is the steady30 path, clipped to durationS because the scenario
+ * contract refuses a path that ends after durationS (a short run keeps the same direction of travel).
+ */
+export function socketScenario(clients, durationS) {
+  return {
+    name: SCENARIO_NAME,
+    kind: 'steady',
+    clients,
+    durationS,
+    path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: Math.min(30, durationS), e: 150, n: 0, u: 100 }],
+  };
+}
+
+async function realDeps() {
+  const [{ startServerProcess }, { runSocketClients }, { createProcSampler }] = await Promise.all([
+    import('./server_proc.mjs'),
+    import('./clients.mjs'),
+    import('./proc_stats.mjs'),
+  ]);
+  return { startServerProcess, runSocketClients, createProcSampler };
+}
+
+const message = (e) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Ticks sampler on the real clock at t0 + i*1000 ms for i = 1..ceil(durationS), the last tick at durationS.
+ * Each timer is aimed at its absolute target, so timer lateness does not accumulate. Resolves after the last tick.
+ */
+function tickOnRealClock(sampler, durationS, now, onError) {
+  const t0 = now();
+  const n = Math.ceil(durationS);
+  let i = 0;
+  return new Promise((resolve) => {
+    const next = () => {
+      i += 1;
+      if (i > n) { resolve(); return; }
+      const targetMs = Math.min(i * 1000, durationS * 1000);
+      setTimeout(() => {
+        try { sampler.tick(); } catch (e) { onError(e); }
+        next();
+      }, Math.max(0, targetMs - (now() - t0)));
+    };
+    next();
+  });
+}
+
+/**
+ * Runs the real-socket load scenario and returns { result, violations, serverSamples, report }.
+ * deps (startServerProcess, runSocketClients, createProcSampler, now) are injectable; missing ones come from
+ * ./server_proc.mjs, ./clients.mjs, ./proc_stats.mjs and performance.now. report is null when the result is invalid.
+ * runScenario's own simulated server samples are discarded; serverSamples are the real-clock samples of the
+ * server process, checked with checkServerSamples. Every violation is prefixed with `socket30: `.
+ */
+export async function runSocketLoad({ clients = 30, durationS = 10, commit, deps = {} } = {}) {
+  const needed = ['startServerProcess', 'runSocketClients', 'createProcSampler'];
+  const d = needed.every((k) => typeof deps[k] === 'function') ? { ...deps } : { ...(await realDeps()), ...deps };
+  const now = d.now ?? (() => performance.now());
+  const scenario = socketScenario(clients, durationS);
+  const prefix = `${SCENARIO_NAME}: `;
+  const violations = [];
+
+  const server = await d.startServerProcess({ host: SOCKET_HOST });
+  let events;
+  let serverSamples = [];
+  try {
+    const sampler = d.createProcSampler({ pid: server.pid, now });
+    const ticking = tickOnRealClock(sampler, durationS, now, (e) => violations.push(`${prefix}server stats: ${message(e)}`));
+    const clientRun = d.runSocketClients({ host: SOCKET_HOST, port: server.port, clients, durationS });
+    const [clientOutcome] = await Promise.allSettled([clientRun, ticking]);
+    if (clientOutcome.status === 'rejected') violations.push(`${prefix}clients: ${message(clientOutcome.reason)}`);
+    else events = clientOutcome.value;
+    serverSamples = sampler.samples();
+  } finally {
+    await server.stop();
+  }
+
+  let result = { scenario, records: [], perClient: [] };
+  if (events !== undefined) {
+    const run = runScenario(scenario, { events, commit });
+    // runScenario's verdicts all read the measured log; its simulated-clock samples are dropped here.
+    appendAll(violations, run.violations);
+    result = { ...run.result, records: run.result.records.map((r) => ({ ...r, method: SOCKET_METHOD })) };
+  }
+  appendAll(violations, checkServerSamples(serverSamples, { durationS }), prefix);
+
+  let report = null;
+  if (validateResult(result).length === 0) report = loadReport(result, { serverSamples });
+  return { result, violations, serverSamples, report };
+}
+
+export async function main(outDir = 'load_out/socket', durationArg, opts = {}) {
+  const durationS = durationArg === undefined ? 10 : Number(durationArg);
+  if (!(Number.isFinite(durationS) && durationS > 0)) {
+    console.error(`usage: node bench/load/socket/run.mjs [outDir] [durationS]  (bad durationS: ${durationArg})`);
+    return 2;
+  }
+  const { result, violations, serverSamples, report } = await runSocketLoad({ ...opts, durationS });
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(`${outDir}/${SCENARIO_NAME}.json`, JSON.stringify(result, null, 2) + '\n');
+  writeFileSync(`${outDir}/${SCENARIO_NAME}.server.json`, JSON.stringify(serverSamples, null, 2) + '\n');
+  const body = report ?? 'no report: result is invalid';
+  const violationLines = violations.map((v) => `- ${v}`).join('\n');
+  writeFileSync(`${outDir}/report.md`, `## ${SCENARIO_NAME}\n${body}\n${violations.length ? `\nviolations:\n${violationLines}\n` : ''}`);
+  console.log(`## ${SCENARIO_NAME}\n${body}\n`);
+  for (const v of violations) console.error(`VIOLATION ${v}`);
+  return violations.length === 0 ? 0 : 1;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main(process.argv[2], process.argv[3]).then(
+    (code) => process.exit(code),
+    (e) => { console.error(e instanceof Error ? e.stack : String(e)); process.exit(1); },
+  );
+}
