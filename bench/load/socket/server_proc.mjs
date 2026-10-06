@@ -9,6 +9,9 @@ const KILL_AFTER_MS = 3000;
 
 export function startServerProcess({ host, env = {}, mainPath = MAIN, startTimeoutMs = START_TIMEOUT_MS, killAfterMs = KILL_AFTER_MS } = {}) {
   if (!host) return Promise.reject(new TypeError('host is required'));
+  for (const [name, v] of [['startTimeoutMs', startTimeoutMs], ['killAfterMs', killAfterMs]]) {
+    if (!Number.isFinite(v) || v <= 0) return Promise.reject(new RangeError(`${name} must be a positive finite number`));
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [mainPath], {
       env: { ...process.env, ...env, [ENV_HOST]: host, [ENV_PORT]: '0' },
@@ -30,6 +33,7 @@ export function startServerProcess({ host, env = {}, mainPath = MAIN, startTimeo
       settled = true;
       clearTimeout(timer);
       if (!exited) child.kill('SIGKILL');
+      e.pid = child.pid;
       reject(e);
     }
     child.on('error', (e) => fail(new Error(`server process failed to start: ${e.message}`)));
