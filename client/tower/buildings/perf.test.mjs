@@ -45,7 +45,7 @@ const EXPECTED_RASTER_PIXELS = {
   points: [20000, 60000, 60000],
   aerial: [408823, 587575, 610462],
 };
-// 면 작업량(정확값, 깊이 시험과 무관). 위와 같은 출처(원본 4b46e9c8, 모드·카메라마다 1회 렌더)이고 stats() 의 workTris·workCovered 로 읽는다.
+// 면 작업량(정확값, 깊이 시험과 무관). 위와 같은 출처(e0dcb1b 에서 측정, 래스터 논리는 4b46e9c8 과 같다. 모드·카메라마다 1회 렌더)이고 stats() 의 workTris·workCovered 로 읽는다.
 // workTris = 근평면 절단 뒤 그린 부채꼴 삼각형 수, workCovered = w0·w1·w2 판정을 통과한 화소 수(깊이 비교 전). black(면)과 aerial(질감)은 같은 면을 같은 순서로 그리므로 값이 같고, points 는 면을 그리지 않아 0 이다.
 // 묶음 순회를 2회·4회 반복하면 깊이 시험이 두 번째부터 막아 처리 화소 수는 그대로지만 이 값은 정확히 2배·4배가 되어 실패한다.
 const EXPECTED_WORK = {
@@ -275,7 +275,7 @@ function medianMs(fn, reps = 1) {
     for (let k = 0; k < reps; k++) fn(); // reps 회를 한 쌍으로 재고 나눈다(눈금 약 4 ms 보다 짧은 연산용)
     const cpu = (cpuMs() - t0) / reps;
     times.push(cpu);
-    idle.push((performance.now() - w0) / reps - cpu);
+    idle.push(Math.max(0, (performance.now() - w0) / reps - cpu)); // 두 시계 눈금 차로 음수가 나올 수 있어 0 으로 하한
   }
   const minIdle = Math.min(...idle);
   console.log(`  (벽시계 − CPU) 최솟값 ${minIdle.toFixed(1)} ms`);
