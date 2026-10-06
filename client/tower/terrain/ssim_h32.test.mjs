@@ -1,41 +1,58 @@
 // [cloud CPU 렌더] 관제탑 지형 H32 양자화 8시점 SSIM 시험(T15.10e, F-458 확인 기준, F-493 재측정). 계약 contracts/tower_assets/terrain_h32.mjs 의
-// quantizeHeights(heights, STEP_M) → dequantizeHeights 로 높이를 왕복시킨 LOD 1~3 타일을 층(createTerrainLayer)으로 그려,
-// 같은 DEM 의 LOD 0(f32, 양자화 없음 — 계약상 LOD 0 은 늘 비양자화) 기준 영상과 8시점 SSIM 을 잰다.
+// quantizeHeights(heights, TERRAIN_H32_STEP_M) → dequantizeHeights(kbase, step, q)(전역 격자) 로 높이를 왕복시킨 LOD 1~3 타일을
+// 층(createTerrainLayer)으로 그려, 같은 DEM 의 LOD 0(f32, 양자화 없음 — 계약상 LOD 0 은 늘 비양자화) 기준 영상과 8시점 SSIM 을 잰다.
+// step 은 이 파일 상수가 아니라 계약 TERRAIN_H32_STEP_M 을 가져와 쓴다(계약이 정한 step 이 실제로 검증된다).
 // 절차·장면 생성·측정 함수는 ssim_h32_sweep.mjs(step 후보 훑기 스크립트)와 공용이다(같은 파일에서 가져옴).
-// STEP_M: 계약 TERRAIN_H32_STEP_M(0.05 m)은 F-493 에서 hill 시드 23 잡음 0 LOD 2·3 street_level 에서 SSIM 0.9486 으로 0.95 를 어겼다.
-//   ssim_h32_sweep.mjs 로 step 후보를 측정 전에 고정한 108 장면에서 잰 뒤 고른 값을 지금은 이 시험 파일 상수로 둔다.
-//   계약 상수 TERRAIN_H32_STEP_M 을 이 값으로 바꿔야 한다(계약 파일은 다른 작업 소유라 여기서 고치지 않음).
-// 장면(측정 전에 고정): hill 시드 1..12 와 23 × 잡음 {0, 0.015}(2 m 셀), noiseBig 시드 0..3, lowNoise 시드 1..3,
-//   lowNoise012 시드 1..3(1 m 셀 ±0.12 m 잡음, LOD 솎기 + 양자화 동시). 나머지(hill 1..40, noiseBig 0..7, lowNoise 1..8,
-//   lowNoise012 1..12)는 시간 때문에 ssim_h32_sweep.mjs 로 잰다.
-// 측정(2026-10-06, ssim_h32_sweep.mjs 108 장면, 최소 SSIM): step 0.05 → 0.9482(lowNoise012:12)·hill:23/0 0.9486 미달,
-//   0.04 → 0.9496 미달(lowNoise012:9), 0.03 → 0.9543(lowNoise012:1 LOD 2 tower_mid; hill 0.9629), 0.025 → 0.9554, 0.02 → 0.9567,
-//   0.0125 → 0.9587. 0.95 를 모든 장면에서 만족하는 가장 큰 후보는 0.03. 여유 0.01 은 어떤 후보도 못 채운다 — lowNoise012 는
-//   양자화 없이도 LOD 솎기만으로 최소 0.9647 이라 여유를 정하는 것은 step 이 아니라 LOD 간격이다.
-// 변이 확인(2026-10-06, 사본에서 STEP_M 을 0.05 로 바꿔 실행): (1) 실패(최소 0.9486, hill:23/0 LOD 2 street_level), 나머지 통과.
+// 측정(2026-10-06, 전역 격자 kbase 코드 6e138ea, ssim_h32_sweep.mjs 128 장면 = hill 시드 1..50 × 잡음 {0, 0.015}, noiseBig 0..7,
+//   lowNoise 1..8, lowNoise012 1..12, LOD 1~3 × 8시점, 장면은 측정 전에 고정). 전 장면 최소 SSIM(여유 = 최소 − 0.95):
+//   step 0.25 → 0.9489 미달(noiseBig:6 LOD 1 low_close_box; 미달 장면은 이것 하나), 0.15 → 0.9627(여유 0.0127, lowNoise012:12),
+//   0.1 → 0.9642, 0.075 → 0.9647, 0.05 → 0.9647, 0.03 → 0.9648. hill 만 보면 모든 step 에서 0.9806 이상, hill:23/0 은 0.9900~0.9911.
+//   전 장면 최소를 정하는 lowNoise012 는 양자화 없이도 LOD 솎기만으로 0.9647 이다. 1b07de8(타일별 base)에서 잰 옛 훑기
+//   (0.05 미달·0.03 이 최대 통과)는 전역 격자 뒤 성립하지 않는다.
+//   규칙(모든 장면 >= 0.95 이고 여유 >= 0.01 인 가장 큰 후보)에 따른 권고 step 은 0.15 m. 계약 상수 바꾸기는 계약 소유 작업이 한다.
+// 장면(시험, 위 128 장면의 부분집합): hill 시드 1..4, 10, 23, 41..45 × 잡음 {0, 0.015}(hill 23 과 감독 확인용 41..45, hill 최소
+//   장면 10), noiseBig 2·6(0.25 에서 유일한 미달 장면 6), lowNoise 6, lowNoise012 1·6·12(전 장면 최소 위치). 나머지는 단독 실행
+//   시간 때문에 ssim_h32_sweep.mjs 로 잰다.
+// 변이 확인: 같은 장면을 step MUTATION_STEP_M(0.25)으로도 양자화해 판정 (1) 을 그대로 적용하면 실패해야 한다(시험 안에서 확인).
+//   실제 실행(2026-10-06): 사본에서 STEP_M 을 0.25 로 바꿔 돌리면 (1) 실패(최소 0.9489 noiseBig:6 LOD 1 low_close_box, 미달 3 시점이
+//   모두 noiseBig:6), 0.15 로 바꾸면 6 개 모두 통과(최소 0.9627 lowNoise012:12, 여유 0.0127). 계약값 0.03 은 최소 0.9648.
 // 판정:
 //   (1) 모든 장면·LOD 1~3·8시점 양자화 SSIM >= TERRAIN_SSIM_MIN(0.95, 계약). 낮추지 않는다.
-//   (2) 양자화 안 한 영상 대비 SSIM 하락량 — 정보 출력만(판정 아님). 이전 주석의 '하락은 step 에 거의 비례' 는 실측과 어긋났다
-//       (step 0.055 최소 0.9563 > step 0.05 의 0.9555, F-496 ③). 하락은 step 에 단조롭지 않아 측정 후 상한으로 거르는 근거가 없다.
+//   (2) 양자화 안 한 영상 대비 SSIM 하락량 — 정보 출력만(판정 아님). 하락은 step 에 단조롭지 않아(F-496 ③) 측정 후 상한으로
+//       거르는 근거가 없다.
 //   (3) 시험 시간: 장면 계산의 이 프로세스 CPU 시간(process.cpuUsage, 사용자+시스템) 상한. 벽시계가 아니라 CPU 시간이라
 //       병렬 시험 부하로 대기 시간이 늘어도 커지지 않는다(F-496 ④).
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { TERRAIN_SSIM_MIN } from '../../../contracts/controlview/terrain.mjs';
+import { TERRAIN_H32_STEP_M } from '../../../contracts/tower_assets/terrain_h32.mjs';
 import { LODS, loadMods, sceneList, measureScene } from './ssim_h32_sweep.mjs';
 
 // ---- 미리 정한 값 ----
-const STEP_M = 0.03; // 시험 파일 상수(계약 TERRAIN_H32_STEP_M 을 이 값으로 바꿔야 함). 되돌림 변이 때 0.05 로 바꾼다.
+const STEP_M = TERRAIN_H32_STEP_M; // 계약 step(파일 상수 아님)
+const MUTATION_STEP_M = 0.25; // 변이: 이 step 이면 판정 (1) 이 실패해야 한다(훑기 실측 0.9489, noiseBig:6)
 const VIEWS = 8;
 const SCENES = Object.freeze({
-  hillSeeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 23],
+  hillSeeds: [1, 2, 3, 4, 10, 23, 41, 42, 43, 44, 45],
   hillNoises: [0, 0.015],
-  noiseBigSeeds: [0, 1, 2, 3],
-  lowNoiseSeeds: [1, 2, 3],
-  lowNoise012Seeds: [1, 2, 3],
+  noiseBigSeeds: [2, 6],
+  lowNoiseSeeds: [6],
+  lowNoise012Seeds: [1, 6, 12],
 });
-// 장면 계산 CPU 시간 상한. 측정(2026-10-06, 4코어 cloud, 36 장면): CPU 약 37.5 s(벽시계 약 37 s). 상한 120 s 는 측정의 약 3.2 배로,
-//   CPU 시간이라 병렬 부하에는 커지지 않고, 더 느린 CPU(약 3 배)까지 흡수한다. 장면이 늘거나 렌더가 크게 느려지면 실패한다.
+/** 판정 (1): 양자화 SSIM 이 TERRAIN_SSIM_MIN 미달인 항목 목록과 최소값·위치. key 는 장면의 양자화 결과 필드 이름. */
+function judgeMin(scenes, cams, key) {
+  const bad = [];
+  let min = Infinity, where = '';
+  for (const sc of scenes) {
+    sc[key].forEach((v, li) => v.forEach((x, k) => {
+      if (!(x >= min)) { min = x; where = `${sc.label} LOD ${LODS[li]} 시점 ${k}(${cams[k].name})`; }
+      if (!(x >= TERRAIN_SSIM_MIN)) bad.push(`${sc.label} LOD ${LODS[li]} 시점 ${k}: ${x.toFixed(4)}`);
+    }));
+  }
+  return { bad, min, where };
+}
+// 장면 계산 CPU 시간 상한. 측정(2026-10-06, 4코어 cloud, 28 장면 × step 2개): CPU 약 32~37 s(단독 실행 벽시계 약 35 s). 상한 120 s 는
+//   측정의 약 3.2 배로, CPU 시간이라 병렬 부하에는 커지지 않고 더 느린 CPU(약 3 배)까지 흡수한다. 장면이 늘거나 렌더가 크게 느려지면 실패한다.
 const CPU_MS_MAX = 120000;
 
 describe(`지형 H32 양자화(step ${STEP_M} m) 8시점 SSIM: LOD 1~3 양자화 타일 대 LOD 0 기준`, () => {
@@ -48,8 +65,8 @@ describe(`지형 H32 양자화(step ${STEP_M} m) 8시점 SSIM: LOD 1~3 양자화
     const list = sceneList(loaded.mods, SCENES);
     const c0 = process.cpuUsage(), t0 = Date.now();
     scenes = list.map((sc) => {
-      const m = measureScene(loaded.mods, cams, sc.make(), [STEP_M]);
-      return { group: sc.group, label: sc.label, f32: m.f32, quant: m.quant[0], strides: m.strides, nullTiles: m.nullTiles[0], maxQErr: m.maxQErr[0] };
+      const m = measureScene(loaded.mods, cams, sc.make(), [STEP_M, MUTATION_STEP_M]);
+      return { group: sc.group, label: sc.label, f32: m.f32, quant: m.quant[0], mutQuant: m.quant[1], strides: m.strides, nullTiles: m.nullTiles[0], maxQErr: m.maxQErr[0] };
     });
     const c = process.cpuUsage(c0);
     cpuMs = (c.user + c.system) / 1000; wallMs = Date.now() - t0;
@@ -74,16 +91,15 @@ describe(`지형 H32 양자화(step ${STEP_M} m) 8시점 SSIM: LOD 1~3 양자화
   });
 
   test(`(1) 양자화 LOD 1~3 대 LOD 0 기준: 모든 장면·8시점 최소 SSIM >= ${TERRAIN_SSIM_MIN}`, () => {
-    const bad = [];
-    let min = Infinity, where = '';
-    for (const sc of scenes) {
-      sc.quant.forEach((v, li) => v.forEach((x, k) => {
-        if (!(x >= min)) { min = x; where = `${sc.label} LOD ${LODS[li]} 시점 ${k}(${cams[k].name})`; }
-        if (!(x >= TERRAIN_SSIM_MIN)) bad.push(`${sc.label} LOD ${LODS[li]} 시점 ${k}: ${x.toFixed(4)}`);
-      }));
-    }
-    console.log(`[ssim_h32] 양자화 최소 SSIM ${min.toFixed(4)} (${where})`);
+    const { bad, min, where } = judgeMin(scenes, cams, 'quant');
+    console.log(`[ssim_h32] 양자화 최소 SSIM ${min.toFixed(4)} (${where}), 여유 ${(min - TERRAIN_SSIM_MIN).toFixed(4)}`);
     assert.deepEqual(bad, [], `양자화 타일이 ${TERRAIN_SSIM_MIN} 미달`);
+  });
+
+  test(`변이: step ${MUTATION_STEP_M} m 으로 양자화하면 판정 (1) 이 실패한다(판정이 step 에 민감함)`, () => {
+    const { bad, min, where } = judgeMin(scenes, cams, 'mutQuant');
+    console.log(`[ssim_h32] 변이 step ${MUTATION_STEP_M} m: 최소 SSIM ${min.toFixed(4)} (${where}), 미달 ${bad.length} 개`);
+    assert.ok(bad.length > 0, `step ${MUTATION_STEP_M} m 에서도 (1) 통과(최소 ${min.toFixed(4)}) — 시험 장면이 step 을 가려내지 못함`);
   });
 
   test('(2) 정보: 양자화 안 한 같은 장면 대비 SSIM 하락량 장면군별 최댓값(판정 아님)', () => {
