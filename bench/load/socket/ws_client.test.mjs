@@ -215,6 +215,20 @@ test('handshake: 403 status is rejected with the status line', () => rejectsWith
   s.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
 }, 'handshake failed: unexpected status: HTTP/1.1 403 Forbidden'));
 
+for (const [code, text] of [[100, 'Continue'], [102, 'Processing']]) {
+  test(`handshake: 1xx status ${code} with otherwise valid upgrade headers is rejected`, () => rejectsWith((s, key) => {
+    s.write(`HTTP/1.1 ${code} ${text}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${acceptOf(key)}\r\n\r\n`);
+  }, `handshake failed: unexpected status: HTTP/1.1 ${code} ${text}`));
+}
+
+test('handshake: bare "HTTP/1.1 100" and "HTTP/1.1 102" status lines are rejected as handshake failures', async () => {
+  for (const code of [100, 102]) {
+    await rejectsWith((s, key) => {
+      s.write(`HTTP/1.1 ${code}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${acceptOf(key)}\r\n\r\n`);
+    }, `handshake failed: unexpected status: HTTP/1.1 ${code}`);
+  }
+});
+
 test('path reaches the server request line', async () => {
   let line = null;
   const srv = await headServer((s, key, head) => {
@@ -254,6 +268,20 @@ test('abnormal end without a close frame reports 1006', async () => {
     const conn = await connectWs({ host: SOCKET_HOST, port: srv.port });
     const info = await new Promise((r) => conn.onClose(r));
     assert.deepEqual(info, { code: 1006, reason: '' });
+  } finally {
+    await srv.close();
+  }
+});
+
+test('abnormal close: socket destroyed right after the handshake reports 1006 with an empty reason, once', async () => {
+  const srv = await rawServer({ onOpen(socket) { socket.destroy(); } });
+  try {
+    const conn = await connectWs({ host: SOCKET_HOST, port: srv.port });
+    const infos = [];
+    await new Promise((r) => { conn.onClose((i) => { infos.push(i); r(); }); });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(infos, [{ code: 1006, reason: '' }]);
+    await conn.close(); // already gone: resolves
   } finally {
     await srv.close();
   }
