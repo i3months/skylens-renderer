@@ -8,6 +8,8 @@ import { createChaseCamera } from '../chase/index.mjs';
 import { createTowerOverlay } from '../overlay/index.mjs';
 import { createTowerStreaming } from '../streaming/index.mjs';
 import { createTowerFallback } from '../fallback/index.mjs';
+import { createControlView } from './index.mjs';
+import { replayRecording } from './recording.mjs';
 import { TOWER_E2E_MATCH } from '../../../contracts/controlview/e2e.mjs';
 
 const SIZE = { width: 640, height: 480 };
@@ -116,7 +118,9 @@ test('e2e: 통합 모듈 사용 중 전역 fetch·타이머·WebSocket 호출 0'
 
       // 폴백 frame 렌더링
       const fallbackFrame = fallback.frame(SIZE);
-      assert.equal(fallbackFrame.mode === 'live' || fallbackFrame.mode === 'fallback', true, `fallback.frame 은 live 또는 fallback 모드여야 함`);
+      // i=10 에서 setAvailable(false) 를 frame 앞에 부르므로 0..9 는 live, 10..19 는 fallback 이다.
+      const wantMode = i < 10 ? 'live' : 'fallback';
+      assert.equal(fallbackFrame.mode, wantMode, `frame ${i}: fallback.frame 모드는 ${wantMode} 여야 함`);
     }
 
     // 최종 상태 확인
@@ -131,6 +135,36 @@ test('e2e: 통합 모듈 사용 중 전역 fetch·타이머·WebSocket 호출 0'
 
     // 입력 릴리스
     input.releaseAll();
+
+    // 화면 조립(createControlView)·녹화 재생(replayRecording) 경로도 같은 감시 구간 안에서 돌린다.
+    // F0..F7 은 state_match 의 타일 도착 녹화(요청·도착·실패가 실제로 일어남), F8 부터 데이터·추적·폴백 전환을 더한다.
+    const recording = {
+      version: 1,
+      frames: [
+        { dtSec: 0.25 },
+        { dtSec: 0.25, arrivedTiles: [[0, 1], [0, 0]] },
+        { dtSec: 0.25, keys: { down: ['ArrowUp'] } },
+        { dtSec: 0.25, keys: { up: ['ArrowUp'] }, failedTiles: [[0, 1]] },
+        { dtSec: 0.25, arrivedTiles: [[0, 1]] },
+        { dtSec: 0.25, keys: { down: ['ArrowUp'] } },
+        { dtSec: 0.25 },
+        { dtSec: 0.25, arrivedTiles: [[0, 0], [0, 2]] },
+        { dtSec: 0.25, keys: { up: ['ArrowUp'] }, drones, detections, paths: [path] },
+        { dtSec: 0.25, available: false },
+        { dtSec: 0.25 },
+        { dtSec: 0.25, available: true },
+      ],
+    };
+    const view = createControlView({
+      input: { pos: [32, 32, 1], pitchRad: -Math.PI / 2, fovYRad: 0.2, speedMps: 128 },
+      streaming: { maxDistM: 50, maxInflight: 1 },
+    });
+    const snaps = replayRecording(view, recording, { width: 100, height: 100 });
+    const wantModes = ['live', 'live', 'live', 'live', 'live', 'live', 'live', 'live', 'live', 'fallback', 'fallback', 'live'];
+    assert.deepEqual(snaps.map((s) => s.mode), wantModes, '재생 프레임별 모드');
+    assert.ok(snaps[7].streaming.held.length > 0, '재생 중 타일이 도착(held)했어야 함');
+    assert.equal(snaps[8].overlay.drones.length, 3, '재생 중 오버레이 드론 3개');
+    view.releaseAll();
 
     // 타이머 생성이 없는지 확인(생성 자체가 위반)
     assert.deepEqual(timerCreated, [], `모듈이 타이머를 만들었음: ${timerCreated.join(',')}`);
