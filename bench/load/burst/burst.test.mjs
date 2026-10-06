@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { simulateBurst, checkBurstInvariants, showFromArrivals, burstArrivals } from './index.mjs';
+import { simulateClients } from '../clients/index.mjs';
 import { validateScenario } from '../../../contracts/load/index.mjs';
 
 const mk = (burstLevels, clients = 30) => ({
@@ -73,16 +74,19 @@ test('checker: duplicate show at one instant is a violation', () => {
 
 test('checker: out-of-range entries are violations', () => {
   const s = mk(4, 2);
+  // client 1 is healthy so only the injected entry is reported
+  const base = [at(1, 100, 1)];
   for (const level of [4, -1, 1.5, NaN]) {
-    const v = checkBurstInvariants([at(0, 100, 1)], [at(0, 100, 1), at(0, 150, level)], s);
+    const v = checkBurstInvariants([at(0, 100, 1), ...base], [at(0, 100, 1), at(0, 150, level), ...base], s);
     assert.equal(v.length, 1, `level ${level}`);
     assert.match(v[0], /^shown: client 0 level .* out of range 0\.\.3$/);
   }
   for (const id of [2, -1, 0.5]) {
-    assert.deepEqual(checkBurstInvariants([], [at(id, 100, 1)], s), [`shown: id ${id} out of range 0..1`]);
+    assert.deepEqual(checkBurstInvariants([at(0, 100, 1), ...base], [at(0, 100, 1), ...base, at(id, 100, 1)], s), [`shown: id ${id} out of range 0..1`]);
   }
-  assert.deepEqual(checkBurstInvariants([], [at(0, Infinity, 1)], s), ['shown: client 0 tMs Infinity not finite']);
-  assert.deepEqual(checkBurstInvariants([at(0, 100, 7)], [], s), ['arrival: client 0 level 7 at 100ms out of range 0..3']);
+  assert.deepEqual(checkBurstInvariants([at(0, 100, 1), ...base], [at(0, 100, 1), ...base, at(0, Infinity, 1)], s), ['shown: client 0 tMs Infinity not finite']);
+  assert.deepEqual(checkBurstInvariants([at(0, 100, 7), ...base], [at(1, 100, 1)], s),
+    ['arrival: client 0 level 7 at 100ms out of range 0..3', 'client 0: no burst arrivals']);
 });
 
 test('checker: valid inputs have no violations', () => {
@@ -90,8 +94,31 @@ test('checker: valid inputs have no violations', () => {
   const arrivals = [at(0, 100, 0), at(0, 100, 1), at(1, 100, 2), at(0, 200, 3), at(0, 300, 2), at(1, 400, 3)];
   const shown = [at(0, 100, 1), at(1, 100, 2), at(0, 200, 3), at(1, 400, 3)];
   assert.deepEqual(checkBurstInvariants(arrivals, shown, s), []);
-  assert.deepEqual(checkBurstInvariants([], [], s), []);
   assert.deepEqual(showFromArrivals(arrivals.map((a) => ({ ...a, kind: 'level' })), 2), shown);
+});
+
+test('checker: no burst arrivals at all is one violation per client in id order', () => {
+  assert.deepEqual(checkBurstInvariants([], [], mk(2, 3)), ['client 0: no burst arrivals', 'client 1: no burst arrivals', 'client 2: no burst arrivals']);
+  const r = simulateBurst(mk(2), { seed: 1 });
+  const noLevels = checkBurstInvariants([], [], mk(2));
+  assert.deepEqual(r.violations, []);
+  assert.deepEqual(noLevels, Array.from({ length: 30 }, (_, id) => `client ${id}: no burst arrivals`));
+});
+
+test('checker: 30-client burst log with all level events removed reports every client', () => {
+  const ev = simulateClients(mk(4), { seed: 3 }).filter((e) => e.kind !== 'level');
+  const arrivals = burstArrivals(ev, 4);
+  assert.deepEqual(arrivals, []);
+  const shown = showFromArrivals(ev, 30);
+  assert.deepEqual(shown, []);
+  assert.deepEqual(checkBurstInvariants(arrivals, shown, mk(4)), Array.from({ length: 30 }, (_, id) => `client ${id}: no burst arrivals`));
+});
+
+test('checker: only client 7 missing from a healthy 30-client burst gives exactly one violation', () => {
+  const r = simulateBurst(mk(4), { seed: 3 });
+  const arrivals = r.arrivals.filter((a) => a.id !== 7);
+  const shown = r.shown.filter((x) => x.id !== 7);
+  assert.deepEqual(checkBurstInvariants(arrivals, shown, mk(4)), ['client 7: no burst arrivals']);
 });
 
 test('simulateBurst: shows come from the machine and pass the checker', () => {
@@ -103,7 +130,7 @@ test('simulateBurst: shows come from the machine and pass the checker', () => {
       assert.ok(r.arrivals.every((a) => a.level < b));
       for (let id = 0; id < 30; id++) {
         const mine = r.shown.filter((s) => s.id === id);
-        assert.ok(mine.length >= 1 && mine.length <= b);
+        assert.equal(mine.length, 1);
         assert.equal(mine[mine.length - 1].level, b - 1);
       }
     }
@@ -171,15 +198,23 @@ test('showFromArrivals: bad clients or events argument throws', () => {
 
 test('checker: cost does not scale as clients * events', () => {
   const s = mk(2, 30);
+  const reads = (N) => {
+    const c = { id: 0, tMs: 0, level: 0 };
+    const arrivals = [];
+    for (let i = 0; i < N; i++) {
+      // Counts reads of every field the checker touches per entry; a pass per client over all events would read them clients * N times.
+      const e = {};
+      for (const [k, v] of Object.entries({ id: i % 30, tMs: i, level: 0 })) {
+        Object.defineProperty(e, k, { enumerable: true, get() { c[k]++; return v; } });
+      }
+      arrivals.push(e);
+    }
+    assert.deepEqual(checkBurstInvariants(arrivals, [], s), Array.from({ length: 30 }, (_, id) => `client ${id}: levels arrived but never shown`));
+    return c.id + c.tMs + c.level;
+  };
   const N = 6000;
-  let reads = 0;
-  const arrivals = [];
-  for (let i = 0; i < N; i++) {
-    // Counts reads of the field the checker touches per entry; a pass per client over all events would read it clients * N times.
-    const e = { id: i % 30, tMs: i };
-    Object.defineProperty(e, 'level', { enumerable: true, get() { reads++; return 0; } });
-    arrivals.push(e);
-  }
-  assert.deepEqual(checkBurstInvariants(arrivals, [], s), Array.from({ length: 30 }, (_, id) => `client ${id}: levels arrived but never shown`));
-  assert.ok(reads <= 10 * N, `level reads ${reads} for ${N} entries`);
+  const r1 = reads(N);
+  const r2 = reads(2 * N);
+  assert.ok(r1 <= 8 * N, `reads ${r1} for ${N} entries (linear cost is about 6 per entry)`);
+  assert.ok(r2 <= 8 * 2 * N && r2 <= 2 * r1 + 100, `reads grew from ${r1} to ${r2} when entries doubled`);
 });
