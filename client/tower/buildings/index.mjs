@@ -136,7 +136,7 @@ export function createBuildingsLayer(opts) {
       const calls0 = rasterCount.calls, pixels0 = rasterCount.pixels;
       const tris0 = rasterWork.tris, covered0 = rasterWork.covered;
       const mode = modeState.get();
-      // 래스터가 던져도 stats 가 이전 카메라 값으로 남지 않게 finally 에서 이번 카메라 값으로 맞춘다.
+      // 래스터 호출이 던져도 stats 가 이전 카메라 값으로 남지 않게 finally 에서 이번 카메라 값으로 맞춘다. 이 try 는 래스터 호출만 감싸므로 assertCamera·out 검사에서 던지면 직전 값이 남고, 래스터 도중 던지면 그 호출은 세지 않는다(완료된 호출만 센다).
       try {
         if (mode === 'points') rasterizePoints(camera, list, pointRgb, out);
         else if (mode === 'aerial') rasterizeTextured(camera, list, bundle.image, out);
@@ -153,7 +153,7 @@ export function createBuildingsLayer(opts) {
       }
       return out;
     },
-    /** 진단용: 마지막 render 의 래스터에 넘어간 묶음 수, 래스터 호출 수, 처리 화소 수(points 는 점 수), 면 래스터의 작업량(workTris = 그린 삼각형 수, workCovered = 깊이 비교 전 가장자리 판정 통과 화소 수). render 가 던져도 이번 카메라 값이다. */
+    /** 진단용: 마지막 render 의 래스터에 넘어간 묶음 수, 래스터 호출 수, 처리 화소 수(points 는 점 수), 면 래스터의 작업량(workTris = 그린 삼각형 수, workCovered = 깊이 비교 전 가장자리 판정 통과 화소 수). 래스터가 던질 때는 이번 카메라 값이고 완료된 래스터 호출만 센다(카메라·out 검사에서 던지면 직전 값). */
     stats() {
       return stats;
     },

@@ -190,7 +190,13 @@ test('F-508: 최소 쪽 복원 검사는 실제 최소 격자 번호 round(min/s
 
 test('F-508: 실제 최소 격자 복원값이 f32 범위를 넘으면 null(최소 쪽 검사 제거 변이 M3)', () => {
   assert.equal(h.quantizeHeights([-3.4e38, 0], 2e38), null);
+  // kmin = kmax = -2 라 최소·최대 쪽 검사 어느 쪽으로도 null 이다(한쪽만 가르는 입력은 위와 아래)
   assert.equal(h.quantizeHeights([-3.4e38, -3.0e38], 2e38), null);
+});
+
+test('F-511: 실제 최대 격자 복원값이 f32 범위를 넘으면 null(최대 쪽 검사 제거 변이)', () => {
+  // kmin = 0 이라 최소 쪽 검사는 통과하고 kmax = 2 → 4e38 만 최대 쪽 검사가 거른다
+  assert.equal(h.quantizeHeights([0, 3.4e38], 2e38), null);
 });
 
 test('F-510 ④: BigInt64Array·BigUint64Array 는 세 함수 모두 RangeError', () => {
