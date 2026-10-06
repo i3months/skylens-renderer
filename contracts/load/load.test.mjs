@@ -83,3 +83,68 @@ test('T16.0: 무효 원소가 매우 많아도 던지지 않는다', () => {
   const e = validateScenario({ ...base, path: big });
   assert.equal(e.length, 300000); // 원소마다 오류 하나, 시작·끝 검사는 객체가 아니라 건너뜀
 });
+
+const holey = (arr, i) => { const a = [...arr]; delete a[i]; return a; };
+const one = (o) => pc(30, (i) => (i === 0 ? o : {}));
+
+test('F-519: sparse arrays and unknown fields are violations', () => {
+  const cases = [
+    [res({ perClient: holey(pc(30), 5) }), ['perClient[5] missing']],
+    [res({ perClient: holey(pc(30), 0) }), ['perClient[0] missing']],
+    [res({ perClient: one({ latencyMs: [1, , 2] }) }), ['perClient[0] bad']],
+    [res({ records: [rec, , rec] }), ['records[1] missing']],
+    [res({ records: holey([rec, rec], 0) }), ['records[0] missing']],
+    [res({ extra: 1 }), ['unknown field extra']],
+    [res({ perClient: one({ x: 1 }) }), ['perClient[0] unknown field x']],
+    [res({ perClient: one({ x: 1, bytes: -1 }) }), ['perClient[0] unknown field x', 'perClient[0] bad']],
+    [res({ perClient: one({ x: 1, y: 2 }) }), ['perClient[0] unknown field x', 'perClient[0] unknown field y']],
+  ];
+  for (const [bad, want] of cases) assert.deepEqual(validateResult(bad), want);
+  assert.deepEqual(validateScenario({ ...base, path: [path[0], { ...path[1], x: 1 }] }), ['path[1] unknown field x']);
+  assert.deepEqual(validateScenario({ ...base, path: [{ ...path[0], x: 1 }, path[1]] }), ['path[0] unknown field x']);
+  assert.deepEqual(validateScenario({ ...base, path: [{ ...path[0], t: NaN }, path[1]] }), ['path[0] needs finite t,e,n,u']);
+  assert.deepEqual(validateScenario({ ...base, path: [{ ...path[0], t: NaN }, wp({ t: 5 })] }), ['path[0] needs finite t,e,n,u']);
+});
+
+test('F-520: boundary values with exact messages', () => {
+  const cases = [
+    [res({ perClient: one({ id: 30 }) }), ['perClient[0] id out of range']],
+    [res({ perClient: one({ id: 29 }) }), ['perClient[29] duplicate id']],
+    [res({ perClient: one({ id: -1 }) }), ['perClient[0] id out of range']],
+    [res({ perClient: one({ id: 1.5 }) }), ['perClient[0] bad']],
+    [res({ perClient: one({ latencyMs: [Infinity] }) }), ['perClient[0] bad']],
+    [res({ perClient: one({ latencyMs: [1, -0.5] }) }), ['perClient[0] bad']],
+    [res({ records: undefined }), ['records empty']],
+    [res({ records: {} }), ['records empty']],
+    [res({ records: [rec, { ...rec, unit: 'bogus' }] }), ['records[1]: bad unit']],
+    [res({ scenario: { ...base, name: 'ab-' } }), ['bad name']],
+    [res({ scenario: { ...base, name: '' } }), ['bad name']],
+  ];
+  for (const [bad, want] of cases) assert.deepEqual(validateResult(bad), want);
+  assert.deepEqual(validateScenario({ ...base, name: 'ab-' }), ['bad name']);
+  assert.deepEqual(validateScenario({ ...base, name: '' }), ['bad name']);
+  assert.deepEqual(validateScenario({ ...base, name: 'a_9' }), []);
+  // Positive boundaries: zero bytes and zero latency are valid.
+  assert.deepEqual(validateResult(res({ perClient: one({ bytes: 0 }) })), []);
+  assert.deepEqual(validateResult(res({ perClient: one({ latencyMs: [0] }) })), []);
+  assert.deepEqual(validateResult(res({ perClient: one({ id: 0, bytes: 0, latencyMs: [0, 0] }) })), []);
+});
+
+test('F-520: very large invalid perClient/records through validateResult do not throw', () => {
+  const N = 300000;
+  const e1 = validateResult(res({ perClient: Array.from({ length: N }, () => null) }));
+  assert.equal(e1.length, N + 1); // length mismatch plus one 'bad' per element
+  assert.equal(e1[0], 'perClient length != clients');
+  assert.equal(e1[1], 'perClient[0] bad');
+  assert.equal(e1[N], `perClient[${N - 1}] bad`);
+  const e2 = validateResult(res({ records: Array.from({ length: N }, () => null) }));
+  assert.equal(e2.length, N);
+  assert.equal(e2[0], 'records[0]: record must be an object');
+  assert.equal(e2[N - 1], `records[${N - 1}]: record must be an object`);
+  const e3 = validateResult(res({ perClient: new Array(N) }));
+  assert.equal(e3.length, N + 1);
+  assert.equal(e3[N], `perClient[${N - 1}] missing`);
+  const e4 = validateResult(res({ records: new Array(N) }));
+  assert.equal(e4.length, N);
+  assert.equal(e4[N - 1], `records[${N - 1}] missing`);
+});
