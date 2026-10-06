@@ -159,7 +159,7 @@ export function createControlView(opts) {
       // 2) 추적 목표 갱신: 드론이 있으면 첫 드론, 없으면 해제
       if (drones.length > 0) {
         const d = drones[0];
-        // 방위가 없으면 같은 드론의 이전 목표 방위를 유지하고, 처음이면 0(북)으로 둔다.
+        // 방위가 없으면 같은 드론의 이전 목표 방위를 유지하고, 이전 방위도 없으면 이 프레임은 추적하지 않는다.
         const yaw = d.yaw !== undefined ? d.yaw : (chaseTarget !== null && chaseTarget.id === d.id ? chaseTarget.yaw : undefined);
         if (yaw !== undefined) {
           chase.setTarget(copyVec(d.enu), yaw);

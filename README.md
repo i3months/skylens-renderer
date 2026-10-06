@@ -153,6 +153,12 @@ WebGL2 로 .skla 조각을 그린다. 계약 `contracts/client_raster/`, 구현 
 
 **조립(`client/tower/e2e/`).** 입력·추적·오버레이·스트리밍·폴백을 한 객체(`createControlView`)로 묶고, 녹화 재생(`replayRecording`)이 같은 입력에서 같은 상태를 내는지 시험한다. 계약 `contracts/controlview/e2e.mjs`. 서버 불가 구간에서는 3D 층 결과를 내지 않고 폴백만 낸다. 네트워크를 쓰지 않는다. 시험: `node --test "client/tower/e2e/*.test.mjs"`.
 
+## 벤치
+
+측정 도구:
+- `node bench/tower/lod_bytes.mjs`: 관제탑 조망 범위의 지형 LOD 단계별 바이트 크기를 측정한다.
+- `node bench/tower/bundle.mjs`: 관제탑 클라이언트 모듈들의 번들 크기(원본·축소·gzip)를 측정한다.
+
 ## English
 
 Server-side renderer for SkyLens. Work in progress.
@@ -305,4 +311,10 @@ A compute-only module that conservatively computes terrain tiles visible from th
 A compute-only module that draws only received drones, paths and detection markers on a 2D map (north up) when server rendering is unavailable. Displays a banner "Real-time 3D unavailable". Contract: `contracts/controlview/fallback.mjs`; implementation: `client/tower/fallback/` (packing, conversion, assembly). Positions not received are never interpolated or extrapolated; only what is received is drawn. Temporary pending human confirmation. No network or timers. Tests: `node --test "client/tower/fallback/*.test.mjs"`.
 
 **Assembly (`client/tower/e2e/`).** Wires input, chase, overlay, streaming and fallback into one object (`createControlView`); recording replay (`replayRecording`) is tested to give the same state for the same input. Contract: `contracts/controlview/e2e.mjs`. While the server is unavailable only the fallback is produced, not the 3D layers. No network. Tests: `node --test "client/tower/e2e/*.test.mjs"`.
+
+## Benchmark
+
+Measurement tools:
+- `node bench/tower/lod_bytes.mjs`: Measures terrain LOD level byte sizes across the control tower viewing range.
+- `node bench/tower/bundle.mjs`: Measures tower client module bundle sizes (raw, minified, and gzipped).
 
