@@ -57,6 +57,7 @@ function simulateClient(id, scenario, random) {
 /** simulateSlowLink(scenario, { seed }) -> { events, maxQueueBytes, undeliveredBytes, dropped }. */
 export function simulateSlowLink(scenario, { seed } = {}) {
   const errs = validateScenario(scenario);
+  if (!(Number.isInteger(seed) && seed >= 0 && seed <= 0xffffffff)) throw new Error('seed must be an integer in 0..2^32-1');
   if (errs.length > 0) throw new Error(`invalid scenario: ${errs.join('; ')}`);
   if (scenario.kind !== 'slow_link') throw new Error('scenario kind must be slow_link');
   const events = [];
@@ -64,7 +65,7 @@ export function simulateSlowLink(scenario, { seed } = {}) {
   let undeliveredBytes = 0;
   let dropped = 0;
   for (let id = 0; id < scenario.clients; id++) {
-    const r = simulateClient(id, scenario, rng(((seed >>> 0) + Math.imul(id + 1, 0x9e3779b1)) >>> 0));
+    const r = simulateClient(id, scenario, rng((seed + Math.imul(id + 1, 0x9e3779b1)) >>> 0));
     for (const e of r.events) events.push(e);
     undeliveredBytes += r.undelivered;
     dropped += r.dropped;

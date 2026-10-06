@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { simulateSlowLink, QUEUE_LIMIT_BYTES } from './index.mjs';
-import { validateEvent } from '../../../contracts/load/harness.mjs';
+import { validateEvent, rng } from '../../../contracts/load/harness.mjs';
 
 const mk = (linkBytesPerS) => ({
   name: 'slow', kind: 'slow_link', clients: 30, durationS: 20, linkBytesPerS,
@@ -65,7 +65,17 @@ test('30 clients, 60 s, seed 1, 50000 B/s: conservation, undelivered and dropped
   assert.equal(delivered, 89265994);
   assert.equal(r.undeliveredBytes, 7325738);
   assert.equal(r.dropped, 504828);
-  assert.ok(r.undeliveredBytes > 0);
+  // Independent replay of each client's payload size sequence: delivered payloads are a FIFO prefix of it.
+  for (let id = 0; id < 30; id++) {
+    const rand = rng((1 + Math.imul(id + 1, 0x9e3779b1)) >>> 0);
+    rand(); // first wanted time
+    const mine = bytesEvents.filter((e) => e.id === id);
+    for (const e of mine) {
+      const size = 4096 + Math.floor(rand() * (40960 - 4096 + 1));
+      rand(); // gap draw
+      assert.equal(e.bytes, size, `client ${id} payload order`);
+    }
+  }
   assert.equal(delivered + r.undeliveredBytes + r.dropped, 97096560);
   assert.equal(r.maxQueueBytes, 262143);
 });
@@ -75,7 +85,13 @@ test('latency is measured from wanted time, including backpressure wait (pinned)
   const lats = r.events.filter((e) => e.kind === 'bytes').map((e) => e.latencyMs);
   assert.ok(Math.abs(Math.max(...lats) - 5884.9577936409405) < 1e-6);
   assert.ok(Math.abs(lats.reduce((a, b) => a + b, 0) - 18696370.16254823) < 1e-3);
-  for (const e of r.events) if (e.kind === 'bytes') assert.ok(e.latencyMs >= e.bytes / 50 - 1e-9, 'at least transit time');
+  // FIFO link: consecutive deliveries of one client are at least one payload's transit time apart.
+  const prev = new Map();
+  for (const e of r.events) {
+    if (e.kind !== 'bytes') continue;
+    if (prev.has(e.id)) assert.ok(e.tMs - prev.get(e.id) >= e.bytes / 50 - 1e-6, `client ${e.id} link spacing`);
+    prev.set(e.id, e.tMs);
+  }
 });
 
 test('no client receives a byte: no throw, log intact, no first_frame', () => {
@@ -90,4 +106,18 @@ test('no client receives a byte: no throw, log intact, no first_frame', () => {
 test('rejects non slow_link scenario', () => {
   const sc = { ...mk(1000) };
   assert.throws(() => simulateSlowLink({ ...sc, kind: 'steady', linkBytesPerS: undefined }, { seed: 1 }));
+});
+
+const BAD_SEEDS = [['2^32', 2 ** 32], ['-1', -1], ['1.5', 1.5], ['NaN', NaN], ['undefined', undefined]];
+for (const [name, seed] of BAD_SEEDS) {
+  test(`rejects bad seed ${name}`, () => {
+    assert.throws(() => simulateSlowLink(mk(50000), { seed }), /seed must be an integer in 0\.\.2\^32-1/);
+  });
+}
+
+test('boundary seeds 0 and 2^32-1 are valid and give different logs', () => {
+  const a = simulateSlowLink(mk(50000), { seed: 0 });
+  const b = simulateSlowLink(mk(50000), { seed: 0xffffffff });
+  assert.ok(a.events.length > 60 && b.events.length > 60);
+  assert.notDeepEqual(a.events, b.events);
 });
