@@ -13,6 +13,7 @@ export function createStatsSampler({
   now: nowIn,
   clock,
   source,
+  cpuStub = false,
 } = {}) {
   if (clock !== 'simulated' && clock !== 'real') throw new Error("createStatsSampler: clock must be 'simulated' or 'real'");
   if (clock === 'simulated' && !(cpuIn && nowIn)) throw new Error('createStatsSampler: a simulated clock needs both now and cpuUsage injected');
@@ -28,24 +29,41 @@ export function createStatsSampler({
     tick() {
       const t = now();
       const wallUs = (t - prevT) * 1000;
-      // Zero (or negative) elapsed time: skip the tick, keep the baseline so the next tick spans it.
-      if (wallUs <= 0) return;
+      // Zero, negative or non-finite elapsed time: skip the tick, keep the baseline so the next tick spans it.
+      if (!(wallUs > 0 && Number.isFinite(wallUs))) return;
       const c = cpuUsage();
       const cpuUs = (c.user - prevCpu.user) + (c.system - prevCpu.system);
       const rssMiB = Math.round((memoryUsage().rss / 1048576) * 100) / 100;
-      out.push({ tS: (t - t0) / 1000, cpuPct: (cpuUs / wallUs) * 100, rssMiB, source, clock });
+      const cpuPct = cpuStub ? null : (cpuUs / wallUs) * 100;
+      out.push({ tS: (t - t0) / 1000, cpuPct, rssMiB, source, clock, cpuSource: cpuStub ? 'stub' : 'measured' });
       prevT = t; prevCpu = c;
     },
     samples() { return out.map((s) => ({ ...s })); },
   };
 }
 
-// Returns violation strings for samples that are not usable as evidence: non-finite values or missing labels.
+// Returns violation strings for samples that are not usable as evidence. Never throws on bad input.
+// cpuPct must be finite and >= 0, except for stub samples (cpuSource 'stub') where it must be exactly null.
 export function checkServerSamples(samples) {
+  if (!Array.isArray(samples)) return ['server samples: not an array'];
   const v = [];
+  let prevT = -Infinity;
   samples.forEach((s, i) => {
-    for (const k of ['cpuPct', 'rssMiB']) if (!Number.isFinite(s[k])) v.push(`server sample ${i}: ${k} is not finite (${s[k]})`);
+    if (s === null || typeof s !== 'object') { v.push(`server sample ${i}: not an object`); return; }
+    if (!Number.isFinite(s.tS)) v.push(`server sample ${i}: tS is not finite (${s.tS})`);
+    else {
+      if (s.tS < 0) v.push(`server sample ${i}: tS is negative (${s.tS})`);
+      if (s.tS <= prevT) v.push(`server sample ${i}: tS not increasing`);
+      prevT = s.tS;
+    }
+    if (s.cpuSource === 'stub') {
+      if (s.cpuPct !== null) v.push(`server sample ${i}: cpuPct must be null for stub (${s.cpuPct})`);
+    } else if (!Number.isFinite(s.cpuPct)) v.push(`server sample ${i}: cpuPct is not finite (${s.cpuPct})`);
+    else if (s.cpuPct < 0) v.push(`server sample ${i}: cpuPct is negative (${s.cpuPct})`);
+    if (!Number.isFinite(s.rssMiB)) v.push(`server sample ${i}: rssMiB is not finite (${s.rssMiB})`);
+    else if (s.rssMiB < 0) v.push(`server sample ${i}: rssMiB is negative (${s.rssMiB})`);
     for (const k of ['source', 'clock']) if (typeof s[k] !== 'string' || s[k] === '') v.push(`server sample ${i}: missing ${k}`);
+    if (s.cpuSource !== 'measured' && s.cpuSource !== 'stub') v.push(`server sample ${i}: bad cpuSource`);
   });
   return v;
 }
