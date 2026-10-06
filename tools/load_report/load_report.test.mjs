@@ -414,3 +414,133 @@ test('MUTATION TEST: removing both pipe and newline escape breaks table complete
   const dataRowPipes = countUnescapedPipes(lines[2]);
   assert.equal(dataRowPipes, 6, 'data row must have exactly 6 unescaped pipes');
 });
+
+test('MUTATION TEST: using /\\n/ regex fails with \\r\\n line breaks', () => {
+  // This test ensures that the regex handles \r\n sequences correctly.
+  // If someone changes the regex to only /\n/ and ignores \r, this test will fail.
+  // The device field has a \r\n sequence which must be converted to a space.
+
+  const result = {
+    scenario: {
+      name: 'test_scenario',
+      kind: 'steady',
+      clients: 1,
+      durationS: 10,
+      path: [
+        { t: 0, e: 0, n: 0, u: 0 },
+        { t: 10, e: 100, n: 200, u: 300 },
+      ],
+    },
+    records: [
+      {
+        metric: 'metric',
+        value: 100,
+        unit: 'ms',
+        device: 'device\r\nname',
+        method: 'method',
+        commit: 'abc1234567890',
+      },
+    ],
+    perClient: [
+      { id: 0, bytes: 5000, latencyMs: [40, 42, 45] },
+    ],
+  };
+
+  const output = loadReport(result);
+  const lines = output.split('\n');
+
+  // Must have exactly 5 lines (header, separator, 1 data, empty, summary)
+  // If \r\n is not properly handled, there will be more lines
+  assert.equal(lines.length, 5, 'output with \\r\\n should have exactly 5 lines');
+
+  // Check that the device field has the \r\n converted to a space
+  assert.match(lines[2], /device name/, 'carriage return + newline should be converted to space');
+});
+
+test('MUTATION TEST: using /\\n/ regex fails with lone \\r line breaks', () => {
+  // This test ensures that the regex handles lone \r (carriage return) correctly.
+  // If someone changes the regex to only /\n/, it will not match lone \r, causing test failure.
+  // A lone \r character must be treated as a line break like \n.
+
+  const result = {
+    scenario: {
+      name: 'test_scenario',
+      kind: 'steady',
+      clients: 1,
+      durationS: 10,
+      path: [
+        { t: 0, e: 0, n: 0, u: 0 },
+        { t: 10, e: 100, n: 200, u: 300 },
+      ],
+    },
+    records: [
+      {
+        metric: 'metric',
+        value: 100,
+        unit: 'ms',
+        device: 'device\rname',
+        method: 'method',
+        commit: 'abc1234567890',
+      },
+    ],
+    perClient: [
+      { id: 0, bytes: 5000, latencyMs: [40, 42, 45] },
+    ],
+  };
+
+  const output = loadReport(result);
+  const lines = output.split('\n');
+
+  // Must have exactly 5 lines (header, separator, 1 data, empty, summary)
+  // If lone \r is not properly handled, the split('\n') will create more lines or malformed output
+  assert.equal(lines.length, 5, 'output with lone \\r should have exactly 5 lines');
+
+  // Check that the device field has the \r converted to a space
+  assert.match(lines[2], /device name/, 'lone carriage return should be converted to space');
+});
+
+test('loadReport: handles already-escaped backslash-pipe correctly', () => {
+  // This test ensures that cells containing a backslash followed by pipe (\|)
+  // are handled correctly and render identically in markdown.
+  // The escaping should not double-escape the backslash.
+
+  const result = {
+    scenario: {
+      name: 'test_scenario',
+      kind: 'steady',
+      clients: 1,
+      durationS: 10,
+      path: [
+        { t: 0, e: 0, n: 0, u: 0 },
+        { t: 10, e: 100, n: 200, u: 300 },
+      ],
+    },
+    records: [
+      {
+        metric: 'metric',
+        value: 100,
+        unit: 'ms',
+        device: 'device\\|name',
+        method: 'method',
+        commit: 'abc1234567890',
+      },
+    ],
+    perClient: [
+      { id: 0, bytes: 5000, latencyMs: [40, 42, 45] },
+    ],
+  };
+
+  const output = loadReport(result);
+  const lines = output.split('\n');
+
+  // Must have exactly 5 lines (header, separator, 1 data, empty, summary)
+  assert.equal(lines.length, 5, 'output should have exactly 5 lines');
+
+  // The data row should have exactly 6 unescaped pipes (5 columns)
+  const dataRowPipes = countUnescapedPipes(lines[2]);
+  assert.equal(dataRowPipes, 6, 'data row must have exactly 6 unescaped pipes');
+
+  // The device field should properly render the backslash and pipe
+  // In the output, backslash-pipe should appear as \\\| (escaped backslash and escaped pipe)
+  assert.match(lines[2], /device\\\\\\\|name/, 'backslash-pipe should be properly escaped');
+});
