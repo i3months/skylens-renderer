@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateThinner } from './tune.mjs';
-import { levelPointTargets } from '../../server/scheduler/segment_budget/index.mjs';
+import { levelPointTargets, createSpatialThinner } from '../../server/scheduler/segment_budget/index.mjs';
 
 const S6_BYTES = 3_000_000;
 const MIN_SSIM = 0.65;
@@ -27,8 +27,14 @@ test('낮은 수준 보장: 수준 0..2 는 원본의 2% 이상, 수준마다 �
   for (let k = 1; k < 4; k++) assert.ok(r.levelPoints[k] > r.levelPoints[k - 1]);
 });
 
+test('변이: 솎기를 모턴 등간격으로 되돌리면 최소 SSIM 이 이 구성보다 0.015 이상 낮다', async () => {
+  const m = await evaluateThinner({ count: 2500000, createThinner: createSpatialThinner });
+  assert.ok(m.bytes <= S6_BYTES);
+  assert.ok(r.ssimMin - m.ssimMin >= 0.015, `개선 ${r.ssimMin - m.ssimMin} (모턴 등간격 ${m.ssimMin})`);
+});
+
 test('변이: 배분을 원본 비례(이전 채택안)로 되돌리면 최소 SSIM 이 이 구성보다 0.05 이상 낮다', async () => {
-  const base = await evaluateThinner({ count: 2500000, allocate: levelPointTargets });
+  const base = await evaluateThinner({ count: 2500000, allocate: levelPointTargets, createThinner: createSpatialThinner });
   assert.ok(base.bytes <= S6_BYTES);
   assert.ok(r.ssimMin - base.ssimMin >= 0.05, `개선 ${r.ssimMin - base.ssimMin} (이전 ${base.ssimMin})`);
 });

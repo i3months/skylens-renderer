@@ -1,4 +1,4 @@
-// makeFloorAllocate(T13.T, 결정 0050) 시험: 기준값은 손으로 계산한 숫자다.
+// makeFloorAllocate(T13.T, 결정 0065) 시험: 기준값은 손으로 계산한 숫자다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeFloorAllocate, S6_LOW_LEVEL_FLOOR, levelPointTargets } from './index.mjs';

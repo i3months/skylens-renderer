@@ -9,7 +9,6 @@ import { renderPoints } from '../../server/raster_ref/zbuffer/index.mjs';
 import { ssim } from '../../server/metrics/ssim/index.mjs';
 import { buildHierarchy, materialize } from '../../server/lod/select/index.mjs';
 import { cullAndSelectDefault } from '../../server/cull/combine/index.mjs';
-import { createSpatialThinner } from '../../server/scheduler/segment_budget/index.mjs';
 import { measureStatusBandwidth, S6_SEND_CONFIG } from '../status_bw/index.mjs';
 import { W, H, TAU, POINT_SIZE_M, LEVEL_COUNT, MAX_LEAF, EDGE0_M, VIEWPOINTS, chunkedRoundTrip } from './index.mjs';
 
@@ -24,20 +23,20 @@ function subset(c, idx) {
 }
 
 /**
- * @param {{createThinner?:Function, allocate?:Function(생략하면 S6_SEND_CONFIG.allocate), count?:number, seed?:number, pointSizeScale?:number, bwOnly?:boolean}} [opts]
+ * @param {{createThinner?:Function(생략하면 S6_SEND_CONFIG.createThinner), allocate?:Function(생략하면 S6_SEND_CONFIG.allocate), count?:number, seed?:number, pointSizeScale?:number, bwOnly?:boolean}} [opts]
  *   count: 구간당 최고 수준 점 수(기본 2,500,000 = SPEC 규모). pointSizeScale: 비교 렌더 점 크기 배율(기본 1).
  * @returns {Promise<{bytes:number, thinned:boolean, levelPoints:number[], levelSource:number[], ratio:number, ssimMin:number, ssimMean:number, ssims:number[], sentMean:number}>}
  */
 export async function evaluateThinner(opts = {}) {
   const count = opts.count ?? 2500000;
-  const bw = measureStatusBandwidth({ segments: 1, pointsPerSegment: count, seed: opts.seed ?? 1, ...S6_SEND_CONFIG, createThinner: opts.createThinner, ...(opts.allocate !== undefined ? { allocate: opts.allocate } : {}) });
+  const bw = measureStatusBandwidth({ segments: 1, pointsPerSegment: count, seed: opts.seed ?? 1, ...S6_SEND_CONFIG, ...(opts.allocate !== undefined ? { allocate: opts.allocate } : {}), ...(opts.createThinner !== undefined ? { createThinner: opts.createThinner } : {}) });
   const row = bw.rows[0];
   const top = row.levels[3];
   const ratio = top.points / top.sourcePoints;
   const base = { bytes: row.frameBytes, thinned: row.thinned, levelPoints: row.levels.map((l) => l.points), levelSource: row.levels.map((l) => l.sourcePoints), ratio };
   if (opts.bwOnly) return base;
   const { cloud } = generate({ seed: 1, count });
-  const makeThinner = opts.createThinner ?? createSpatialThinner;
+  const makeThinner = opts.createThinner ?? S6_SEND_CONFIG.createThinner;
   const thinned = subset(cloud, makeThinner(cloud.positions, cloud).select(Math.round(cloud.count * ratio)));
   const h = buildHierarchy(thinned, { edge0M: EDGE0_M, levelCount: LEVEL_COUNT, maxLeafPoints: MAX_LEAF });
   const ssims = [];
