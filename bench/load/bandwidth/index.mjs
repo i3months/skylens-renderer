@@ -22,7 +22,7 @@ export function bandwidthStats(events, durationS) {
     if (!(typeof e.bytes === 'number' && Number.isFinite(e.bytes) && e.bytes >= 0)) {
       throw new RangeError('bytes must be a finite number >= 0');
     }
-    if (!(typeof e.tMs === 'number' && Number.isFinite(e.tMs) && e.tMs >= 0)) {
+    if (!(Number.isFinite(e.tMs) && e.tMs >= 0)) {
       throw new RangeError('tMs must be a finite number >= 0');
     }
     // events after the scenario window are an input error; tMs === durationS*1000 is accepted
