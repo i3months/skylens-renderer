@@ -1,12 +1,17 @@
 // Minimal RFC 6455 client for the real-socket load run (T16.12). node:net only; frames via server/ws/frame.
 // connectWs({ host, port, path = '/', timeoutMs }) resolves once the 101 upgrade is verified and rejects on any
 // connect / handshake failure (refused, bad status, bad accept key, timeout). The returned handle:
-//   onMessage(cb(Uint8Array))  complete binary messages (fragments reassembled); messages that arrive before a
-//                              callback is set are queued and delivered when it is set.
+//   onMessage(cb(Uint8Array, recvMs))  complete binary messages (fragments reassembled); messages that arrive before a
+//                              callback is set are queued and delivered when it is set. recvMs is now() read at the entry of
+//                              the socket 'data' event that completed the message (not when the callback runs).
+//                              connectWs also takes now = () => performance.now() for that reading.
+//   A server frame with the MASK bit set is a protocol error (RFC 6455 5.1): the client closes with 1002.
 //   onClose(cb({ code, reason }))  called once when the connection ends (server close, error, or our close()).
 //   close(code = 1000)         sends a masked close frame and resolves when the socket is gone (bounded wait).
+//   connectedMs                now() at the entry of the data event that completed the 101 head.
 //   socket                     the underlying net.Socket.
 import net from 'node:net';
+import { performance } from 'node:perf_hooks';
 import { createHash, randomBytes } from 'node:crypto';
 import { FrameParser, encodeFrame, encodeClosePayload, OPCODES } from '../../../server/ws/frame/index.mjs';
 
@@ -41,11 +46,12 @@ function checkUpgrade(head, key) {
  * @param {{ host: string, port: number, path?: string, timeoutMs?: number }} opts
  * @returns {Promise<{ onMessage(cb: (data: Uint8Array) => void): void, onClose(cb: (info: {code: number, reason: string}) => void): void, close(code?: number): Promise<void>, socket: net.Socket }>}
  */
-export function connectWs({ host, port, path = '/', timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS } = {}) {
+export function connectWs({ host, port, path = '/', timeoutMs = DEFAULT_CONNECT_TIMEOUT_MS, now = () => performance.now() } = {}) {
   if (typeof host !== 'string' || host === '') return Promise.reject(new TypeError('host must be a non-empty string'));
   if (!Number.isInteger(port) || port < 1 || port > 65535) return Promise.reject(new RangeError('port must be an integer in 1..65535'));
   if (typeof path !== 'string' || !path.startsWith('/')) return Promise.reject(new TypeError('path must start with /'));
   if (!(Number.isFinite(timeoutMs) && timeoutMs > 0)) return Promise.reject(new RangeError('timeoutMs must be > 0'));
+  if (typeof now !== 'function') return Promise.reject(new TypeError('now must be a function'));
 
   return new Promise((resolve, reject) => {
     const key = randomBytes(16).toString('base64');
@@ -90,15 +96,57 @@ export function connectWs({ host, port, path = '/', timeoutMs = DEFAULT_CONNECT_
       closeTimer = setTimeout(() => socket.destroy(), CLOSE_WAIT_MS);
     }
 
-    function deliver(data) {
-      if (msgCb) msgCb(data);
-      else queue.push(data);
+    function deliver(data, recvMs) {
+      if (msgCb) msgCb(data, recvMs);
+      else queue.push([data, recvMs]);
     }
 
-    function feed(chunk) {
+    // Stream-level scan of server frame headers; FrameParser(requireMask:false) would silently accept a masked frame.
+    // Returns the offset in chunk of the first byte of the offending frame (-1: its start was in an earlier chunk), or null.
+    const scan = { phase: 0, extLeft: 0, ext: [], payloadLeft: 0 };
+    function findMasked(chunk) {
+      let i = 0;
+      let frameAt = scan.phase === 0 ? 0 : -1;
+      while (i < chunk.length) {
+        if (scan.phase === 0) { scan.phase = 1; frameAt = i; i++; } else if (scan.phase === 1) {
+          const b = chunk[i++];
+          if (b & 0x80) return frameAt;
+          const len = b & 0x7f;
+          scan.ext = [];
+          if (len === 126) { scan.extLeft = 2; scan.phase = 2; } else if (len === 127) { scan.extLeft = 8; scan.phase = 2; } else if (len > 0) { scan.payloadLeft = len; scan.phase = 3; } else scan.phase = 0;
+        } else if (scan.phase === 2) {
+          scan.ext.push(chunk[i++]);
+          if (--scan.extLeft === 0) {
+            scan.payloadLeft = scan.ext.reduce((a, v) => a * 256 + v, 0);
+            scan.phase = scan.payloadLeft > 0 ? 3 : 0;
+          }
+        } else {
+          const n = Math.min(scan.payloadLeft, chunk.length - i);
+          i += n;
+          scan.payloadLeft -= n;
+          if (scan.payloadLeft === 0) scan.phase = 0;
+        }
+      }
+      return null;
+    }
+
+    function feed(chunk, recvMs) {
+      if (closeInfo) return;
+      const maskedAt = findMasked(chunk);
+      if (maskedAt !== null) {
+        feedParsed(chunk.subarray(0, Math.max(0, maskedAt)), recvMs);
+        if (closeInfo) return;
+        sendClose(1002);
+        finish(1002, 'masked server frame');
+        return;
+      }
+      feedParsed(chunk, recvMs);
+    }
+
+    function feedParsed(chunk, recvMs) {
       for (const ev of parser.push(chunk)) {
         if (closeInfo) return;
-        if (ev.type === 'message') deliver(ev.data);
+        if (ev.type === 'message') deliver(ev.data, recvMs);
         else if (ev.type === 'ping') {
           if (!closeSent) socket.write(maskedFrame(OPCODES.PONG, ev.data));
         } else if (ev.type === 'close') {
@@ -119,7 +167,8 @@ export function connectWs({ host, port, path = '/', timeoutMs = DEFAULT_CONNECT_
     });
 
     socket.on('data', (chunk) => {
-      if (upgraded) { feed(chunk); return; }
+      const recvMs = now();
+      if (upgraded) { feed(chunk, recvMs); return; }
       headBuf = Buffer.concat([headBuf, chunk]);
       const end = headBuf.indexOf('\r\n\r\n');
       if (end < 0) {
@@ -131,10 +180,11 @@ export function connectWs({ host, port, path = '/', timeoutMs = DEFAULT_CONNECT_
       const rest = headBuf.subarray(end + 4);
       headBuf = null;
       upgraded = true;
+      handle.connectedMs = recvMs; // handshake-complete time: now() at the entry of the data event that finished the head
       settled = true;
       clearTimeout(connectTimer);
       resolve(handle);
-      if (rest.length > 0) feed(rest);
+      if (rest.length > 0) feed(rest, recvMs);
     });
 
     socket.on('error', (err) => {
@@ -157,7 +207,7 @@ export function connectWs({ host, port, path = '/', timeoutMs = DEFAULT_CONNECT_
       socket,
       onMessage(cb) {
         msgCb = cb;
-        while (msgCb && queue.length > 0) msgCb(queue.shift());
+        while (msgCb && queue.length > 0) { const [d, t] = queue.shift(); msgCb(d, t); }
       },
       onClose(cb) {
         closeCb = cb;
