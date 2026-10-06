@@ -45,7 +45,9 @@ export function simulateClients(scenario, { seed } = {}) {
       }
       tMs = Math.max(tMs, prev);
       if (tMs > closeMs) break; // arrives after close: not delivered, never clamped to closeMs
-      events.push({ id, tMs, kind: 'bytes', bytes: d.bytes, latencyMs: d.latencyMs });
+      // Observed latency: arrival minus request time, so group sharing and the Math.max push are included.
+      const latencyMs = Math.round((tMs - d.t) * 10) / 10;
+      events.push({ id, tMs, kind: 'bytes', bytes: d.bytes, latencyMs });
       events.push({ id, tMs, kind: 'level', level });
       if (level === 0) events.push({ id, tMs, kind: 'first_frame' });
       t = tMs;
