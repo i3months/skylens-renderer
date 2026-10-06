@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { simulateClients } from './index.mjs';
+import { simulateClients, countOpenConnections } from './index.mjs';
 import { validateEvent } from '../../../contracts/load/harness.mjs';
 
 const steady = (clients, durationS = 10) => ({
@@ -63,10 +63,79 @@ test('single-client scenarios work for every kind', () => {
   }
 });
 
-test('burst levels arrive together; slow link adds latency', () => {
-  const b = simulateClients({ ...steady(1), kind: 'burst', burstLevels: 4 }, { seed: 2 });
-  const times = b.filter((e) => e.kind === 'level').map((e) => e.tMs);
-  assert.ok(Math.max(...times) - Math.min(...times) <= 100 * 4);
-  const slow = simulateClients({ ...steady(1), kind: 'slow_link', linkBytesPerS: 10000 }, { seed: 2 });
+const burst30 = { ...steady(30, 60), name: 'burst30', kind: 'burst', burstLevels: 4 };
+
+test('burst30 seed 1: levels 0..3 of each client share one tMs, first_frame at that tMs', () => {
+  const ev = simulateClients(burst30, { seed: 1 });
+  for (let id = 0; id < 30; id++) {
+    const mine = ev.filter((e) => e.id === id);
+    const lv = mine.filter((e) => e.kind === 'level');
+    assert.deepEqual(lv.map((e) => e.level), [0, 1, 2, 3]);
+    assert.equal(new Set(lv.map((e) => e.tMs)).size, 1);
+    const by = mine.filter((e) => e.kind === 'bytes');
+    assert.equal(by.length, 4);
+    for (const b of by) assert.equal(b.tMs, lv[0].tMs);
+    const ff = mine.filter((e) => e.kind === 'first_frame');
+    assert.equal(ff.length, 1);
+    assert.equal(ff[0].tMs, lv[0].tMs);
+  }
+});
+
+test('burstLevels 2: levels 0,1 together, levels 2,3 later and spaced', () => {
+  const ev = simulateClients({ ...burst30, burstLevels: 2 }, { seed: 1 });
+  for (let id = 0; id < 30; id++) {
+    const t = ev.filter((e) => e.id === id && e.kind === 'level').map((e) => e.tMs);
+    assert.equal(t[0], t[1]);
+    assert.ok(t[2] > t[1] && t[3] > t[2]);
+  }
+});
+
+test('slow link adds latency', () => {
+  const slow = simulateClients({ ...steady(1, 60), kind: 'slow_link', linkBytesPerS: 10000 }, { seed: 2 });
   assert.ok(Math.max(...slow.filter((e) => e.kind === 'bytes').map((e) => e.latencyMs)) > 5000);
+});
+
+test('durationS 1: nothing arrives after close, no clamped fake arrivals', () => {
+  for (const kind of ['steady', 'burst']) {
+    const dur = kind === 'burst' ? 0.3 : 1;
+    const closeAt = dur * 1000;
+    const sc = { ...steady(30, dur), kind, ...(kind === 'burst' ? { burstLevels: 4 } : {}) };
+    const ev = simulateClients(sc, { seed: 1 });
+    let dropped = 0;
+    for (let id = 0; id < 30; id++) {
+      const mine = ev.filter((e) => e.id === id);
+      const lv = mine.filter((e) => e.kind === 'level');
+      assert.deepEqual(lv.map((e) => e.level), [0, 1, 2, 3].slice(0, lv.length)); // a prefix, never gaps
+      if (lv.length < 4) dropped++;
+      for (const e of mine) if (e.kind !== 'close') assert.ok(e.tMs <= closeAt);
+      // clamped fake arrivals would pile several distinct levels onto closeMs in steady mode
+      if (kind === 'steady') assert.ok(mine.filter((e) => e.kind === 'level' && e.tMs === closeAt).length <= 1);
+      assert.equal(mine.filter((e) => e.kind === 'first_frame').length, lv.length ? 1 : 0);
+    }
+    assert.ok(dropped > 0, `${kind}: some client must miss levels in ${dur} s`);
+  }
+});
+
+test('invalid scenario or seed throws', () => {
+  assert.throws(() => simulateClients({ ...steady(3), kind: 'nope' }, { seed: 1 }), /invalid scenario/);
+  assert.throws(() => simulateClients({ ...steady(3), clients: 0 }, { seed: 1 }), /invalid scenario/);
+  assert.throws(() => simulateClients({ ...steady(3), kind: 'burst' }, { seed: 1 }), /invalid scenario/);
+  assert.throws(() => simulateClients(null, { seed: 1 }));
+  for (const seed of [undefined, -1, 1.5, 2 ** 32, NaN, Infinity, '1']) {
+    assert.throws(() => simulateClients(steady(3), { seed }), /seed/);
+  }
+  assert.doesNotThrow(() => simulateClients(steady(3), { seed: 0 }));
+  assert.doesNotThrow(() => simulateClients(steady(3), { seed: 2 ** 32 - 1 }));
+});
+
+test('open connections: min equals clients through the run', () => {
+  for (const sc of [steady(30), burst30, steady(30, 1)]) {
+    const r = countOpenConnections(simulateClients(sc, { seed: 4 }));
+    assert.deepEqual(r, { min: 30, max: 30 });
+  }
+  const ev = simulateClients(steady(5), { seed: 4 });
+  // a client closing early drops min
+  const dropped = ev.map((e) => (e.kind === 'close' && e.id === 2 ? { ...e, tMs: 5000 } : e)).sort((a, b) => a.tMs - b.tMs);
+  assert.equal(countOpenConnections(dropped).min, 4);
+  assert.deepEqual(countOpenConnections([]), { min: 0, max: 0 });
 });
