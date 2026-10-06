@@ -102,3 +102,20 @@ test('throwing getter (Proxy) becomes a violation, not an exception', () => {
   const nonError = new Proxy({}, { get() { throw 'str'; } }); // eslint-disable-line no-throw-literal
   assert.deepEqual(checkEventLog([nonError], 3), ['event 0: str']);
 });
+
+const seq = (...ts) => ts.map((tMs) => ({ id: 0, tMs, kind: 'connect' }));
+
+test('invalid tMs never poisons the monotonic baseline', () => {
+  assert.deepEqual(checkEventLog(seq(Infinity, 1), 3), ['event 0: bad tMs']);
+  assert.deepEqual(checkEventLog(seq(10, -1, 3), 3), ['event 1: bad tMs', 'event 2: tMs goes backwards']);
+});
+
+test('backwards tMs is reported against the last valid value only', () => {
+  assert.deepEqual(checkEventLog(seq(0, 20, 5, 10), 3), ['event 2: tMs goes backwards', 'event 3: tMs goes backwards']);
+});
+
+test('non-array and null-ish logs are violations, not throws', () => {
+  for (const bad of [null, undefined, 5, {}, 'abc']) {
+    assert.deepEqual(checkEventLog(bad, 3), ['event log: not an array']);
+  }
+});
