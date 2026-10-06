@@ -79,7 +79,8 @@ export function replayRecording(view, recording, size) {
   try {
     for (const f of frames) out.push(replayFrame(view, f, sz));
   } catch (err) {
-    view.releaseAll(); // 중간에 던져도 눌린 키가 남지 않게
+    // 중간에 던져도 눌린 키가 남지 않게 한다. 정리 중 오류가 원래 오류를 가리지 않게 삼킨다.
+    try { view.releaseAll(); } catch { /* 원래 오류가 우선 */ }
     throw err;
   }
   return out;

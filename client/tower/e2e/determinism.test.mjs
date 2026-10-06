@@ -62,7 +62,7 @@ const newView = () => createControlView({ input: { pos: [32, 32, 50], yaw: 0 } }
 
 test('같은 녹화를 새 view 두 개로 재생하면 Snapshot[] 이 JSON 으로 완전히 같다', () => {
   const rec = makeRecording(20240615);
-  assert.equal(rec.frames.length, FRAMES);
+  assert.equal(rec.frames.length, 72); // FRAMES 와 독립인 리터럴(생성 루프가 바뀌면 여기서 드러난다)
   const a = replayRecording(newView(), rec, SIZE);
   const b = replayRecording(newView(), rec, SIZE);
   assert.equal(a.length, rec.frames.length);
@@ -179,6 +179,8 @@ test('추적 중 streaming.update 가 던진 프레임은 입력·추적을 되�
   const head = [
     { dtSec: 0.25, drones: [{ id: 'z', enu: [0, 0, 40000], yaw: 0 }] },
     { dtSec: 0.25, drones: [{ id: 'z', enu: [40, 0, 40000], yaw: 0 }] },
+    // 데이터 없는 프레임: 목표가 x=40 으로 옮겨 간 뒤 한 번 감쇠해 카메라가 목표에 닿기 전(0 < x < 40)에 있게 한다.
+    { dtSec: 0.05 },
   ];
   const tail = [{ dtSec: 0.25 }, { dtSec: 0.25 }, { dtSec: 0.25, drones: [] }, { dtSec: 0.25 }];
 
@@ -193,6 +195,9 @@ test('추적 중 streaming.update 가 던진 프레임은 입력·추적을 되�
   const viewHead = replayRecording(view, { version: 1, frames: head }, size);
   view.keyDown('ArrowUp');
   view.setDrones([{ id: 'z', enu: [0, 0, 50], yaw: 0 }]);
+  // 던지기 전 추적 카메라는 감쇠 중이다(현재 ≠ 목표). 되돌릴 때 감쇠 상태가 아니라 목표로 되살리면 여기서 어긋난다.
+  const x0 = view.snapshot(size).camera.pos[0];
+  assert.ok(x0 > 0 && x0 < 40, `던지기 전 카메라 x 는 감쇠 중이어야 함: ${x0}`);
   const before = JSON.stringify(view.snapshot(size));
   assert.throws(() => view.step(0.25, size), RangeError);
   assert.equal(JSON.stringify(view.snapshot(size)), before);
@@ -200,6 +205,7 @@ test('추적 중 streaming.update 가 던진 프레임은 입력·추적을 되�
   const viewTail = replayRecording(view, { version: 1, frames: tail }, size);
 
   assert.equal(JSON.stringify([...viewHead, ...viewTail]), JSON.stringify([...refHead, ...refTail]));
+  assert.equal(view.snapshot(size).camera.pos[0], ref.snapshot(size).camera.pos[0]);
   // 비교가 공허하지 않다: 추적 중이던 카메라는 드론 위(높이 40010 m 부근)에 있다
   assert.ok(viewTail[0].camera.pos[2] > 40000);
 });

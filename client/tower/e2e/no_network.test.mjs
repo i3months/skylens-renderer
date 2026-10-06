@@ -5,7 +5,6 @@ import assert from 'node:assert/strict';
 import { installNetworkSpies } from '../buildings/network_spies.mjs';
 import { createControlView } from './index.mjs';
 import { replayRecording } from './recording.mjs';
-import { TOWER_E2E_MATCH } from '../../../contracts/controlview/e2e.mjs';
 
 const SIZE = { width: 640, height: 480 };
 
@@ -79,8 +78,8 @@ test('e2e: 통합 모듈 사용 중 전역 fetch·타이머·WebSocket 호출 0'
         { dtSec: 0.25, arrivedTiles: [[0, 0], [0, 2]] }, // F7 y=160 → (0,0) 내보냄, 내보낸 (0,0) 도착은 버리고 (0,2) held
         { dtSec: 0.25, keys: { up: ['ArrowUp'] }, drones, detections, paths: [path] }, // F8 데이터는 step 뒤에 들어옴
         { dtSec: 0.25, available: false }, // F9 step 은 live 라 추적 카메라로 update, 그 뒤 폴백
-        { dtSec: 0.25 }, // F10 폴백: update 건너뜀
-        { dtSec: 0.25, available: true }, // F11 step 은 폴백 중이라 update 건너뜀 → F9 의 update 결과가 그대로
+        { dtSec: 0.25, drones: [{ id: 'drone-a', enu: [10, 200, 30], yaw: 0.5 }, drones[1], drones[2]] }, // F10 폴백: update 건너뜀. 데이터(드론 a 를 북으로 150 m 이동)는 step 뒤에 들어옴
+        { dtSec: 0.25, available: true }, // F11 step 은 폴백 중이라 update 를 건너뛴다 → F9 의 update 결과가 그대로(F10 에서 드론이 옮겨 가 있어 update 했다면 달라진다)
       ],
     };
     const view = createControlView({
@@ -106,7 +105,8 @@ test('e2e: 통합 모듈 사용 중 전역 fetch·타이머·WebSocket 호출 0'
     // F9·F10 은 fallback 이라 3D 층 결과가 없다.
     assert.equal(snaps[9].streaming, null);
     assert.equal(snaps[10].streaming, null);
-    // F11: F9 에서 카메라가 드론 추적으로 옮겨 가 새 타일 (-1,-1) 이 요청되고 (0,2) 는 retain 밖으로 나간다.
+    // F11: 회귀 고정(구현 출력, 손계산 아님). F9 의 update 결과가 그대로 남는다: F10·F11 step 은 폴백 중이라 update 하지 않는다.
+    // F10 에서 드론이 북으로 옮겨 갔으므로 가드가 없으면 F11 step 이 다른 카메라로 update 해 이 값이 달라진다(가드 제거 변이로 확인).
     assert.deepEqual(snaps[11].streaming, { held: [t(0, 1)], inflight: [t(-1, -1)] }, 'F11 held·inflight');
     assert.equal(snaps[8].overlay.drones.length, 3, '재생 중 오버레이 드론 3개');
     view.releaseAll();
@@ -120,7 +120,6 @@ test('e2e: 통합 모듈 사용 중 전역 fetch·타이머·WebSocket 호출 0'
   }
   // 복원 뒤에 호출 수를 단언한다.
   assert.deepEqual(spies.calls, [], `네트워크 감시자가 호출을 기록했음: ${spies.calls.join(',')}`);
-  assert.ok(spies.calls.length <= TOWER_E2E_MATCH.maxNetworkCalls, `네트워크 호출 수가 한도(${TOWER_E2E_MATCH.maxNetworkCalls})를 넘음: ${spies.calls.length}`);
 });
 
 for (const [label, defer] of [
