@@ -158,7 +158,7 @@ test('markers: 출력 yaw 의 화면 방향은 (sin yaw, −cos yaw) 이고 손�
   out.forEach((m, i) => {
     const [yaw, ex, ey] = table[i];
     assert.equal(m.yaw, yaw); // 보정 없이 그대로
-    // 출력된 yaw 의 sin·cos 가 기대 방향과 맞는다. 부호·축이 바뀐 변이는 앞의 yaw 동일 단언(:160)이 먼저 잡고, 이 줄은 yaw 값이 맞아도 방향 규약이 어긋난 경우를 잡는다.
+    // 출력된 yaw 의 sin·cos 가 기대 방향과 맞는다. yaw 값 그대로 반환(:160)이므로, 이 줄은 표 자체가 일관성이 있는지 검증한다.
     assert.ok(Number.isFinite(m.yaw), `yaw ${yaw}`);
     assert.ok(Math.abs(Math.sin(m.yaw) - ex) < 1e-12 && Math.abs(-Math.cos(m.yaw) - ey) < 1e-12, `yaw ${yaw}`);
   });
