@@ -127,7 +127,7 @@ export function runScenario(scenario, opts = {}) {
   if (scenario.kind !== 'slow_link') appendAll(violations, checkThresholds(records, thresholds), `${name}: `);
   // Simulated clock and stub CPU by default, so source reads 'simulated'. Real server verdicts are the [local] follow-up (T16.12 / T17).
   // A sampler or usage function that throws becomes a `server stats: <message>` violation; one that returns null makes the sampler
-  // skip the tick (fewer samples), reported as `N server samples, expected M`. Neither escapes as an exception.
+  // skip the tick (fewer samples), reported by checkServerSamples as `server samples: N samples, expected M`. Neither escapes as an exception.
   let serverSamples = [];
   try {
     const sampler = createStatsSampler(samplerOpts);
@@ -135,7 +135,6 @@ export function runScenario(scenario, opts = {}) {
     const expectedSamples = Math.ceil(scenario.durationS);
     for (let i = 1; i <= expectedSamples; i++) { tickMs = Math.min(i, scenario.durationS) * 1000; sampler.tick(); }
     serverSamples = sampler.samples();
-    if (serverSamples.length < expectedSamples) violations.push(`${name}: ${serverSamples.length} server samples, expected ${expectedSamples}`);
     appendAll(violations, checkServerSamples(serverSamples, { durationS: scenario.durationS }), `${name}: `);
   } catch (e) {
     violations.push(`${name}: server stats: ${e instanceof Error ? e.message : String(e)}`);
