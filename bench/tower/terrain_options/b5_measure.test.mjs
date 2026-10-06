@@ -37,6 +37,17 @@ test('summarize: cellM 포함(없으면 그룹 규칙으로 보충)', () => {
   assert.equal(rows.find((r) => r.group === 'lowNoise2m').cellM, 2);
 });
 
+test('summarize: cellM 없는 lowNoise2m 행은 그룹 규칙으로 2 를 채운다', () => {
+  const s = synth();
+  s.results = [{ dem: 'lowNoise2m:2', group: 'lowNoise2m', options: s.results[0].options }];
+  const rows = summarize(s);
+  assert.ok(rows.length >= 1);
+  for (const r of rows) {
+    assert.equal(r.group, 'lowNoise2m');
+    assert.equal(r.cellM, 2);
+  }
+});
+
 test('formatB5: 열 머리에 간격(셀)·cellM 표기', () => {
   const out = formatB5(synth());
   assert.match(out, /간격\(셀\) LOD0\.\.3/);

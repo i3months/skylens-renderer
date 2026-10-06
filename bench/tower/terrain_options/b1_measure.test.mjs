@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { demTileCount, measureDem, lowNoiseDem } from './b1_measure.mjs';
+import { makeHillDem } from '../../../client/tower/terrain/fixtures.mjs';
 
 // 6×6 타일 DEM(셀 16 m → 타일당 4 셀). 원점만 바꿔 쓴다.
 function gridDem(originX, originY, cellM = 16, tiles = 6) {
@@ -37,4 +38,8 @@ test('기존 DEM tileCount 불변(계산만)', () => {
   assert.equal(demTileCount(gridDem(-512, -512, 1, 16)), 256); // lowNoise 1 m
   assert.equal(demTileCount(gridDem(-512, -512, 2, 16)), 256); // lowNoise2m
   assert.equal(demTileCount(gridDem(-256, -256, 2, 4)), 16); // hill 16
+  // 합성 격자가 아니라 실제 생성기 출력에도 같은 값을 단언한다.
+  assert.equal(demTileCount(lowNoiseDem(1, 1)), 256);
+  assert.equal(demTileCount(lowNoiseDem(1, 2)), 256);
+  assert.equal(demTileCount(makeHillDem({ seed: 1, noiseRatio: 0 })), 16);
 });
