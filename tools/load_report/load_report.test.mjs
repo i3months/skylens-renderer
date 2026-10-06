@@ -608,53 +608,142 @@ function srcResult({ method = 'x', serverSamples } = {}) {
   if (serverSamples) r.serverSamples = serverSamples;
   return r;
 }
-const sample = (source) => [{ tS: 0, cpuPct: 1, rssMiB: 1, source, clock: 'real' }];
-const lastLine = (out) => out.split('\n').at(-1);
+const sample = (source, extra = {}) => ({ tS: 0, cpuPct: 1, rssMiB: 1, source, clock: 'real', cpuSource: 'measured', ...extra });
+const samples = (source) => [sample(source)];
+const lines = (out) => out.split('\n');
+const srcOf = (out) => lines(out).find((l) => l.startsWith('source:'));
+const cpuOf = (out) => lines(out).find((l) => l.startsWith('cpu/rss source:'));
+const twoRecords = (m1, m2) => {
+  const r = srcResult({ method: m1 });
+  r.records.push({ ...r.records[0], metric: 'm2', method: m2 });
+  return r;
+};
 
-test('source line: server-process samples in result give no "simulated" at all', () => {
-  const out = loadReport(srcResult({ method: 'sim', serverSamples: sample('server-process') }));
-  assert.equal(lastLine(out), 'source: server-process, S5/S8 verdict measured on server-process');
-  assert.equal(out.split('simulated').length - 1, 0);
+test('source line: samples never change the source line', () => {
+  const out = loadReport(srcResult({ method: 'sim', serverSamples: samples('server-process') }));
+  assert.equal(srcOf(out), 'source: simulated, S5/S8 verdict [local]');
+  assert.equal(cpuOf(out), 'cpu/rss source: server-process');
+  assert.ok(!out.includes('measured on server-process'));
 });
 
-test('source line: opts.serverSamples is accepted and wins over method', () => {
-  const out = loadReport(srcResult({ method: 'sim' }), { serverSamples: sample('server-process') });
-  assert.equal(lastLine(out), 'source: server-process, S5/S8 verdict measured on server-process');
-  assert.ok(!out.includes('simulated'));
+test('source line: any sim record wins, also when not first', () => {
+  assert.equal(srcOf(loadReport(twoRecords('wrk', 'sim'))), 'source: simulated, S5/S8 verdict [local]');
+  assert.equal(srcOf(loadReport(twoRecords('sim', 'wrk'))), 'source: simulated, S5/S8 verdict [local]');
 });
 
-test('source line: harness-process samples', () => {
-  const out = loadReport(srcResult({ serverSamples: sample('harness-process') }));
-  assert.equal(lastLine(out), 'source: harness-process, S5/S8 verdict measured on harness-process');
+test('source line: sim method with samples in opts is still simulated', () => {
+  const out = loadReport(srcResult({ method: 'sim' }), { serverSamples: samples('server-process') });
+  assert.equal(srcOf(out), 'source: simulated, S5/S8 verdict [local]');
 });
 
-test('source line: simulated samples keep the [local] wording', () => {
-  const out = loadReport(srcResult({ method: 'measure', serverSamples: sample('simulated') }));
-  assert.equal(lastLine(out), 'source: simulated, S5/S8 verdict [local]');
+test('source line: records with different methods give unknown', () => {
+  assert.equal(srcOf(loadReport(twoRecords('wrk', 'ab'))), 'source: unknown, S5/S8 verdict origin unknown');
 });
 
-test('source line: no samples, method sim maps to simulated', () => {
-  assert.equal(lastLine(loadReport(srcResult({ method: 'sim' }))), 'source: simulated, S5/S8 verdict [local]');
+test('source line: records with equal methods use that method', () => {
+  assert.equal(srcOf(loadReport(twoRecords('wrk', 'wrk'))), 'source: wrk, S5/S8 verdict measured on wrk');
 });
 
-test('source line: no samples, other method is used as source', () => {
-  assert.equal(lastLine(loadReport(srcResult({ method: 'wrk' }))), 'source: wrk, S5/S8 verdict measured on wrk');
+test('source line: first record method must be usable (first wins over later)', () => {
+  assert.equal(srcOf(loadReport(twoRecords('', 'wrk'))), 'source: unknown, S5/S8 verdict origin unknown');
+  assert.equal(srcOf(loadReport(twoRecords('wrk', ''))), 'source: wrk, S5/S8 verdict measured on wrk');
 });
 
-test('source line: empty samples array falls back to method', () => {
-  assert.equal(lastLine(loadReport(srcResult({ method: 'wrk', serverSamples: [] }))), 'source: wrk, S5/S8 verdict measured on wrk');
+test('source line: method with line break is sanitized', () => {
+  const out = loadReport(srcResult({ method: 'a\nb' }));
+  assert.equal(srcOf(out), 'source: a b, S5/S8 verdict measured on a b');
 });
 
-test('source line: sample without a string source falls back to method', () => {
-  assert.equal(lastLine(loadReport(srcResult({ method: 'wrk', serverSamples: [{ tS: 0 }] }))), 'source: wrk, S5/S8 verdict measured on wrk');
+test('source line: no samples, sim maps to simulated and no cpu/rss line', () => {
+  const out = loadReport(srcResult({ method: 'sim' }));
+  assert.equal(srcOf(out), 'source: simulated, S5/S8 verdict [local]');
+  assert.equal(cpuOf(out), undefined);
 });
 
-test('source line: no usable source gives unknown', () => {
-  const r = srcResult();
-  r.records[0].method = '';
-  assert.equal(lastLine(loadReport(r)), 'source: unknown, S5/S8 verdict origin unknown');
+test('source line: other method is used as source', () => {
+  assert.equal(srcOf(loadReport(srcResult({ method: 'wrk' }))), 'source: wrk, S5/S8 verdict measured on wrk');
 });
 
-test('source line: literal unknown sample source', () => {
-  assert.equal(lastLine(loadReport(srcResult({ serverSamples: sample('unknown') }))), 'source: unknown, S5/S8 verdict origin unknown');
+test('source line: empty method gives unknown', () => {
+  assert.equal(srcOf(loadReport(srcResult({ method: '' }))), 'source: unknown, S5/S8 verdict origin unknown');
+});
+
+test('cpu/rss line: valid samples, not simulated', () => {
+  const out = loadReport(srcResult({ method: 'wrk', serverSamples: samples('server-process') }));
+  assert.equal(cpuOf(out), 'cpu/rss source: server-process, measured on server-process');
+  assert.equal(srcOf(out), 'source: wrk, S5/S8 verdict measured on wrk');
+});
+
+test('cpu/rss line: valid samples via opts', () => {
+  const out = loadReport(srcResult({ method: 'wrk' }), { serverSamples: samples('harness-process') });
+  assert.equal(cpuOf(out), 'cpu/rss source: harness-process, measured on harness-process');
+});
+
+test('cpu/rss line: follows the source line', () => {
+  const l = lines(loadReport(srcResult({ method: 'wrk', serverSamples: samples('server-process') })));
+  assert.equal(l.at(-2), 'source: wrk, S5/S8 verdict measured on wrk');
+  assert.equal(l.at(-1), 'cpu/rss source: server-process, measured on server-process');
+});
+
+test('cpu/rss line: empty samples array prints no line', () => {
+  assert.equal(cpuOf(loadReport(srcResult({ method: 'wrk', serverSamples: [] }))), undefined);
+});
+
+test('cpu/rss line: sample source unknown', () => {
+  assert.equal(cpuOf(loadReport(srcResult({ method: 'wrk', serverSamples: samples('unknown') }))), 'cpu/rss source: unknown');
+});
+
+test('cpu/rss line: invalid samples give unknown without measured on', () => {
+  for (const bad of [[{ tS: 0 }], [sample('server-process', { rssMiB: -1 })], [sample('server-process', { cpuSource: 'x' })],
+    [sample('server-process', { tS: 1 }), sample('server-process', { tS: 1 })], 'nope', {}, [null]]) {
+    const out = loadReport(srcResult({ method: 'wrk', serverSamples: bad }));
+    assert.equal(cpuOf(out), 'cpu/rss source: unknown', JSON.stringify(bad));
+    assert.ok(!out.includes('measured on server-process'));
+  }
+});
+
+test('cpu/rss line: numeric sample source is rejected as unknown', () => {
+  const out = loadReport(srcResult({ method: 'wrk', serverSamples: [sample(5)] }));
+  assert.equal(cpuOf(out), 'cpu/rss source: unknown');
+});
+
+test('cpu/rss line: numeric record method is rejected by the contract or reported unknown', () => {
+  const r = srcResult({ method: 'wrk' });
+  r.records[0].method = 5;
+  let out;
+  try { out = loadReport(r); } catch { return; }
+  assert.equal(srcOf(out), 'source: unknown, S5/S8 verdict origin unknown');
+});
+
+test('cpu/rss line: two samples with different sources, first sample wins', () => {
+  const two = [sample('server-process', { tS: 0 }), sample('harness-process', { tS: 1 })];
+  const out = loadReport(srcResult({ method: 'wrk', serverSamples: two }));
+  assert.equal(cpuOf(out), 'cpu/rss source: server-process, measured on server-process');
+  assert.ok(!out.includes('harness-process'));
+});
+
+test('cpu/rss line: opts.serverSamples wins over result.serverSamples', () => {
+  const out = loadReport(srcResult({ method: 'wrk', serverSamples: samples('harness-process') }), { serverSamples: samples('server-process') });
+  assert.equal(cpuOf(out), 'cpu/rss source: server-process, measured on server-process');
+});
+
+test('cpu/rss line: invalid opts samples are not replaced by valid result samples', () => {
+  const out = loadReport(srcResult({ method: 'wrk', serverSamples: samples('server-process') }), { serverSamples: [{ tS: 0 }] });
+  assert.equal(cpuOf(out), 'cpu/rss source: unknown');
+});
+
+test('cpu/rss line: opts null is treated as empty opts', () => {
+  const out = loadReport(srcResult({ method: 'wrk', serverSamples: samples('server-process') }), null);
+  assert.equal(cpuOf(out), 'cpu/rss source: server-process, measured on server-process');
+});
+
+test('cpu/rss line: simulated source prints no measured on', () => {
+  const out = loadReport(srcResult({ method: 'sim' }), { serverSamples: samples('simulated') });
+  assert.equal(cpuOf(out), 'cpu/rss source: simulated');
+});
+
+test('loadReport: non-object result throws', () => {
+  for (const bad of [null, undefined, 5, 'x', true]) {
+    assert.throws(() => loadReport(bad), { message: 'loadReport: result must be an object' });
+  }
 });
