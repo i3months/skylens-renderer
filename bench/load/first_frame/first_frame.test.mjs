@@ -10,7 +10,10 @@ function log(times, connectMs = []) {
   times.forEach((t, id) => {
     const c = connectMs[id] ?? 0;
     ev.push({ id, tMs: c, kind: 'connect' });
-    if (t !== null) ev.push({ id, tMs: c + t, kind: 'first_frame' });
+    if (t !== null) {
+      ev.push({ id, tMs: c + t, kind: 'level', level: 0 });
+      ev.push({ id, tMs: c + t, kind: 'first_frame' });
+    }
   });
   return ev;
 }
@@ -20,7 +23,10 @@ test('limit constant is 3000 ms', () => {
 });
 
 test('FIXTURE_EVENTS: Infinity for the client without a first frame', () => {
-  const s = firstFrameStats(FIXTURE_EVENTS, 3);
+  // FIXTURE_EVENTS carries no level events; add the level-0 arrivals a real log has.
+  const withLevels = [...FIXTURE_EVENTS,
+    { id: 0, tMs: 1200, kind: 'level', level: 0 }, { id: 1, tMs: 2000, kind: 'level', level: 0 }];
+  const s = firstFrameStats(withLevels, 3);
   assert.deepEqual(s.perClientMs, [1200, 2000, Infinity]);
   assert.equal(s.p50Ms, 2000);
   assert.equal(s.p95Ms, Infinity);
@@ -41,6 +47,7 @@ test('20 clients, nearest-rank p50 = 10th and p95 = 19th smallest', () => {
 test('connect time is subtracted; first of several first_frame events counts', () => {
   const ev = [
     { id: 0, tMs: 500, kind: 'connect' },
+    { id: 0, tMs: 2500, kind: 'level', level: 0 },
     { id: 0, tMs: 2500, kind: 'first_frame' },
     { id: 0, tMs: 3000, kind: 'first_frame' },
   ];
@@ -103,8 +110,8 @@ test('zero first frames: NaN percentiles and a violation', () => {
 
 test('first_frame before the client connect gives Infinity, not a negative value', () => {
   const ev = [
-    { id: 0, tMs: 1000, kind: 'connect' }, { id: 0, tMs: 400, kind: 'first_frame' },
-    { id: 1, tMs: 0, kind: 'connect' }, { id: 1, tMs: 700, kind: 'first_frame' },
+    { id: 0, tMs: 1000, kind: 'connect' }, { id: 0, tMs: 300, kind: 'level', level: 0 }, { id: 0, tMs: 400, kind: 'first_frame' },
+    { id: 1, tMs: 0, kind: 'connect' }, { id: 1, tMs: 700, kind: 'level', level: 0 }, { id: 1, tMs: 700, kind: 'first_frame' },
   ];
   const s = firstFrameStats(ev, 2);
   assert.deepEqual(s.perClientMs, [Infinity, 700]);
@@ -181,4 +188,46 @@ test('slow p95 with a missing client reports both; all missing keeps the NaN mes
     ['first-frame p95 4000 ms exceeds limit 3000 ms', 'client 0: no first frame']);
   assert.deepEqual(firstFrameViolations(firstFrameStats(log([null, null]), 2)),
     ['first-frame p95 is NaN: no first frame was measured', 'client 0: no first frame', 'client 1: no first frame']);
+});
+
+test('F-544: first_frame without a level-0 arrival is Infinity and reported', () => {
+  const s = firstFrameStats([{ id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 500, kind: 'first_frame' }], 1);
+  assert.deepEqual(s.perClientMs, [Infinity]);
+  assert.deepEqual(s.missing, [0]);
+  assert.deepEqual(firstFrameViolations(s), [
+    'first-frame p95 is NaN: no first frame was measured',
+    'client 0: first_frame without level-0 arrival',
+  ]);
+});
+
+test('F-544: level 1 only, or level 0 arriving after the first_frame, does not count', () => {
+  const ev = [
+    { id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 100, kind: 'level', level: 1 }, { id: 0, tMs: 500, kind: 'first_frame' },
+    { id: 1, tMs: 0, kind: 'connect' }, { id: 1, tMs: 600, kind: 'level', level: 0 }, { id: 1, tMs: 500, kind: 'first_frame' },
+    { id: 2, tMs: 0, kind: 'connect' }, { id: 2, tMs: 500, kind: 'level', level: 0 }, { id: 2, tMs: 500, kind: 'first_frame' },
+    { id: 3, tMs: 0, kind: 'connect' },
+  ];
+  const s = firstFrameStats(ev, 4);
+  assert.deepEqual(s.perClientMs, [Infinity, Infinity, 500, Infinity]);
+  assert.deepEqual(s.missing, [0, 1, 3]);
+  assert.deepEqual(firstFrameViolations(s).filter((v) => v.startsWith('client')), [
+    'client 0: first_frame without level-0 arrival',
+    'client 1: first_frame without level-0 arrival',
+    'client 3: no first frame',
+  ]);
+});
+
+test('F-544: a later first_frame with an arrival counts; a level of another id does not', () => {
+  const ev = [
+    { id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 100, kind: 'first_frame' },
+    { id: 0, tMs: 300, kind: 'level', level: 0 }, { id: 0, tMs: 400, kind: 'first_frame' },
+    { id: 1, tMs: 0, kind: 'connect' }, { id: 1, tMs: 100, kind: 'first_frame' },
+  ];
+  assert.deepEqual(firstFrameStats(ev, 2).perClientMs, [400, Infinity]);
+});
+
+test('F-548: violations derive missing from perClientMs when stats carry no missing list', () => {
+  assert.deepEqual(firstFrameViolations({ p95Ms: 100, perClientMs: [100, Infinity, 50, NaN] }),
+    ['client 1: no first frame', 'client 3: no first frame']);
+  assert.deepEqual(firstFrameViolations({ p95Ms: 100, perClientMs: [100, 50] }), []);
 });
