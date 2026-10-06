@@ -44,6 +44,15 @@ const KIND_KEYS = {
 };
 const COMMON_KEYS = ['id', 'tMs', 'kind'];
 
+// Pre-compute allowed keys for each kind to avoid creating new Sets per event
+const ALLOWED_KEYS_BY_KIND = {
+  connect: new Set([...COMMON_KEYS, ...KIND_KEYS.connect]),
+  first_frame: new Set([...COMMON_KEYS, ...KIND_KEYS.first_frame]),
+  close: new Set([...COMMON_KEYS, ...KIND_KEYS.close]),
+  bytes: new Set([...COMMON_KEYS, ...KIND_KEYS.bytes]),
+  level: new Set([...COMMON_KEYS, ...KIND_KEYS.level]),
+};
+
 /** Returns violation strings for one event; empty means valid. */
 export function validateEvent(e, clients) {
   const isInt = Number.isInteger;
@@ -58,7 +67,7 @@ export function validateEvent(e, clients) {
   }
   if (e.kind === 'level' && !(isInt(e.level) && e.level >= 0 && e.level < LEVEL_COUNT)) errs.push('bad level');
   if (EVENT_KINDS.includes(e.kind)) {
-    const allowed = new Set([...COMMON_KEYS, ...KIND_KEYS[e.kind]]);
+    const allowed = ALLOWED_KEYS_BY_KIND[e.kind];
     for (const k of Object.keys(e)) if (!allowed.has(k)) errs.push(`unexpected key ${k}`);
   }
   return errs;
