@@ -81,7 +81,7 @@ export function firstFrameStats(events, clients) {
 /**
  * Returns violation strings (an input-check violation if stats.p95Ms is not a number). Empty only when p95 is a
  * number <= FIRST_FRAME_P95_LIMIT_MS (NaN fails) and no client lacks a first frame. Every client without one yields
- * `client N: no first frame` in id order (`client N: first_frame without level-0 arrival` if it had a first_frame but no arrival); an Infinity p95 caused only by such clients is not reported twice.
+ * `client N: no first frame` in id order (`client N: first_frame without level arrival (any level)` if it had a first_frame but no arrival); an Infinity p95 caused only by such clients is not reported twice.
  */
 export function firstFrameViolations(stats) {
   if (stats === null || typeof stats !== 'object' || typeof stats.p95Ms !== 'number') {
@@ -115,16 +115,16 @@ export function firstFrameViolations(stats) {
   if (Array.isArray(stats.outOfOrder)) for (const o of stats.outOfOrder) if (o !== null && typeof o === 'object') order.set(o.id, o.reason);
   // Per client, in id order, exactly one message:
   //  before_connect (missing or not): `client N: first_frame before connect (out of order)`, replaces 'no first frame';
-  //  missing otherwise: 'first_frame without level-0 arrival' / 'no first frame' as before;
-  //  not missing but an earlier first_frame preceded the level-0 arrival:
-  //  `client N: first_frame before level-0 arrival (out of order)`.
+  //  missing otherwise: 'first_frame without level arrival (any level)' / 'no first frame' as before;
+  //  not missing but an earlier first_frame preceded the level arrival (any level):
+  //  `client N: first_frame before level arrival (any level) (out of order)`.
   const ids = [...new Set([...missing, ...order.keys()])].sort((a, b) => a - b);
   for (const id of ids) {
     const reason = order.get(id);
     const isMissing = missing.includes(id);
     if (reason === 'before_connect') out.push(`client ${id}: first_frame before connect (out of order)`);
-    else if (isMissing) out.push(noArrival.includes(id) ? `client ${id}: first_frame without level-0 arrival` : `client ${id}: no first frame`);
-    else if (reason === 'before_firstArrival') out.push(`client ${id}: first_frame before level-0 arrival (out of order)`);
+    else if (isMissing) out.push(noArrival.includes(id) ? `client ${id}: first_frame without level arrival (any level)` : `client ${id}: no first frame`);
+    else if (reason === 'before_firstArrival') out.push(`client ${id}: first_frame before level arrival (any level) (out of order)`);
     else if (reason !== undefined) out.push(`client ${id}: first_frame out of order (unknown reason ${JSON.stringify(reason)})`);
   }
   return out;
