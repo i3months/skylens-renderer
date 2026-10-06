@@ -13,7 +13,7 @@ export const TOWER_FALLBACK_LIMITS = Object.freeze({ minSpanM: 100, marginPx: 16
 
 export const TOWER_FALLBACK_FORMULA = Object.freeze({
   fit: '받은 모든 점(드론·탐지·경로 점)의 (e,n) 경계 상자. centerE = (minE+maxE)/2, centerN = (minN+maxN)/2, span = max(maxE−minE, maxN−minN, minSpanM), m = min(max(marginPx, 1), min(width,height)/4)(여백은 최소 1px 이되 한 변의 1/4 을 넘지 않는다: 한 변 < 4px 에서는 m = min(width,height)/4 < 1. min(width,height) < 4·max(marginPx,1) 인 작은 화면에서는 avail = min/2 라 지도가 1px 로 붕괴하지 않는다. 한 변 ≥ 2px 에서 모든 점이 visible), avail = max(min(width,height) − 2·m, 1), metersPerPx = max(span/avail, minMetersPerPx)(하한 미만은 하한으로 고정하며 던지지 않는다). 받은 점이 없으면 view = null',
-  toScreen: 'x = width/2 + (e − centerE)/metersPerPx;  y = height/2 − (n − centerN)/metersPerPx;  visible = 0 ≤ x < width 이고 0 ≤ y < height. 자동 맞춤에서는 받은 모든 점이 [m, size−m] 안에 들어(marginPx=0 이어도 한 변 ≥ 4px 에서는 m ≥ 1 이라 경계 x=width 에 놓이지 않고, 한 변 ≥ 2px 에서 visible 이다)',
+  toScreen: 'x = width/2 + (e − centerE)/metersPerPx;  y = height/2 − (n − centerN)/metersPerPx;  visible = 0 ≤ x < width 이고 0 ≤ y < height. 한 변 ≥ 2px 에서 자동 맞춤의 모든 점이 [m, size−m] 안에 들어간다(marginPx=0 이어도 한 변 ≥ 4px 에서는 m ≥ 1 이라 경계 x=width 에 놓이지 않음)',
   override: 'setView 로 직접 정한 view 가 있으면 맞춤 대신 그것을 쓴다(null 이면 다시 맞춤). 받은 점이 없어도 view 는 null 이 아니라 그 값이다',
 });
 

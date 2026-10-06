@@ -19,6 +19,7 @@ export const TOWER_E2E_RECORDING = Object.freeze({
   version: 1,
   frame: '{ dtSec:number, keys?:{down?:string[], up?:string[]}, drones?:Drone[], detections?:Detection[], paths?:Path[], available?:boolean, arrivedTiles?:[tx,ty][], failedTiles?:[tx,ty][] }',
   expected: '녹화마다 프레임별 기대 상태(모드·held·inflight 개수, camera.quat·fovY, 오버레이 드론 [id,x,y,visible]·탐지, fallback.paths)를 손계산으로 적은 표를 시험 안에 둔다. 구현 출력을 받아 적은 값은 손계산이라 쓰지 않는다',
+  replay: 'replayRecording 은 프레임마다 snapshot 을 돌려준다. 도중 던지면 미리 눌린 키도 releaseAll 하고, 앞 프레임의 상태는 비원자: snapshot 은 한 프레임의 모든 데이터(keys, drones, detections, paths, available, arrived, failed)를 모두 적용한 뒤에만 취한다',
 });
 
 export const TOWER_E2E_MODULES = Object.freeze({
