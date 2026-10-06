@@ -62,7 +62,7 @@ const newView = () => createControlView({ input: { pos: [32, 32, 50], yaw: 0 } }
 
 test('같은 녹화를 새 view 두 개로 재생하면 Snapshot[] 이 JSON 으로 완전히 같다', () => {
   const rec = makeRecording(20240615);
-  assert.ok(rec.frames.length >= 60);
+  assert.equal(rec.frames.length, FRAMES);
   const a = replayRecording(newView(), rec, SIZE);
   const b = replayRecording(newView(), rec, SIZE);
   assert.equal(a.length, rec.frames.length);
@@ -169,4 +169,37 @@ test('clear() 뒤 snapshot 의 overlay 목록과 fallback 목록이 비어 있�
   assert.equal(fb.mode, 'fallback');
   assert.equal(fb.fallback.empty, true);
   assert.deepEqual(fb.fallback.drones, []);
+});
+
+test('추적 중 streaming.update 가 던진 프레임은 입력·추적을 되돌려 이후 스냅샷이 그 프레임을 건너뛴 재생과 같다', () => {
+  // 입력 카메라는 바로 아래를 봐 타일이 적고, 드론이 높이 40000 m 에 있으면 추적 카메라도 타일이 없다(maxDistM 30 km).
+  // 드론을 50 m 로 내리면 추적 카메라가 거의 수평이라 needed 가 상한을 넘어 update 가 RangeError 를 던진다(추적 감쇠 뒤에 던짐).
+  const size = { width: 160, height: 120 };
+  const mk = () => createControlView({ input: { pitchRad: -Math.PI / 2 }, streaming: { maxDistM: 30000 } });
+  const head = [
+    { dtSec: 0.25, drones: [{ id: 'z', enu: [0, 0, 40000], yaw: 0 }] },
+    { dtSec: 0.25, drones: [{ id: 'z', enu: [40, 0, 40000], yaw: 0 }] },
+  ];
+  const tail = [{ dtSec: 0.25 }, { dtSec: 0.25 }, { dtSec: 0.25, drones: [] }, { dtSec: 0.25 }];
+
+  const ref = mk();
+  const refHead = replayRecording(ref, { version: 1, frames: head }, size);
+  ref.keyDown('ArrowUp');
+  ref.setDrones([{ id: 'z', enu: [0, 0, 50], yaw: 0 }]);
+  ref.setDrones([{ id: 'z', enu: [40, 0, 40000], yaw: 0 }]);
+  const refTail = replayRecording(ref, { version: 1, frames: tail }, size);
+
+  const view = mk();
+  const viewHead = replayRecording(view, { version: 1, frames: head }, size);
+  view.keyDown('ArrowUp');
+  view.setDrones([{ id: 'z', enu: [0, 0, 50], yaw: 0 }]);
+  const before = JSON.stringify(view.snapshot(size));
+  assert.throws(() => view.step(0.25, size), RangeError);
+  assert.equal(JSON.stringify(view.snapshot(size)), before);
+  view.setDrones([{ id: 'z', enu: [40, 0, 40000], yaw: 0 }]);
+  const viewTail = replayRecording(view, { version: 1, frames: tail }, size);
+
+  assert.equal(JSON.stringify([...viewHead, ...viewTail]), JSON.stringify([...refHead, ...refTail]));
+  // 비교가 공허하지 않다: 추적 중이던 카메라는 드론 위(높이 40010 m 부근)에 있다
+  assert.ok(viewTail[0].camera.pos[2] > 40000);
 });
