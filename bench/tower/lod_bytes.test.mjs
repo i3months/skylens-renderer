@@ -21,6 +21,8 @@ test('예산 상수는 SPEC S6 초기 15 MB 그대로', () => {
 test('완만 DEM: 정점 수 65/33/17/9, 단계마다 약 1/4(사후 측정 범위)', () => {
   assert.deepEqual(smooth.levels.map((l) => l.cells), [65, 33, 17, 9]);
   assert.deepEqual(raw(smooth), [38158848, 9650688, 2474496, 655872]); // 측정 후 고정(정확값)
+  // 결정 0057(1 m 셀 상한 0.25 m) 뒤에도 smooth 는 간격 2/4/8 오차가 상한 안이라 바이트가 그대로다.
+  assert.deepEqual(all.effectiveMaxErrorM1m, [0, 0.25, 0.25, 0.25]);
   for (const l of smooth.levels) assert.equal(l.tiles, 256);
   assert.ok(smooth.ratios.lod3OverLod2.raw > 0.25 && smooth.ratios.lod3OverLod2.raw < 0.28);
   assert.ok(smooth.ratios.lod3OverLod0.raw > 0.016 && smooth.ratios.lod3OverLod0.raw < 0.019);
