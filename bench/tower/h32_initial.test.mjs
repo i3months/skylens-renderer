@@ -86,7 +86,7 @@ test('LOD0 은 계약대로 양자화하지 않는다(전부 f32 로 센다)', (
 
 test('범위를 넘는 타일은 f32 폴백으로 센다', () => {
   const dem = noiseBigDem(0);
-  // 타일 (0,0) 한 점을 +4000 m 로 올리면 범위/0.05 > 65535 → 그 타일만 폴백
+  // 타일 (0,0) 한 점을 +4000 m 로 올리면 범위/0.03 > 65535 → 그 타일만 폴백
   const h = new Float32Array(dem.heights);
   h[520 * dem.width + 520] = 4000; // 타일 경계(0 m)를 피한 (8 m, 8 m)
   const m = measureH32Initial({ ...dem, heights: h }, { tilesPerSide: 2 });
@@ -115,8 +115,11 @@ test('폴백 타일 DEM 의 compareBudget 이 손 계산 숫자와 같다(2×2 �
   assert.equal(b.shareMargin, 10_737_673);
   assert.equal(b.totalMargin, 10_737_673);
   assert.equal(b.sharePass && b.totalPass, true);
-  // 폴백이 없었다면(전부 양자화) 4·8,474 + 152 = 34,048 B 로 8,442 B 더 작다 — 폴백이 수치에 실제로 반영됨.
-  assert.equal(42_490 - (4 * 8_474 + 4 * 38), 8_442);
+  // 폴백이 없었다면(전부 양자화) 실제 측정: 4 타일 모두 양자화하면 wire = 4·8,474 + 4·38 = 34,048 B, 차이 = 8,442 B — 폴백이 수치에 실제로 반영됨.
+  const demNoSpike = noiseBigDem(0);
+  const mNoSpike = measureH32Initial(demNoSpike, { tilesPerSide: 2 });
+  assert.ok(mNoSpike.quant.fallbackTiles === 0, '스파이크 없는 DEM 은 폴백이 없어야 함');
+  assert.equal(m.quant.wire - mNoSpike.quant.wire, 8_442);
 });
 
 test('서버 인코더 대조: 인코더가 반드시 있어야 하고, 양자화 256 타일·payload 가 계약 바이트 식에서 유도한 값과 같다', async () => {

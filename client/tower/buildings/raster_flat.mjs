@@ -12,6 +12,7 @@
 // - 비유한 정점·범위 밖 인덱스는 TypeError 로 던진다(계약 위반을 숨기지 않는다).
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { BUILDINGS_DEFAULTS } from '../../../contracts/controlview/buildings.mjs';
+import { rasterCount } from './raster_count.mjs';
 
 const ERR = 'buildings/raster:';
 
@@ -48,6 +49,8 @@ export function rasterizeGroupsCore(camera, groups, onTriangle, onPixel, out, uv
   const clipU = [0, 0, 0, 0]; const clipV = [0, 0, 0, 0];
   const sx = [0, 0, 0, 0]; const sy = [0, 0, 0, 0]; const iz = [0, 0, 0, 0];
   const uz = [0, 0, 0, 0]; const vz = [0, 0, 0, 0]; // u/z, v/z
+
+  let pixelCount = 0; // onPixel 호출 수(진단용 raster_count)
 
   function rasterSub(ia, ib, ic, gid) {
     const ax = sx[ia]; const ay = sy[ia];
@@ -98,6 +101,7 @@ export function rasterizeGroupsCore(camera, groups, onTriangle, onPixel, out, uv
           u = (w0 * auz + w1 * buz + w2 * cuz) * invArea / inv;
           v = (w0 * avz + w1 * bvz + w2 * cvz) * invArea / inv;
         }
+        pixelCount += 1;
         onPixel(3 * pix, u, v);
       }
     }
@@ -165,6 +169,8 @@ export function rasterizeGroupsCore(camera, groups, onTriangle, onPixel, out, uv
       for (let k = 1; k < m - 1; k += 1) rasterSub(0, k, k + 1, g);
     }
   }
+  rasterCount.calls += 1;
+  rasterCount.pixels += pixelCount;
 }
 
 /**

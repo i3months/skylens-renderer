@@ -141,3 +141,40 @@ test('F-504 ⑥: dequantizeHeights 복원값이 비유한이면 RangeError', () 
   assert.throws(() => h.dequantizeHeights(2147483647, 3.4e38, [65535]), RangeError);
   assert.doesNotThrow(() => h.dequantizeHeights(0, 3.4e38, [1]));
 });
+
+test('F-506 ①: step 이 number 가 아니면 quantize·snap 모두 RangeError(암묵 변환 거부)', () => {
+  for (const step of ['0.03', true, null, {}, [0.03], 1n]) {
+    assert.throws(() => h.quantizeHeights([1, 2], step), RangeError, `quantize ${String(step)}`);
+    assert.throws(() => h.snapHeightsToGrid([1, 2], step), RangeError, `snap ${String(step)}`);
+  }
+});
+
+test('F-506 ①: quantize 가 돌려주는 step 은 fround(0.03) 와 ===(checkStep fround 제거 변이 M1b)', () => {
+  assert.equal(h.quantizeHeights([1, 2], 0.03).step, Math.fround(0.03));
+  assert.equal(h.quantizeHeights([1, 2]).step, Math.fround(h.TERRAIN_H32_STEP_M));
+  assert.notEqual(Math.fround(0.03), 0.03);
+});
+
+test('F-506 ②: DataView 는 세 함수 모두 RangeError(빈 배열처럼 통과 금지)', () => {
+  const dv = new DataView(new ArrayBuffer(8));
+  assert.throws(() => h.quantizeHeights(dv), RangeError);
+  assert.throws(() => h.snapHeightsToGrid(dv), RangeError);
+  assert.throws(() => h.dequantizeHeights(0, 0.03, dv), RangeError);
+});
+
+test('F-506 ③: quantize 복원값이 비유한이면 null(dequantize 가 던지는 입력은 quantize 도 거른다)', () => {
+  assert.equal(h.quantizeHeights([3.4e38], 2e38), null);
+  assert.equal(h.quantizeHeights([-3.4e38], 2e38), null);
+  assert.throws(() => h.dequantizeHeights(1, 2e38, [1]), RangeError); // kbase 1 + q 1 = 2 → 4e38
+  assert.ok(h.quantizeHeights([1e30], 1e30)); // 유한 경계 안쪽은 그대로 양자화
+});
+
+test('F-506 ④: {length:0} 유사배열은 RangeError, 3.5e38 step 은 빈 q 에서도 RangeError(M2b)', () => {
+  const fake = { length: 0 };
+  assert.throws(() => h.quantizeHeights(fake), RangeError);
+  assert.throws(() => h.snapHeightsToGrid(fake), RangeError);
+  assert.throws(() => h.dequantizeHeights(0, 0.03, fake), RangeError);
+  for (const step of [1e-50, 3.5e38]) {
+    assert.throws(() => h.dequantizeHeights(0, step, []), RangeError, `step ${step}`);
+  }
+});

@@ -15,6 +15,7 @@
 // - 비유한 좌표는 건너뛰지 않고 TypeError 로 던진다(계약 위반을 숨기지 않는다. terrain/raster 와 같은 방침).
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { BUILDINGS_DEFAULTS } from '../../../contracts/controlview/buildings.mjs';
+import { rasterCount } from './raster_count.mjs';
 
 /** out 이 카메라와 같은 크기의 RenderResult 모양인지 확인한다(전체 화소 검사는 하지 않는다). */
 export function assertOutFor(camera, out, who) {
@@ -61,7 +62,9 @@ export function rasterizeLines(camera, groups, rgb, out, opts = {}) {
   // 이 호출에서 선이 쓴 화소 표시: 선끼리는 편향 없이 비교하고 면(선이 쓰지 않은 화소)과만 편향을 둔다.
   if (markBuf.length !== W * H) markBuf = new Uint8Array(W * H); else markBuf.fill(0); // 호출 사이 재사용
   const lineMark = markBuf;
+  let plotCount = 0; // plot 시도 수(진단용 raster_count)
   const plot = (i, j, dRaw, g) => {
+    plotCount += 1;
     if (i < 0 || j < 0 || i >= W || j >= H) return;
     const d = Math.fround(dRaw);
     if (!Number.isFinite(d)) return; // float32 유한 범위 밖이면 그리지 않는다
@@ -141,4 +144,6 @@ export function rasterizeLines(camera, groups, rgb, out, opts = {}) {
       }
     }
   }
+  rasterCount.calls += 1;
+  rasterCount.pixels += plotCount;
 }

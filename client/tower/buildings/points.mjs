@@ -10,6 +10,7 @@
 import { assertCamera } from '../../../contracts/raster/index.mjs';
 import { BUILDINGS_DEFAULTS } from '../../../contracts/controlview/buildings.mjs';
 import { assertOutFor, assertRgb } from './lines.mjs';
+import { rasterCount } from './raster_count.mjs';
 
 /**
  * 표본점을 그린다.
@@ -28,10 +29,12 @@ export function rasterizePoints(camera, groups, rgb, out) {
   const { fx, fy, cx, cy } = K;
   const color = out.color, depth = out.depth, index = out.index;
 
+  let pointCount = 0; // 검사한 점 수(진단용 raster_count)
   for (let g = 0; g < groups.length; g += 1) {
     const P = groups[g] && groups[g].points;
     if (!(P instanceof Float32Array) || P.length % 3 !== 0) throw new TypeError(`points: groups[${g}].points 는 길이가 3 의 배수인 Float32Array`);
     for (let s = 0; s < P.length; s += 3) {
+      pointCount += 1;
       const x = P[s], y = P[s + 1], z = P[s + 2];
       if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))) throw new TypeError(`points: groups[${g}].points[${s}..${s + 2}] 가 유한하지 않음`);
       const d0 = R[6] * x + R[7] * y + R[8] * z + t[2];
@@ -51,4 +54,6 @@ export function rasterizePoints(camera, groups, rgb, out) {
       color[3 * p] = rgb[0]; color[3 * p + 1] = rgb[1]; color[3 * p + 2] = rgb[2];
     }
   }
+  rasterCount.calls += 1;
+  rasterCount.pixels += pointCount;
 }
