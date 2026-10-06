@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { traceMesh, createTracer } from './ref_trace.mjs';
 import { EMPTY_DEPTH, EMPTY_INDEX, emptyResult } from '../../../contracts/raster/index.mjs';
 import { TERRAIN_SSIM_MIN, TERRAIN_DEFAULTS } from '../../../contracts/controlview/terrain.mjs';
-import { TERRAIN_LOD_MAX_ERROR_M } from '../../../contracts/tower_assets/index.mjs';
+import { terrainLodMaxErrorM } from '../../../contracts/tower_assets/index.mjs';
 import { faceNormalEnu, shadeLambert } from './shade.mjs';
 import { lambert as serverLambert } from '../../../server/raster_ref/shade/index.mjs';
 import { buildLayerMesh } from './mesh.mjs';
@@ -26,8 +26,13 @@ const SSIM_LOD0_MIN = 0.99; // LOD 0 을 layer 로 그린 것 대 기준(래스�
 const MASK_MISMATCH_MAX_RATIO = 0; // 빈/채움이 다른 화소 비율 상한. 근거: 변 규칙 결정성(위 8행 주석). 참고 측정: LOD 0 24 장면 8시점·부분 메시 8시점 모두 0
 // LOD 3 타일 메시가 LOD 2 와 똑같은(정점·삼각형 동일) 장면 수. 근거: 결정 0046 의 LOD 3 오차 상한이 [0,0.5,1,1] 이라 LOD 2 와 LOD 3 이 같은 상한(1 m)이고,
 //   그 상한에서 간격이 같게 정해지는 DEM 은 두 단계가 같은 메시가 된다. 곧 이 장면들의 LOD 3 SSIM 은 LOD 2 와 같아 LOD 3 을 따로 검증하지 못한다. 측정 후 고정한 값: 개수가 아니라 장면 목록('시드/잡음')이다 —
-//   상한(TERRAIN_LOD_MAX_ERROR_M)이 바뀌면 목록이 달라져 (2a) 가 실패한다(시드 5..10·12 의 두 잡음 = 14 장면).
-const LOD3_EQ_LOD2_SCENES = Object.freeze(['5/0', '6/0', '7/0', '8/0', '9/0', '10/0', '12/0', '5/0.015', '6/0.015', '7/0.015', '8/0.015', '9/0.015', '10/0.015', '12/0.015']);
+//   상한(terrainLodMaxErrorM)이 바뀌면 목록이 달라져 (2a) 가 실패한다.
+//   결정 0057(T15.10d): 상한이 min(절대표, 0.25·cellM) 이 되어 이 장면(2 m 셀)의 LOD1~3 상한이 0.5 m 다. LOD2·3 이 같은 상한이라
+//   시드 1·2 잡음 0 을 뺀 22 장면이 LOD3 = LOD2 다(이전 [0,0.5,1,1] 에서는 시드 5..10·12 의 두 잡음 = 14 장면). 24 장면 LOD1~3 최소 0.9818(시드 10 잡음 0.015).
+const LOD3_EQ_LOD2_SCENES = Object.freeze([
+  '3/0', '4/0', '5/0', '6/0', '7/0', '8/0', '9/0', '10/0', '11/0', '12/0',
+  '1/0.015', '2/0.015', '3/0.015', '4/0.015', '5/0.015', '6/0.015', '7/0.015', '8/0.015', '9/0.015', '10/0.015', '11/0.015', '12/0.015',
+]);
 const TRACE_TOTAL_MS_MAX = 20000; // 한 장면 8시점 기준 영상 합계 시간 상한
 const VIEWS = 8;
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
@@ -37,6 +42,7 @@ const NOISES = [0, 0.015]; // 높이 잡음 비율(진폭 10 m 의 ±1.5 % = ±0
 //   잡음 0.015 → 0.9246 0.9152 0.8407 0.9331 0.9382 로 미달이었다. 원인은 높이 오차 상한 2 m 가 법선(기울기) 오차를 묶지 않는 것.
 //   T15.1c: LOD 3 높이 오차 상한을 1 m 로 조여(contracts TERRAIN_LOD_MAX_ERROR_M, 결정 0046 — 시험 결과를 보고 고른 값) 그 DEM 들의 LOD 3 간격이
 //   8 m 로 줄었고 24 장면 LOD 1~3 최소가 0.9645(시드 7 잡음 0.015)다. 아래 (2b) 는 목록이 실제와 정확히 같음(곧 미달 없음)을 단언한다.
+//   결정 0057 이후(2 m 셀 상한 0.5 m) 최소 0.9818(시드 10 잡음 0.015 LOD 2·3).
 const KNOWN_SHORTFALL = Object.freeze({});
 // 변이 확인: 층·기준을 모두 면 음영으로 그리면 잡음 장면 LOD 1~3 이 0.95 를 크게 밑돈다(측정 0.88 안팎). (2c) 의 상한.
 const FACE_SHADING_NOISY_MAX = 0.93;
@@ -400,7 +406,7 @@ describe('지형 층 8시점 SSIM(시드 1..12 × 잡음 {0, 0.015})', () => {
   });
 
   for (const l of [1, 2, 3]) {
-    test(`(2) LOD ${l}(오차 상한 ${TERRAIN_LOD_MAX_ERROR_M[l]} m) 대 LOD 0 기준: 알려진 미달을 뺀 모든 장면·8시점 최소 SSIM >= ${TERRAIN_SSIM_MIN}`, () => {
+    test(`(2) LOD ${l}(오차 상한 ${terrainLodMaxErrorM(l, 2)} m, 2 m 셀) 대 LOD 0 기준: 알려진 미달을 뺀 모든 장면·8시점 최소 SSIM >= ${TERRAIN_SSIM_MIN}`, () => {
       const bad = [];
       for (const s of scenes) {
         if (Object.hasOwn(KNOWN_SHORTFALL, key(s, l))) continue;

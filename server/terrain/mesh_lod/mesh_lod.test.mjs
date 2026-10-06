@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import {
   TERRAIN_LOD_COUNT,
   TERRAIN_LOD_MAX_ERROR_M,
+  terrainLodMaxErrorM,
   TowerAssetError,
 } from '../../../contracts/tower_assets/index.mjs';
 import * as stubs from '../../../contracts/tower_assets/stubs.mjs';
@@ -89,37 +90,37 @@ function sweep(dem) {
 }
 
 // 기준 숫자(리터럴). cells = 한 변 정점 수, max = 16장 가운데 최대 오차(m).
+// 결정 0057(T15.10d): 실제 상한 = min(TERRAIN_LOD_MAX_ERROR_M, 0.25·cellM). 이 DEM 들은 1 m 셀이라 LOD1~3 상한이 모두 0.25 m 다.
 const EXPECTED = {
   // 평면: 쌍선형이 정확 → Float32 반올림 수준 오차만, 명목 간격 그대로.
   slope: { cells: [65, 33, 17, 9], max: [0, 0.0000019073486328125, 0.00000286102294921875, 0.00000286102294921875] }, // 실측 고정(회귀용)
   // 언덕(유리 함수): 곡률 오차가 간격²에 비례(약 4배씩).
   // F-305 로 오차를 쌍선형 대신 메시(삼각형) 표면 기준으로 재면서 max 가 바뀌었다
   // (이전 0.03726768493652344, 0.14631986618041992, 0.5442428588867188). 간격·해시는 그대로.
-  hill: { cells: [65, 33, 17, 9], max: [0, 0.03736114501953125, 0.14777565002441406, 0.5656108856201172] }, // 실측 고정(회귀용)
+  // 결정 0057: LOD3 간격 8(0.5656 m) 이 상한 0.25 m 를 넘어 간격 4(0.1478 m)로 내려가 LOD2 와 같은 타일이 된다(이전 cells 9, max 0.5656108856201172).
+  hill: { cells: [65, 33, 17, 17], max: [0, 0.03736114501953125, 0.14777565002441406, 0.14777565002441406] }, // 실측 고정(회귀용)
   // 1.5 m 계단(16 m 마다): 간격 2 → 0.75(>0.5) 라 LOD1 은 원본, LOD2 는 간격 2(0.75 ≤ 1).
   // LOD3: 상한 2 m 였을 때는 간격 8(1.3125 ≤ 2). T15.1c 에서 상한이 1 m 로 줄어 간격 8(1.3125)·4(1.5·3/4 = 1.125) 가 모두 넘으므로
   // 간격 2(0.75) 로 내려가 LOD2 와 같은 타일이 된다(해시도 LOD2 와 같다). 간격 8 의 정답은 아래 '알려진 정답' 시험이 직접 만든 타일로 지킨다.
   // max 는 해석 근거로 식을 쓴다(실측 고정 아님): 간격 2 는 계단 턱 한 칸이 절반 어긋나 1.5/2 (LOD2·LOD3 이 이 값).
   // 간격 8(1.5·7/8 = 1.3125)·간격 4(1.5·3/4 = 1.125)는 여기 max 에 나오지 않는다 — 두 값은 아래 '알려진 정답' 시험이 직접 만든 타일로 단언한다.
-  steps: { cells: [65, 65, 33, 33], max: [0, 0, 1.5 / 2, 1.5 / 2] },
+  // 결정 0057: 간격 2 오차 0.75 가 1 m 셀 상한 0.25 m 를 넘어 LOD1~3 모두 원본(이전 cells [65, 65, 33, 33], max [0, 0, 0.75, 0.75]).
+  steps: { cells: [65, 65, 65, 65], max: [0, 0, 0, 0] },
   // 0.4 m 폭 잡음 + 경사: 모든 LOD 가 명목 간격으로 상한 안.
   // F-305 메시 표면 기준으로 LOD2 max 가 0.3806000351905823 → 0.3891999423503876 로 바뀌었다. 간격·해시는 그대로.
-  noise: { cells: [65, 33, 17, 9], max: [0, 0.3926001787185669, 0.3891999423503876, 0.3904501795768738] }, // 실측 고정(회귀용)
+  // 결정 0057: 간격 2·4·8 의 오차(0.3926·0.3892·0.3905 m)가 1 m 셀 상한 0.25 m 를 넘어 LOD1~3 모두 원본.
+  //   (이전 cells [65, 33, 17, 9]. 같은 무늬를 2 m 셀로 두면 상한 0.5 m 라 명목 간격이 유지된다 — 아래 '셀 크기' 시험.)
+  noise: { cells: [65, 65, 65, 65], max: [0, 0, 0, 0] },
   // 2 m 폭 잡음: LOD1·2 는 상한을 못 맞춰 원본으로 물러난다. LOD3 도 상한 1 m(T15.1c, 이전 2 m 에서는 간격 8·최대 1.9522499740123749)
   // 를 어떤 간격으로도 못 맞춰 원본으로 물러난다.
   noiseBig: { cells: [65, 65, 65, 65], max: [0, 0, 0, 0] },
 };
 // LOD 별 16장 heights 바이트(타일 순서 ty, tx) 의 sha256. 초월함수 없는 DEM 만 고정한다. 실측 고정(회귀용).
+// 결정 0057: steps·noise 는 LOD1~3 이 원본이라 네 해시가 LOD0 과 같다. 이전 해시: steps LOD2·3 7c63444d…3978,
+//   noise LOD1 d5c34ff3…1ea7·LOD2 69c71df0…2350·LOD3 9a867ed9…1d32.
 const EXPECTED_HASH = {
-  steps: ['63a8f38a8cada2250a3defca87686e308a78c03d905d1c9c0bc8a7beb3f62a85',
-    '63a8f38a8cada2250a3defca87686e308a78c03d905d1c9c0bc8a7beb3f62a85',
-    '7c63444da97f7af8e6a4b02065ecde273f26157072cfbf36b75dbba0d34d3978',
-    // LOD3 = LOD2 와 같은 간격 2 타일(T15.1c 상한 1 m). 이전 간격 8 해시는 adf86fb3…fe74.
-    '7c63444da97f7af8e6a4b02065ecde273f26157072cfbf36b75dbba0d34d3978'],
-  noise: ['b8a58588a067859ad4ad991e2f95de4a103efbe26d921040fdb3192958eab385',
-    'd5c34ff3eedfa474db3bb2c407b5c278650107929e6a9c8a595f60e4f2f11ea7',
-    '69c71df00d2a0fdf23ea9c339a044ea88b781fc70c7a7361f67bc47ea4eb2350',
-    '9a867ed91eeb8827772854c00fbee7e6e46cf04a69e8cd985bcd7a7436091d32'],
+  steps: Array(4).fill('63a8f38a8cada2250a3defca87686e308a78c03d905d1c9c0bc8a7beb3f62a85'),
+  noise: Array(4).fill('b8a58588a067859ad4ad991e2f95de4a103efbe26d921040fdb3192958eab385'),
 };
 
 test('stubs 서명과 같은 이름으로 export', () => {
@@ -135,7 +136,9 @@ for (const [name, mk] of Object.entries(DEMS)) {
     const got = sweep(dem);
     const exp = EXPECTED[name];
     for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
-      assert.ok(got[lod].max <= TERRAIN_LOD_MAX_ERROR_M[lod], `${name} LOD${lod} ${got[lod].max} > ${TERRAIN_LOD_MAX_ERROR_M[lod]}`);
+      const cap = terrainLodMaxErrorM(lod, dem.cellM);
+      assert.ok(cap <= TERRAIN_LOD_MAX_ERROR_M[lod]);
+      assert.ok(got[lod].max <= cap, `${name} LOD${lod} ${got[lod].max} > ${cap}`);
       assert.equal(got[lod].cells, exp.cells[lod], `${name} LOD${lod} cells`);
       assert.equal(got[lod].max, exp.max[lod], `${name} LOD${lod} max`);
     }
@@ -157,7 +160,7 @@ test('measureTerrainError = 0.25 m 표본 메시 표면 독립 검산(연속 영
   }
 });
 
-test('알려진 정답: 계단 간격 8 타일 (0,0) 은 x=0,8,..,64 표본, 오차 최대점 x=15 에서 1.5·7/8, LOD3 은 간격 2 로 내려간다', () => {
+test('알려진 정답: 계단 간격 8 타일 (0,0) 은 x=0,8,..,64 표본, 오차 최대점 x=15 에서 1.5·7/8, LOD3 은 원본 간격으로 내려간다', () => {
   const dem = DEMS.steps();
   // 간격 8 타일을 직접 만든다(T15.1c 상한 1 m 에서는 자동 선택이 간격 8 을 쓰지 않는다).
   const t = { tx: 0, ty: 0, lod: 3, cells: 9, heights: new Float32Array(81) };
@@ -168,9 +171,10 @@ test('알려진 정답: 계단 간격 8 타일 (0,0) 은 x=0,8,..,64 표본, 오
   const t4 = { tx: 0, ty: 0, lod: 3, cells: 17, heights: new Float32Array(17 * 17) };
   for (let j = 0; j < 17; j++) for (let i = 0; i < 17; i++) t4.heights[j * 17 + i] = dem.heights[j * 4 * N + i * 4];
   assert.equal(measureTerrainError(dem, t4).maxErrorM, 1.125);
-  // 1.3125 > 1 이고 간격 4 도 1.125 > 1 이라 LOD3 은 간격 2(오차 0.75).
-  assert.equal(terrainLodStride(dem, 3), 2);
-  assert.equal(measureTerrainError(dem, buildTerrainTile(dem, 0, 0, 3)).maxErrorM, 0.75);
+  // 1.3125·1.125·0.75(간격 2) 모두 1 m 셀 상한 0.25 m(결정 0057)를 넘어 LOD3 은 간격 1(오차 0).
+  //   (T15.1c 상한 1 m 만 있을 때는 간격 2·오차 0.75 였다.)
+  assert.equal(terrainLodStride(dem, 3), 1);
+  assert.equal(measureTerrainError(dem, buildTerrainTile(dem, 0, 0, 3)).maxErrorM, 0);
   // LOD0 은 원본 표본 그대로.
   const t0 = buildTerrainTile(dem, 1, 0, 0);
   assert.equal(t0.heights[15], 6); // x = 64 + 15 = 79 → floor(79/16) = 4 → 4·1.5 = 6
@@ -338,8 +342,13 @@ test('F-315 ③·F-314 ⑥: 유한하지 않은 높이 → 즉시 TowerAssetErro
   d.heights[10] = NaN; // 타일 (0,0) 만
   d.heights[200 * N + 64] = Infinity; // x=64 경계: 타일 (0,3)·(1,3) 공유
   assert.deepEqual(terrainMissingTiles(d), [{ tx: 0, ty: 3 }, { tx: 1, ty: 3 }, { tx: 0, ty: 0 }].sort((p, q) => p.ty - q.ty || p.tx - q.tx));
-  // 결측 타일을 뺀 판정이라 간격은 정상 DEM 과 같다(noise 명목 간격).
-  for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.equal(terrainLodStride(d, lod), 1 << lod);
+  // 결측 타일을 뺀 판정이라 간격은 정상 DEM 과 같다(결정 0057 이후 noise 는 1 m 셀이라 LOD1~3 모두 간격 1).
+  const clean = DEMS.noise();
+  for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.equal(terrainLodStride(d, lod), terrainLodStride(clean, lod));
+  // 결측 판정이 상한과 무관하게 동작함을 명목 간격에서도 본다: 같은 무늬를 2 m 셀로(상한 0.5 m) 두면 명목 간격이고, 결측을 넣어도 같다.
+  const d2 = { ...DEMS.noise(), cellM: 2 };
+  d2.heights[10] = NaN;
+  for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) assert.equal(terrainLodStride(d2, lod), 1 << lod);
 });
 
 // ---- 변형 시험 보강(F-318 ①②③) ----
@@ -358,7 +367,7 @@ test('① 간격 판정은 첫 타일에서 멈추지 않는다: (0,0) 만 평�
     for (const [tx, ty] of TILES) {
       const t = buildTerrainTile(dem, tx, ty, lod);
       assert.equal(t.cells, 65, `LOD${lod} (${tx},${ty}) cells`);
-      assert.ok(measureTerrainError(dem, t).maxErrorM <= TERRAIN_LOD_MAX_ERROR_M[lod], `LOD${lod} (${tx},${ty}) 오차 상한`);
+      assert.ok(measureTerrainError(dem, t).maxErrorM <= terrainLodMaxErrorM(lod, dem.cellM), `LOD${lod} (${tx},${ty}) 오차 상한`);
     }
   }
   // 대조: 평평한 타일만 따로 보면 간격 2 로도 오차 0.
@@ -396,7 +405,8 @@ test('③ 오차 상한 경계: 상한 그대로면 유지, 상한 + 0.04 m 면 
   const spike = (d) => singleTileDem((i, j) => (i === 1 && j === 0 ? d : 0));
   const nominalCells = { 1: 33, 2: 17, 3: 9 };
   for (const lod of [1, 2, 3]) {
-    const cap = TERRAIN_LOD_MAX_ERROR_M[lod];
+    const cap = terrainLodMaxErrorM(lod, 1); // 1 m 셀: 0.25 m(결정 0057)
+    assert.equal(cap, 0.25);
     const keep = buildTerrainTile(spike(cap), 0, 0, lod);
     assert.equal(keep.cells, nominalCells[lod], `LOD${lod} 상한 ${cap} 은 허용`);
     assert.equal(measureTerrainError(spike(cap), keep).maxErrorM, cap);
@@ -404,4 +414,17 @@ test('③ 오차 상한 경계: 상한 그대로면 유지, 상한 + 0.04 m 면 
     assert.ok(reduce.cells > nominalCells[lod], `LOD${lod} ${cap + 0.04} 는 간격을 줄여야 한다 (cells ${reduce.cells})`);
     assert.ok(measureTerrainError(spike(cap + 0.04), reduce).maxErrorM <= cap);
   }
+});
+
+test('결정 0057 셀 크기: 같은 높이 무늬라도 1 m 셀은 상한 0.25 m, 2 m 셀은 0.5 m, 4 m 셀은 절대표 [0, 0.5, 1, 1]', () => {
+  // noise 무늬(간격 2·4·8 오차 0.39 m 안팎, 기울기 무관 무늬)를 셀 크기만 바꿔 같은 표본으로 둔다.
+  const base = DEMS.noise();
+  const strides = (cellM) => [0, 1, 2, 3].map((l) => terrainLodStride({ ...base, heights: base.heights.slice(), cellM }, l));
+  assert.deepEqual(strides(1), [1, 1, 1, 1]);
+  assert.deepEqual(strides(2), [1, 2, 4, 8]);
+  assert.deepEqual(strides(4), [1, 2, 4, 8]);
+  // steps(턱 1.5 m): 간격 2 오차 0.75. 4 m 셀이면 상한이 절대표와 같아 T15.1c 결과(LOD2·3 간격 2)가 그대로다.
+  const st = DEMS.steps();
+  assert.deepEqual([0, 1, 2, 3].map((l) => terrainLodStride({ ...st, heights: st.heights.slice(), cellM: 4 }, l)), [1, 1, 2, 2]);
+  assert.deepEqual([0, 1, 2, 3].map((l) => terrainLodStride({ ...st, heights: st.heights.slice(), cellM: 2 }, l)), [1, 1, 1, 1]);
 });
