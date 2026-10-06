@@ -1,2 +1,3 @@
 # 서브에이전트 격리 작업 트리
 /.c[l]aude/
+node_modules/

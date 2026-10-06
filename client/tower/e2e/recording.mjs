@@ -55,6 +55,16 @@ function checkFrame(f, i) {
   }
 }
 
+const VIEW_METHODS = ['keyDown', 'keyUp', 'releaseAll', 'step', 'setDrones', 'setDetections', 'setPath', 'setAvailable', 'arrived', 'failed', 'snapshot'];
+
+// view 가 createControlView 결과 모양인지 확인한다(없는 메서드는 재생 중간이 아니라 처음에 'view' 로 알린다).
+function checkView(view) {
+  if (view === null || typeof view !== 'object') throw new TypeError('view 는 createControlView 결과 객체여야 한다');
+  for (const m of VIEW_METHODS) {
+    if (typeof view[m] !== 'function') throw new TypeError(`view.${m} 는 함수여야 한다(view 는 createControlView 결과여야 한다)`);
+  }
+}
+
 /**
  * replayRecording(view, recording, size) -> Snapshot[]
  * view 는 createControlView 결과. 프레임마다 한 개의 snapshot(size) 를 돌려준다.
@@ -62,13 +72,15 @@ function checkFrame(f, i) {
 export function replayRecording(view, recording, size) {
   const sz = copySize(size);
   checkSizeLight(sz);
+  checkView(view);
   const frames = readFrames(framesOf(recording));
   frames.forEach(checkFrame);
   const out = [];
   try {
     for (const f of frames) out.push(replayFrame(view, f, sz));
   } catch (err) {
-    view.releaseAll(); // 중간에 던져도 눌린 키가 남지 않게
+    // 중간에 던져도 눌린 키가 남지 않게 한다. 정리 중 오류가 원래 오류를 가리지 않게 삼킨다.
+    try { view.releaseAll(); } catch { /* 원래 오류가 우선 */ }
     throw err;
   }
   return out;

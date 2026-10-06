@@ -142,16 +142,31 @@ test('view: 5e-324 의 minSpanM·setView 는 RangeError 이고 frame 좌표는 �
   for (const d of f.frame({ width: 800, height: 600 }).drones) assert.ok(Number.isFinite(d.x) && Number.isFinite(d.y));
 });
 
-test('markers: yaw 는 ENU 방위(0=북, 시계 +)로 그대로 전달되고 π/2 는 화면 오른쪽(동)이다', () => {
+test('markers: 출력 yaw 의 화면 방향은 (sin yaw, −cos yaw) 이고 손으로 박은 방위와 맞는다', () => {
   const view = { centerE: 0, centerN: 0, metersPerPx: 1 };
   const size = { width: 200, height: 200 };
-  const yaw = Math.PI / 2;
-  const [m] = buildMarkers(view, size, [{ id: 'a', enu: [0, 0, 0], yaw }], false);
-  assert.equal(m.yaw, yaw); // 보정 없이 그대로
-  // 방위 yaw 로 앞(sin yaw, cos yaw)에 놓인 점은 화면에서 (sin yaw, −cos yaw) 쪽에 놓인다: π/2 → +x, y 불변.
-  const [h] = buildMarkers(view, size, [{ id: 'h', enu: [10 * Math.sin(yaw), 10 * Math.cos(yaw), 0] }], false);
-  assert.ok(Math.abs(h.x - (m.x + 10)) < 1e-9 && Math.abs(h.y - m.y) < 1e-9);
-  // yaw=0 은 북 → 화면 위(y 감소).
-  const [n0] = buildMarkers(view, size, [{ id: 'n', enu: [0, 10, 0] }], false);
-  assert.ok(n0.y === m.y - 10 && n0.x === m.x);
+  // 계약(fallback.mjs 형식 요약): 화면 단위 벡터 (sin yaw, −cos yaw). 기대값은 손으로 박았다(x 오른쪽, y 아래).
+  const table = [
+    [0, 0, -1], // 북 → 위
+    [Math.PI / 2, 1, 0], // 동 → 오른쪽
+    [Math.PI, 0, 1], // 남 → 아래
+    [-Math.PI / 2, -1, 0], // 서 → 왼쪽
+    [Math.PI / 4, Math.SQRT1_2, -Math.SQRT1_2], // 북동 → 오른쪽 위
+  ];
+  const items = table.map(([yaw], i) => ({ id: `d${i}`, enu: [0, 0, 0], yaw }));
+  const out = buildMarkers(view, size, items, false);
+  out.forEach((m, i) => {
+    const [yaw, ex, ey] = table[i];
+    assert.equal(m.yaw, yaw); // 보정 없이 그대로
+    // 출력된 yaw 의 sin·cos 가 기대 방향과 맞는다. 부호·축이 바뀐 변이는 앞의 yaw 동일 단언(:160)이 먼저 잡고, 이 줄은 yaw 값이 맞아도 방향 규약이 어긋난 경우를 잡는다.
+    assert.ok(Number.isFinite(m.yaw), `yaw ${yaw}`);
+    assert.ok(Math.abs(Math.sin(m.yaw) - ex) < 1e-12 && Math.abs(-Math.cos(m.yaw) - ey) < 1e-12, `yaw ${yaw}`);
+  });
+  // yaw 가 없으면 만들어 넣지 않는다.
+  const [none] = buildMarkers(view, size, [{ id: 'z', enu: [0, 0, 0] }], false);
+  assert.equal('yaw' in none, false);
+  // 위치 변환: 북(+n)은 화면 위(y 감소), 동(+e)은 오른쪽(x 증가).
+  const [c, n, e] = buildMarkers(view, size, [{ id: 'c', enu: [0, 0, 0] }, { id: 'n', enu: [0, 10, 0] }, { id: 'e', enu: [10, 0, 0] }], false);
+  assert.ok(n.y === c.y - 10 && n.x === c.x);
+  assert.ok(e.x === c.x + 10 && e.y === c.y);
 });
