@@ -57,6 +57,9 @@ export function measureStatusBandwidth(opts = {}) {
   const codec = opts.codec ?? 0;
   if (codec !== 0 && codec !== 1) throw new RangeError(`codec 은 0 또는 1: ${codec}`);
   const segmentByteBudget = opts.segmentByteBudget ?? null;
+  // T13.T 튜닝 훅: 솎기 도구 공장(기본 createSpatialThinner)과 수준별 점 배분 함수(기본 levelPointTargets). 기본값이면 동작은 이전과 같다.
+  const makeThinner = opts.createThinner ?? createSpatialThinner;
+  const allocate = opts.allocate;
   const scene = generateLevels({ seed: opts.seed ?? 1, segments, count: pointsPerSegment });
   const welcomeBytes = frameLen({ type: 'WELCOME', sessionId: 1, resumed: false, nextPieceSeq: 1 });
 
@@ -75,7 +78,7 @@ export function measureStatusBandwidth(opts = {}) {
   const rows = [];
   for (let segmentId = 0; segmentId < segments; segmentId++) {
     const sources = [0, 1, 2, 3].map((level) => levelCloud(scene, segmentId, level));
-    const thinners = sources.map((c) => createSpatialThinner(c.positions));
+    const thinners = sources.map((c) => makeThinner(c.positions, c));
     const last = [null, null, null, null]; // 수준별 마지막 구성 캐시
     const build = (level, k) => {
       if (last[level]?.k === Math.min(k, sources[level].count)) return last[level];
@@ -89,6 +92,7 @@ export function measureStatusBandwidth(opts = {}) {
       const fit = fitSegmentBudget({
         counts,
         maxBytes: segmentByteBudget,
+        allocate,
         measure: (t) => t.reduce((s, k, level) => { const b = build(level, k); return s + b.pieceBytes + b.arrivedBytes; }, 0),
       });
       ({ targets, thinned } = fit);

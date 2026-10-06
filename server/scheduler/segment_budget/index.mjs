@@ -94,7 +94,8 @@ export function levelPointTargets(counts, total) {
  *       maxBytes 이하이면서 tolerance 안(≥ (1-tolerance)·maxBytes)이면 멈춘다. maxIter 안에 못 맞추면 그때까지 맞은 것 중
  *       가장 큰 예산을 쓰고, 맞은 것이 하나도 없으면 예산을 줄여 가며 맞을 때까지 잰다.
  * @param {{counts:number[], maxBytes:number, measure:(targets:number[]) => number,
- *   bytesPerPointGuess?:number, safety?:number, tolerance?:number, maxIter?:number}} opts
+ *   bytesPerPointGuess?:number, safety?:number, tolerance?:number, maxIter?:number,
+ *   allocate?:(counts:number[], total:number) => number[]}} opts  allocate 는 구간 점 예산을 수준별로 나누는 함수(기본 levelPointTargets)
  * @returns {{budgetPoints:number, targets:number[], bytes:number, thinned:boolean, tries:{points:number, bytes:number}[]}}
  */
 export function fitSegmentBudget(opts) {
@@ -113,7 +114,7 @@ export function fitSegmentBudget(opts) {
   const sum = counts.reduce((s, c) => s + c, 0);
   const tries = [];
   const run = (points) => {
-    const targets = levelPointTargets(counts, points);
+    const targets = (opts.allocate ?? levelPointTargets)(counts, points);
     const bytes = measure(targets);
     if (!Number.isInteger(bytes) || bytes < 0) throw new TypeError(`measure 는 0 이상 정수를 돌려줘야 한다: ${bytes}`);
     tries.push({ points, bytes });
