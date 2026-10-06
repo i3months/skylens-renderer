@@ -1,6 +1,6 @@
 // 건물 층 성능 시험. 3000개 건물 묶음을 세 카메라(위에서 내려다봄 + 비스듬 2종)로 세 옵션 각각 렌더(RUNS=5회 중앙값).
-// 시간 문턱은 CPU 잡음 여유: 참조 구현의 거친 상한.
-// 렌더 문턱은 CPU 래스터의 회귀 감시용일 뿐 S1 판정이 아니다. black 최대가 S1 의 33 ms 를 넘을 수 있다(black 최대 64 ms·전체(aerial) 최대 70 ms). 실기기 fps 는 T17 [local] 에서 잰다.
+// 시간 문턱은 CPU 래스터 회귀 감시용 거친 상한이며 모드마다 따로 둔다(근거는 RENDER_THRESHOLD_MS 위).
+// 렌더 문턱은 S1 판정이 아니다. black 은 실측 최대 40~62 ms 라 S1 의 33 ms 를 넘을 수 있다(aerial 최대 48~56 ms). 실기기 fps 는 T17 [local] 에서 잰다.
 // 각 모드·카메라 조합의 덮인 화소 수는 측정값과 ±0.1% 안이어야 한다(일부만 그리거나 비우는 변이가 통과하지 못하게 한다).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,13 +12,19 @@ const RUNS = 5;
 const GROUP_COUNT = 6; // 합성 장면을 나눌 묶음 수(3000개 건물을 500개씩)
 // 합성 항공영상 범위(ENU m): 건물 격자(약 ±1400 m) 전체를 덮는다.
 const AERIAL_BOUNDS_M = { minX: -1500, minY: -1500, maxX: 1500, maxY: 1500 };
-// 모드별 렌더 문턱(ms). 세 모드가 한 문턱(300 ms)을 쓰면 points(실측 2~4 ms)는 75배 느려져도 통과했다.
-// 스레드 CPU 시간으로 바꾼 뒤에는 CPU 대기 잡음이 빠져(8 프로세스 부하에서도 black·aerial 최대 47 ms) 큰 여유가 필요 없다.
-// black·aerial: 실측 최대 40~70 ms 의 약 1.4~2.5배인 100 ms. 렌더를 4회 반복하는 변이는 140~200 ms 라 실패한다.
-// points: 1회가 threadCpuUsage 눈금(이 VM 약 4 ms)보다 짧아 20회를 한 쌍으로 재서 호출당 값을 낸다(실측 1~3 ms, 부하에서도 같은 범위).
-//   6 ms 는 실측 최대의 약 2배, 4회 반복 변이(호출당 약 7~9 ms, 5회 시행 5/5)는 실패한다.
-const POINTS_REPS = 20; // points 는 1회가 눈금보다 짧아 20회를 한 쌍으로 잰다
-const RENDER_THRESHOLD_MS = { black: 100, points: 6, aerial: 100 };
+// 모드별 렌더 문턱(ms). 한 문턱을 공용하면 points(실측 1 ms 안팎)가 수십 배 느려져도 통과하므로 모드마다 둔다.
+// 측정 규칙(미리 정함): 원본 최대의 3배 이상이면서 래스터 4회 반복 변이를 가르는 값. 측정해 보니 둘이 양립하지 않았다:
+// 변이는 래스터 단계만 4번 부르므로(고정 비용인 출력 버퍼 할당·초기화는 그대로) 렌더 전체로는 약 2.2~3.3배만 느려진다.
+// 그래서 4회 변이를 확실히 가르는 쪽을 우선하고 원본 최대 대비 배수를 줄였다. 4배 변이 한계: 래스터 단계만 4배인 변이만 보장하며,
+// 래스터 이외 단계(culling·버퍼 할당)의 지연이나 4배 미만 회귀는 잡지 못한다.
+// 실측(VM, 스레드 CPU 시간, 6~8회 시행): 래스터 4회 변이 20회 최소 black 124·aerial 92·points 3.0 ms(원본 20회 최대 black 56·aerial 55.9·points 1.0 ms, 8 프로세스 동시 부하 24회 최대 black 83.5·aerial 60.0·points 1.0 ms).
+// black 100 ms(원본 최대의 약 1.8배, 부하 최대의 1.2배, 변이 최소의 81%), aerial 75 ms(약 1.3배, 변이 최소의 82%), points 2 ms(약 2배, 변이 최소의 67%).
+// points: 1280×720 에서는 출력 버퍼 초기화 같은 고정 비용이 커서 4회 변이가 약 2배밖에 안 늘었다. 화소 수에 비례하지 않는 점 투영 비용만 남도록
+// 가로세로 1/4 카메라(같은 시야각)로 재고, 1회가 threadCpuUsage 눈금(이 VM 약 4 ms)보다 짧아 POINTS_REPS 회를 한 쌍으로 재서 호출당 값을 낸다.
+const POINTS_REPS = 100; // points 는 1회가 눈금보다 짧아 100회를 한 쌍으로 잰다(해상도 약 0.04 ms)
+const RENDER_THRESHOLD_MS = { black: 100, points: 2, aerial: 75 };
+// 벽시계 멈춤 감시(헐거운 상한): CPU 시간이 못 보는 Atomics.wait·sleep 류 지연을 큰 값으로만 잡는다. 부하에서 생기는 대기는 통과해야 하므로 원본 실측(약 60 ms)의 수십 배다.
+const WALL_STALL_MS = 1500;
 // 모드·카메라(위/남동/북서)별 덮인 화소 수의 측정값. 래스터는 결정적이라 3회 실행이 같았고(묶음 1개·6개 모두), 측정값과 ±0.1% 안이어야 한다.
 const EXPECTED_COVERED = {
   black: [261789, 398769, 415587],
@@ -33,8 +39,8 @@ const MODE_SWITCH_CALLS = 1000;
 
 // 벽시계 대신 스레드 CPU 시간(threadCpuUsage, 없으면 프로세스 cpuUsage)으로 잰다: 전체 npm test 처럼 다른 프로세스가 CPU 를 빼앗아 생기는 대기(한 번 300 ms 를 넘긴 적이 있다)는 포함하지 않는다(reuse_cull.test.mjs 와 같은 방식).
 // 문턱(모드별 렌더·setMode 1 ms)은 올리지도 측정에 맞춰 조정하지도 않았다. 렌더가 실제로 느려지는 변이(CPU 일 증가)는 CPU 시간에도 그대로 잡히므로 계속 실패한다.
-// 한계: CPU 시간은 Atomics.wait·sleep·I/O 대기 같은 비CPU 지연을 보지 못한다(그런 변이는 이 시험을 통과한다).
-// 그런 멈춤은 실기기 fps(T17 [local])와 벽시계 시험이 맡고, 여기서는 CPU 일 증가만 감시한다.
+// 한계: CPU 시간은 Atomics.wait·sleep·I/O 대기 같은 비CPU 지연을 보지 못한다. 그런 지연은 WALL_STALL_MS(헐거운 벽시계 상한)보다 길 때만 잡히고, 짧은 지연은 통과한다.
+// 그 이하의 멈춤은 실기기 fps(T17 [local])가 맡고, 여기서는 CPU 일 증가만 정밀하게 감시한다.
 // 결정적 단언(덮인 화소 수 ±0.1%·aerial 색 수 하한·묶음 수·건물 수)은 시간과 별개로 병행한다.
 function cpuMs() { const u = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : process.cpuUsage(); return (u.user + u.system) / 1000; }
 
@@ -237,9 +243,12 @@ function medianMs(fn, reps = 1) {
   const times = [];
   fn(); // 워밍업
   for (let r = 0; r < RUNS; r++) {
+    const w0 = performance.now();
     const t0 = cpuMs();
     for (let k = 0; k < reps; k++) fn(); // reps 회를 한 쌍으로 재고 나눈다(눈금 약 4 ms 보다 짧은 연산용)
     times.push((cpuMs() - t0) / reps);
+    const wall = (performance.now() - w0) / reps;
+    assert.ok(wall <= WALL_STALL_MS, `벽시계 호출당 ${wall.toFixed(0)} ms > ${WALL_STALL_MS} ms (비CPU 멈춤 의심)`);
   }
   return median(times);
 }
@@ -276,8 +285,10 @@ test('buildings layer 성능: 렌더 모드별 문턱, setMode ≤ 1ms (평균)'
         console.log(`  aerial 카메라 ${ci}: 서로 다른 색 ${colors}`);
         assert.ok(colors >= MIN_AERIAL_COLORS[ci], `aerial 카메라 ${ci}: 서로 다른 색 ${colors} < 하한 ${MIN_AERIAL_COLORS[ci]}`);
       }
+      // points 는 고정 비용(출력 버퍼)을 줄이려 1/4 크기 카메라로 잰다(위 문턱 주석 참조). 덮인 화소 수 단언은 위에서 전체 크기로 이미 했다.
+      const tcam = mode === 'points' ? { width: W / 4, height: H / 4, K: { fx: camera.K.fx / 4, fy: camera.K.fy / 4, cx: camera.K.cx / 4, cy: camera.K.cy / 4 }, R: camera.R, t: camera.t } : camera;
       const medianT = medianMs(() => {
-        layer.render(camera);
+        layer.render(tcam);
       }, mode === 'points' ? POINTS_REPS : 1);
       modeTimes.push(medianT);
     }
