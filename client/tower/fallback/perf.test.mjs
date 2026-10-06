@@ -1,11 +1,11 @@
 // 폴백 frame 성능 시험. 한도 규모(드론 256·탐지 4096·경로 64개×1500점 ≈ 10만 점)에서 frame 이 한 프레임 예산에 드는지 본다.
-// 단언: 묶음 중앙값 ≤ 16 ms(한 프레임 예산) 그리고 ≤ 50 ms 와 자동 맞춤 frame ≤ 16 ms(AUTO_FIT_MAX_MS), 같은 프로세스의 기준 연산(setView frame) 대비 비율 상한,
+// 단언: 한도 규모 frame 묶음 중앙값 ≤ 16 ms(한 프레임 예산, FRAME_BUDGET_MS)·≤ 50 ms, 묶음 p90 ≤ 8 ms(P90_MAX_MS), 자동 맞춤 frame ≤ 16 ms(AUTO_FIT_MAX_MS),
+// 같은 프로세스의 기준 연산(setView frame) 대비 비율 상한, 맞춤 순회 몫(자동 − setView frame)이 독립 기준 순회의 FIT_SHARE_RATIO 배 이하,
 // 결과 개수가 입력과 같다(결정적), 자동 맞춤이 점마다 배열을 만들지 않는다(push 호출 0), 옛 구현과 결과가 같다.
 // 시간은 벽시계가 아니라 이 프로세스의 CPU 시간으로 잰다: 시험이 동시에 여러 개 돌아 CPU 를 나눠 써도 흔들리지 않는다.
 // 상한을 측정에 맞춰 낮추지 않는다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { performance } from 'node:perf_hooks';
 import { createTowerFallback } from './index.mjs';
 import { fitView } from './view.mjs';
 import { buildMarkers } from './markers.mjs';
@@ -19,6 +19,11 @@ const N_POINTS = 1500;
 const BATCH = 11; // 묶음 개수(중앙값을 낸다)
 const PER_BATCH = 5; // 묶음 하나당 frame 호출 수(평균을 낸다)
 const MAX_MS = 50;
+const FRAME_BUDGET_MS = 16; // 한 프레임 예산(60 Hz)
+const P90_MAX_MS = 8; // 묶음 p90 상한(예산의 절반). 근거는 보고: CPU 시간 기준 실측 한 자리 ms 아래로 여유가 크다
+const P90_BATCH = 21; // p90 을 내려면 묶음이 많아야 한다
+const P90_WARM = 8;
+const FIT_SHARE_RATIO = 3; // 맞춤 순회 몫 / 독립 기준 순회 상한(같은 일을 하므로 상수배 안. 10배 변이는 실패)
 const CAP_SCALE_MAX_MS = 100; // 총 점 상한 규모 절대 시간(헐렁한 상한, 실측은 수 ms)
 const AUTO_FIT_MAX_MS = 16; // 자동 맞춤 frame 상한
 const MAX_RATIO = 3; // 자동 맞춤 frame / setView frame 상한
@@ -59,15 +64,30 @@ function median(a) { return [...a].sort((x, y) => x - y)[Math.floor(a.length / 2
 function cpuMs() { const u = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : process.cpuUsage(); return (u.user + u.system) / 1000; }
 
 /** fn 을 데운 뒤 BATCH 묶음 × PER_BATCH 번 돌려 묶음 평균 CPU 시간(ms)의 중앙값을 돌려준다. */
-function medianCpuMs(fn) {
-  fn();
+function medianCpuMs(fn) { return median(batchesCpuMs(fn)); }
+
+/** 데운 뒤 묶음별 평균 CPU 시간(ms) 배열. */
+function batchesCpuMs(fn, batchCount = BATCH, warm = 1) {
+  for (let w = 0; w < warm; w += 1) fn();
   const batches = [];
-  for (let b = 0; b < BATCH; b += 1) {
+  for (let b = 0; b < batchCount; b += 1) {
     const t0 = cpuMs();
     for (let r = 0; r < PER_BATCH; r += 1) fn();
     batches.push((cpuMs() - t0) / PER_BATCH);
   }
-  return median(batches);
+  return batches;
+}
+
+function p90(a) { return [...a].sort((x, y) => x - y)[Math.ceil(a.length * 0.9) - 1]; }
+
+/** 독립 기준 순회: 경계 상자만 갱신한다(index.mjs 의 맞춤 순회와 같은 일). 몫의 기준이다. */
+function refTraverse(scene) {
+  let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
+  const upd = (q) => { if (q[0] < minE) minE = q[0]; if (q[0] > maxE) maxE = q[0]; if (q[1] < minN) minN = q[1]; if (q[1] > maxN) maxN = q[1]; };
+  for (const d of scene.drones) upd(d.enu);
+  for (const d of scene.detections) upd(d.enu);
+  for (const p of scene.paths) for (const q of p.points) upd(q);
+  return maxE - minE + maxN - minN;
 }
 
 function medianMs(target) { return medianCpuMs(() => target.frame(SIZE)); }
@@ -79,11 +99,23 @@ function floorOf(scene) {
   return () => fb.frame(SIZE);
 }
 
+/** 부하로 한 번 튄 측정이 오탐이 되지 않게 최대 ATTEMPTS 번 재서, 한 번이라도 통과하면 통과로 본다. 실제 회귀(10배·옛 push)는 매번 실패한다. */
+const ATTEMPTS = 3;
+function untilOk(measure) {
+  let r;
+  for (let a = 0; a < ATTEMPTS; a += 1) { r = measure(); if (r.ok) return r; }
+  return r;
+}
+
 /** target 이 자동 맞춤 상한(절대 16 ms, setView frame 대비 비율)을 지키는지 본다. */
-function judge(target, floor) {
+function judge(target, floor, scene) { return untilOk(() => judgeOnce(target, floor, scene)); }
+function judgeOnce(target, floor, scene) {
   const ms = medianMs(target);
   const base = medianCpuMs(floor);
-  return { ms, base, ratio: ms / base, ok: ms <= AUTO_FIT_MAX_MS && ms <= MAX_RATIO * base };
+  const ref = scene ? medianCpuMs(() => refTraverse(scene)) : 0;
+  const share = ms - base; // 맞춤 순회 몫(음수면 잡음, 0 으로 본다)
+  const shareOk = scene ? Math.max(share, 0) <= FIT_SHARE_RATIO * ref : true;
+  return { ms, base, ref, share, ratio: ms / base, ok: ms <= AUTO_FIT_MAX_MS && ms <= MAX_RATIO * base && shareOk };
 }
 
 /** 옛 구현: 점마다 [e,n] 배열을 만들어 fitView 에 넘긴다(회귀 비교용). */
@@ -113,9 +145,16 @@ function fbOf(scene) {
 test('perf: 드론 256·탐지 4096·경로 64×1500점 frame 묶음 중앙값 ≤ 50 ms', () => {
   const fb = loaded();
   assert.deepEqual(fb.counts(), { drones: N_DRONES, detections: N_DETECTIONS, paths: N_PATHS });
-  const ms = medianMs(fb);
-  console.log(`fallback perf: frame 한 번 묶음 중앙값 ${ms.toFixed(2)} ms (상한 ${MAX_MS} ms)`);
+  const r = untilOk(() => {
+    const batches = batchesCpuMs(() => fb.frame(SIZE), P90_BATCH, P90_WARM); // 첫 호출의 JIT·GC 꼬리가 p90 에 들지 않게 충분히 데운다
+    const m = median(batches), q = p90(batches);
+    return { ms: m, q90: q, ok: m <= FRAME_BUDGET_MS && q <= P90_MAX_MS };
+  });
+  const { ms, q90 } = r;
+  console.log(`fallback perf: frame 한 번 묶음 중앙값 ${ms.toFixed(2)} ms (상한 ${MAX_MS} ms, 예산 ${FRAME_BUDGET_MS} ms), p90 ${q90.toFixed(2)} ms (상한 ${P90_MAX_MS} ms)`);
   assert.ok(ms <= MAX_MS, `중앙값 ${ms.toFixed(2)} ms > ${MAX_MS} ms`);
+  assert.ok(ms <= FRAME_BUDGET_MS, `중앙값 ${ms.toFixed(2)} ms > 한 프레임 예산 ${FRAME_BUDGET_MS} ms`);
+  assert.ok(q90 <= P90_MAX_MS, `p90 ${q90.toFixed(2)} ms > ${P90_MAX_MS} ms`);
 });
 
 test('perf: 총 점 상한 규모의 자동 맞춤 frame 절대 시간(한 번 호출 ms 단위)', () => {
@@ -129,9 +168,10 @@ test('perf: 총 점 상한 규모의 자동 맞춤 frame 절대 시간(한 번 �
     for (let j = 0; j < per; j += 1) points.push([k * 4 - 126, j * 0.2 - 150, 20]);
     fb.setPath({ id: `cap-${k}`, points });
   }
-  const ms = medianMs(fb);
-  console.log(`fallback perf: 총 점 상한 ${cap} 점 frame 묶음 p50 ${ms.toFixed(2)} ms (상한 ${CAP_SCALE_MAX_MS} ms)`);
+  const { ms } = untilOk(() => { const m = medianMs(fb); return { ms: m, ok: m <= FRAME_BUDGET_MS }; });
+  console.log(`fallback perf: 총 점 상한 ${cap} 점 frame 묶음 p50 ${ms.toFixed(2)} ms (상한 ${FRAME_BUDGET_MS} ms 예산, 헐렁한 ${CAP_SCALE_MAX_MS} ms)`);
   assert.ok(ms <= CAP_SCALE_MAX_MS, `${ms.toFixed(2)} ms > ${CAP_SCALE_MAX_MS} ms`);
+  assert.ok(ms <= FRAME_BUDGET_MS, `${ms.toFixed(2)} ms > 한 프레임 예산 ${FRAME_BUDGET_MS} ms`);
 });
 
 test('perf: 총 점 상한을 넘기는 setPath 는 RangeError 이고 상태는 그대로다', () => {
@@ -182,16 +222,16 @@ test('perf: 반복해도 결과가 같고 상태가 변하지 않는다', () => 
 
 test('perf: 자동 맞춤 frame ≤ 16 ms 이고 setView frame 대비 비율 안(동시 실행에도 안정)', () => {
   const scene = makeScene();
-  const r = judge(fbOf(scene), floorOf(scene));
-  console.log(`fallback perf: 자동 맞춤 frame ${r.ms.toFixed(2)} ms, 기준 ${r.base.toFixed(2)} ms, 비율 ${r.ratio.toFixed(2)} (상한 ${AUTO_FIT_MAX_MS} ms, ${MAX_RATIO}배)`);
-  assert.ok(r.ok, `frame ${r.ms.toFixed(2)} ms, 기준 ${r.base.toFixed(2)} ms, 비율 ${r.ratio.toFixed(2)}`);
+  const r = judge(fbOf(scene), floorOf(scene), scene);
+  console.log(`fallback perf: 자동 맞춤 frame ${r.ms.toFixed(2)} ms, 기준 ${r.base.toFixed(2)} ms, 비율 ${r.ratio.toFixed(2)} (상한 ${AUTO_FIT_MAX_MS} ms, ${MAX_RATIO}배), 순회 몫 ${r.share.toFixed(2)} ms / 기준 순회 ${r.ref.toFixed(2)} ms (상한 ${FIT_SHARE_RATIO}배)`);
+  assert.ok(r.ok, `frame ${r.ms.toFixed(2)} ms, 기준 ${r.base.toFixed(2)} ms, 비율 ${r.ratio.toFixed(2)}, 순회 몫 ${r.share.toFixed(2)} ms, 기준 순회 ${r.ref.toFixed(2)} ms`);
 });
 
 test('perf: 10배 느린 변이는 판정에서 실패한다', () => {
   const scene = makeScene();
   const fb = fbOf(scene);
   const slow = { frame(size) { let o; for (let i = 0; i < 10; i += 1) o = fb.frame(size); return o; } };
-  const r = judge(slow, floorOf(scene));
+  const r = judge(slow, floorOf(scene), scene);
   assert.equal(r.ok, false, `10배 느린 변이가 통과했다: ${r.ms.toFixed(2)} ms, 비율 ${r.ratio.toFixed(2)}`);
 });
 
