@@ -283,8 +283,7 @@ test('F-546: durationS 1.2 gives ticks [1, 1.2]', () => {
 });
 test('F-546: durationS 0 is rejected by the scenario check before any stats run', () => {
   const { violations } = runScenario({ ...steady, durationS: 0 }, { ...OPTS, events: baseSteady() });
-  assert.ok(violations.every((v) => v.startsWith('steady30: bad durationS')) || violations[0] === 'steady30: bad durationS', violations.join('\n'));
-  assert.equal(violations[0], 'steady30: bad durationS');
+  assert.deepEqual(violations, ['steady30: bad durationS', 'steady30: path ends after durationS']);
 });
 // Each stats function throws only while it is the running one (detected through the stack), so every run() guard is exercised.
 function throwingLog(fnName) {
@@ -300,9 +299,6 @@ for (const [fn, sc] of [['firstFrameStats', steady], ['bandwidthStats', steady],
   ['unreachableClients', steady], ['perClientFromEvents', steady], ['burstArrivals', SCENARIOS[1]]]) {
   test(`F-546: ${fn} throwing becomes a bad-event-log violation`, () => {
     const events = throwingLog(fn);
-    if (sc.kind === 'burst') {
-      for (let i = 0; i < events.length; i++) { /* same log shape for burst */ }
-    }
     const log = sc.kind === 'burst' ? (() => { const b = simulateClients(sc, { seed: 1 }); return b.map((e) => { const o = {}; for (const k of Object.keys(e)) Object.defineProperty(o, k, { enumerable: true, configurable: true, get() { if (new Error().stack.includes(`at ${fn} `)) throw new Error(`boom ${fn}`); return e[k]; } }); return o; }); })() : events;
     const { violations } = runScenario(sc, { ...OPTS, events: log });
     assert.ok(violations.includes(`${sc.name}: bad event log: boom ${fn}`), `${fn}: ${violations.join('\n')}`);
@@ -340,4 +336,23 @@ test('F-543: main passes the server samples to loadReport (cpu/rss line follows 
   assert.equal(lines.join('\n').split('cpu/rss source: server-process').length - 1, 3);
   assert.ok(!lines.join('\n').includes('measured on'));  // simulated clock: no measured claim
   assert.equal(lines.join('\n').split('source: simulated, S5/S8 verdict [local]').length - 1, 3);
+});
+test('F-553: runScenario(S, null) throws a clear opts error; undefined opts keeps the defaults', () => {
+  assert.throws(() => runScenario(steady, null), { message: 'runScenario: opts must be an object' });
+  assert.throws(() => runScenario(steady, 5), { message: 'runScenario: opts must be an object' });
+  assert.throws(() => runScenario(steady, []), { message: 'runScenario: opts must be an object' });
+  const r = runScenario(steady, undefined);
+  assert.deepEqual(r.violations, []);
+  assert.equal(r.serverSamples.length, 60);
+});
+test('F-553: a throwing cpuUsage becomes exactly one server stats violation with no samples', () => {
+  let t = 0;
+  const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: () => { throw new Error('cpu gone'); } } });
+  assert.deepEqual(violations, ['steady30: server stats: cpu gone']);
+  assert.deepEqual(serverSamples, []);
+});
+test('F-553: a cpuUsage that always returns null reports the exact sample shortfall', () => {
+  let t = 0;
+  const { violations } = runScenario(steady, { ...OPTS, statsClock: { clock: 'simulated', now: () => (t += 1000), cpuUsage: () => null } });
+  assert.deepEqual(violations, ['steady30: 0 server samples, expected 60']);
 });

@@ -69,6 +69,7 @@ function samplerOptions(statsClock, nowSimulated) {
  * serverSamples come from the stats sampler ticked once per simulated second, the last tick at durationS.
  */
 export function runScenario(scenario, opts = {}) {
+  if (opts === null || (typeof opts !== 'string' && (typeof opts !== 'object' || Array.isArray(opts)))) throw new Error('runScenario: opts must be an object');
   const { commit = commitHash(), thresholds = loadThresholds(), statsClock, events: injected, show = showFromArrivals } = typeof opts === 'string' ? { commit: opts } : opts;
   if (scenario === null || typeof scenario !== 'object' || Array.isArray(scenario)) throw new Error('runScenario: scenario must be an object');
   const name = scenario.name;
@@ -125,7 +126,8 @@ export function runScenario(scenario, opts = {}) {
   // The 3 s limit is a regression threshold of the mock harness (SPEC S5 value); slow_link only reports.
   if (scenario.kind !== 'slow_link') appendAll(violations, checkThresholds(records, thresholds), `${name}: `);
   // Simulated clock and stub CPU by default, so source reads 'simulated'. Real server verdicts are the [local] follow-up (T16.12 / T17).
-  // A sampler or usage function that throws or returns nothing (null memoryUsage/cpuUsage) becomes a violation, not an exception.
+  // A sampler or usage function that throws becomes a `server stats: <message>` violation; one that returns null makes the sampler
+  // skip the tick (fewer samples), reported as `N server samples, expected M`. Neither escapes as an exception.
   let serverSamples = [];
   try {
     const sampler = createStatsSampler(samplerOpts);
