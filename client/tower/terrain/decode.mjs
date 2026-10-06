@@ -1,5 +1,6 @@
 // 지형 H32 타일 디코더(T15.1.10e, 계약 contracts/tower_assets/terrain_h32.mjs). 좌표: GeoAnchor 기준 ENU, 1 unit = 1 m.
 // decodeTerrainTileH32(bytes) -> { tx, ty, lod, cells, heights:Float32Array }. 머리·길이가 계약과 한 바이트라도 어긋나면 RangeError 를 던진다.
+// 양자화 머리는 i32 kbase · f32 step(전역 격자), 복원은 계약 dequantizeHeights. LOD 0 + 양자화 flag, 비유한 f32 본문·복원값은 던진다.
 // DataView 로 읽으므로 subarray 처럼 바이트 오프셋이 4의 배수가 아닌 입력에서도 동작한다. heights 는 입력 버퍼와 별도 복사다.
 // 클라이언트 코드이므로 server/ 를 가져오지 않고 contracts/ 만 가져온다.
 import {
@@ -37,21 +38,27 @@ export function decodeTerrainTileH32(bytes) {
   if (dv.getUint16(14, true) !== 0) throw fail('예약 필드가 0 이 아니다');
   if (cells < 2) throw fail(`cells ${cells} 는 2 이상이어야 한다`);
   const quantized = (flags & TERRAIN_H32_FLAG_QUANTIZED) !== 0;
+  if (quantized && lod === 0) throw fail('lod 0 은 양자화할 수 없다(계약: LOD0 비양자화)');
   const expected = terrainH32Bytes(cells, quantized);
   if (u8.length !== expected) throw fail(`길이 ${u8.length} B 가 기대 ${expected} B 와 다르다`);
   const n = cells * cells;
   let heights;
   if (quantized) {
-    const base = dv.getFloat32(TERRAIN_H32_HEADER_BYTES, true);
+    const kbase = dv.getInt32(TERRAIN_H32_HEADER_BYTES, true);
     const step = dv.getFloat32(TERRAIN_H32_HEADER_BYTES + 4, true);
-    if (!Number.isFinite(base) || !Number.isFinite(step) || !(step > 0)) throw fail('base/step 이 유한한 양수가 아니다');
+    if (!Number.isFinite(step) || !(step > 0)) throw fail('step 이 유한한 양수가 아니다');
     const q = new Uint16Array(n);
     const off = TERRAIN_H32_HEADER_BYTES + 8;
     for (let k = 0; k < n; k++) q[k] = dv.getUint16(off + 2 * k, true);
-    heights = dequantizeHeights(base, step, q);
+    heights = dequantizeHeights(kbase, step, q);
+    for (let k = 0; k < n; k++) if (!Number.isFinite(heights[k])) throw fail(`복원 높이[${k}] 가 유한하지 않다`);
   } else {
     heights = new Float32Array(n);
-    for (let k = 0; k < n; k++) heights[k] = dv.getFloat32(TERRAIN_H32_HEADER_BYTES + 4 * k, true);
+    for (let k = 0; k < n; k++) {
+      const v = dv.getFloat32(TERRAIN_H32_HEADER_BYTES + 4 * k, true);
+      if (!Number.isFinite(v)) throw fail(`높이[${k}] 가 유한하지 않다`);
+      heights[k] = v;
+    }
   }
   return { tx, ty, lod, cells, heights };
 }

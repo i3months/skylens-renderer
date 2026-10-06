@@ -42,22 +42,23 @@ test('머리 필드 바이트 위치 (양자화)', () => {
   const b = encodeTerrainTileH32({ tx: -3, ty: 70000, lod: 3, cells: 2, heights: h });
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
   assert.equal(b[0], 0x48);
-  assert.equal(b[1], 1);
+  assert.equal(b[1], 2);
   assert.equal(b[2], 3);
   assert.equal(b[3], 1);
   assert.equal(dv.getInt32(4, true), -3);
   assert.equal(dv.getInt32(8, true), 70000);
   assert.equal(dv.getUint16(12, true), 2);
   assert.equal(dv.getUint16(14, true), 0);
-  assert.equal(dv.getFloat32(16, true), 10);
+  // kbase = floor(10 / fround(0.05)) = 199 (fround(0.05) 가 0.05 보다 조금 커서 10/s = 199.999997)
+  assert.equal(dv.getInt32(16, true), 199);
   assert.equal(dv.getFloat32(20, true), Math.fround(0.05));
   assert.deepEqual([...b.subarray(4, 8)], [0xfd, 0xff, 0xff, 0xff]);
   assert.deepEqual([...b.subarray(8, 12)], [0x70, 0x11, 0x01, 0x00]); // 70000 = 0x11170
   assert.equal(b.length, 16 + 8 + 8);
-  assert.equal(dv.getUint16(24, true), 0);
-  assert.equal(dv.getUint16(26, true), 20); // (11-10)/0.05
-  assert.equal(dv.getUint16(28, true), 40);
-  assert.equal(dv.getUint16(30, true), 60);
+  assert.equal(dv.getUint16(24, true), 1); // round(10/s) − 199 = 200 − 199
+  assert.equal(dv.getUint16(26, true), 21); // round(11/s) = 220
+  assert.equal(dv.getUint16(28, true), 41);
+  assert.equal(dv.getUint16(30, true), 61);
 });
 
 test('머리 필드 바이트 위치 (비양자화 · i32 경계)', () => {
@@ -94,13 +95,21 @@ test('기본값: lod≥1 양자화, LOD0 은 늘 비양자화(quantize:true 여�
   for (let k = 0; k < 25; k++) assert.equal(dv.getFloat32(16 + 4 * k, true), h[k]); // 무손실
 });
 
-test('범위 초과 타일은 f32 로 폴백한다', () => {
-  // (max-min)/0.05 > 65535 ⇒ 범위 > 3276.75 m
-  const over = new Float32Array([0, 3276.8, 1, 2]);
+test('범위 초과 타일은 f32 로 폴백한다(LOD1~3 은 전역 격자로 반올림한 값, LOD0·quantize:false 는 원본)', () => {
+  // round(max/s) − floor(min/s) > 65535 ⇒ 범위 > 약 3276.75 m
+  const over = new Float32Array([0, 3276.8, 1.01, 2.03]);
   const b = encodeTerrainTileH32({ tx: 0, ty: 0, lod: 2, cells: 2, heights: over });
   assert.equal(b[3], 0);
   assert.equal(b.length, 32);
-  assert.equal(new DataView(b.buffer).getFloat32(20, true), Math.fround(3276.8));
+  const dv = new DataView(b.buffer);
+  const s = Math.fround(0.05);
+  for (let k = 0; k < 4; k++) assert.equal(dv.getFloat32(16 + 4 * k, true), Math.fround(Math.round(over[k] / s) * s), `격자 ${k}`);
+  assert.equal(dv.getFloat32(24, true), Math.fround(20 * s)); // 1.01 → 격자 20
+  assert.notEqual(dv.getFloat32(24, true), over[2]);
+  const raw = encodeTerrainTileH32({ tx: 0, ty: 0, lod: 2, cells: 2, heights: over }, { quantize: false });
+  assert.equal(new DataView(raw.buffer).getFloat32(24, true), over[2]);
+  const l0 = encodeTerrainTileH32({ tx: 0, ty: 0, lod: 0, cells: 2, heights: over });
+  assert.equal(new DataView(l0.buffer).getFloat32(24, true), over[2]);
   const edge = new Float32Array([0, 3276, 1, 2]); // 65520 단계, 범위 안
   assert.equal(encodeTerrainTileH32({ tx: 0, ty: 0, lod: 2, cells: 2, heights: edge })[3], 1);
 });
@@ -110,16 +119,16 @@ test('양자화 복원 오차 ≤ step/2 + f32 반올림', () => {
   const h = makeHeights(cells, 11, -5, 120);
   const b = encodeTerrainTileH32({ tx: 0, ty: 0, lod: 1, cells, heights: h });
   const dv = new DataView(b.buffer);
-  const base = dv.getFloat32(16, true), step = dv.getFloat32(20, true);
+  const kbase = dv.getInt32(16, true), step = dv.getFloat32(20, true);
   const q = new Uint16Array(cells * cells);
   for (let k = 0; k < q.length; k++) q[k] = dv.getUint16(24 + 2 * k, true);
-  const back = dequantizeHeights(base, step, q);
+  const back = dequantizeHeights(kbase, step, q);
   const tol = TERRAIN_H32_STEP_M / 2 + 1e-5; // f32 반올림(|h|≤125 에서 ≈ 8e-6)
   let worst = 0;
   for (let k = 0; k < q.length; k++) worst = Math.max(worst, Math.abs(back[k] - h[k]));
   assert.ok(worst <= tol, `worst ${worst}`);
   assert.ok(worst > 0.001, '양자화가 실제로 일어났다');
-  assert.equal(base, Math.fround(Math.min(...h)));
+  assert.equal(kbase, Math.floor(Math.min(...h) / step));
 });
 
 test('음성 입력 거부 (12종)', () => {
@@ -151,9 +160,9 @@ test('음성 입력 거부 (12종)', () => {
 
 test('고정 입력 전체 바이트 골든 (cells=3)', () => {
   const heights = new Float32Array([10, 10.05, 10.1, 10.25, 10.5, 10.75, 11, 11.5, 12]);
-  // 머리: 48 01 lod=01 flags=01 | tx=-2 | ty=5 | cells=3 | 0 ; base=10 | step=0.05 ; q = 0,1,2,5,10,15,20,30,40
+  // 머리: 48 02 lod=01 flags=01 | tx=-2 | ty=5 | cells=3 | 0 ; kbase=199(i32) | step=0.05 ; q = round(h/s) − 199 = 1,2,3,6,11,16,21,31,41
   const q = encodeTerrainTileH32({ tx: -2, ty: 5, lod: 1, cells: 3, heights });
-  assert.equal(hex(q), '48010101feffffff050000000300000000002041cdcc4c3d00000100020005000a000f0014001e002800');
+  assert.equal(hex(q), '48020101feffffff0500000003000000c7000000cdcc4c3d01000200030006000b00100015001f002900');
   const f = encodeTerrainTileH32({ tx: -2, ty: 5, lod: 0, cells: 3, heights });
-  assert.equal(hex(f), '48010000feffffff050000000300000000002041cdcc20419a992141000024410000284100002c41000030410000384100004041');
+  assert.equal(hex(f), '48020000feffffff050000000300000000002041cdcc20419a992141000024410000284100002c41000030410000384100004041');
 });
