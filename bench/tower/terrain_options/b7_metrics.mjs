@@ -117,6 +117,9 @@ export function measureMetricScene(entry, cams, table, window = B7_WINDOW) {
   return { scene: entry.name, strides, conditions };
 }
 
+/** SSIM 미달 판정. NaN 도 미달로 센다(`x < min` 은 NaN 에서 거짓이라 미달을 놓친다, F-496 ⑤). */
+export const ssimShort = (x) => !(x >= TERRAIN_SSIM_MIN);
+
 const minMax = (xs) => ({ min: Math.min(...xs), max: Math.max(...xs) });
 /** dup 조건은 뺀다(같은 간격 = 같은 메시). */
 export function summarize(conds) {
@@ -142,11 +145,11 @@ export function measureGroups({ hill = hillScenes(), low = lowNoiseScenes(), tab
   const run = (scenes) => scenes.map((e) => { const r = measureMetricScene(e, cams, table); log(`[b7] ${e.name}`); return r; });
   const hr = run(hill), lr = run(low);
   const hc = hr.flatMap((x) => x.conditions), lc = lr.flatMap((x) => x.conditions);
-  const failing = (cs) => cs.filter((c) => c.ssimMin8 < TERRAIN_SSIM_MIN && !c.dup).length;
+  const failing = (cs) => cs.filter((c) => ssimShort(c.ssimMin8) && !c.dup).length;
   const groups = {
     hill: { scenes: hr.length, ...summarize(hc), failing: failing(hc) },
     lowNoise: { scenes: lr.length, ...summarize(lc), failing: failing(lc) },
-    lowNoiseFail: { scenes: lr.length, ...summarize(lc.filter((c) => c.ssimMin8 < TERRAIN_SSIM_MIN)) },
+    lowNoiseFail: { scenes: lr.length, ...summarize(lc.filter((c) => ssimShort(c.ssimMin8))) },
     lowNoisePass: { scenes: lr.length, ...summarize(lc.filter((c) => c.ssimMin8 >= TERRAIN_SSIM_MIN)) },
   };
   return { table: [...table], groups, scenes: { hill: hr, lowNoise: lr } };
@@ -166,7 +169,7 @@ export function measureHalves({ halves = B7_HALVES_M, seeds = B6_SEEDS, log = ()
     for (const x of rs) {
       for (const l of x.options.rule.levels.slice(1)) {
         n++;
-        if (l.ssimMin8 < TERRAIN_SSIM_MIN) fail++;
+        if (ssimShort(l.ssimMin8)) fail++;
         min = Math.min(min, l.ssimMin8);
         worstE = Math.max(worstE, l.maxErrorM);
       }
@@ -175,10 +178,10 @@ export function measureHalves({ halves = B7_HALVES_M, seeds = B6_SEEDS, log = ()
   });
 }
 
-/** 0057 이 인용한 수치(비교용). dec = 0057 이 적은 소수 자릿수. */
+/** 0057 이 인용한 수치(비교용). lowNoise 0.296 은 SSIM 미달 구간의 하한이라 집단 최솟값과 비교한다(최댓값 0.2991 이 아님, F-495 ②). dec = 0057 이 적은 소수 자릿수. */
 export const CITED_0057 = Object.freeze([
   { key: 'hill e/cellM 최대', get: (g) => g.hill.eOverCell.max, cited: 0.404, dec: 3 },
-  { key: 'lowNoise e/cellM 최대', get: (g) => g.lowNoise.eOverCell.max, cited: 0.296, dec: 3 },
+  { key: 'lowNoise e/cellM 최소', get: (g) => g.lowNoise.eOverCell.min, cited: 0.296, dec: 3 },
   { key: '평균 각 실패 집단 최소', get: (g) => g.lowNoiseFail.meanDeg.min, cited: 3.57, dec: 2 },
   { key: '평균 각 통과 집단 최대', get: (g) => g.hill.meanDeg.max, cited: 3.92, dec: 2 },
   { key: 'RMS 각 실패 집단 최소', get: (g) => g.lowNoiseFail.rmsDeg.min, cited: 4.03, dec: 2 },

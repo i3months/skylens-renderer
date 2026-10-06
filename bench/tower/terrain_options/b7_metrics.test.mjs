@@ -4,10 +4,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { towerViewpoints, makeHillDem } from '../../../client/tower/terrain/fixtures.mjs';
 import { lowNoiseDem } from './b1_measure.mjs';
+import { TERRAIN_SSIM_MIN } from '../../../contracts/controlview/terrain.mjs';
 import { encodeQuantized } from './b4_formats.mjs';
 import {
   normalAngleErrors, measureMetricScene, measureGroups, measureHalves, summarize, compareCited, formatB7, parseArgs,
-  CITED_0057, B7_WINDOW,
+  CITED_0057, CITED_HALVES, CITED_LOWNOISE_SSIM, B7_WINDOW, ssimShort,
 } from './b7_metrics.mjs';
 
 const WIN0 = { tileMin: 0, tileMax: 0 };
@@ -104,4 +105,92 @@ test('F-491 ⑧: encodeQuantized 는 cells < 2·정수 아님을 RangeError 로 
   // cells = 2 는 통과한다.
   const ok = encodeQuantized({ tx: 0, ty: 0, cells: 2, heights: Float32Array.from([0, 0.01, 0.02, 0.03]) }, 0.01, { verify: true });
   assert.equal(ok.heights.length, 4);
+});
+
+// ---- F-497: 0057 대조 판정과 집단 분류 ----
+
+const mm = (min, max) => ({ min, max });
+/** 0057 인용값과 소수 자릿수 반올림 후 모두 일치하도록 손으로 만든 집단. 서로 다른 집단·최소/최대는 일부러 다른 값을 둔다(읽는 칸이 바뀌면 드러남). */
+function citedGroups() {
+  return {
+    hill: { eOverCell: mm(0.1, 0.4041), meanDeg: mm(1, 3.9204), rmsDeg: mm(1, 4.3104), maxDeg: mm(1, 15.0704), ssimMin8: mm(0.99, 1) },
+    lowNoise: { eOverCell: mm(0.2961, 0.2991), meanDeg: mm(1, 9), rmsDeg: mm(1, 9), maxDeg: mm(1, 99), ssimMin8: mm(0.9467, 0.99) },
+    lowNoiseFail: { eOverCell: mm(0.2961, 0.2991), meanDeg: mm(3.5704, 9), rmsDeg: mm(4.0304, 9), maxDeg: mm(11.4204, 99), ssimMin8: mm(0.9467, 0.949) },
+    lowNoisePass: { eOverCell: mm(0.29, 0.29), meanDeg: mm(2, 8), rmsDeg: mm(2, 8), maxDeg: mm(2, 88), ssimMin8: mm(0.95, 0.99) },
+  };
+}
+const citedHalves = () => [
+  { halfM: 0.1, minSsim: 0.97374 }, { halfM: 0.11, minSsim: 0.96896 }, { halfM: 0.12, minSsim: 0.96434 },
+];
+
+test('0057 인용 상수: 키·값·자릿수를 0057 리터럴로 고정한다(lowNoise 는 최소 0.296)', () => {
+  assert.deepEqual(CITED_0057.map((c) => [c.key, c.cited, c.dec]), [
+    ['hill e/cellM 최대', 0.404, 3],
+    ['lowNoise e/cellM 최소', 0.296, 3],
+    ['평균 각 실패 집단 최소', 3.57, 2],
+    ['평균 각 통과 집단 최대', 3.92, 2],
+    ['RMS 각 실패 집단 최소', 4.03, 2],
+    ['RMS 각 통과 집단 최대', 4.31, 2],
+    ['최대 각 실패 집단 최소', 11.42, 2],
+    ['최대 각 통과 집단 최대', 15.07, 2],
+  ]);
+  assert.deepEqual({ ...CITED_HALVES }, { 0.1: 0.9737, 0.11: 0.969, 0.12: 0.9643 });
+  assert.equal(CITED_LOWNOISE_SSIM, 0.9467);
+});
+
+test('compareCited: 일치하는 입력은 모든 행 match, 한 칸만 다르면 그 행만 불일치', () => {
+  const groups = citedGroups();
+  const rows = compareCited({ groups, halves: citedHalves() });
+  assert.equal(rows.length, CITED_0057.length + 3 + 1);
+  for (const r of rows) assert.equal(r.match, true, `${r.key} actual ${r.actual}`);
+  assert.ok(Math.abs(rows[0].diff - (0.4041 - 0.404)) < 1e-12);
+  // 불일치: hill e/cellM 최대 0.4041 → 0.4051(반올림 0.405), 반폭 0.11 0.96896 → 0.9680.
+  groups.hill.eOverCell = mm(0.1, 0.4051);
+  const halves = citedHalves(); halves[1].minSsim = 0.968;
+  const bad = compareCited({ groups, halves });
+  assert.deepEqual(bad.filter((r) => !r.match).map((r) => r.key), ['hill e/cellM 최대', '±0.11 m 최소 SSIM']);
+  // 집단이 비면(값 없음) 불일치이며 던지지 않는다.
+  const empty = { ...citedGroups(), lowNoiseFail: { n: 0 } };
+  const rows2 = compareCited({ groups: empty, halves: [] });
+  assert.equal(rows2.find((r) => r.key === '평균 각 실패 집단 최소').match, false);
+});
+
+test('compareCited: 각 행이 0057 이 말한 집단·최소/최대 칸을 읽는다', () => {
+  const keyOf = (mutate) => {
+    const g = citedGroups(); mutate(g);
+    return compareCited({ groups: g, halves: citedHalves() }).filter((r) => !r.match).map((r) => r.key);
+  };
+  assert.deepEqual(keyOf((g) => { g.lowNoise.eOverCell.max = 0.296; g.lowNoise.eOverCell.min = 0.1; }), ['lowNoise e/cellM 최소']);
+  assert.deepEqual(keyOf((g) => { g.lowNoise.meanDeg.max = 3.92; g.hill.meanDeg.max = 7; }), ['평균 각 통과 집단 최대']);
+  assert.deepEqual(keyOf((g) => { g.lowNoisePass.maxDeg.max = 15.07; g.hill.maxDeg.max = 14; }), ['최대 각 통과 집단 최대']);
+  assert.deepEqual(keyOf((g) => { g.lowNoiseFail.rmsDeg.min = 5; }), ['RMS 각 실패 집단 최소']);
+});
+
+test('집단 분류: hill 은 hill 조건만, lowNoise 는 ssimMin8 기준으로 미달·통과로 나뉘고 합 = 전체', () => {
+  const cams = towerViewpoints();
+  const hillE = { name: 'hill:1/0.015', make: () => makeHillDem({ seed: 1, noiseRatio: 0.015 }) };
+  const lowE = { name: 'lowNoise:1', make: () => lowNoiseDem(1, 1) };
+  const table = [0, 0.5, 1, 1];
+  const res = measureGroups({ hill: [hillE], low: [lowE], table });
+  const hc = measureMetricScene(hillE, cams, table).conditions;
+  const lc = measureMetricScene(lowE, cams, table).conditions;
+  assert.deepEqual(res.groups.hill, { scenes: 1, ...summarize(hc), failing: hc.filter((c) => !c.dup && c.ssimMin8 < TERRAIN_SSIM_MIN).length });
+  const fail = lc.filter((c) => c.ssimMin8 < TERRAIN_SSIM_MIN), pass = lc.filter((c) => c.ssimMin8 >= TERRAIN_SSIM_MIN);
+  assert.equal(fail.length + pass.length, lc.length);
+  assert.deepEqual(res.groups.lowNoise, { scenes: 1, ...summarize(lc), failing: fail.filter((c) => !c.dup).length });
+  assert.deepEqual(res.groups.lowNoiseFail, { scenes: 1, ...summarize(fail) });
+  assert.deepEqual(res.groups.lowNoisePass, { scenes: 1, ...summarize(pass) });
+  assert.equal(res.groups.lowNoiseFail.n + res.groups.lowNoisePass.n, res.groups.lowNoise.n);
+  // 두 집단의 지표가 실제로 다르다(hill 요약에 lowNoise 가 섞이면 드러난다).
+  assert.notEqual(res.groups.hill.eOverCell.max, res.groups.lowNoise.eOverCell.max);
+  // 미달 집단의 SSIM 은 모두 기준 미만, 통과 집단은 모두 이상.
+  if (res.groups.lowNoiseFail.n) assert.ok(res.groups.lowNoiseFail.ssimMin8.max < TERRAIN_SSIM_MIN);
+  if (res.groups.lowNoisePass.n) assert.ok(res.groups.lowNoisePass.ssimMin8.min >= TERRAIN_SSIM_MIN);
+});
+
+test('F-496 ⑤: SSIM 미달 판정은 NaN 을 미달로 센다', () => {
+  assert.equal(ssimShort(NaN), true);
+  assert.equal(ssimShort(TERRAIN_SSIM_MIN), false);
+  assert.equal(ssimShort(TERRAIN_SSIM_MIN - 1e-9), true);
+  assert.equal(ssimShort(1), false);
 });

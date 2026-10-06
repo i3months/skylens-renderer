@@ -8,7 +8,7 @@
 // - LOD k 명목 간격 = 2^k(64 m / cellM 을 나누는 범위에서). 그 간격에서 타일 하나라도 메시 표면 오차가 상한을 넘으면
 //   간격을 절반으로 줄여 다시 잰다(간격 1 = 원본이면 오차 0). 간격은 DEM 하나·LOD 하나에 전역 하나.
 // - 오차 = 대각선 (i,j)–(i+1,j+1) 규약 삼각형 보간 표면과 DEM 표본의 차 최댓값(DEM 표본점에서 잰 값이 정확한 최대).
-import { TERRAIN_TILE_SIZE_M, TERRAIN_LOD_COUNT } from '../../../contracts/tower_assets/index.mjs';
+import { TERRAIN_TILE_SIZE_M, TERRAIN_LOD_COUNT, TowerAssetError } from '../../../contracts/tower_assets/index.mjs';
 
 /** 비교안 상한표(m). (i) 현행(결정 0046 T15.1c), (ii) 옛 값(결정 0044 §5). 측정 전에 정한 값이며 측정에 맞춰 바꾸지 않는다. */
 export const B1_OPTIONS = Object.freeze({
@@ -89,6 +89,8 @@ export function lodStrides(dem, bounds) {
   const n0 = n0Of(dem);
   // 결측 타일(유한하지 않은 높이가 섞인 타일)은 서버 terrainLodStride 처럼 간격 판정에서 뺀다.
   const tiles = coveredTileOrigins(dem, n0).filter(([i0, j0]) => !tileHasNonFinite(dem, i0, j0, n0));
+  // 서버 terrainLodStride 처럼 판정할 타일이 하나도 없으면 공칭 간격을 돌려주지 않고 던진다(F-496 ⑦).
+  if (tiles.length === 0) throw new TowerAssetError('간격을 판정할 타일이 없다: DEM 이 덮는 타일이 없거나 전부 결측이다');
   const strides = [], maxErrorM = [];
   for (let lod = 0; lod < TERRAIN_LOD_COUNT; lod++) {
     const limit = bounds[lod];
