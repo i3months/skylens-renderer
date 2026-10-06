@@ -288,7 +288,10 @@ test('ties on tMs are ordered by id even when arrival order is reversed; closes 
     const closes = events.filter((e) => e.kind === 'close');
     assert.equal(closes.length, CLIENTS_TIE);
     for (const c of closes) assert.equal(c.tMs, 1000); // exactly durationS * 1000, never earlier
-    for (let i = 1; i < events.length; i++) assert.ok(events[i - 1].tMs < events[i].tMs || events[i - 1].id <= events[i].id, `id order at ${i}`);
+    for (let i = 1; i < events.length; i++) {
+      assert.ok(events[i].tMs >= events[i - 1].tMs, `tMs non-decreasing at ${i}`);
+      if (events[i].tMs === events[i - 1].tMs) assert.ok(events[i].id >= events[i - 1].id, `id ascending on tMs tie at ${i}`);
+    }
     for (let id = 0; id < CLIENTS_TIE; id++) {
       const mine = events.filter((e) => e.id === id);
       assert.equal(mine[0].kind, 'connect');
