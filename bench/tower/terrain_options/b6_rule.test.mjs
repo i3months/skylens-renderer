@@ -73,7 +73,7 @@ test('lowNoise012(1 m 셀 ±0.12 m, 솎아냄) 시드 1..12 간격 [1,2,4,8] 단
   assert.equal(rows.length, 12);
   // 실제로 솎아내는 조건: 간격 > 1. 규칙이 1 m 셀에서 상한을 0.24 m 미만으로 조이면(예: 기울기 상수 0.2) 간격이 줄어 여기서 실패한다.
   for (const r of rows) assert.deepEqual(r.levels.map((l) => l.stride), [1, 2, 4, 8], r.name);
-  for (const r of rows) for (const l of r.levels.slice(1)) assert.ok(l.maxErrorM > 0.2 && l.maxErrorM <= ruleBounds(1)[l.lod], `${r.name} LOD${l.lod} 최대 오차 ${l.maxErrorM}`);
+  for (const r of rows) for (const l of r.levels.slice(1)) assert.ok(l.maxErrorM >= 0.236 && l.maxErrorM <= 0.2399, `${r.name} LOD${l.lod} 최대 오차 ${l.maxErrorM}`);
   assert.equal(assertAll(rows, 'lowNoise012(솎아냄)'), 36);
 });
 
@@ -85,6 +85,7 @@ test('대조 lowNoise2m(2 m 셀) 36 조건 >= 0.95, 간격은 명목 그대로(1
 
 test('noiseBig 1 m 셀 간격 1 — SSIM 자명(항등): 12 장면 간격 [1,1,1,1] 단언, LOD1..3 >= 0.95', { timeout: TIMEOUT_MS }, () => {
   const rows = runGroup('noiseBig');
+  // 규칙과 무관: 이 간격 [1,1,1,1] 은 옛 표(절대표 [0, 0.5, 1, 1])에서도 같다(노이즈가 커서 어느 표든 솎아내지 못한다). 규칙 변이를 잡는 시험이 아니다.
   for (const r of rows) assert.deepEqual(r.levels.map((l) => l.stride), [1, 1, 1, 1], r.name);
   assert.equal(assertAll(rows, 'noiseBig(항등)'), 36);
 });
@@ -93,7 +94,8 @@ test('noiseHalfDem(·, 0.15) 은 lowNoiseDem 과 바이트가 같다(lowNoise012
   assert.equal(LOW_NOISE_012_HALF_M, 0.12);
   for (const s of [1, 7, 12]) for (const c of [1, 2]) {
     const a = noiseHalfDem(s, 0.15, c), b = lowNoiseDem(s, c);
-    assert.equal(a.width, b.width);
+    for (const k of ['originX', 'originY', 'cellM', 'width', 'height']) assert.equal(a[k], b[k], `${k} seed ${s} cell ${c}`);
+    assert.equal(a.heights.length, b.heights.length);
     assert.ok(a.heights.every((v, k) => v === b.heights[k]), `seed ${s} cell ${c}`);
   }
 });
