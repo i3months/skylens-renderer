@@ -37,6 +37,10 @@ export function terrainH32Bytes(cells, quantized) {
 }
 
 /** 유효한 step 이면 f32 로 반올림한 값, 아니면 null. */
+function checkArray(a, name) {
+  if (a === null || a === undefined || typeof a !== 'object' || !Number.isInteger(a.length) || a.length < 0) throw new RangeError(`${name} 가 배열이 아니다: ${String(a)}`);
+}
+
 function checkStep(step) {
   const s = Math.fround(step);
   return s > 0 && Number.isFinite(s) ? s : null;
@@ -50,6 +54,7 @@ function checkStep(step) {
  * @returns {{ kbase:number, base:number, step:number, q:Uint16Array }|null}
  */
 export function quantizeHeights(heights, step = TERRAIN_H32_STEP_M) {
+  checkArray(heights, 'heights');
   const s = checkStep(step);
   if (s === null || heights.length === 0) return null;
   let min = Infinity, max = -Infinity;
@@ -72,8 +77,16 @@ export function quantizeHeights(heights, step = TERRAIN_H32_STEP_M) {
 export function dequantizeHeights(kbase, step, q) {
   if (typeof step !== 'number' || !Number.isFinite(step) || !(step > 0)) throw new RangeError(`step ${String(step)} 가 유한한 양수가 아니다`);
   if (!Number.isInteger(kbase) || kbase < I32_MIN || kbase > I32_MAX) throw new RangeError(`kbase ${String(kbase)} 가 i32 정수가 아니다`);
+  checkArray(q, 'q');
+  // step 은 f32 로 반올림해 쓴다: double 0.03 과 fround(0.03) 가 같은 비트를 내야 한다(quantizeHeights 는 fround 한 step 으로 격자를 만든다).
+  const s = Math.fround(step);
+  if (!(s > 0) || !Number.isFinite(s)) throw new RangeError(`step ${String(step)} 가 f32 로 유한한 양수가 아니다`);
   const out = new Float32Array(q.length);
-  for (let k = 0; k < q.length; k++) out[k] = Math.fround((kbase + q[k]) * step);
+  for (let k = 0; k < q.length; k++) {
+    const v = q[k];
+    if (!Number.isInteger(v) || v < 0 || v > TERRAIN_H32_MAX_Q) throw new RangeError(`q[${k}] ${String(v)} 가 0..65535 정수가 아니다`);
+    out[k] = Math.fround((kbase + v) * s);
+  }
   return out;
 }
 
@@ -83,6 +96,7 @@ export function dequantizeHeights(kbase, step, q) {
  * @returns {Float32Array|null}
  */
 export function snapHeightsToGrid(heights, step = TERRAIN_H32_STEP_M) {
+  checkArray(heights, 'heights');
   const s = checkStep(step);
   if (s === null) return null;
   const out = new Float32Array(heights.length);
