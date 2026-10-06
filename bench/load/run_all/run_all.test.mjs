@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SCENARIOS, runScenario, main, appendAll } from './run.mjs';
@@ -33,7 +33,7 @@ test('T16.10: 문턱 주입이 slow_link 는 면제', () => {
   assert.deepEqual(violations, []);
 });
 test('T16.10: 서버 샘플 시계가 끊기면 샘플 부족 위반', () => {
-  const { violations, serverSamples } = runScenario(steady, { commit: 'abcdef1', statsClock: { now: () => 0 } });
+  const { violations, serverSamples } = runScenario(steady, { commit: 'abcdef1', statsClock: { now: () => 0, cpuUsage: () => ({ user: 0, system: 0 }) } });
   assert.equal(serverSamples.length, 0);
   assert.deepEqual(violations, ['steady30: 0 server samples, expected 60']);
 });
@@ -87,11 +87,12 @@ test('F-529: burst scenarios with burstLevels 1..4 have 0 violations', () => {
     assert.deepEqual(violations, [], `burstLevels ${b}`);
   }
 });
-test('F-529: burst invariant violations: arrival out of range (exact string)', () => {
+test('F-529 / F-539: a non-integer arrival level is rejected by the event log check (exact string)', () => {
+  // Since F-539 the injected log is checked first, so the burst checker never sees level 1.5.
   const s = burstOf(2);
   const events = [...simulateClients(s, { seed: 1 }), { id: 0, tMs: 5, kind: 'level', level: 1.5 }];
   const { violations } = runScenario(s, { ...OPTS, events });
-  assert.deepEqual(violations, ['burst2: arrival: client 0 level 1.5 at 5ms out of range 0..1']);
+  assert.deepEqual(violations, [`burst2: event ${events.length - 1}: bad level`]);
 });
 test('F-529: burst invariant violations: levels beyond burstLevels are not arrivals', () => {
   // a level-3 event in a burstLevels 2 run belongs to the post-burst part and must not be flagged
@@ -124,13 +125,13 @@ test('F-529: constant-3 shown mutation, level 3 inside the scenario range but ne
 
 // ---- F-535 / F-537: 소수 durationS, 대량 위반, slow_link 표시 ----
 const shortPath = [{ t: 0, e: 0, n: 0, u: 100 }, { t: 0.4, e: 1, n: 0, u: 100 }];
-test('F-535: durationS 소수(1.5, 0.5) 시나리오도 위반 0, 샘플 수는 floor', () => {
+test('F-535 / F-541: fractional durationS (1.5, 0.5) has 0 violations, ceil(durationS) samples, last tS = durationS', () => {
   const r15 = runScenario({ ...steady, name: 'steady1_5', durationS: 1.5, clients: 5, path: shortPath }, OPTS);
   assert.deepEqual(r15.violations, []);
-  assert.equal(r15.serverSamples.length, 1);
+  assert.deepEqual(r15.serverSamples.map((x) => x.tS), [1, 1.5]);
   const r05 = runScenario({ ...steady, name: 'steady0_5', durationS: 0.5, clients: 5, path: shortPath }, OPTS);
   assert.deepEqual(r05.violations, []);
-  assert.equal(r05.serverSamples.length, 0);
+  assert.deepEqual(r05.serverSamples.map((x) => x.tS), [0.5]);
 });
 test('F-537: appendAll 은 대량(200000) 위반도 RangeError 없이 접두어를 붙여 덧붙인다', () => {
   const items = Array.from({ length: 200000 }, (_, i) => `v${i}`);
@@ -145,4 +146,99 @@ test('F-537: main 콘솔 출력의 slow_link 시나리오 줄에만 S5 문턱 �
   try { assert.equal(main(mkdtempSync(join(tmpdir(), 'load-')), OPTS), 0); } finally { console.log = log; }
   const headings = lines.flatMap((l) => l.split('\n')).filter((l) => l.startsWith('## '));
   assert.deepEqual(headings, ['## steady30', '## burst30', '## slow30 (S5 문턱 제외 시나리오)']);
+});
+
+// ---- F-538: statsClock handling ----
+const zeroCpu = () => ({ user: 0, system: 0 });
+test('F-538: default run samples a stub CPU on the simulated clock', () => {
+  const { violations, serverSamples } = runScenario(steady, OPTS);
+  assert.deepEqual(violations, []);
+  assert.equal(serverSamples.length, 60);
+  assert.deepEqual(serverSamples.at(-1).tS, 60);
+  for (const x of serverSamples) {
+    assert.equal(x.cpuPct, null);
+    assert.equal(x.cpuSource, 'stub');
+    assert.equal(x.source, 'simulated');
+    assert.equal(x.clock, 'simulated');
+  }
+});
+test('F-538: statsClock with cpuUsage but no now throws', () => {
+  assert.throws(() => runScenario(SCENARIOS[0], { commit: '0000000', statsClock: { cpuUsage: () => process.cpuUsage() } }),
+    { message: 'runScenario: statsClock must provide both now and cpuUsage, or neither' });
+});
+test('F-538: statsClock with now but no cpuUsage throws', () => {
+  assert.throws(() => runScenario(steady, { ...OPTS, statsClock: { now: () => 0 } }),
+    { message: 'runScenario: statsClock must provide both now and cpuUsage, or neither' });
+});
+test('F-538: source/clock overrides without now and cpuUsage throw', () => {
+  assert.throws(() => runScenario(steady, { ...OPTS, statsClock: { source: 'server-process', clock: 'real' } }),
+    { message: 'runScenario: statsClock overrides (source, clock, memoryUsage, cpuStub) need both now and cpuUsage' });
+  assert.throws(() => runScenario(steady, { ...OPTS, statsClock: { source: 'server-process' } }),
+    { message: 'runScenario: statsClock overrides (source, clock, memoryUsage, cpuStub) need both now and cpuUsage' });
+});
+test('F-538: unknown statsClock keys throw', () => {
+  assert.throws(() => runScenario(steady, { ...OPTS, statsClock: { now: () => 0, cpuUsage: zeroCpu, nowMs: 1 } }),
+    { message: 'runScenario: statsClock has unknown key nowMs' });
+});
+test('F-538: now returning Infinity yields no non-finite tS sample and a missing-sample violation', () => {
+  const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { now: () => Infinity, cpuUsage: zeroCpu } });
+  assert.ok(serverSamples.every((x) => Number.isFinite(x.tS)));
+  assert.deepEqual(violations, ['steady30: 0 server samples, expected 60']);
+});
+test('F-538: injected now and cpuUsage give measured samples', () => {
+  let t = 0;
+  const { violations, serverSamples } = runScenario(steady, { ...OPTS, statsClock: { now: () => (t += 1000), cpuUsage: zeroCpu } });
+  assert.deepEqual(violations, []);
+  assert.deepEqual(serverSamples.map((x) => x.tS).slice(0, 3), [1, 2, 3]);
+  assert.ok(serverSamples.every((x) => x.cpuPct === 0 && x.cpuSource === 'measured' && x.clock === 'simulated'));
+});
+
+// ---- F-539: injected event logs are checked first, stats throws become violations ----
+test('F-539: a bad injected log returns its violations without running stats', () => {
+  const events = [...baseSteady(), { id: 99, tMs: 0, kind: 'connect' }];
+  const r = runScenario(steady, { ...OPTS, events });
+  assert.deepEqual(r.violations, [`steady30: event ${events.length - 1}: bad id`]);
+  assert.deepEqual(r.result, { scenario: steady, records: [], perClient: [] });
+  assert.deepEqual(r.serverSamples, []);
+});
+test('F-539: a non-array injected log is a violation, not a throw', () => {
+  for (const events of [null, 'nope', { length: 1 }]) {
+    assert.deepEqual(runScenario(steady, { ...OPTS, events }).violations, ['steady30: event log is not an array']);
+  }
+});
+test('F-539: a valid log a stats function rejects becomes a bad-event-log violation', () => {
+  const events = [...baseSteady(), { id: 0, tMs: 61000, kind: 'bytes', bytes: 1, latencyMs: 1 }];
+  const r = runScenario(steady, { ...OPTS, events });
+  assert.deepEqual(r.violations, ['steady30: bad event log: tMs must be <= durationS * 1000']);
+  assert.deepEqual(r.result.records, []);
+});
+test('F-539: a throwing show in a burst run becomes a violation', () => {
+  const show = () => { throw new Error('boom'); };
+  assert.deepEqual(runScenario(SCENARIOS[1], { ...OPTS, show }).violations, ['burst30: bad event log: boom']);
+});
+test('F-539: shipped scenarios keep 0 violations with their own log injected', () => {
+  for (const s of SCENARIOS.filter((x) => x.kind !== 'slow_link')) {
+    assert.deepEqual(runScenario(s, { ...OPTS, events: simulateClients(s, { seed: 1 }) }).violations, [], s.name);
+  }
+});
+
+// ---- F-542: huge violation counts go through appendAll (no spread push) ----
+const HUGE = 250000;
+const hugeShow = () => Array.from({ length: HUGE }, () => ({ id: 0, tMs: 0, level: 9 }));
+test('F-542: runScenario carries more than 200000 violations without RangeError', () => {
+  const { violations } = runScenario(SCENARIOS[1], { ...OPTS, show: hugeShow });
+  assert.equal(violations.length, HUGE + 30);
+  assert.equal(violations[0], 'burst30: shown: client 0 level 9 at 0ms out of range 0..3');
+  assert.equal(violations[HUGE - 1], 'burst30: shown: client 0 level 9 at 0ms out of range 0..3');
+  assert.equal(violations[HUGE], 'burst30: client 0: levels arrived but never shown');
+});
+test('F-542: main reports more than 200000 violations without RangeError', () => {
+  let n = 0; const err = console.error; const log = console.log;
+  console.error = () => { n++; }; console.log = () => {};
+  try { assert.equal(main(mkdtempSync(join(tmpdir(), 'load-')), { ...OPTS, show: hugeShow }), 1); } finally { console.error = err; console.log = log; }
+  assert.equal(n, HUGE + 30);
+});
+test('F-542: run.mjs never spreads into push', () => {
+  const src = readFileSync(new URL('./run.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(src, /\.push\(\s*\.\.\./);
 });
