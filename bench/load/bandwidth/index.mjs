@@ -6,7 +6,8 @@
  * @returns {{totalBytes: number, meanBytesPerS: number, peakBytesPerS: number}}
  *   totalBytes in bytes; meanBytesPerS and peakBytesPerS in bytes per second (B/s);
  *   peak = most bytes received in any one 1 s bucket [1000k, 1000k+1000) ms.
- * @throws {RangeError} durationS not a finite number > 0, or a bytes event with non-finite/negative bytes
+ * @throws {RangeError} durationS not a finite number > 0, or a bytes event with non-finite/negative bytes,
+ *   non-finite/negative tMs, or tMs > durationS * 1000
  */
 export function bandwidthStats(events, durationS) {
   if (!(typeof durationS === 'number' && Number.isFinite(durationS) && durationS > 0)) {
@@ -21,6 +22,11 @@ export function bandwidthStats(events, durationS) {
     if (!(typeof e.bytes === 'number' && Number.isFinite(e.bytes) && e.bytes >= 0)) {
       throw new RangeError('bytes must be a finite number >= 0');
     }
+    if (!(typeof e.tMs === 'number' && Number.isFinite(e.tMs) && e.tMs >= 0)) {
+      throw new RangeError('tMs must be a finite number >= 0');
+    }
+    // events after the scenario window are an input error; tMs === durationS*1000 is accepted
+    if (e.tMs > durationS * 1000) throw new RangeError('tMs must be <= durationS * 1000');
     totalBytes += e.bytes;
     const k = Math.floor(e.tMs / 1000);
     buckets.set(k, (buckets.get(k) ?? 0) + e.bytes);
