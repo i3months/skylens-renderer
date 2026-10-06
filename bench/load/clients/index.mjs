@@ -60,19 +60,21 @@ export function simulateClients(scenario, { seed } = {}) {
 }
 
 /**
- * Open connections over time: { max } over the whole log, { min } over the steady window, i.e. the states after the
- * last connect and before the final close time. A client that drops early lowers min below the client count.
+ * Open connections over time, tracked per client id: { max } over the whole log, { min } over the steady window, i.e.
+ * the states after the last connect and before the final close time. A client that drops early lowers min below the
+ * client count. A duplicate connect for an open id and a close for an id that is not open do not change the count.
  */
 export function countOpenConnections(events) {
-  let open = 0;
+  const openIds = new Set();
   let max = 0;
   let lastConnect = -1;
   let endMs = 0;
   const states = [];
   for (const e of events) {
-    if (e.kind === 'connect') { open++; lastConnect = states.length; }
-    else if (e.kind === 'close') { open--; endMs = Math.max(endMs, e.tMs); }
+    if (e.kind === 'connect') { openIds.add(e.id); lastConnect = states.length; }
+    else if (e.kind === 'close') { openIds.delete(e.id); endMs = Math.max(endMs, e.tMs); }
     else continue;
+    const open = openIds.size;
     max = Math.max(max, open);
     states.push({ tMs: e.tMs, open });
   }
@@ -81,4 +83,28 @@ export function countOpenConnections(events) {
     if (states[i].tMs < endMs) min = Math.min(min, states[i].open);
   }
   return { min: Number.isFinite(min) ? min : max, max };
+}
+
+/**
+ * Per-id connection violations, deterministic: first in event order `client N: duplicate connect` (connect while
+ * already open) and `client N: close without connect` (close while not open), then `client N: never connected` for
+ * ids 0..clients-1 with no connect at all. Output is sorted by id, then by event order within an id.
+ */
+export function connectionViolations(events, clients) {
+  const open = new Set();
+  const everConnected = new Set();
+  const perId = new Map();
+  const add = (id, msg) => { if (!perId.has(id)) perId.set(id, []); perId.get(id).push(msg); };
+  for (const e of events) {
+    if (e.kind === 'connect') {
+      if (open.has(e.id)) add(e.id, `client ${e.id}: duplicate connect`);
+      open.add(e.id);
+      everConnected.add(e.id);
+    } else if (e.kind === 'close') {
+      if (!open.has(e.id)) add(e.id, `client ${e.id}: close without connect`);
+      open.delete(e.id);
+    }
+  }
+  for (let id = 0; id < clients; id++) if (!everConnected.has(id)) add(id, `client ${id}: never connected`);
+  return [...perId.keys()].sort((a, b) => a - b).flatMap((id) => perId.get(id));
 }
