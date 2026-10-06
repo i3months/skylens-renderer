@@ -10,9 +10,9 @@
 //
 // Module signatures (default export is none; use the named export):
 //   T16.1  bench/load/clients/index.mjs      simulateClients(scenario, { seed }) -> ClientEvent[]   (sorted by tMs, then id)
-//   T16.2  bench/load/server_stats/index.mjs createStatsSampler({ cpuUsage, memoryUsage, now }) -> { tick(), samples() }
-//                                            samples() -> [{ tS, cpuPct, rssMiB, source, clock }] one per tick; source 'harness-process' and clock 'simulated'
-//                                            in the mock (real server values come from T16.12); a non-finite sample is a violation
+//   T16.2  bench/load/server_stats/index.mjs createStatsSampler({ cpuUsage, memoryUsage, now, clock, source, cpuStub }) -> { tick(), samples() }
+//                                            samples() -> [{ tS, cpuPct, rssMiB, source, clock }] one per tick; clock 'simulated' defaults source to 'simulated', clock 'real' defaults to 'harness-process' (server run passes 'server-process'); cpuStub true makes cpuPct null and source 'stub'.
+//                                            checkServerSamples(samples) -> string[] violation strings, never throws; a non-finite sample is a violation.
 //   T16.3  bench/load/per_client/index.mjs   perClientFromEvents(events, clients) -> perClient[] (validateResult shape)
 //   T16.4  bench/load/first_frame/index.mjs  firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs[] }
 //   T16.5  bench/load/bandwidth/index.mjs    bandwidthStats(events, durationS) -> { totalBytes, meanBytesPerS, peakBytesPerS }
@@ -23,18 +23,18 @@
 //                                            measured log, both sorted by tMs; each shown entry must be an arrived level, the highest arrived
 //                                            so far, and never followed by a lower one; overtaken levels are skipped, never filled in)
 //                                            simulateBurst(scenario, { seed }) -> { arrivals, shown, violations }  (uses simulateClients)
-//   Burst scenario: every client's levels 0..burstLevels-1 carry ONE tMs (묶음 지연 최댓값), so they arrive together.
+//   Burst scenario: every client's levels 0..burstLevels-1 carry ONE tMs (maximum bundle delay), so they arrive together.
 //   First frame (one definition, clients and slow_link): tMs of the first payload of level 0 that arrived and was drawn.
 //   T16.7  bench/load/slow_link/index.mjs    simulateSlowLink(scenario, { seed }) -> { events: ClientEvent[], maxQueueBytes, undeliveredBytes, dropped }
 //                                            (sender queue bounded by backpressure; bytes are delayed, never invented; at the end the bytes still
-//                                            queued are reported as undeliveredBytes, dropped = 백프레셔에서 막혀 있다가 close 때 버려진 payload의 크기, latencyMs은
-//                                            payload를 원한 순간부터 측정되며 백프레셔로 인한 대기 시간을 포함함)
+//                                            queued are reported as undeliveredBytes, dropped = size of payload held back by backpressure then discarded at close; latencyMs
+//                                            measured from payload request time, including wait time due to backpressure)
 //   T16.8  tools/load_report/index.mjs       loadReport(result) -> markdown table string (SPEC section 4 rows)
 //   T16.9  bench/thresholds/index.mjs        checkThresholds(records, thresholds) -> string[] violations; thresholds.json beside it
 //   T16.10 bench/load/run_all/run.mjs        node run.mjs -> runs every scenario, writes result JSON, exits non-zero on violations
-//                                            runScenario(scenario, opts) 및 main(outDir, opts): opts.commit (기본값: commitHash()), opts.thresholds (기본값: loadThresholds()),
-//                                            opts.statsClock (선택사항), opts.events (대체 로그, 기본값: 시뮬레이션), opts.show (기본값: showFromArrivals) 주입 가능.
-//                                            burst 시나리오에서 arrivals는 burstArrivals로 생성됨. 위반은 동일한 측정 로그에서 확인되며, result는 serverSamples를 포함함.
+//                                            runScenario(scenario, opts) and main(outDir, opts): opts.commit (default: commitHash()), opts.thresholds (default: loadThresholds()),
+//                                            opts.statsClock (optional), opts.events (alternate log, default: simulated), opts.show (default: showFromArrivals) injectable.
+//                                            In burst scenarios arrivals are generated from burstArrivals. Violations checked against the same measurement log; result includes serverSamples.
 import { LEVEL_COUNT } from '../asset/index.mjs';
 
 export const EVENT_KINDS = ['connect', 'bytes', 'level', 'first_frame', 'close'];
