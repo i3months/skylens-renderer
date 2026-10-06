@@ -25,10 +25,14 @@ const FRAME_BUDGET_MS = 16; // 한 프레임 예산(60 Hz)
 // ① 절대: p90 ≤ FRAME_BUDGET_MS(16 ms). 꼬리 프레임도 한 프레임 예산 안이라는 제품 요구 그대로다(측정에 맞춘 값이 아니다).
 // ② 모양: p90 / 중앙값 ≤ P90_MEDIAN_RATIO. 꼬리가 몸통의 몇 배로 퍼지는지 본다. 묶음당 5회면 부하에서 비율이 최대 3.21(중앙값 1.8)까지 튀었고,
 //    묶음당 10회(P90_PER_BATCH)로 늘리면 부하 80회·한가 40회 시행에서 최대 1.77(중앙값 1.2, 부하 최대 1.70)이다. 상한 2.5 는 그 최대의 약 1.4배.
+// 이 문턱(p90 ≤ 16 ms)은 한가할 때 p90(3.5~5.7 ms)의 약 2.8~4.6배, 위 부하 최대 p90(12.2 ms)의 약 1.3배다. 그래서 정상 장면의 p90 은 약 3.6배 이상 느려져야(예: 4.5 ms → 16 ms 초과) 넘는다.
+// 곧 약 3.6배 미만의 느려짐은 이 문턱 아래 잡음 범위이고, 이 단언으로 잡지 못한다(잡는 것은 아래 중앙값·기준 대비 비율·순회 몫 단언).
 // 한계: 이 두 단언은 '꼬리가 예산을 넘지 않고 터지지 않는다' 만 본다. 균일한 N 배 느려짐(맞춤 순회 10배 등)은 비율이 그대로라 여기서 못 잡고,
 // 중앙값·기준 대비 비율·맞춤 순회 몫 단언이 잡는다.
 const P90_MAX_MS = FRAME_BUDGET_MS;
 const P90_MEDIAN_RATIO = 2.5;
+/** 꼬리 비율 p90/중앙값 의 단일 정의. 판정(ok)과 단언·로그가 모두 이 값을 쓴다. 중앙값 0: p90 도 0 이면 퍼짐 없음(1), p90 > 0 이면 무한대(실패). 0/0 = NaN 으로 두 판정이 갈리지 않게 한다. */
+function tailOf(q, m) { return m > 0 ? q / m : (q > 0 ? Infinity : 1); }
 const P90_BATCH = 21; // p90 을 내려면 묶음이 많아야 한다
 const P90_PER_BATCH = 10; // p90 묶음 하나당 frame 호출 수(5 는 부하에서 꼬리 비율이 너무 튄다)
 const P90_WARM = 8;
@@ -114,7 +118,7 @@ function floorOf(scene) {
 /**
  * 부하로 한 번 튄 측정이 오탐이 되지 않게 최대 ATTEMPTS 번 재서, 한 번이라도 통과하면 통과로 본다.
  * 한계: 3회 중 1회만 통과해도 통과이므로, 간헐적으로만 느린 회귀(예: 3회 중 2회 이상 문턱을 넘지만 가끔 통과하는 정도)는 놓칠 수 있다.
- * 실제 회귀(맞춤 순회 10배·옛 push)는 측정마다 문턱을 크게 넘어 3회 모두 실패하므로 잡힌다(변이 시험으로 확인). 오탐 확률은 문턱 초과 확률 p 의 3제곱이다.
+ * 실제 회귀(맞춤 순회 10배·옛 push)는 측정마다 문턱을 크게 넘어 3회 모두 실패하므로 잡힌다(변이 시험으로 확인). 오탐 확률은 문턱 초과 확률 p 의 3제곱이다(시도가 서로 독립이라는 가정 아래서만 성립한다: 부하가 길게 이어져 연속 시도가 함께 느려지면 p^3 보다 크다).
  */
 const ATTEMPTS = 3;
 function untilOk(measure) {
@@ -163,8 +167,8 @@ test('perf: 드론 256·탐지 4096·경로 64×1500점 frame 묶음 중앙값 �
   assert.deepEqual(fb.counts(), { drones: N_DRONES, detections: N_DETECTIONS, paths: N_PATHS });
   const r = untilOk(() => {
     const batches = batchesCpuMs(() => fb.frame(SIZE), P90_BATCH, P90_WARM, P90_PER_BATCH); // 첫 호출의 JIT·GC 꼬리가 p90 에 들지 않게 충분히 데운다
-    const m = median(batches), q = p90(batches);
-    return { ms: m, q90: q, tail: q / m, ok: m <= FRAME_BUDGET_MS && q <= P90_MAX_MS && q <= P90_MEDIAN_RATIO * m };
+    const m = median(batches), q = p90(batches), tail = tailOf(q, m);
+    return { ms: m, q90: q, tail, ok: m <= FRAME_BUDGET_MS && q <= P90_MAX_MS && tail <= P90_MEDIAN_RATIO };
   });
   const { ms, q90, tail } = r;
   console.log(`fallback perf: frame 한 번 묶음 중앙값 ${ms.toFixed(2)} ms (상한 ${MAX_MS} ms, 예산 ${FRAME_BUDGET_MS} ms), p90 ${q90.toFixed(2)} ms (상한 ${P90_MAX_MS} ms), p90/중앙값 ${tail.toFixed(2)} (상한 ${P90_MEDIAN_RATIO})`);
@@ -244,8 +248,12 @@ test('perf: 자동 맞춤 frame ≤ 16 ms 이고 setView frame 대비 비율 안
   assert.ok(r.ok, `frame ${r.ms.toFixed(2)} ms, 기준 ${r.base.toFixed(2)} ms, 비율 ${r.ratio.toFixed(2)}, 순회 몫 ${r.share.toFixed(2)} ms, 기준 순회 ${r.ref.toFixed(2)} ms`);
 });
 
-// 맞춤 순회 10배 변이(Pfit10): frame 한 번에 경계 상자 순회를 10번 한다(독립 기준 순회 9번 + frame 안의 1번). frame 전체를 10번 하는 것보다 구체적인 회귀다.
-// 순회 몫이 기준 순회의 약 10배가 돼 FIT_SHARE_RATIO(3) 단언이 실패해야 한다(몫 ≈ 9×0.8 ms ≫ 3×0.8 ms).
+// 맞춤 순회 변이(Pfit10): frame 한 번에 경계 상자 순회를 10번 한다(독립 기준 순회 9번 + frame 안의 1번). frame 전체를 10번 하는 것보다 구체적인 회귀다.
+// 측정(이 환경 CPU 시간 중앙값): 기준 순회 refTraverse ≈ 0.80 ms, 제품 순회(index.mjs 의 루프와 같은 복사본) ≈ 0.80 ms 라 둘은 거의 같은 비용이다(비 0.99).
+// 그러므로 기준 순회 9회 추가 = 제품 순회 9회 추가(몫 ≈ 7.2 ms 추가)이지, 제품 순회 17배가 아니다(앞 주석의 '17배'는 틀렸다). 정상 몫은 1.2~1.7 ms(기준 순회의 1.5~2.2배, 문턱 3배 아래).
+// 이 변이의 몫은 7.4 ms(실측 1회, 기준 순회의 약 9배)라 문턱 3×0.80 = 2.4 ms 를 약 3.1배 넘는다. 문턱의 정상 쪽 여유는 정상 몫 최대 1.7 ms 에 대해 2.4 ms(약 1.4배)다.
+// 제품 index.mjs 의 순회 루프를 실제로 10번 돌게 고친 변이(직접 시험, 이 파일 밖)는 몫 3.7~6.4 ms(기준 순회의 4.6~8.1배)로 문턱(2.4 ms)을 1.5~2.7배 넘어 이 시험(자동 맞춤 판정)이 계속 실패했다.
+// 실제 변이는 한 함수 안에서 같은 루프를 되풀이해 JIT 이 더 싸게 돌리므로 별도 복사본 변이(아래 Pprod10)보다 몫이 작다. 둘 다 아래에서 시험한다.
 test('perf: 맞춤 순회 10배 변이는 판정에서 실패한다', () => {
   const scene = makeScene();
   const fb = fbOf(scene);
@@ -253,6 +261,42 @@ test('perf: 맞춤 순회 10배 변이는 판정에서 실패한다', () => {
   const r = judge(slow, floorOf(scene), scene);
   assert.equal(r.ok, false, `맞춤 순회 10배 변이가 통과했다: ${r.ms.toFixed(2)} ms, 순회 몫 ${r.share.toFixed(2)} ms, 기준 순회 ${r.ref.toFixed(2)} ms`);
   assert.ok(r.share > FIT_SHARE_RATIO * r.ref, `순회 몫 ${r.share.toFixed(2)} ms 가 ${FIT_SHARE_RATIO}배 기준 순회 ${r.ref.toFixed(2)} ms 이하다(몫 단언이 변이를 잡지 못함)`);
+  console.log(`fallback perf: Pfit10 몫 ${r.share.toFixed(2)} ms / 문턱 ${(FIT_SHARE_RATIO * r.ref).toFixed(2)} ms (기준 순회 ${r.ref.toFixed(2)} ms)`);
+});
+
+/** 제품 index.mjs 의 맞춤 순회 루프(드론·탐지·경로 점을 인덱스 for 로 돌며 경계 상자 갱신)의 인라인 복사본. 제품 순회 10회 변이용. */
+function prodTraverse(scene) {
+  const { drones, detections, paths } = scene;
+  let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
+  for (let i = 0; i < drones.length; i++) { const q = drones[i].enu; const e = q[0], n = q[1]; if (e < minE) minE = e; if (e > maxE) maxE = e; if (n < minN) minN = n; if (n > maxN) maxN = n; }
+  for (let i = 0; i < detections.length; i++) { const q = detections[i].enu; const e = q[0], n = q[1]; if (e < minE) minE = e; if (e > maxE) maxE = e; if (n < minN) minN = n; if (n > maxN) maxN = n; }
+  for (let k = 0; k < paths.length; k++) {
+    const pp = paths[k].points;
+    for (let i = 0; i < pp.length; i++) { const q = pp[i]; const e = q[0], n = q[1]; if (e < minE) minE = e; if (e > maxE) maxE = e; if (n < minN) minN = n; if (n > maxN) maxN = n; }
+  }
+  return maxE - minE + maxN - minN;
+}
+
+// 제품 순회 10회 변이(Pprod10): 제품 루프 복사본을 9번 더 돈다. 몫 ≈ 정상 몫 + 9×0.80 ms 라 문턱 3×기준 순회를 넘어야 한다.
+test('perf: 제품 순회 10회 변이(인라인 복사본)는 판정에서 실패한다', () => {
+  const scene = makeScene();
+  const fb = fbOf(scene);
+  const slow = { frame(size) { for (let i = 0; i < 9; i += 1) prodTraverse(scene); return fb.frame(size); } };
+  const r = judge(slow, floorOf(scene), scene);
+  assert.equal(r.ok, false, `제품 순회 10회 변이가 통과했다: ${r.ms.toFixed(2)} ms, 순회 몫 ${r.share.toFixed(2)} ms, 기준 순회 ${r.ref.toFixed(2)} ms`);
+  assert.ok(r.share > FIT_SHARE_RATIO * r.ref, `순회 몫 ${r.share.toFixed(2)} ms 가 ${FIT_SHARE_RATIO}배 기준 순회 ${r.ref.toFixed(2)} ms 이하다`);
+});
+
+test('perf: 꼬리 비율은 중앙값 0 에서도 판정과 단언이 같다', () => {
+  for (const [name, batches] of [['[0,0,0]', [0, 0, 0]], ['[0,0,1]', [0, 0, 1]], ['[2,2,3]', [2, 2, 3]], ['[1,1,10]', [1, 1, 10]]]) {
+    const m = median(batches), q = p90(batches), tail = tailOf(q, m);
+    assert.ok(!Number.isNaN(tail), `${name}: tail 이 NaN 이면 판정(<=)과 단언이 갈린다`);
+    assert.equal(tail <= P90_MEDIAN_RATIO, name !== '[0,0,1]' && name !== '[1,1,10]', name); // 판정과 단언은 같은 tail 한 값을 쓴다
+  }
+  assert.equal(tailOf(0, 0), 1); // 퍼짐 없음 → 통과
+  assert.equal(tailOf(1, 0), Infinity); // 몸통 0 에 꼬리 > 0 → 실패
+  assert.ok(tailOf(0, 0) <= P90_MEDIAN_RATIO && !(tailOf(1, 0) <= P90_MEDIAN_RATIO));
+  assert.equal(tailOf(3, 2), 1.5);
 });
 
 // 총 점 상한(maxTotalPathPoints)이 생겨 64×10,000(64만 점)은 setPath 가 거부한다. 같은 합계 안에서 경로 하나가 긴 극단(8×12,000 점)을 비율 문턱(BIG_RATIO, 그대로)으로 본다.
