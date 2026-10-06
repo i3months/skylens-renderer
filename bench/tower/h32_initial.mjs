@@ -146,7 +146,7 @@ function print(r) {
     console.log(`| ${name} | ${x.cells} | ${pad(x.f32.payload, 9)} | ${pad(x.f32.wire, 9)} | ${pad(x.quant.payload, 9)} | ${pad(x.quant.wire, 9)} | ${x.quant.fallbackTiles} | `
       + `${x.budgetF32.shareMargin}/${x.budgetQuant.shareMargin} | ${x.budgetF32.total}/${x.budgetQuant.total} | ${pass} | ${enc} |`);
   }
-  console.log(`LEVEL_ARRIVED ${r.levelArrivedEach} B/(segment, level) 는 몫 정의에 없어 합계에 넣지 않음.`);
+  console.log(`합계는 스케줄러 LEVEL_ARRIVED 프레임 ${r.levelArrivedEach} B/(segment, level)를 제외한 값이다(몫 정의 결정 0056 에 없음, 위 합계 열에 포함되지 않음).`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

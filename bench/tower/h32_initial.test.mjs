@@ -6,7 +6,7 @@ import {
   BUILDINGS_BYTES, DRAPE_MIP2_BYTES, WELCOME_BYTES, INITIAL_TERRAIN_LOD,
 } from './h32_initial.mjs';
 import { noiseBigDem, smoothDem } from './lod_bytes.mjs';
-import { TERRAIN_INITIAL_BUDGET_BYTES, INITIAL_TOTAL_LIMIT_BYTES } from '../../contracts/tower_assets/terrain_h32.mjs';
+import { TERRAIN_INITIAL_BUDGET_BYTES, INITIAL_TOTAL_LIMIT_BYTES, terrainH32Bytes } from '../../contracts/tower_assets/terrain_h32.mjs';
 import { WELCOME_FRAME_BYTES, PIECE_FRAME_OVERHEAD_BYTES } from '../../server/scheduler/initial/index.mjs';
 import { INITIAL_TERRAIN_LOD as ASSETS_TERRAIN_LOD } from '../tower_assets/index.mjs';
 
@@ -93,29 +93,71 @@ test('범위를 넘는 타일은 f32 폴백으로 센다', () => {
   assert.equal(m.quant.payload, 3 * 8_474 + 16_916);
 });
 
-test('서버 인코더 대조: 있으면 실제 길이 합이 계약 계산과 같고, 없으면 대조 불가로 표시한다', async (t) => {
-  const present = existsSync(new URL('../../server/terrain/height_format/index.mjs', import.meta.url));
+test('서버 인코더 대조: 인코더가 반드시 있어야 하고, 양자화 256 타일·payload 가 계약 바이트 식에서 유도한 값과 같다', async () => {
+  assert.ok(existsSync(new URL('../../server/terrain/height_format/index.mjs', import.meta.url)), '인코더 파일이 없으면 통과하지 않는다');
   const r = await crossCheckEncoder(noiseBigDem(0));
-  if (!present) {
-    assert.deepEqual(r, { available: false });
-    t.diagnostic('대조 가능 여부: 불가(server/terrain/height_format/index.mjs 없음)');
-    return;
-  }
   assert.equal(r.available, true);
-  t.diagnostic(`대조 가능 여부: 가능, 실제 payload ${r.payload} B`);
+  // 기대값은 인코더 출력이 아닌 계약 terrainH32Bytes 에서 직접 유도한다(noiseBig LOD3: 전 타일 양자화, 폴백 0).
+  const derived = 256 * terrainH32Bytes(NOISE_LOD3.cells, true);
+  assert.equal(r.quantizedTiles, 256);
+  assert.equal(r.fallbackTiles, 0);
+  assert.equal(r.payload, derived);
+  assert.equal(r.expectedPayload, derived);
   assert.equal(r.mismatchTiles, 0);
-  assert.equal(r.payload, r.expectedPayload);
-  assert.equal(r.quantizedTiles + r.fallbackTiles, 256);
-  assert.ok([NOISE_LOD3.f32.payload, NOISE_LOD3.quant.payload].includes(r.payload) || r.fallbackTiles > 0);
+  assert.equal(r.payload, NOISE_LOD3.quant.payload);
   assert.ok(r.payload + 256 * PIECE_FRAME_OVERHEAD_BYTES <= TERRAIN_INITIAL_BUDGET_BYTES);
 });
 
-test('measureAllH32 는 모든 DEM 에서 몫·합계를 통과하고 대조 가능 여부를 싣는다', async () => {
+test('서버 인코더 대조: 완만 DEM 도 전 타일 양자화이고 payload 가 계약 식 유도값과 같다', async () => {
+  const r = await crossCheckEncoder(smoothDem());
+  assert.equal(r.available, true);
+  assert.equal(r.quantizedTiles, 256);
+  assert.equal(r.payload, 256 * terrainH32Bytes(9, true));
+  assert.equal(r.mismatchTiles, 0);
+});
+
+test('measureAllH32 는 모든 DEM 에서 몫·합계를 통과하고 인코더 대조(available true)를 싣는다', async () => {
   const r = await measureAllH32();
   assert.deepEqual(Object.keys(r.rows), ['noiseBig:0', 'noiseBig:1', 'noiseBig:2', 'noiseBig:3', 'smooth']);
   for (const [name, x] of Object.entries(r.rows)) {
     assert.equal(x.budgetQuant.sharePass && x.budgetQuant.totalPass, true, name);
     assert.equal(x.budgetF32.sharePass && x.budgetF32.totalPass, true, name);
-    assert.equal(typeof x.encoder.available, 'boolean', name);
+    assert.equal(x.encoder.available, true, name);
+    assert.equal(x.encoder.quantizedTiles, 256, name);
+    assert.equal(x.encoder.mismatchTiles, 0, name);
   }
+});
+
+test('② compareBudget 몫 경계: 몫 이하 통과, 몫+1 은 sharePass 거짓(합계는 아직 통과)', () => {
+  const at = compareBudget(TERRAIN_INITIAL_BUDGET_BYTES);
+  assert.equal(at.sharePass, true);
+  assert.equal(at.shareMargin, 0);
+  assert.equal(at.total, INITIAL_TOTAL_LIMIT_BYTES);
+  assert.equal(at.totalPass, true);
+  assert.equal(at.totalMargin, 0);
+  const over = compareBudget(TERRAIN_INITIAL_BUDGET_BYTES + 1);
+  assert.equal(over.sharePass, false);
+  assert.equal(over.shareMargin, -1);
+  assert.equal(over.total, INITIAL_TOTAL_LIMIT_BYTES + 1);
+  assert.equal(over.totalPass, false);
+  assert.equal(over.totalMargin, -1);
+  const under = compareBudget(TERRAIN_INITIAL_BUDGET_BYTES - 1);
+  assert.equal(under.sharePass, true);
+  assert.equal(under.totalPass, true);
+  assert.equal(under.total, INITIAL_TOTAL_LIMIT_BYTES - 1);
+  assert.equal(under.totalMargin, 1);
+});
+
+test('② 합계 15,000,000±1 경계와 몫만 넘는 경우를 판정이 구분한다', () => {
+  const fixed = BUILDINGS_BYTES + DRAPE_MIP2_BYTES + WELCOME_BYTES;
+  for (const [wire, pass] of [[INITIAL_TOTAL_LIMIT_BYTES - fixed - 1, true], [INITIAL_TOTAL_LIMIT_BYTES - fixed, true], [INITIAL_TOTAL_LIMIT_BYTES - fixed + 1, false]]) {
+    const b = compareBudget(wire);
+    assert.equal(b.total, INITIAL_TOTAL_LIMIT_BYTES - (INITIAL_TOTAL_LIMIT_BYTES - fixed - wire));
+    assert.equal(b.totalPass, pass, `wire ${wire}`);
+    assert.equal(b.sharePass, wire <= TERRAIN_INITIAL_BUDGET_BYTES);
+  }
+  const huge = compareBudget(20_000_000);
+  assert.equal(huge.sharePass, false);
+  assert.equal(huge.totalPass, false);
+  assert.ok(huge.shareMargin < 0 && huge.totalMargin < 0);
 });
