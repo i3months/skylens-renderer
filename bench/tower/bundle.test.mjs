@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { measureBundle, modules } from './bundle.mjs';
+import { measureBundle, reachableInputs, modules } from './bundle.mjs';
 import { CONTROLVIEW_LIMITS } from '../../contracts/controlview/index.mjs';
 
 const LIMIT = CONTROLVIEW_LIMITS.bundleBytes;
@@ -17,11 +17,21 @@ const EXPECTED_MODULES = [
 const MIN_ENTRY_GZIP = 50; // an entry that bundles to fewer bytes is empty/broken
 // Floor for the whole bundle. Measured with only the entry files counted
 // (bundle:false, shared chunks dropped, or every import external) the total is
-// ~16,280 B; the real graph is 68,057 B. 32,000 B is about twice the
+// ~16,280 B; the real graph is 68,062 B. 32,000 B is about twice the
 // entry-files-only value, so any measurement that stops following imports
 // falls below it, while it stays well under the real total so ordinary
 // refactors do not trip it.
 const MIN_TOTAL_GZIP = 32_000;
+// Shared chunks alone. Measured on the real graph: 13 chunks, 32,630 B gzip
+// (entries alone: 35,432 B). 16,000 B is about half of that, so a measurement
+// that keeps only some of the chunks (e.g. one) falls well below it, while
+// ordinary refactors that move code between chunks do not trip it.
+const MIN_CHUNK_GZIP = 16_000;
+// Number of shared chunks. Measured on the real graph: 13. Keeping only the
+// few large chunks (and adjusting outputs to match) still passes the gzip
+// floor above, so the count is checked too. 10 leaves a margin of 3 for
+// chunks merging in ordinary refactors while rejecting a handful of survivors.
+const MIN_CHUNK_COUNT = 10;
 // e2e wires the other tower modules together; its graph must include them.
 const MIN_E2E_INPUTS = 10;
 
@@ -56,6 +66,13 @@ test('tower client bundle gzip size <= CONTROLVIEW_LIMITS.bundleBytes', { timeou
   assert.ok(e2e.inputs >= MIN_E2E_INPUTS, `e2e bundles ${e2e.inputs} files, expected >= ${MIN_E2E_INPUTS}`);
   // code shared between entries must be emitted and counted, not dropped
   assert.ok(r.chunks.length >= 1, 'shared chunks must be emitted and counted');
+  // metafile.outputs is the independent count of emitted files; the rows
+  // returned must account for every one of them (a dropped chunk breaks this)
+  assert.ok(Number.isInteger(r.outputs) && r.outputs > 0, `outputs must be a positive integer, got ${r.outputs}`);
+  assert.equal(r.entries.length + r.chunks.length, r.outputs, 'emit count = entries + chunks (no emitted file left unmeasured)');
+  const chunkGzip = r.chunks.reduce((s, x) => s + x.gzip, 0);
+  assert.ok(chunkGzip >= MIN_CHUNK_GZIP, `shared chunks gzip ${chunkGzip} below floor ${MIN_CHUNK_GZIP}`);
+  assert.ok(r.chunks.length >= MIN_CHUNK_COUNT, `shared chunk count ${r.chunks.length} below floor ${MIN_CHUNK_COUNT}`);
   const entriesOnly = r.entries.reduce((s, x) => s + x.gzip, 0);
   assert.ok(r.totalGzip > entriesOnly, 'total must exceed the entry files alone');
   assert.ok(r.totalGzip >= MIN_TOTAL_GZIP, `total gzip ${r.totalGzip} below floor ${MIN_TOTAL_GZIP}`);
@@ -78,4 +95,15 @@ test('positive control: a small entry importing a large module is judged over th
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('guard: reachableInputs throws for an entry that is not a metafile.inputs key', () => {
+  const metafile = { inputs: { 'a.mjs': { imports: [] } } };
+  assert.equal(reachableInputs(metafile, 'a.mjs'), 1);
+  assert.throws(() => reachableInputs(metafile, 'missing.mjs'), /not found in metafile\.inputs/);
+});
+
+test('guard: measureBundle rejects an empty or non-array entry list', async () => {
+  await assert.rejects(() => measureBundle([]), /at least one entry module/);
+  await assert.rejects(() => measureBundle('client/raster'), /at least one entry module/);
 });

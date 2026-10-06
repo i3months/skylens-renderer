@@ -8,11 +8,54 @@ import { modules } from './index.mjs';
 // (no npx fallback: esbuild is a devDependency installed by "npm ci").
 const GZIP_LIMIT_BYTES = CONTROLVIEW_LIMITS.bundleBytes;
 
+const EXPECTED_MODULES = [
+  'client/proto', 'client/codec', 'client/asset',
+  'client/levels', 'client/cull', 'client/geo',
+];
+// Source files in each entry's bundled import graph, measured on the real
+// graph (proto 4, codec 5, asset 3, levels 4, cull 1, geo 2; sum 19).
+// Floor of ~9 (~47% of measured 19) serves as a lower bound: an unfollowed
+// import or refactoring that significantly reduces the import graph falls
+// below this threshold, while ordinary refactors that preserve dependencies
+// do not trip it.
+const MIN_INPUTS = {
+  'client/proto': 4, 'client/codec': 5, 'client/asset': 3,
+  'client/levels': 4, 'client/cull': 1, 'client/geo': 2,
+};
+const MIN_TOTAL_INPUTS = 9;
+// Measured with bundle:true, splitting:true: total 12,411 B gzip
+// (entries 10,268 B + 2 shared chunks 2,143 B).
+// Measured with bundle:false: 10,812 B gzip (no shared chunk extraction).
+// Floor of 10,000 B (~81% of bundle:false 10,812 B, ~80% of full 12,411 B)
+// catches measurements where bundling or import following is broken, while
+// allowing ordinary refactors that do not drop significant code.
+const MIN_TOTAL_GZIP = 10_000;
+const MIN_CHUNK_GZIP = 1_000;
+
 test('client bundle gzip size', { timeout: 60_000 }, async () => {
-  const { totalGzip } = await measureBundle(modules);
-  assert.ok(totalGzip > 0, 'measured size must be positive');
+  assert.deepEqual(modules, EXPECTED_MODULES, 'module list must not shrink');
+  const r = await measureBundle(modules);
+  assert.ok(r.totalGzip > 0, 'measured size must be positive');
+
+  // negative assertions: the measurement actually measured everything
+  assert.equal(r.entries.length, modules.length, 'one measured entry per module');
+  assert.deepEqual(r.entries.map((e) => e.module), modules);
+  for (const e of r.entries) {
+    assert.ok(e.minified > 0 && e.gzip > 0, `${e.module} must have nonzero size`);
+    assert.ok(e.inputs >= MIN_INPUTS[e.module], `${e.module} bundles ${e.inputs} source file(s), expected >= ${MIN_INPUTS[e.module]}; imports were not followed`);
+  }
+  assert.ok(r.entries.reduce((s, e) => s + e.inputs, 0) >= MIN_TOTAL_INPUTS, 'total bundled source files below floor');
+  assert.ok(r.chunks.length >= 1, 'shared chunks must be emitted and counted');
+  assert.ok(Number.isInteger(r.outputs), `outputs must be an integer, got ${r.outputs}`);
+  assert.equal(r.entries.length + r.chunks.length, r.outputs, 'emit count = entries + chunks (no emitted file left unmeasured)');
+  const chunkGzip = r.chunks.reduce((s, x) => s + x.gzip, 0);
+  assert.ok(chunkGzip >= MIN_CHUNK_GZIP, `shared chunks gzip ${chunkGzip} below floor ${MIN_CHUNK_GZIP}`);
+  const sum = [...r.entries, ...r.chunks].reduce((s, x) => s + x.gzip, 0);
+  assert.equal(r.totalGzip, sum, 'total equals sum of emitted files');
+  assert.ok(r.totalGzip >= MIN_TOTAL_GZIP, `total gzip ${r.totalGzip} below floor ${MIN_TOTAL_GZIP}`);
+
   assert.ok(
-    totalGzip <= GZIP_LIMIT_BYTES,
-    `Total gzip size ${totalGzip} bytes exceeds limit of ${GZIP_LIMIT_BYTES} bytes`
+    r.totalGzip <= GZIP_LIMIT_BYTES,
+    `Total gzip size ${r.totalGzip} bytes exceeds limit of ${GZIP_LIMIT_BYTES} bytes`
   );
 });
