@@ -21,7 +21,7 @@ export const CONTROLVIEW_METHOD_MAP = Object.freeze([
   { role: '추적 카메라(기존 감쇠 의미)', source: 'towerViewer.ts (chase)', module: 'chase', fn: 'createChaseCamera', origin: 'estimated' },
   { role: '드론·경로·탐지 마커(ENU 일치 ≤ 1 cm)', source: 'towerViewer.ts (오버레이)', module: 'overlay', fn: 'createTowerOverlay', origin: 'estimated' },
   { role: '시점 이동에 따른 조각 요청', source: 'towerViewer.ts (스트리밍)', module: 'streaming', fn: 'createTowerStreaming', origin: 'estimated' },
-  { role: '폴백(2D 지도, 사람 확인 전 임시)', source: '(신규)', module: 'fallback', fn: 'createTowerFallback', origin: 'estimated' },
+  { role: '폴백(2D 지도, 확정(SPEC §5, 사람 결정 2026-10-06))', source: '(신규)', module: 'fallback', fn: 'createTowerFallback', origin: 'estimated' },
   { role: '조립(어댑터 본체)', source: 'towerViewer.ts 공개 메서드 전체', module: 'e2e', fn: 'createControlView', origin: 'estimated' },
 ]);
 
