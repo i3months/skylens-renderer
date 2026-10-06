@@ -433,6 +433,15 @@ function overlayOnlyBad(obj, key, good, badValue) {
   Object.defineProperty(obj, key, { enumerable: true, configurable: true, get: () => (readByOverlayOnly() ? badValue : good) });
   return obj;
 }
+function threw(fn) {
+  try {
+    fn();
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 test('e2e: removePath 는 overlay·fallback 양쪽에서 빼고, 조립 층이 한 번 읽은 사본을 두 층에 넘겨 거부 없이 같은 새 데이터를 갖는다', () => {
   // 크기 232×132, 폴백 기본값 → 여백 16, avail 100. 받은 점의 경계 상자 변이 100 m 이하면 metersPerPx = 1.
   // 추적 카메라 fovY 2·atan(1/2) → f = 132, (cx, cy) = (116, 66).
@@ -467,11 +476,15 @@ test('e2e: removePath 는 overlay·fallback 양쪽에서 빼고, 조립 층이 �
   };
   assertMatch(replayRecording(view, [{ dtSec: 0.25 }], size), [h1Row]);
 
-  // 접근자는 overlay 가 직접 읽을 때만 나쁜 값을 주지만, 조립 층의 사본을 보므로 4 건 모두 던지지 않는다.
-  assert.doesNotThrow(() => view.setDrones([D1, overlayOnlyBad({ id: 'd9' }, 'enu', [100, 230, 50], [1, 2])]));
-  assert.doesNotThrow(() => view.setDetections([K1, overlayOnlyBad({ id: 'k2' }, 'enu', [110, 210, 0], [1, 2])]));
-  assert.doesNotThrow(() => view.setPath(overlayOnlyBad({ id: 'p2' }, 'points', [[130, 225, 0], [110, 205, 0]], [[0, 0, 0]])));
-  assert.doesNotThrow(() => view.setPath(overlayOnlyBad({ id: 'p3' }, 'points', [[100, 230, 0], [130, 200, 0]], [[0, 0, 0]])));
+  // 접근자는 overlay 가 직접 읽을 때만 나쁜 값을 주지만, 조립 층의 사본을 보므로 4 건 모두 거부되지 않는다(불변식).
+  const rd = threw(() => view.setDrones([D1, overlayOnlyBad({ id: 'd9' }, 'enu', [100, 230, 50], [1, 2])]));
+  assert.equal(rd, false, 'rd: 두 층이 같은 사본을 보아 거부 없음');
+  const rk = threw(() => view.setDetections([K1, overlayOnlyBad({ id: 'k2' }, 'enu', [110, 210, 0], [1, 2])]));
+  assert.equal(rk, false, 'rk: 두 층이 같은 사본을 보아 거부 없음');
+  const rp2 = threw(() => view.setPath(overlayOnlyBad({ id: 'p2' }, 'points', [[130, 225, 0], [110, 205, 0]], [[0, 0, 0]])));
+  assert.equal(rp2, false, 'rp2: 두 층이 같은 사본을 보아 거부 없음');
+  const rp3 = threw(() => view.setPath(overlayOnlyBad({ id: 'p3' }, 'points', [[100, 230, 0], [130, 200, 0]], [[0, 0, 0]])));
+  assert.equal(rp3, false, 'rp3: 두 층이 같은 사본을 보아 거부 없음');
 
   const h2Row = {
     mode: 'fallback', banner: TOWER_FALLBACK_BANNER,
