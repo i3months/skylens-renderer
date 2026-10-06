@@ -31,6 +31,8 @@ const MIN_CHUNK_GZIP = 16_000;
 // few large chunks (and adjusting outputs to match) still passes the gzip
 // floor above, so the count is checked too. 10 leaves a margin of 3 for
 // chunks merging in ordinary refactors while rejecting a handful of survivors.
+// 여유 3: 가장 작은 3개 청크가 합 ~1,160 B일 때, 일반적 리팩터링에서 3개까지 통합되는
+// 것은 수용하되 그 이상은 거부한다 (code-split 에서 의도하지 않은 통합 감지).
 const MIN_CHUNK_COUNT = 10;
 // e2e wires the other tower modules together; its graph must include them.
 const MIN_E2E_INPUTS = 10;
