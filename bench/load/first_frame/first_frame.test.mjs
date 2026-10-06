@@ -271,10 +271,55 @@ test('F-556: any level arrival at or before first_frame accepts it; later level 
   assert.deepEqual(firstFrameViolations(s), []);
 });
 
-test('F-560: firstFrameViolations tolerates minimal stats and null outOfOrder entries', () => {
-  assert.deepEqual(firstFrameViolations({ p95Ms: 100 }), []);
-  assert.doesNotThrow(() => firstFrameViolations({ p95Ms: 100, outOfOrder: [null] }));
-  assert.deepEqual(firstFrameViolations({ p95Ms: 100, outOfOrder: [null] }), []);
+test('F-560: firstFrameViolations accepts valid minimal stats', () => {
+  assert.deepEqual(firstFrameViolations({ p95Ms: 100, missing: [] }), []);
+  assert.deepEqual(firstFrameViolations({ p95Ms: 100, perClientMs: [1, 2] }), []);
+  assert.deepEqual(firstFrameViolations({ p95Ms: 100, missing: [], outOfOrder: [] }), []);
+});
+
+test('F-563: malformed stats yield violations and never throw', () => {
+  const cases = [
+    { p95Ms: 100 },
+    { p95Ms: 1, missing: 'abc' },
+    { p95Ms: 1, perClientMs: 'abc' },
+    { p95Ms: 1, outOfOrder: 'abc' },
+    { p95Ms: 1, outOfOrder: [{}] },
+    { p95Ms: 1, outOfOrder: [null] },
+    { p95Ms: 1, missing: [], outOfOrder: [null] },
+  ];
+  for (const c of cases) {
+    let v;
+    assert.doesNotThrow(() => { v = firstFrameViolations(c); }, JSON.stringify(c));
+    assert.ok(v.length >= 1, JSON.stringify(c));
+  }
+});
+
+test('F-563: a valid firstFrameStats result still gives no violations', () => {
+  assert.deepEqual(firstFrameViolations(firstFrameStats(log([100, 200]), 2)), []);
+});
+
+test('F-563: an explicit missing list takes priority over perClientMs', () => {
+  assert.deepEqual(firstFrameViolations({ p95Ms: 100, missing: [2] }), ['client 2: no first frame']);
+  assert.deepEqual(firstFrameViolations({ p95Ms: 100, missing: [2], perClientMs: [1, 1, 1] }), ['client 2: no first frame']);
+  assert.deepEqual(firstFrameViolations({ p95Ms: 100, missing: [], perClientMs: [1, Infinity] }), []);
+});
+
+test('F-563: a level event without a valid level 0..3 is not an arrival', () => {
+  for (const lv of [{}, { level: 99 }, { level: -1 }, { level: 1.5 }, { level: '0' }, { level: 4 }]) {
+    const ev = [
+      { id: 0, tMs: 0, kind: 'connect' },
+      { id: 0, tMs: 100, kind: 'level', ...lv },
+      { id: 0, tMs: 100, kind: 'first_frame' },
+    ];
+    const s = firstFrameStats(ev, 1);
+    assert.deepEqual(s.perClientMs, [Infinity], JSON.stringify(lv));
+    assert.deepEqual(s.noArrival, [0]);
+    assert.ok(firstFrameViolations(s).includes('client 0: first_frame without level-0 arrival'), JSON.stringify(lv));
+  }
+  const ok = firstFrameStats([
+    { id: 0, tMs: 0, kind: 'connect' }, { id: 0, tMs: 100, kind: 'level', level: 3 }, { id: 0, tMs: 100, kind: 'first_frame' },
+  ], 1);
+  assert.deepEqual(ok.perClientMs, [100]);
 });
 
 test('F-560: connect uses the minimum tMs, not the first value seen', () => {
@@ -283,4 +328,24 @@ test('F-560: connect uses the minimum tMs, not the first value seen', () => {
     { id: 0, tMs: 700, kind: 'level', level: 0 }, { id: 0, tMs: 700, kind: 'first_frame' },
   ];
   assert.deepEqual(firstFrameStats(ev, 1).perClientMs, [600]);
+});
+
+test('F-568: outOfOrder reasons are pinned', () => {
+  const ev = [
+    { id: 0, tMs: 100, kind: 'connect' }, { id: 0, tMs: 50, kind: 'first_frame' }, { id: 0, tMs: 60, kind: 'level', level: 0 },
+    { id: 1, tMs: 0, kind: 'connect' }, { id: 1, tMs: 50, kind: 'first_frame' }, { id: 1, tMs: 60, kind: 'level', level: 0 },
+    { id: 2, tMs: 0, kind: 'connect' }, { id: 2, tMs: 50, kind: 'first_frame' }, { id: 2, tMs: 50, kind: 'level', level: 2 },
+  ];
+  assert.deepEqual(firstFrameStats(ev, 3).outOfOrder, [
+    { id: 0, reason: 'before_connect' }, { id: 1, reason: 'before_firstArrival' },
+  ]);
+});
+
+test('F-568: unknown outOfOrder reason is a violation', () => {
+  const v = firstFrameViolations({ p95Ms: 1, missing: [], outOfOrder: [{ id: 0, reason: 'before_level0' }] });
+  assert.ok(v.length >= 1);
+});
+
+test('F-571: noArrival of wrong type is a violation', () => {
+  assert.ok(firstFrameViolations({ p95Ms: 1, missing: [], perClientMs: [1], noArrival: 'x' }).length >= 1);
 });

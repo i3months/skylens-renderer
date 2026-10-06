@@ -1,9 +1,10 @@
 // T16.4 first-frame latency statistics over a ClientEvent log (see contracts/load/harness.mjs).
 // Pure function: no wall clock, no I/O.
-// First frame = the time the first level-0 payload arrived and was drawn (contract header definition);
+// First frame = the time the first level payload (any level) arrived and was drawn (contract header definition);
 // the 'first_frame' event carries that time, and latency is measured from the client's 'connect'.
 
 import { MAX_CLIENTS } from '../../../contracts/load/index.mjs';
+import { LEVEL_COUNT } from '../../../contracts/asset/index.mjs';
 
 /**
  * Regression threshold of the mock harness (the SPEC S5 value is reused as is).
@@ -22,7 +23,7 @@ function nearestRank(sortedAsc, p) {
 /**
  * firstFrameStats(events, clients) -> { p50Ms, p95Ms, perClientMs, missing, noArrival, outOfOrder }
  * missing = ascending ids whose perClientMs is Infinity (no usable first frame).
- * noArrival = ascending ids that had a first_frame but no level-0 arrival at or before it (subset of missing).
+ * noArrival = ascending ids that had a first_frame but no level arrival (any level) at or before it (subset of missing).
  * perClientMs[id] = first 'first_frame' tMs minus the client's 'connect' tMs.
  * A first_frame counts only if the same id has a 'level' event (any level) at tMs <= that first_frame's tMs;
  * otherwise the client gets Infinity (never filled in) and, if it had a first_frame, its id is in noArrival.
@@ -31,8 +32,8 @@ function nearestRank(sortedAsc, p) {
  * connect is impossible data and also gets Infinity (never a negative latency).
  * outOfOrder = ascending-id list of { id, reason } for impossible orderings, never silently discarded:
  * 'before_connect' = some first_frame tMs < the client's connect tMs (client needs a connect);
- * 'before_level0' = some first_frame tMs < the client's earliest level-0 arrival (min over all level events of any level, not first seen),
- * including the case where that client has no level-0 arrival at all. before_connect takes precedence per client.
+ * 'before_firstArrival' = some first_frame tMs < the client's earliest first level arrival (any level; min over all valid level events, not first seen),
+ * including the case where that client has no level arrival (any level) at all. before_connect takes precedence per client.
  * If no client reached a first frame at all, p50Ms and p95Ms are NaN (nothing was measured).
  */
 export function firstFrameStats(events, clients) {
@@ -48,25 +49,25 @@ export function firstFrameStats(events, clients) {
     throw new RangeError(`clients must be an integer in 1..${MAX_CLIENTS}`);
   }
   const connect = new Array(clients).fill(Infinity);
-  const level0 = new Array(clients).fill(Infinity);
+  const firstArrival = new Array(clients).fill(Infinity);
   const frames = Array.from({ length: clients }, () => []);
   for (const e of events) {
     if (!Number.isInteger(e.id) || e.id < 0 || e.id >= clients) continue;
     if (e.kind === 'connect' && e.tMs < connect[e.id]) connect[e.id] = e.tMs;
-    else if (e.kind === 'level' && e.tMs < level0[e.id]) level0[e.id] = e.tMs;
+    else if (e.kind === 'level' && Number.isInteger(e.level) && e.level >= 0 && e.level < LEVEL_COUNT && e.tMs < firstArrival[e.id]) firstArrival[e.id] = e.tMs;
     else if (e.kind === 'first_frame') frames[e.id].push(e.tMs);
   }
   // A first_frame counts only if a level arrival (any level) of the same id is at tMs <= the first_frame tMs.
   const frame = new Array(clients).fill(Infinity);
   const noArrival = [];
   frames.forEach((list, id) => {
-    for (const t of list) if (t >= level0[id] && t < frame[id]) frame[id] = t;
+    for (const t of list) if (t >= firstArrival[id] && t < frame[id]) frame[id] = t;
     if (list.length > 0 && frame[id] === Infinity) noArrival.push(id);
   });
   const outOfOrder = [];
   frames.forEach((list, id) => {
     if (list.some((t) => t < connect[id])) outOfOrder.push({ id, reason: 'before_connect' });
-    else if (list.some((t) => t < level0[id])) outOfOrder.push({ id, reason: 'before_level0' });
+    else if (list.some((t) => t < firstArrival[id])) outOfOrder.push({ id, reason: 'before_firstArrival' });
   });
   const perClientMs = connect.map((c, id) =>
     Number.isFinite(c) && Number.isFinite(frame[id]) && frame[id] >= c ? frame[id] - c : Infinity);
@@ -86,7 +87,20 @@ export function firstFrameViolations(stats) {
   if (stats === null || typeof stats !== 'object' || typeof stats.p95Ms !== 'number') {
     return ['first-frame stats input invalid: p95Ms must be a number'];
   }
+  const bad = [];
+  if (stats.missing !== undefined && !Array.isArray(stats.missing)) bad.push('missing must be an array');
+  if (stats.perClientMs !== undefined && !Array.isArray(stats.perClientMs)) bad.push('perClientMs must be an array');
+  if (stats.noArrival !== undefined && !Array.isArray(stats.noArrival)) bad.push('noArrival must be an array');
+  if (stats.outOfOrder !== undefined) {
+    if (!Array.isArray(stats.outOfOrder)) bad.push('outOfOrder must be an array');
+    else if (!stats.outOfOrder.every((o) => o !== null && typeof o === 'object' && Number.isInteger(o.id) && typeof o.reason === 'string')) {
+      bad.push('outOfOrder entries must be { id, reason }');
+    }
+  }
+  if (stats.missing === undefined && stats.perClientMs === undefined) bad.push('missing or perClientMs is required');
+  if (bad.length > 0) return [`first-frame stats input invalid: ${bad.join('; ')}`];
   let missing = [];
+  // An explicit missing list takes priority over perClientMs.
   if (Array.isArray(stats.missing)) missing = stats.missing;
   else if (Array.isArray(stats.perClientMs)) {
     stats.perClientMs.forEach((ms, id) => { if (!Number.isFinite(ms)) missing.push(id); });
@@ -110,7 +124,8 @@ export function firstFrameViolations(stats) {
     const isMissing = missing.includes(id);
     if (reason === 'before_connect') out.push(`client ${id}: first_frame before connect (out of order)`);
     else if (isMissing) out.push(noArrival.includes(id) ? `client ${id}: first_frame without level-0 arrival` : `client ${id}: no first frame`);
-    else if (reason === 'before_level0') out.push(`client ${id}: first_frame before level-0 arrival (out of order)`);
+    else if (reason === 'before_firstArrival') out.push(`client ${id}: first_frame before level-0 arrival (out of order)`);
+    else if (reason !== undefined) out.push(`client ${id}: first_frame out of order (unknown reason ${JSON.stringify(reason)})`);
   }
   return out;
 }

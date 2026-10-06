@@ -20,9 +20,13 @@ function methodSource(records) {
   return first;
 }
 
+// Methods that approximate a cloud deployment locally; their verdict is a local one.
+export const CLOUD_APPROXIMATION_METHODS = ['loopback-socket'];
+
 function sourceLine(source) {
   if (source === 'simulated') return 'source: simulated, S5/S8 verdict [local]';
   if (source === 'unknown') return 'source: unknown, S5/S8 verdict origin unknown';
+  if (CLOUD_APPROXIMATION_METHODS.includes(source)) return `source: ${source} (cloud approximation), S5/S8 verdict [local]`;
   return `source: ${source}, S5/S8 verdict measured on ${source}`;
 }
 

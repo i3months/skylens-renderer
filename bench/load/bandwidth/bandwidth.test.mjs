@@ -197,3 +197,18 @@ test('bandwidth peak: a short last bin is a rate over its own width (documented 
   const r = bandwidthStats([{ kind: 'bytes', tMs: 10, bytes: 30 }, { kind: 'bytes', tMs: 2100, bytes: 10 }], 2.25);
   assert.strictEqual(r.peakBytesPerS, 40);
 });
+
+test('bandwidthStats throws instead of returning Infinity when rates overflow', () => {
+  assert.throws(() => bandwidthStats([{ kind: 'bytes', bytes: 1e308, tMs: 0 }], 1e-300), RangeError);
+  assert.throws(() => bandwidthStats([{ kind: 'bytes', bytes: 1e308, tMs: 0 }], 1e-10), RangeError);
+});
+
+test('bandwidthStats normal inputs stay finite and unchanged', () => {
+  const r = bandwidthStats([{ kind: 'bytes', bytes: 1e6, tMs: 0 }], 0.5);
+  assert.deepStrictEqual(r, { totalBytes: 1e6, meanBytesPerS: 2e6, peakBytesPerS: 2e6, invalid: [] });
+  assert.strictEqual(bandwidthStats(FIXTURE_EVENTS, 10).peakBytesPerS, 8000);
+});
+
+test("F-571: peak-only overflow throws RangeError", () => {
+  assert.throws(() => bandwidthStats([{ id: 0, tMs: 2000, kind: "bytes", bytes: 1e300, latencyMs: 0 }], 2 + 4.44e-16), RangeError);
+});

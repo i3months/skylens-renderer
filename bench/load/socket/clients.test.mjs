@@ -1,0 +1,271 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import net from 'node:net';
+import { createWsServer } from '../../../server/ws/index.mjs';
+import { checkEventLog } from '../run_all/event_log.mjs';
+import { countOpenConnections, connectionViolations } from '../clients/index.mjs';
+import { LEVEL_PAYLOAD_BYTES, SOCKET_HOST } from './contract.mjs';
+import { createHash } from 'node:crypto';
+import { encodeFrame, OPCODES } from '../../../server/ws/frame/index.mjs';
+import { runSocketClients } from './clients.mjs';
+
+const CLIENTS = 30;
+
+function startServer(onConnection) {
+  return createWsServer({ host: SOCKET_HOST, port: 0, onConnection });
+}
+
+function sendLevels(conn) {
+  for (const n of LEVEL_PAYLOAD_BYTES) conn.send(new Uint8Array(n));
+}
+
+test('30 clients connect at once, record a valid log, and stay open until durationS', async () => {
+  const srv = await startServer(sendLevels);
+  try {
+    const durationS = 1;
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.address().port, clients: CLIENTS, durationS });
+    assert.deepEqual(checkEventLog(events, CLIENTS), []);
+    assert.deepEqual(connectionViolations(events, CLIENTS), []);
+    assert.equal(countOpenConnections(events).min, CLIENTS);
+    for (let i = 1; i < events.length; i++) {
+      const a = events[i - 1];
+      const b = events[i];
+      assert.ok(a.tMs < b.tMs || (a.tMs === b.tMs && a.id <= b.id), `order at ${i}`);
+    }
+    for (let id = 0; id < CLIENTS; id++) {
+      const mine = events.filter((e) => e.id === id);
+      const kinds = (k) => mine.filter((e) => e.kind === k);
+      assert.equal(kinds('connect').length, 1);
+      assert.equal(kinds('close').length, 1);
+      assert.equal(mine[0].kind, 'connect');
+      assert.equal(mine.at(-1).kind, 'close');
+      assert.ok(kinds('close')[0].tMs >= durationS * 1000);
+      assert.deepEqual(kinds('bytes').map((e) => e.bytes), [...LEVEL_PAYLOAD_BYTES]);
+      for (const b of kinds('bytes')) assert.ok(b.latencyMs >= 0 && b.latencyMs <= b.tMs);
+      assert.deepEqual(kinds('level').map((e) => e.level), [0, 1, 2, 3]);
+      const ff = kinds('first_frame');
+      assert.equal(ff.length, 1);
+      assert.equal(ff[0].tMs, kinds('level')[0].tMs);
+      assert.ok(mine.indexOf(ff[0]) > mine.indexOf(kinds('level')[0]));
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test('injected clock: tMs is measured from one start reading', async () => {
+  const srv = await startServer(sendLevels);
+  try {
+    let calls = 0;
+    const base = 1e6;
+    const now = () => { calls++; return base + performance.now(); };
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.address().port, clients: 2, durationS: 0.3, now });
+    assert.ok(calls > 0);
+    assert.deepEqual(checkEventLog(events, 2), []);
+    assert.ok(events.every((e) => e.tMs < 5000));
+  } finally {
+    await srv.close();
+  }
+});
+
+test('connection failures resolve with no connect events', async () => {
+  const tmp = net.createServer();
+  await new Promise((r) => tmp.listen(0, SOCKET_HOST, r));
+  const freePort = tmp.address().port;
+  await new Promise((r) => tmp.close(r));
+  const events = await runSocketClients({ host: SOCKET_HOST, port: freePort, clients: 3, durationS: 0.2 });
+  assert.deepEqual(events, []);
+});
+
+test('a handshake that never completes is bounded and emits nothing', async () => {
+  const held = new Set();
+  const silent = net.createServer((s) => { held.add(s); s.on('error', () => {}); s.on('close', () => held.delete(s)); });
+  await new Promise((r) => silent.listen(0, SOCKET_HOST, r));
+  try {
+    const t0 = performance.now();
+    const events = await runSocketClients({ host: SOCKET_HOST, port: silent.address().port, clients: 2, durationS: 0.2 });
+    assert.deepEqual(events, []);
+    assert.ok(performance.now() - t0 < 3000);
+  } finally {
+    for (const s of held) s.destroy();
+    await new Promise((r) => silent.close(r));
+  }
+});
+
+test('server close before durationS emits an early close and the run still resolves', async () => {
+  const srv = await startServer((conn) => {
+    conn.send(new Uint8Array(LEVEL_PAYLOAD_BYTES[0]));
+    setTimeout(() => conn.close(1000, 'done'), 20);
+  });
+  try {
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.address().port, clients: 4, durationS: 1 });
+    assert.deepEqual(checkEventLog(events, 4), []);
+    assert.deepEqual(connectionViolations(events, 4), []);
+    const closes = events.filter((e) => e.kind === 'close');
+    assert.equal(closes.length, 4);
+    for (const c of closes) assert.ok(c.tMs < 900);
+    assert.equal(events.filter((e) => e.kind === 'level').length, 4);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('programmer errors reject', async () => {
+  const ok = { host: SOCKET_HOST, port: 1, clients: 1, durationS: 1 };
+  await assert.rejects(runSocketClients({ ...ok, clients: 0 }), RangeError);
+  await assert.rejects(runSocketClients({ ...ok, durationS: 0 }), RangeError);
+  await assert.rejects(runSocketClients({ ...ok, host: '' }), TypeError);
+  await assert.rejects(runSocketClients({ ...ok, port: 70000 }), RangeError);
+  await assert.rejects(runSocketClients({ ...ok, now: 5 }), TypeError);
+});
+
+const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+/** Raw server: valid handshake (optionally after delayMs), then onOpen(socket). */
+function rawServer({ delayMs = 0, onOpen = () => {} } = {}) {
+  const sockets = new Set();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+    let buf = Buffer.alloc(0);
+    let done = false;
+    socket.on('data', (chunk) => {
+      if (done) return;
+      buf = Buffer.concat([buf, chunk]);
+      if (buf.indexOf('\r\n\r\n') < 0) return;
+      done = true;
+      const key = /sec-websocket-key:\s*(\S+)/i.exec(buf.toString('latin1'))[1];
+      const accept = createHash('sha1').update(key + GUID).digest('base64');
+      setTimeout(() => {
+        if (socket.destroyed) return;
+        socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+        onOpen(socket);
+      }, delayMs);
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, SOCKET_HOST, () => resolve({
+      port: server.address().port,
+      close: () => new Promise((r) => { for (const s of sockets) s.destroy(); server.close(() => r()); }),
+    }));
+  });
+}
+
+test('level is recovered from the payload size, not arrival order; one first_frame at the first level', async () => {
+  const srv = await startServer((conn) => {
+    conn.send(new Uint8Array(LEVEL_PAYLOAD_BYTES[3]));
+    setTimeout(() => conn.send(new Uint8Array(LEVEL_PAYLOAD_BYTES[1])), 20);
+  });
+  try {
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.address().port, clients: 1, durationS: 0.4 });
+    const levels = events.filter((e) => e.kind === 'level');
+    assert.deepEqual(levels.map((e) => e.level), [3, 1]);
+    const ff = events.filter((e) => e.kind === 'first_frame');
+    assert.equal(ff.length, 1);
+    assert.equal(ff[0].tMs, levels[0].tMs);
+    assert.ok(levels[1].tMs > levels[0].tMs);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('5 messages: exactly 4 level events (non-level size is bytes only) and 5 bytes events', async () => {
+  const srv = await startServer((conn) => {
+    for (const n of LEVEL_PAYLOAD_BYTES) conn.send(new Uint8Array(n));
+    conn.send(new Uint8Array(100));
+  });
+  try {
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.address().port, clients: 2, durationS: 0.4 });
+    for (let id = 0; id < 2; id++) {
+      const mine = events.filter((e) => e.id === id);
+      assert.equal(mine.filter((e) => e.kind === 'level').length, 4);
+      assert.deepEqual(mine.filter((e) => e.kind === 'level').map((e) => e.level), [0, 1, 2, 3]);
+      assert.equal(mine.filter((e) => e.kind === 'bytes').length, 5);
+      assert.deepEqual(mine.filter((e) => e.kind === 'bytes').map((e) => e.bytes).sort((a, b) => a - b), [100, ...LEVEL_PAYLOAD_BYTES]);
+      assert.equal(mine.filter((e) => e.kind === 'first_frame').length, 1);
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test('a non-level first message yields bytes only and no first_frame', async () => {
+  const srv = await startServer((conn) => { conn.send(new Uint8Array(100)); });
+  try {
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.address().port, clients: 1, durationS: 0.3 });
+    assert.equal(events.filter((e) => e.kind === 'bytes').length, 1);
+    assert.equal(events.filter((e) => e.kind === 'level' || e.kind === 'first_frame').length, 0);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('latencyMs is measured from the attempt time; a first payload delayed 50 ms gives >= 45', async () => {
+  const srv = await rawServer({
+    onOpen(socket) {
+      setTimeout(() => socket.write(encodeFrame(OPCODES.BINARY, new Uint8Array(LEVEL_PAYLOAD_BYTES[0]))), 50);
+    },
+  });
+  try {
+    const readings = [];
+    const now = () => { const v = Math.round(performance.now()); readings.push(v); return v; }; // integer ms: exact arithmetic
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.port, clients: 1, durationS: 0.4, now });
+    const [start, attempt] = readings; // start reading first, then the single client's attempt reading
+    const bytes = events.filter((e) => e.kind === 'bytes');
+    assert.equal(bytes.length, 1);
+    assert.ok(bytes[0].latencyMs >= 45, `latency ${bytes[0].latencyMs}`);
+    assert.equal(bytes[0].latencyMs, bytes[0].tMs - (attempt - start));
+    const connect = events.find((e) => e.kind === 'connect');
+    assert.ok(connect.tMs >= attempt - start && connect.tMs <= bytes[0].tMs);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('a handshake that finishes after durationS adds no events', async () => {
+  const srv = await rawServer({ delayMs: 350, onOpen(socket) { socket.write(encodeFrame(OPCODES.BINARY, new Uint8Array(LEVEL_PAYLOAD_BYTES[0]))); } });
+  try {
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.port, clients: 2, durationS: 0.2 });
+    assert.deepEqual(events, []);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('ties on tMs are ordered by id, and events of one id keep their order', async () => {
+  const srv = await startServer(sendLevels);
+  try {
+    let clock = 0;
+    const timer = setTimeout(() => { clock = 1000; }, 300);
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.address().port, clients: 4, durationS: 1, now: () => clock });
+    clearTimeout(timer);
+    assert.ok(events.every((e) => e.tMs === 0 || e.tMs === 1000));
+    assert.ok(events.filter((e) => e.tMs === 0).length > 4 * 4);
+    for (let i = 1; i < events.length; i++) assert.ok(events[i - 1].tMs < events[i].tMs || events[i - 1].id <= events[i].id, `id order at ${i}`);
+    for (let id = 0; id < 4; id++) {
+      const mine = events.filter((e) => e.id === id);
+      assert.equal(mine[0].kind, 'connect');
+      assert.equal(mine.at(-1).kind, 'close');
+      assert.deepEqual(mine.filter((e) => e.kind === 'level').map((e) => e.level), [0, 1, 2, 3]);
+    }
+  } finally {
+    await srv.close();
+  }
+});
+
+test('path option reaches the server request line for every client', async () => {
+  const lines = [];
+  const srv = net.createServer((socket) => {
+    socket.on('error', () => {});
+    socket.once('data', (d) => { lines.push(d.toString('latin1').split('\r\n')[0]); socket.destroy(); });
+  });
+  await new Promise((r) => srv.listen(0, SOCKET_HOST, r));
+  try {
+    const events = await runSocketClients({ host: SOCKET_HOST, port: srv.address().port, clients: 3, durationS: 0.2, path: '/x' });
+    assert.deepEqual(events, []);
+    assert.deepEqual(lines, ['GET /x HTTP/1.1', 'GET /x HTTP/1.1', 'GET /x HTTP/1.1']);
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});

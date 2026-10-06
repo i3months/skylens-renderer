@@ -13,7 +13,7 @@ import { MAX_DURATION_S } from '../../../contracts/load/index.mjs';
  *   Full buckets are 1 s wide (peak = most bytes in one second). With fractional durationS the last bucket is only
  *   durationS - floor-part wide, so its rate is bytes / that width; this guarantees peak >= mean always.
  * @throws {RangeError} durationS not a finite number in (0, MAX_DURATION_S], or a bytes event with non-finite/negative bytes
- *   (bad tMs does not throw, see invalid)
+ *   (bad tMs does not throw, see invalid), or mean/peak bytes per second overflowing to a non-finite value
  */
 export function bandwidthStats(events, durationS) {
   if (!(typeof durationS === 'number' && Number.isFinite(durationS) && durationS > 0 && durationS <= MAX_DURATION_S)) {
@@ -58,7 +58,13 @@ export function bandwidthStats(events, durationS) {
     if (rate > peakBytesPerS) peakBytesPerS = rate;
   }
 
-  return { totalBytes, meanBytesPerS: totalBytes / durationS, peakBytesPerS, invalid };
+  // Tiny durationS can overflow the rates even when totalBytes is finite: never return Infinity silently.
+  const meanBytesPerS = totalBytes / durationS;
+  if (!Number.isFinite(meanBytesPerS) || !Number.isFinite(peakBytesPerS)) {
+    throw new RangeError('bytes per second overflowed');
+  }
+
+  return { totalBytes, meanBytesPerS, peakBytesPerS, invalid };
 }
 
 /**

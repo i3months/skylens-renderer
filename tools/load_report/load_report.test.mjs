@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadReport } from './index.mjs';
+import { loadReport, CLOUD_APPROXIMATION_METHODS } from './index.mjs';
 
 function countUnescapedPipes(line) {
   // Count pipes that are not escaped with a backslash
@@ -754,6 +754,17 @@ test('cpu/rss line: sample source is escaped for the markdown cell', () => {
   assert.equal(cpuOf(out), 'cpu/rss source: a\\|b c\\\\d, measured on a\\|b c\\\\d');
 });
 
+test('F-561: one mixed-source sample among ten gives unknown without measured on', () => {
+  const mixed = samples('server-process');
+  mixed[5] = { ...mixed[5], source: 'other' };
+  const out = loadReport(srcResult({ method: 'wrk', serverSamples: mixed }));
+  assert.equal(cpuOf(out), 'cpu/rss source: unknown');
+  assert.ok(!out.includes('measured on server-process'));
+  // the same ten samples, all server-process, give the normal line
+  const clean = loadReport(srcResult({ method: 'wrk', serverSamples: samples('server-process') }));
+  assert.equal(cpuOf(clean), 'cpu/rss source: server-process, measured on server-process');
+});
+
 test('F-558: loadReport checks the samples against result.scenario.durationS', () => {
   const one = loadReport(srcResult({ method: 'wrk', durationS: 60, serverSamples: [sample('server-process', { tS: 0.001 })] }));
   assert.equal(cpuOf(one), 'cpu/rss source: unknown');
@@ -764,4 +775,16 @@ test('F-558: loadReport checks the samples against result.scenario.durationS', (
   const sim = (n) => Array.from({ length: n }, (_, i) => sample('simulated', { tS: i + 1, clock: 'simulated', cpuSource: 'simulated' }));
   assert.equal(cpuOf(loadReport(srcResult({ method: 'sim', serverSamples: sim(9) }))), 'cpu/rss source: unknown');
   assert.equal(cpuOf(loadReport(srcResult({ method: 'sim', serverSamples: sim(10) }))), 'cpu/rss source: simulated');
+});
+
+test('source line: cloud approximation method reports [local], not measured on', () => {
+  assert.ok(CLOUD_APPROXIMATION_METHODS.includes('loopback-socket'));
+  const out = loadReport(srcResult({ method: 'loopback-socket' }));
+  assert.equal(srcOf(out), 'source: loopback-socket (cloud approximation), S5/S8 verdict [local]');
+  assert.ok(!out.includes('measured on'));
+  assert.ok(out.includes('[local]'));
+});
+
+test('source line: non-approximation method still says measured on', () => {
+  assert.equal(srcOf(loadReport(srcResult({ method: 'wrk' }))), 'source: wrk, S5/S8 verdict measured on wrk');
 });
