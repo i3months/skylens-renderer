@@ -47,8 +47,9 @@ test('F-494 ⑤: quantizeHeights 음성 — NaN·Inf·step ≤ 0·비유한 step
   assert.equal(h.quantizeHeights(new Float32Array([1, 2]), Infinity), null);
   assert.equal(h.quantizeHeights(new Float32Array([])), null);
   assert.equal(h.quantizeHeights(new Float32Array([1e9, 1e9]), 0.05), null); // kbase 2e10 > i32
-  assert.equal(h.quantizeHeights(new Float32Array([0, 3276.8])), null); // 기본 step 범위 초과
-  assert.ok(h.quantizeHeights(new Float32Array([0, 3276])));
+  const s = Math.fround(h.TERRAIN_H32_STEP_M); // 기본 step 범위 경계(계약 상수에서 유도)
+  assert.equal(h.quantizeHeights(new Float32Array([0, 65536 * s])), null); // 기본 step 범위 초과
+  assert.ok(h.quantizeHeights(new Float32Array([0, 65535 * s])));
   assert.equal(h.snapHeightsToGrid(new Float32Array([NaN])), null);
   assert.equal(h.snapHeightsToGrid(new Float32Array([1]), 0), null);
   assert.throws(() => h.dequantizeHeights(0.5, 0.05, new Uint16Array(1)), RangeError);

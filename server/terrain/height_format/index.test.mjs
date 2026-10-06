@@ -49,16 +49,17 @@ test('머리 필드 바이트 위치 (양자화)', () => {
   assert.equal(dv.getInt32(8, true), 70000);
   assert.equal(dv.getUint16(12, true), 2);
   assert.equal(dv.getUint16(14, true), 0);
-  // kbase = floor(10 / fround(0.05)) = 199 (fround(0.05) 가 0.05 보다 조금 커서 10/s = 199.999997)
-  assert.equal(dv.getInt32(16, true), 199);
-  assert.equal(dv.getFloat32(20, true), Math.fround(0.05));
+  // 계약 step(TERRAIN_H32_STEP_M = 0.03) 기준 손 계산: s = fround(0.03) = 0.029999999329, kbase = floor(10/s) = floor(333.33) = 333
+  assert.equal(TERRAIN_H32_STEP_M, 0.03);
+  assert.equal(dv.getInt32(16, true), 333);
+  assert.equal(dv.getFloat32(20, true), Math.fround(TERRAIN_H32_STEP_M));
   assert.deepEqual([...b.subarray(4, 8)], [0xfd, 0xff, 0xff, 0xff]);
   assert.deepEqual([...b.subarray(8, 12)], [0x70, 0x11, 0x01, 0x00]); // 70000 = 0x11170
   assert.equal(b.length, 16 + 8 + 8);
-  assert.equal(dv.getUint16(24, true), 1); // round(10/s) − 199 = 200 − 199
-  assert.equal(dv.getUint16(26, true), 21); // round(11/s) = 220
-  assert.equal(dv.getUint16(28, true), 41);
-  assert.equal(dv.getUint16(30, true), 61);
+  assert.equal(dv.getUint16(24, true), 0); // round(10/s) − 333 = 333 − 333
+  assert.equal(dv.getUint16(26, true), 34); // round(11/s) = round(366.67) = 367
+  assert.equal(dv.getUint16(28, true), 67); // round(12/s) = 400
+  assert.equal(dv.getUint16(30, true), 100); // round(13/s) = round(433.33) = 433
 });
 
 test('머리 필드 바이트 위치 (비양자화 · i32 경계)', () => {
@@ -96,21 +97,21 @@ test('기본값: lod≥1 양자화, LOD0 은 늘 비양자화(quantize:true 여�
 });
 
 test('범위 초과 타일은 f32 로 폴백한다(LOD1~3 은 전역 격자로 반올림한 값, LOD0·quantize:false 는 원본)', () => {
-  // round(max/s) − floor(min/s) > 65535 ⇒ 범위 > 약 3276.75 m
-  const over = new Float32Array([0, 3276.8, 1.01, 2.03]);
+  // round(max/s) − floor(min/s) > 65535 ⇒ 범위 > 65535·step(계약 step 에서 유도)
+  const s = Math.fround(TERRAIN_H32_STEP_M);
+  const over = new Float32Array([0, 65536 * s, 1.01, 2.03]);
   const b = encodeTerrainTileH32({ tx: 0, ty: 0, lod: 2, cells: 2, heights: over });
   assert.equal(b[3], 0);
   assert.equal(b.length, 32);
   const dv = new DataView(b.buffer);
-  const s = Math.fround(0.05);
   for (let k = 0; k < 4; k++) assert.equal(dv.getFloat32(16 + 4 * k, true), Math.fround(Math.round(over[k] / s) * s), `격자 ${k}`);
-  assert.equal(dv.getFloat32(24, true), Math.fround(20 * s)); // 1.01 → 격자 20
+  assert.equal(dv.getFloat32(24, true), Math.fround(Math.round(1.01 / s) * s)); // 1.01 → 가장 가까운 격자
   assert.notEqual(dv.getFloat32(24, true), over[2]);
   const raw = encodeTerrainTileH32({ tx: 0, ty: 0, lod: 2, cells: 2, heights: over }, { quantize: false });
   assert.equal(new DataView(raw.buffer).getFloat32(24, true), over[2]);
   const l0 = encodeTerrainTileH32({ tx: 0, ty: 0, lod: 0, cells: 2, heights: over });
   assert.equal(new DataView(l0.buffer).getFloat32(24, true), over[2]);
-  const edge = new Float32Array([0, 3276, 1, 2]); // 65520 단계, 범위 안
+  const edge = new Float32Array([0, 65535 * s, 1, 2]); // 65535 단계, 범위 안
   assert.equal(encodeTerrainTileH32({ tx: 0, ty: 0, lod: 2, cells: 2, heights: edge })[3], 1);
 });
 
@@ -160,9 +161,10 @@ test('음성 입력 거부 (12종)', () => {
 
 test('고정 입력 전체 바이트 골든 (cells=3)', () => {
   const heights = new Float32Array([10, 10.05, 10.1, 10.25, 10.5, 10.75, 11, 11.5, 12]);
-  // 머리: 48 02 lod=01 flags=01 | tx=-2 | ty=5 | cells=3 | 0 ; kbase=199(i32) | step=0.05 ; q = round(h/s) − 199 = 1,2,3,6,11,16,21,31,41
+  // 머리: 48 02 lod=01 flags=01 | tx=-2 | ty=5 | cells=3 | 0 ; kbase=333(i32, 4d010000) | step=fround(0.03)(8fc2f53c)
+  // q = round(h/s) − 333: h/s = 333.33, 335.0, 336.67, 341.67, 350.0, 358.33, 366.67, 383.33, 400.0 → 0,2,4,9,17,25,34,50,67
   const q = encodeTerrainTileH32({ tx: -2, ty: 5, lod: 1, cells: 3, heights });
-  assert.equal(hex(q), '48020101feffffff0500000003000000c7000000cdcc4c3d01000200030006000b00100015001f002900');
+  assert.equal(hex(q), '48020101feffffff05000000030000004d0100008fc2f53c000002000400090011001900220032004300');
   const f = encodeTerrainTileH32({ tx: -2, ty: 5, lod: 0, cells: 3, heights });
   assert.equal(hex(f), '48020000feffffff050000000300000000002041cdcc20419a992141000024410000284100002c41000030410000384100004041');
 });
