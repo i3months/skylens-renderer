@@ -421,7 +421,7 @@ test('e2e: 추적 중 step 이 던지면 입력·추적을 되돌리고 다음 �
 
 // 오버레이만 거부하는 입력: 같은 검사기를 쓰는 overlay·fallback 은 보통 같은 판정을 내리므로, 접근자로 overlay 의 읽기에만 나쁜 값을 준다.
 // 호출 스택에 overlay/index.mjs 가 있고 fallback/index.mjs 가 없을 때(= overlay 가 검사하며 읽을 때)만 bad 를 돌려준다.
-// 조립 층이 입력을 한 번만 읽어 사본을 넘긴다면 두 층이 같은 사본을 보아 아무도 던지지 않는다. 그때는 두 층이 같은 새 데이터를 가져야 한다.
+// 조립 층은 입력을 한 번만 읽어 사본을 두 층에 넘기므로 두 층이 같은 사본을 보아 아무도 거부하지 않는다(불변식). 두 층은 같은 새 데이터를 가져야 한다.
 function readByOverlayOnly() {
   const lim = Error.stackTraceLimit;
   Error.stackTraceLimit = 200;
@@ -433,17 +433,16 @@ function overlayOnlyBad(obj, key, good, badValue) {
   Object.defineProperty(obj, key, { enumerable: true, configurable: true, get: () => (readByOverlayOnly() ? badValue : good) });
   return obj;
 }
-function rejectedOrNot(fn) {
+function threw(fn) {
   try {
     fn();
     return false;
-  } catch (err) {
-    assert.ok(err instanceof RangeError, `overlay 거부는 RangeError 여야 한다: ${err}`);
+  } catch {
     return true;
   }
 }
 
-test('e2e: removePath 는 overlay·fallback 양쪽에서 빼고, overlay 만 거부한 데이터는 fallback 에서도 되돌린다', () => {
+test('e2e: removePath 는 overlay·fallback 양쪽에서 빼고, 조립 층이 한 번 읽은 사본을 두 층에 넘겨 거부 없이 같은 새 데이터를 갖는다', () => {
   // 크기 232×132, 폴백 기본값 → 여백 16, avail 100. 받은 점의 경계 상자 변이 100 m 이하면 metersPerPx = 1.
   // 추적 카메라 fovY 2·atan(1/2) → f = 132, (cx, cy) = (116, 66).
   // H0: d1 (100,200,50) yaw 0, k1 (120,230,30), p1 [(100,200),(140,200)], p2 [(120,215),(130,225)], 데이터 뒤 서버 불가.
@@ -452,7 +451,7 @@ test('e2e: removePath 는 overlay·fallback 양쪽에서 빼고, overlay 만 거
   // removePath('p1') 뒤 H1: 상자 e [100,130], n [200,230] → 중심 (115,215) → x = e + 1, y = 281 − n.
   //     d1 (101,81), k1 (121,51), p2 (121,66)-(131,56). (폴백에 p1 이 남으면 상자·경로 목록이 달라진다)
   // overlay 만 거부(4 건): 드론 [d1, d9 (100,230,50)], 탐지 [k1, k2 (110,210,0)], p2 교체 [(130,225),(110,205)], 새 p3 [(100,230),(130,200)].
-  //   거부되면 폴백은 이전 그대로(H1 과 같다). 거부되지 않으면(입력 사본화) 두 층 모두 새 값을 가진다:
+  //   거부 없음(두 층이 같은 사본을 본다) → 두 층 모두 새 값을 가진다:
   //   새 점은 모두 상자 e [100,130], n [200,230] 안이라 사상은 그대로 → d9 (101,51), k2 (111,71), p2 (131,56)-(111,76), p3 (101,51)-(131,81).
   // H3: 서버 복귀(live). 첫 드론 d1(yaw 0)을 H1 부터 추적 → 카메라 (100,170,60), qYP(0, PHI).
   //     d1 은 시선 위 → (116, 66). k1: rel (20,60,−30): X_c = (20, (−60+90)/√10, (180+30)/√10) → u = 116 + 132·20·√10/210 = 116 + 88√10/7, v = 66 + 132·30/210 = 66 + 132/7
@@ -477,24 +476,28 @@ test('e2e: removePath 는 overlay·fallback 양쪽에서 빼고, overlay 만 거
   };
   assertMatch(replayRecording(view, [{ dtSec: 0.25 }], size), [h1Row]);
 
-  const rd = rejectedOrNot(() => view.setDrones([D1, overlayOnlyBad({ id: 'd9' }, 'enu', [100, 230, 50], [1, 2])]));
-  const rk = rejectedOrNot(() => view.setDetections([K1, overlayOnlyBad({ id: 'k2' }, 'enu', [110, 210, 0], [1, 2])]));
-  const rp2 = rejectedOrNot(() => view.setPath(overlayOnlyBad({ id: 'p2' }, 'points', [[130, 225, 0], [110, 205, 0]], [[0, 0, 0]])));
-  const rp3 = rejectedOrNot(() => view.setPath(overlayOnlyBad({ id: 'p3' }, 'points', [[100, 230, 0], [130, 200, 0]], [[0, 0, 0]])));
+  // 접근자는 overlay 가 직접 읽을 때만 나쁜 값을 주지만, 조립 층의 사본을 보므로 4 건 모두 거부되지 않는다(불변식).
+  const rd = threw(() => view.setDrones([D1, overlayOnlyBad({ id: 'd9' }, 'enu', [100, 230, 50], [1, 2])]));
+  assert.equal(rd, false, 'rd: 두 층이 같은 사본을 보아 거부 없음');
+  const rk = threw(() => view.setDetections([K1, overlayOnlyBad({ id: 'k2' }, 'enu', [110, 210, 0], [1, 2])]));
+  assert.equal(rk, false, 'rk: 두 층이 같은 사본을 보아 거부 없음');
+  const rp2 = threw(() => view.setPath(overlayOnlyBad({ id: 'p2' }, 'points', [[130, 225, 0], [110, 205, 0]], [[0, 0, 0]])));
+  assert.equal(rp2, false, 'rp2: 두 층이 같은 사본을 보아 거부 없음');
+  const rp3 = threw(() => view.setPath(overlayOnlyBad({ id: 'p3' }, 'points', [[100, 230, 0], [130, 200, 0]], [[0, 0, 0]])));
+  assert.equal(rp3, false, 'rp3: 두 층이 같은 사본을 보아 거부 없음');
 
-  const p2Row = rp2 ? ['p2', [[121, 66], [131, 56]]] : ['p2', [[131, 56], [111, 76]]];
   const h2Row = {
     mode: 'fallback', banner: TOWER_FALLBACK_BANNER,
-    fbDrones: rd ? [['d1', 101, 81]] : [['d1', 101, 81], ['d9', 101, 51]],
-    fbDetections: rk ? [['k1', 121, 51]] : [['k1', 121, 51], ['k2', 111, 71]],
-    fbPaths: rp3 ? [p2Row] : [p2Row, ['p3', [[101, 51], [131, 81]]]],
+    fbDrones: [['d1', 101, 81], ['d9', 101, 51]],
+    fbDetections: [['k1', 121, 51], ['k2', 111, 71]],
+    fbPaths: [['p2', [[131, 56], [111, 76]]], ['p3', [[101, 51], [131, 81]]]],
   };
   const D1_OV = ['d1', 116, 66, true], K1_OV = ['k1', 116 + (88 * S10) / 7, 66 + 132 / 7, true];
   const h3Row = {
     mode: 'live', camPos: [100, 170, 60], quat: qYP(0, PHI), fovY: FOV_FULL, fbDrones: [], fbDetections: [], fbPaths: [],
-    ovDrones: rd ? [D1_OV] : [D1_OV, ['d9', 116, 66 - 396 / 19, true]],
-    ovDetections: rk ? [K1_OV] : [K1_OV, ['k2', 116 + (22 * S10) / 3, 66 + 308 / 3, false]],
-    ovPathIds: rp3 ? ['p2'] : ['p2', 'p3'],
+    ovDrones: [D1_OV, ['d9', 116, 66 - 396 / 19, true]],
+    ovDetections: [K1_OV, ['k2', 116 + (22 * S10) / 3, 66 + 308 / 3, false]],
+    ovPathIds: ['p2', 'p3'],
   };
   assertMatch(replayRecording(view, [{ dtSec: 0.25 }, { dtSec: 0.25, available: true }], size), [h2Row, h3Row]);
 });

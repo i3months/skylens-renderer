@@ -20,7 +20,8 @@ function checkViewOpts(opts) {
 }
 
 // 모듈 opts 는 되살리기(재생성)에 다시 쓰므로 얕은 복사로 붙잡아 둔다(호출자가 나중에 고쳐도 영향 없음).
-const copyOpts = (o) => (o === undefined ? undefined : { ...o });
+// 비객체(숫자·null·배열 등)는 펼치지 않고 그대로 두어 각 모듈 생성자가 TypeError 로 거부하게 한다.
+const copyOpts = (o) => (o === null || typeof o !== 'object' || Array.isArray(o) ? o : { ...o });
 
 const copyVec = (v) => [v[0], v[1], v[2]];
 
@@ -99,9 +100,6 @@ export function createControlView(opts) {
   let chaseCur = null; // {pos, yaw}
   // 추적에 쓸 드론 목록 사본(받은 그대로, 검사를 통과한 것만).
   let drones = [];
-  // 폴백 되돌리기용 사본: 마지막으로 받아들인 탐지·경로.
-  let detections = [];
-  let paths = new Map(); // id -> path
 
   // 입력 층을 자세·눌린 키로 다시 만든다(실패한 step 되돌리기).
   function rebuildInput(pose) {
@@ -172,7 +170,7 @@ export function createControlView(opts) {
           const s = chase.step(dtSec);
           chaseCur = { pos: copyVec(s.pos), yaw: s.yaw };
         } else {
-          // 방위가 도착한 적 없으면 지어내지 않고 이 프레임은 추적하지 않는다(입력 카메라).
+          // 이전 방위도 없으면 지어내지 않고 이 프레임은 추적하지 않는다(입력 카메라).
           chase.clearTarget();
           tracking = false;
           chaseTarget = null;
@@ -214,56 +212,33 @@ export function createControlView(opts) {
       heldCodes.clear();
     },
     step,
-    // 데이터는 폴백(검사가 더 엄격: |e|,|n| 상한) 먼저, 그다음 오버레이에 넣는다. 오버레이가 던지면 폴백을 이전 값으로 되돌린다.
+    // 데이터는 입력을 한 번만 읽은 사본으로 폴백·오버레이에 같이 넣는다. 두 층이 같은 사본을 보므로 폴백(검사가 더 엄격: |e|,|n| 상한)이
+    // 받아들이면 오버레이도 받아들인다(거부는 폴백에서 먼저 던져 어느 층도 바뀌지 않는다). 그래서 되돌릴 코드가 없다.
     setDrones(input) {
       const list = copyInput(input); // 한 번만 읽은 사본(yaw 접근자 포함)을 넘기고 저장한다
-      const prev = drones;
       fallback.setDrones(list);
-      try {
-        overlay.setDrones(list);
-      } catch (err) {
-        fallback.setDrones(prev);
-        throw err;
-      }
+      overlay.setDrones(list);
       drones = list.map((d) => (d.yaw === undefined ? { id: d.id, enu: copyVec(d.enu) } : { id: d.id, enu: copyVec(d.enu), yaw: d.yaw }));
     },
     setDetections(input) {
       const list = copyInput(input);
-      const prev = detections;
       fallback.setDetections(list);
-      try {
-        overlay.setDetections(list);
-      } catch (err) {
-        fallback.setDetections(prev);
-        throw err;
-      }
-      detections = list.map((d) => ({ ...d, enu: copyVec(d.enu) }));
+      overlay.setDetections(list);
     },
     setPath(input) {
       const path = copyInput(input);
       fallback.setPath(path);
-      const id = path.id;
-      try {
-        overlay.setPath(path);
-      } catch (err) {
-        if (paths.has(id)) fallback.setPath(paths.get(id));
-        else fallback.removePath(id);
-        throw err;
-      }
-      paths.set(id, { id, points: path.points.map(copyVec) });
+      overlay.setPath(path);
     },
     removePath(id) {
       const a = overlay.removePath(id);
       fallback.removePath(id);
-      paths.delete(id);
       return a;
     },
     clear() {
       overlay.clear();
       fallback.clear();
       drones = [];
-      detections = [];
-      paths = new Map();
     },
     setAvailable(available) {
       fallback.setAvailable(available);
