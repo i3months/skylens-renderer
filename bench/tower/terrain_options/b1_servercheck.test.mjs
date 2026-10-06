@@ -18,6 +18,46 @@ function smallDem(cellM) {
   return { originX: -128, originY: -128, cellM, width: side, height: side, heights };
 }
 
+// 가로 ≠ 세로(5×3 타일), originX ≠ originY(-192, 64)인 비대칭 DEM(F-489). 대각선 표본만으로는 못 잡는 오류를 드러낸다.
+function rectDem(cellM) {
+  const w = 5 * 64 / cellM + 1, h = 3 * 64 / cellM + 1;
+  const heights = new Float32Array(w * h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    heights[j * w + i] = 20 + 5 * Math.sin(i * cellM / 30) * Math.cos(j * cellM / 40) + 0.3 * (((i * 7 + j * 13) % 11) / 11 - 0.5);
+  }
+  return { originX: -192, originY: 64, cellM, width: w, height: h, heights };
+}
+
+test('비대칭 DEM(가로 ≠ 세로, originX ≠ originY)에서 대조가 통과하고 모서리 5곳을 본다', () => {
+  const dem = rectDem(2);
+  const { strides } = lodStrides(dem, caps(2));
+  const seen = new Set();
+  const spy = (d, tx, ty, lod, s) => { seen.add(`${tx},${ty}`); return buildTileWithStride(d, tx, ty, lod, s); };
+  const r = checkAgainstServer(dem, strides, { build: spy });
+  assert.equal(r.tiles, 4 * 5);
+  // 타일 좌표 x −3..1, y 1..3: 네 모서리와 가운데가 모두 들어 있어야 한다.
+  for (const k of ['-3,1', '1,3', '1,1', '-3,3', '-1,2']) assert.ok(seen.has(k), `표본에 ${k} 없음: ${[...seen]}`);
+});
+
+test('비대칭 DEM: i0·j0 의 tx/ty 를 뒤바꾼 사본은 실패한다', () => {
+  const dem = rectDem(2);
+  const { strides } = lodStrides(dem, caps(2));
+  // 사본이 타일 (tx, ty) 대신 상대 위치를 뒤바꾼 (tx0 + (ty - ty0), ty0 + (tx - tx0)) 를 만든다. 범위 밖이어도 던지므로 실패로 본다.
+  const swapped = (d, tx, ty, lod, s) => buildTileWithStride(d, -3 + (ty - 1), 1 + (tx + 3), lod, s);
+  assert.throws(() => checkAgainstServer(dem, strides, { build: swapped }));
+});
+
+test('비대칭 DEM: 대각선 밖 타일에만 +0.01 을 더한 사본은 실패한다', () => {
+  const dem = rectDem(2);
+  const { strides } = lodStrides(dem, caps(2));
+  const offDiag = (d, tx, ty, lod, s) => {
+    const t = buildTileWithStride(d, tx, ty, lod, s);
+    if (tx + 3 !== ty - 1) t.heights[0] += 0.01;
+    return t;
+  };
+  assert.throws(() => checkAgainstServer(dem, strides, { build: offDiag }), /사본 타일 불일치/);
+});
+
 for (const cellM of [1, 2]) {
   test(`서버 실효 상한 사본이 서버와 일치하고 대조가 실제 돌았다 (cellM ${cellM})`, () => {
     const dem = smallDem(cellM);

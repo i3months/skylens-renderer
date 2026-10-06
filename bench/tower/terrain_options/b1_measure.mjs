@@ -45,6 +45,7 @@ import { lambert as serverLambert } from '../../../server/raster_ref/shade/index
 import { towerViewpoints, TOWER_EYE_MIN_U_M } from '../../../client/tower/terrain/fixtures.mjs';
 import { createTerrainLayer } from '../../../client/tower/terrain/index.mjs';
 import { createTracer } from '../../../client/tower/terrain/ref_trace.mjs';
+import { parseFlags } from './flags.mjs';
 import { B1_OPTIONS, lodStrides, buildTileWithStride } from './b1_lod.mjs';
 
 const SPAN_M = 1024;
@@ -155,12 +156,13 @@ function viewTileOrder() {
   return order;
 }
 
-/** DEM 이 완전히 덮는 타일 좌표 중 앞·가운데·끝 타일(대조 표본). */
+/** DEM 이 완전히 덮는 타일 좌표 중 앞·가운데·끝 타일과 나머지 두 모서리(대조 표본). */
 function sampleTiles(dem) {
   const n0 = checkCellM(dem.cellM);
   const nx = (dem.width - 1) / n0, ny = (dem.height - 1) / n0;
   const tx0 = Math.round(dem.originX / 64), ty0 = Math.round(dem.originY / 64);
-  const pts = [[0, 0], [Math.floor((nx - 1) / 2), Math.floor((ny - 1) / 2)], [nx - 1, ny - 1]];
+  // 대각선 3점만으로는 tx/ty 뒤바뀜·대각선 밖 오류를 못 잡으므로 나머지 두 모서리도 넣는다(F-489).
+  const pts = [[0, 0], [Math.floor((nx - 1) / 2), Math.floor((ny - 1) / 2)], [nx - 1, ny - 1], [nx - 1, 0], [0, ny - 1]];
   const seen = new Set();
   return pts.map(([i, j]) => [tx0 + i, ty0 + j]).filter(([x, y]) => (seen.has(`${x},${y}`) ? false : seen.add(`${x},${y}`)));
 }
@@ -326,12 +328,11 @@ export function formatTable(all) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  const get = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null; };
-  const onlyArg = get('--only');
-  const only = args.includes('--only') ? parseOnly(onlyArg ?? '') : null;
-  const all = measureAllOptions({ only, check: !args.includes('--no-check') });
+  // 알 수 없는 '--' 토큰·값 누락은 parseFlags 가 던져 비영 종료한다(F-491 ⑥).
+  const flags = parseFlags(process.argv.slice(2), { values: ['--only', '--json'], bools: ['--no-check'] });
+  const only = flags.has('--only') ? parseOnly(flags.get('--only')) : null;
+  const all = measureAllOptions({ only, check: !flags.has('--no-check') });
   console.log(formatTable(all));
-  const jsonPath = get('--json');
+  const jsonPath = flags.get('--json');
   if (jsonPath) writeFileSync(jsonPath, JSON.stringify(all, null, 2) + '\n');
 }

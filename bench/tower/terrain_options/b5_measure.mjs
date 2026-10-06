@@ -25,6 +25,7 @@ import { noiseBigDem } from '../lod_bytes.mjs';
 import { INITIAL_LIMIT_BYTES } from '../../tower_assets/index.mjs';
 import { TERRAIN_SSIM_MIN } from '../../../contracts/controlview/terrain.mjs';
 import { makeHillDem, towerViewpoints } from '../../../client/tower/terrain/fixtures.mjs';
+import { parseFlags } from './flags.mjs';
 import { measureDem, lowNoiseDem, floorFixed } from './b1_measure.mjs';
 
 export const B5_OPTIONS = Object.freeze({
@@ -120,13 +121,11 @@ export function formatB5(all) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  const get = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null; };
-  const onlyArg = get('--only');
-  // 빈 값·오타는 parseOnly 가 던져 비영 종료한다. --only 가 값 없이 끝나면 null 이 아니라 빈 값으로 본다.
-  const only = args.includes('--only') ? parseOnly(onlyArg ?? '') : null;
+  // 빈 값·오타는 parseOnly 가, 알 수 없는 '--' 토큰·값 누락은 parseFlags 가 던져 비영 종료한다(F-491 ⑥).
+  const flags = parseFlags(process.argv.slice(2), { values: ['--only', '--json'] });
+  const only = flags.has('--only') ? parseOnly(flags.get('--only')) : null;
   const all = measureB5({ only });
   console.log(formatB5(all));
-  const jsonPath = get('--json');
+  const jsonPath = flags.get('--json');
   if (jsonPath) writeFileSync(jsonPath, JSON.stringify(all, null, 2) + '\n');
 }
