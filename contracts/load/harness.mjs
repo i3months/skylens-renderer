@@ -104,7 +104,7 @@ export const FIXTURE_SCENARIO = {
   name: 'fixture', kind: 'steady', clients: 3, durationS: 10,
   path: [{ t: 0, e: 0, n: 0, u: 100 }, { t: 10, e: 30, n: 0, u: 100 }],
 };
-/** Tiny valid log for FIXTURE_SCENARIO: client 0 level-0 arrival and first frame at 1200 ms, 1 at 2000 ms, 2 at 2800 ms. */
+/** Tiny valid log for FIXTURE_SCENARIO: client 0 level arrival and first frame at 1200 ms, 1 at 2000 ms, 2 at 2800 ms. */
 export const FIXTURE_EVENTS = [
   { id: 0, tMs: 0, kind: 'connect' }, { id: 1, tMs: 0, kind: 'connect' }, { id: 2, tMs: 0, kind: 'connect' },
   { id: 0, tMs: 1000, kind: 'bytes', bytes: 5000, latencyMs: 100 },
