@@ -104,7 +104,23 @@ const MUTANTS = [
   ['(m4) 먼 순 요청', () => farFirst, 15],
 ];
 
+// m1 은 즉시 도착 5 사례를 제외하고 지연 10 사례만 테스트(정확한 경계: 10/10).
+test(`변이 감지: (m1) 이동 중 전부 취소 후 재요청 → 지연 10 실행 중 10 실패`, () => {
+  const failed = [];
+  for (const [name, poses] of PATHS) {
+    for (const [dname, makeDelay, maxDelay] of DELAYS) {
+      if (maxDelay === 0) continue; // 즉시 도착 제외
+      const r = replay(name, poses, makeDelay, maxDelay, { deps: { planRequests: cancelAllMoving() } });
+      if (defaultFailures(r).length > 0) failed.push(`${name}·${dname}`);
+    }
+  }
+  assert.equal(failed.length, 10, `(m1): 실패 ${failed.length}/10 (${failed.join(', ')})`);
+});
+
 for (const [mname, make, minFail] of MUTANTS) {
+  // m1 은 이미 별도 테스트로 처리됨
+  if (mname === '(m1) 이동 중 전부 취소 후 재요청') continue;
+
   test(`변이 감지: ${mname} → 기본값 15 실행 중 ≥ ${minFail} 실패`, () => {
     const failed = [];
     for (const [name, poses] of PATHS) {
@@ -114,6 +130,20 @@ for (const [mname, make, minFail] of MUTANTS) {
       }
     }
     assert.ok(failed.length >= minFail, `${mname}: 실패 ${failed.length}/15 (${failed.join(', ')})`);
+
+    // m3, m4 는 orderViolations 에만 걸린다(계약: needed 는 가까운 순, request 는 그 순서).
+    if (mname === '(m3) 오래 보류된 타일을 뒤로 미는 반노화' || mname === '(m4) 먼 순 요청') {
+      for (const [name, poses] of PATHS) {
+        for (const [dname, makeDelay, maxDelay] of DELAYS) {
+          const r = replay(name, poses, makeDelay, maxDelay, { deps: { planRequests: make() } });
+          const violations = defaultFailures(r);
+          if (violations.length > 0) {
+            assert.ok(violations.some((v) => v.startsWith('orderViolations')),
+              `${mname} · ${name} · ${dname}: orderViolations 로만 걸려야 함, 실제: ${violations.join(', ')}`);
+          }
+        }
+      }
+    }
   });
 }
 

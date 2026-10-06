@@ -6,9 +6,15 @@
 // 원칙: 도착한 것만 그린다 — 받은 드론·경로·탐지만 그리고, 받지 못한 위치를 예측·보간·외삽으로 지어내지 않는다.
 // 이 층은 네트워크·타이머를 쓰지 않는다. 한 번 호출이 한 프레임 안에서 끝나는 동기 계산이다.
 
-/** 한도·기본값. nearM: 경로 선분을 이 깊이(m) 앞에서 자른다. */
+/**
+ * 한도·기본값. nearM: 경로 선분을 이 깊이(m) 앞에서 자른다.
+ * maxTotalPathPoints: 저장된 모든 경로의 점 개수 합계 상한(폴백 지도 setPath 가 강제한다).
+ *   근거: maxPathPoints(경로 하나) × maxPaths 는 6.4M 점이라 자동 맞춤(fitView) CPU 가 한 프레임에 약 0.5 s(p50 실측)로 예산을 크게 넘는다.
+ *   경로 64개 × 1500점 = 96,000 점은 한 프레임(16 ms) 안에 frame 전체(맞춤+투영)가 드는 규모(실측 p50 약 2 ms)라 이 값을 상한으로 둔다.
+ *   경로 하나가 maxPathPoints 까지 가려면 나머지 경로가 합계 안에서 비어 있어야 한다. 같은 id 로 교체하는 경우 옛 경로의 점은 합계에서 뺀다.
+ */
 export const TOWER_OVERLAY_LIMITS = Object.freeze({
-  maxDrones: 256, maxDetections: 4096, maxPaths: 64, maxPathPoints: 100_000, nearM: 0.1, maxIdChars: 64,
+  maxDrones: 256, maxDetections: 4096, maxPaths: 64, maxPathPoints: 100_000, maxTotalPathPoints: 96_000, nearM: 0.1, maxIdChars: 64,
 });
 
 /** 탐지 종류. 기본 'detection'. */

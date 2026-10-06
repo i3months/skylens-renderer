@@ -30,6 +30,13 @@ function installTimerCounters() {
   wrap(globalThis, '');
   wrap(timersCjs, 'node:timers.');
   wrap(timersPromises, 'node:timers/promises.');
+  // AbortSignal.timeout 도 내부 타이머를 만든다.
+  const origAbortTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = function countedAbortTimeout(...args) {
+    created.push('AbortSignal.timeout');
+    return origAbortTimeout.apply(this, args);
+  };
+  restores.push(() => { AbortSignal.timeout = origAbortTimeout; });
   // timers/promises.scheduler.wait·yield 도 센다(내부적으로 타이머를 만든다).
   const sched = timersPromises.scheduler;
   for (const name of SCHEDULER_NAMES) {
@@ -48,9 +55,13 @@ function installTimerCounters() {
   };
   // 마이크로태스크·setImmediate 를 몇 바퀴 비워 queueMicrotask 등으로 미룬 타이머 생성까지 기록한 뒤 푼다.
   const release = async () => {
-    for (let i = 0; i < 3; i += 1) {
+    // 기록 수가 한 바퀴 동안 늘지 않을 때까지 비운다(상한 50 바퀴).
+    let stable = 0;
+    for (let i = 0; i < 50 && stable < 2; i += 1) {
+      const before = created.length;
       await Promise.resolve();
       await new Promise((r) => realSetImmediate(r));
+      stable = created.length === before ? stable + 1 : 0;
     }
     restore();
   };
@@ -122,6 +133,16 @@ test('index: 네트워크·타이머를 쓰지 않는다', async () => {
       assert.ok(Array.isArray(frame.paths), 'frame 은 paths 배열이어야 함');
     }
 
+    // 잘못된 입력(던져도 감시 구간 안에서 아무것도 만들지 않는다)
+    for (const bad of [() => fb.setDrones('x'), () => fb.setDrones([{ id: 'z', enu: [1e9, 0, 0] }]), () => fb.setPath({ id: 'q' }), () => fb.setView({ centerE: 0 }), () => fb.setView({ centerE: 0, centerN: 0, metersPerPx: 0 }), () => fb.setAvailable('x'), () => fb.frame({ width: -1, height: 5 })]) {
+      try { bad(); assert.fail('던져야 함'); } catch (e) { assert.ok(e instanceof TypeError || e instanceof RangeError, `예상 밖 예외: ${e && e.message}`); }
+    }
+    // 가용성 true → false → true → false 왕복
+    fb.setAvailable(true);
+    assert.equal(fb.frame(SIZE).mode, 'live');
+    fb.setAvailable(false);
+    assert.equal(fb.frame(SIZE).mode, 'fallback');
+
     // setView로 view 직접 지정
     const view = { centerE: 0, centerN: 0, metersPerPx: 1 };
     fb.setView(view);
@@ -130,6 +151,11 @@ test('index: 네트워크·타이머를 쓰지 않는다', async () => {
     frame = fb.frame(SIZE);
     assert.equal(frame.mode, 'fallback');
     assert.ok(frame.view, 'setView 후 frame.view 는 존재해야 함');
+
+    // 수동 view 해제 뒤 다시 맞춤
+    fb.setView(null);
+    assert.ok(fb.frame(SIZE).view, '자동 맞춤 view 가 있어야 함');
+    fb.setView(view);
 
     // counts 확인
     const counts = fb.counts();
@@ -146,6 +172,13 @@ test('index: 네트워크·타이머를 쓰지 않는다', async () => {
     fb.clear();
     const countsAfterClear = fb.counts();
     assert.deepEqual(countsAfterClear, { drones: 0, detections: 0, paths: 0 }, 'clear 후 counts={(drones:0, detections:0, paths:0}');
+
+    // 빈 frame(수동 view 있음·없음, fallback·live)
+    assert.equal(fb.frame(SIZE).empty, true);
+    fb.setView(null);
+    assert.equal(fb.frame(SIZE).view, null);
+    fb.setAvailable(true);
+    assert.equal(fb.frame(SIZE).empty, true);
 
   } finally {
     // 미룬 타이머 생성이 기록되도록 마이크로태스크·setImmediate 를 비운 뒤에 계수기를 푼다.
@@ -228,4 +261,25 @@ test('no_network: 감시자가 실제로 호출을 센다(양성 대조)', async
   t.after(() => spies.restore());
   globalThis.fetch('http://127.0.0.1:1/test');
   assert.ok(spies.calls.includes('fetch'), '감시자가 fetch 호출을 기록해야 함');
+});
+
+test('no_network: AbortSignal.timeout 계수가 실제로 센다(양성 대조)', async () => {
+  const timers = installTimerCounters();
+  try {
+    AbortSignal.timeout(60000);
+  } finally {
+    await timers.release();
+  }
+  assert.ok(timers.created.includes('AbortSignal.timeout'), `AbortSignal.timeout 호출이 기록돼야 함: ${timers.created.join(',')}`);
+});
+
+test('no_network: 비우기는 기록이 늘지 않을 때까지 돌아 여러 단계로 미룬 타이머도 센다(양성 대조)', async () => {
+  const timers = installTimerCounters();
+  try {
+    // 마이크로태스크 → setImmediate → 마이크로태스크 순으로 세 단계 미룬 뒤 타이머를 만든다.
+    queueMicrotask(() => realSetImmediate(() => queueMicrotask(() => realSetImmediate(() => queueMicrotask(() => { setTimeout(() => {}, 5000).unref(); })))));
+  } finally {
+    await timers.release();
+  }
+  assert.ok(timers.created.includes('setTimeout'), `늦게 미룬 setTimeout 이 기록돼야 함: ${timers.created.join(',')}`);
 });

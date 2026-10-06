@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { checkFallbackOpts, checkView, checkAvailable, checkEnuRange } from './validate.mjs';
-import { TOWER_FALLBACK_TEST_NAMES } from '../../../contracts/controlview/fallback.mjs';
+import { TOWER_FALLBACK_TEST_NAMES, TOWER_FALLBACK_LIMITS } from '../../../contracts/controlview/fallback.mjs';
 
 const T = TypeError, R = RangeError;
 
@@ -100,8 +100,8 @@ test('validate: checkView 기본값·경계값', () => {
   assert.throws(() => checkView({ centerE: 0, centerN: NaN, metersPerPx: 1 }), R);
 
   // metersPerPx > 0, 유한성
-  assert.deepEqual(checkView({ centerE: 0, centerN: 0, metersPerPx: 1e-10 }),
-    { centerE: 0, centerN: 0, metersPerPx: 1e-10 });
+  assert.deepEqual(checkView({ centerE: 0, centerN: 0, metersPerPx: 1e-6 }),
+    { centerE: 0, centerN: 0, metersPerPx: 1e-6 }); // 계약 하한 정확히 통과
   assert.throws(() => checkView({ centerE: 0, centerN: 0, metersPerPx: Infinity }), R);
   assert.throws(() => checkView({ centerE: 0, centerN: 0, metersPerPx: 0 }), R); // metersPerPx ≤ 0
   assert.throws(() => checkView({ centerE: 0, centerN: 0, metersPerPx: -1 }), R);
@@ -129,9 +129,9 @@ test('validate: checkEnuRange 배열 경계값', () => {
   assert.throws(() => checkEnuRange([{ id: 'a', enu: [NaN, 0, 0] }]), R);
   assert.throws(() => checkEnuRange([{ id: 'a', enu: [0, Infinity, 0] }]), R);
 
-  // -0 검사: 반환값이 -0 를 포함하면 문제
+  // checkEnuRange 는 정규화하지 않고 원본 참조를 돌려주므로 -0 도 그대로다.
   const r = checkEnuRange([{ id: 'a', enu: [-0, 0, 0] }]);
-  assert.ok(Object.is(r[0].enu[0], -0) || Object.is(r[0].enu[0], 0)); // 원본 그대로 반환
+  assert.ok(Object.is(r[0].enu[0], -0));
 });
 
 test('validate: checkEnuRange 경로 경계값', () => {
@@ -173,4 +173,32 @@ test('validate: 깊은 복사(checkFallbackOpts, checkView)', () => {
   assert.equal(view2.centerE, 1);
   assert.equal(view2.centerN, 2);
   assert.equal(view2.metersPerPx, 3);
+});
+
+test('validate: 계약 하한(minMetersPerPx) 미만의 minSpanM·metersPerPx 는 RangeError', () => {
+  const lo = TOWER_FALLBACK_LIMITS.minMetersPerPx;
+  assert.equal(lo, 1e-6);
+  assert.throws(() => checkFallbackOpts({ minSpanM: 5e-324 }), R);
+  assert.throws(() => checkFallbackOpts({ minSpanM: lo / 2 }), R);
+  assert.deepEqual(checkFallbackOpts({ minSpanM: lo }), { minSpanM: lo, marginPx: 16 });
+  assert.throws(() => checkView({ centerE: 0, centerN: 0, metersPerPx: 5e-324 }), R);
+  assert.throws(() => checkView({ centerE: 0, centerN: 0, metersPerPx: lo / 2 }), R);
+});
+
+test('validate: 프로토타입이 오염돼도 빈 view·opts 는 필수 누락으로 던진다', () => {
+  Object.prototype.centerE = 1; Object.prototype.centerN = 2; Object.prototype.metersPerPx = 3;
+  try {
+    assert.throws(() => checkView({}), T);
+    assert.deepEqual(checkFallbackOpts({}), { minSpanM: 100, marginPx: 16 });
+  } finally {
+    delete Object.prototype.centerE; delete Object.prototype.centerN; delete Object.prototype.metersPerPx;
+  }
+});
+
+test('validate: checkEnuRange 배열은 형식 검사를 모두 끝낸 뒤 범위를 검사한다', () => {
+  // 앞 항목은 범위 위반, 뒤 항목은 형식 위반 → TypeError 가 먼저.
+  assert.throws(() => checkEnuRange([{ id: 'a', enu: [NaN, 0, 0] }, { id: 'b', enu: 'x' }]), T);
+  assert.throws(() => checkEnuRange([{ id: 'a', enu: [2e6, 0, 0] }, { id: 'b', enu: [0, '1', 0] }]), T);
+  // 형식이 모두 맞으면 첫 범위 위반(NaN → RangeError).
+  assert.throws(() => checkEnuRange([{ id: 'a', enu: [NaN, 0, 0] }, { id: 'b', enu: [0, 0, 0] }]), R);
 });

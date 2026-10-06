@@ -1,5 +1,5 @@
-// 관제탑 폴백 조립 장면 시험. 계약(contracts/controlview/fallback.mjs)의 수식을 시험 안에 직접 구현한 독립 오라클과 비교한다.
-// 구현 모듈(view·markers·paths)을 import 하지 않는다. 기준 수치는 손계산 값을 박았다.
+// 관제탑 폴백 조립 장면 시험. 기준 수치는 손계산 값을 박았고, 그 밖에는 성질(왕복·북쪽이 위·경계 점이 여백 선 위)만 검사한다.
+// 구현 모듈(view·markers·paths)을 import 하지 않는다.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTowerFallback } from './index.mjs';
@@ -10,23 +10,6 @@ const EPS = 1e-9;
 const MIN_SPAN = 100;
 const MARGIN = 16;
 
-// 독립 오라클: TOWER_FALLBACK_FORMULA.fit
-function oracleFit(points, size) {
-  if (points.length === 0) return null;
-  const es = points.map((p) => p[0]);
-  const ns = points.map((p) => p[1]);
-  const minE = Math.min(...es), maxE = Math.max(...es);
-  const minN = Math.min(...ns), maxN = Math.max(...ns);
-  const span = Math.max(maxE - minE, maxN - minN, MIN_SPAN);
-  const avail = Math.max(Math.min(size.width, size.height) - 2 * MARGIN, 1);
-  return { centerE: (minE + maxE) / 2, centerN: (minN + maxN) / 2, metersPerPx: span / avail };
-}
-// 독립 오라클: TOWER_FALLBACK_FORMULA.toScreen
-function oracleScreen(view, size, e, n) {
-  const x = size.width / 2 + (e - view.centerE) / view.metersPerPx;
-  const y = size.height / 2 - (n - view.centerN) / view.metersPerPx;
-  return { x, y, visible: x >= 0 && x < size.width && y >= 0 && y < size.height };
-}
 function near(a, b, msg) { assert.ok(Math.abs(a - b) <= EPS, `${msg}: ${a} != ${b}`); }
 
 const SIZE = { width: 800, height: 600 };
@@ -81,14 +64,17 @@ test(NAME_MAIN, () => {
   const want = [[116, 300], [400, 158], [684, 16]];
   assert.equal(r.paths[0].polyline.length, 3);
   want.forEach(([x, y], i) => { near(r.paths[0].polyline[i].x, x, `p1[${i}].x`); near(r.paths[0].polyline[i].y, y, `p1[${i}].y`); });
-  // 오라클과도 일치
-  const ov = oracleFit([[0, 0], [200, 100], [100, 50], [200, -100], [0, 0], [100, 50], [200, 100]], SIZE);
-  near(r.view.metersPerPx, ov.metersPerPx, 'oracle mpp');
-  for (const d of r.drones) {
-    const src = DRONES.find((s) => s.id === d.id);
-    const o = oracleScreen(ov, SIZE, src.enu[0], src.enu[1]);
-    near(d.x, o.x, 'oracle x'); near(d.y, o.y, 'oracle y'); assert.equal(d.visible, o.visible);
+  // 성질: 화면 좌표를 view 로 되돌리면 받은 ENU 가 나온다(왕복)
+  const back = (p) => [r.view.centerE + (p.x - SIZE.width / 2) * r.view.metersPerPx, r.view.centerN - (p.y - SIZE.height / 2) * r.view.metersPerPx];
+  for (const [list, src] of [[r.drones, DRONES], [r.detections, DETS]]) {
+    list.forEach((m, i) => { const [e, n] = back(m); near(e, src[i].enu[0], `${m.id} 왕복 e`); near(n, src[i].enu[1], `${m.id} 왕복 n`); });
   }
+  PATH.points.forEach((q, i) => { const [e, n] = back(r.paths[0].polyline[i]); near(e, q[0], `p1[${i}] 왕복 e`); near(n, q[1], `p1[${i}] 왕복 n`); });
+  // 성질: 북쪽(n 큼)일수록 y 가 작다
+  assert.ok(r.drones[1].y < r.drones[0].y, 'd2(n=100) 는 d1(n=0) 보다 위');
+  assert.ok(r.detections[1].y > r.detections[0].y, 't2(n=-100) 는 t1(n=50) 보다 아래');
+  // 성질: 남북 끝점(n=±100)이 위·아래 여백 선 위에 있다(높이 600 이 짧은 변)
+  near(r.drones[1].y, MARGIN, 'd2 위 여백 선'); near(r.detections[1].y, SIZE.height - MARGIN, 't2 아래 여백 선');
 });
 
 test('index: live 에서는 배너·목록·view 가 비어 있다', () => {
@@ -160,11 +146,8 @@ test('index: 같은 크기에서 두 번 부르면 결과가 같다(상태 불�
 test('index: 크기를 바꿔도 모든 점이 여백 안에 든다', () => {
   const f = scene();
   f.setAvailable(false);
-  const pts = [[0, 0], [200, 100], [100, 50], [200, -100]];
   for (const size of [{ width: 800, height: 600 }, { width: 320, height: 240 }, { width: 1000, height: 300 }, { width: 300, height: 1000 }, { width: 64, height: 64 }]) {
     const r = f.frame(size);
-    const ov = oracleFit(pts, size);
-    near(r.view.metersPerPx, ov.metersPerPx, `mpp ${size.width}x${size.height}`);
     const all = [...r.drones, ...r.detections, ...r.paths.flatMap((p) => p.polyline)];
     assert.equal(all.length, 2 + 2 + 3);
     for (const p of all) {
@@ -172,5 +155,63 @@ test('index: 크기를 바꿔도 모든 점이 여백 안에 든다', () => {
       assert.ok(p.y >= MARGIN - EPS && p.y <= size.height - MARGIN + EPS, `y ${p.y} in ${size.height}`);
     }
     for (const m of [...r.drones, ...r.detections]) assert.equal(m.visible, true);
+    // 성질: 짧은 변 방향의 경계 점은 여백 선 위에 닿는다(span 200 ≥ minSpan 이므로 두 축 모두 avail 을 채운다)
+    const side = Math.min(size.width, size.height);
+    const key = size.width <= size.height ? 'x' : 'y';
+    near(Math.min(...all.map((p) => p[key])), MARGIN, `${key} 최소가 여백 선 위`);
+    near(Math.max(...all.map((p) => p[key])), side - MARGIN, `${key} 최대가 여백 선 위`);
   }
+});
+
+test('index: 경로 점만 멀리 있어도 자동 맞춤이 경로 점을 포함한다', () => {
+  // 드론 (0,0) 하나, 경로 (0,0)→(5000,5000). 경로 점을 맞춤에서 빼면 스케일이 minSpan 으로 줄어 폴리라인이 화면을 벗어난다.
+  const f = createTowerFallback();
+  f.setDrones([{ id: 'd', enu: [0, 0, 0] }]);
+  f.setPath({ id: 'p', points: [[0, 0, 0], [5000, 5000, 0]] });
+  f.setAvailable(false);
+  const r = f.frame(SIZE);
+  // 손계산: span 5000, avail 568, metersPerPx 5000/568, 중심 (2500,2500)
+  near(r.view.centerE, 2500, 'centerE'); near(r.view.centerN, 2500, 'centerN');
+  near(r.view.metersPerPx, 5000 / 568, 'metersPerPx');
+  assert.equal(r.paths[0].polyline.length, 2);
+  for (const p of r.paths[0].polyline) {
+    assert.ok(p.x >= MARGIN - EPS && p.x <= SIZE.width - MARGIN + EPS, `x ${p.x}`);
+    assert.ok(p.y >= MARGIN - EPS && p.y <= SIZE.height - MARGIN + EPS, `y ${p.y}`);
+  }
+  near(r.paths[0].polyline[0].y, SIZE.height - MARGIN, '시작점 아래 여백 선');
+  near(r.paths[0].polyline[1].y, MARGIN, '끝점 위 여백 선');
+});
+
+test('index: 수동 view 일 때도 banner 가 나온다(데이터 있음·clear 뒤 모두)', () => {
+  const f = scene();
+  f.setAvailable(false);
+  f.setView({ centerE: 0, centerN: 0, metersPerPx: 0.5 });
+  assert.equal(f.frame(SIZE).banner, '실시간 3D 불가');
+  f.clear();
+  const r = f.frame(SIZE);
+  assert.equal(r.banner, '실시간 3D 불가');
+  assert.equal(r.mode, 'fallback');
+  assert.equal(r.empty, true);
+});
+
+test('index: opts 의 minSpanM·marginPx 가 맞춤에 쓰인다(기본값으로 바뀌지 않는다)', () => {
+  // 점 하나·100×100: span = max(0, 1000) = 1000, marginPx 0 은 끝 점이 보이도록 하한 1 px 로 올라 avail = 100 - 2 = 98 → metersPerPx 1000/98 (F-443 ①, 기본값이면 100/68)
+  const f = createTowerFallback({ minSpanM: 1000, marginPx: 0 });
+  f.setDrones([{ id: 'd', enu: [7, 9, 0] }]);
+  f.setAvailable(false);
+  const r = f.frame({ width: 100, height: 100 });
+  near(r.view.metersPerPx, 1000 / 98, 'metersPerPx');
+  near(r.drones[0].x, 50, 'x'); near(r.drones[0].y, 50, 'y');
+});
+
+test('index: setView 로 넘긴 객체나 frame 결과를 고쳐도 다음 frame 의 view 는 원래 값이다', () => {
+  const f = scene();
+  f.setAvailable(false);
+  const given = { centerE: 1, centerN: 2, metersPerPx: 0.5 };
+  f.setView(given);
+  given.centerE = 999; given.metersPerPx = 77;
+  assert.deepEqual(f.frame(SIZE).view, { centerE: 1, centerN: 2, metersPerPx: 0.5 });
+  const r = f.frame(SIZE);
+  r.view.centerN = -5; r.view.metersPerPx = 3;
+  assert.deepEqual(f.frame(SIZE).view, { centerE: 1, centerN: 2, metersPerPx: 0.5 });
 });

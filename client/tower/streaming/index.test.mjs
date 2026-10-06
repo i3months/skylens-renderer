@@ -347,3 +347,30 @@ test('update·missing: pos·quat 접근자는 한 번만 읽고, 비배열 pos·
   assert.doesNotThrow(() => s.update(flip, size));
   assert.equal(n, 1);
 });
+
+test('update·missing: size 접근자는 한 번만 읽고 검사값과 사용값이 같다, 비객체 size 는 TypeError', () => {
+  // 호출마다 새 접근자: 첫 읽기는 유효값, 이후 읽기는 무효값(width 100 → 0.5)
+  const mk = () => {
+    const reads = { width: 0, height: 0, devicePixelRatio: 0 };
+    const acc = {
+      get width() { reads.width += 1; return reads.width === 1 ? 100 : 0.5; },
+      get height() { reads.height += 1; return reads.height === 1 ? 80 : 0.5; },
+      get devicePixelRatio() { reads.devicePixelRatio += 1; return reads.devicePixelRatio === 1 ? 2 : -1; },
+    };
+    return { reads, acc };
+  };
+  const { s, ctx } = make();
+  ctx.needed = [tile(1, 1)];
+  const a = mk();
+  assert.doesNotThrow(() => s.update(pose, a.acc));
+  assert.deepEqual(a.reads, { width: 1, height: 1, devicePixelRatio: 1 });
+  const v = ctx.calls[0].view;
+  assert.deepEqual([v.width, v.height, v.devicePixelRatio], [100, 80, 2]);
+  const b = mk();
+  assert.doesNotThrow(() => s.missing(pose, b.acc));
+  assert.deepEqual(b.reads, { width: 1, height: 1, devicePixelRatio: 1 });
+  for (const bad of [null, undefined, 5, 'abc', true]) {
+    assert.throws(() => s.update(pose, bad), T);
+    assert.throws(() => s.missing(pose, bad), T);
+  }
+});

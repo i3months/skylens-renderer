@@ -24,6 +24,12 @@ export function createTowerFallback(opts) {
       if (!store.hasPath(checked.id) && store.counts().paths >= TOWER_OVERLAY_LIMITS.maxPaths) {
         throw new RangeError(`경로는 ${TOWER_OVERLAY_LIMITS.maxPaths} 개 이하여야 한다`);
       }
+      // 총 점 상한: 같은 id 교체면 옛 경로의 점은 뺀다. 넘으면 던지고 상태는 그대로다(store.setPath 전에 검사).
+      let total = checked.points.length;
+      for (const p of store.pathsRaw()) if (p.id !== checked.id) total += p.points.length;
+      if (total > TOWER_OVERLAY_LIMITS.maxTotalPathPoints) {
+        throw new RangeError(`경로 점 총합은 ${TOWER_OVERLAY_LIMITS.maxTotalPathPoints} 개 이하여야 한다`);
+      }
       store.setPath(checked);
     },
     removePath(id) { return store.removePath(id); },
@@ -39,11 +45,40 @@ export function createTowerFallback(opts) {
       if (modeState.mode() === 'live') return { mode: 'live', banner: null, empty, view: null, drones: [], detections: [], paths: [] };
       let view = manualView;
       if (view === null) {
-        const pts = [];
-        for (const d of drones) pts.push([d.enu[0], d.enu[1]]);
-        for (const d of detections) pts.push([d.enu[0], d.enu[1]]);
-        for (const p of paths) for (const q of p.points) pts.push([q[0], q[1]]);
-        view = fitView(pts, sz, fitOpts);
+        // 점을 직접 순회해 경계 상자만 갱신한다(점마다 배열 할당 0). 상자 모서리 두 점만 fitView 에 넘기므로 결과는 같다.
+        let minE = Infinity, maxE = -Infinity, minN = Infinity, maxN = -Infinity;
+        let any = false;
+        for (let i = 0; i < drones.length; i++) {
+          const q = drones[i].enu;
+          const e = q[0], n = q[1];
+          if (e < minE) minE = e;
+          if (e > maxE) maxE = e;
+          if (n < minN) minN = n;
+          if (n > maxN) maxN = n;
+          any = true;
+        }
+        for (let i = 0; i < detections.length; i++) {
+          const q = detections[i].enu;
+          const e = q[0], n = q[1];
+          if (e < minE) minE = e;
+          if (e > maxE) maxE = e;
+          if (n < minN) minN = n;
+          if (n > maxN) maxN = n;
+          any = true;
+        }
+        for (let k = 0; k < paths.length; k++) {
+          const pp = paths[k].points;
+          for (let i = 0; i < pp.length; i++) {
+            const q = pp[i];
+            const e = q[0], n = q[1];
+            if (e < minE) minE = e;
+            if (e > maxE) maxE = e;
+            if (n < minN) minN = n;
+            if (n > maxN) maxN = n;
+            any = true;
+          }
+        }
+        view = any ? fitView([[minE, minN], [maxE, maxN]], sz, fitOpts) : null;
       } else view = { ...view };
       if (view === null) return { mode: 'fallback', banner: TOWER_FALLBACK_BANNER, empty, view: null, drones: [], detections: [], paths: [] };
       return {

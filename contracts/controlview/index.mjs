@@ -63,3 +63,4 @@ export * from './chase.mjs';
 export * from './overlay.mjs';
 export * from './streaming.mjs';
 export * from './fallback.mjs';
+export * from './e2e.mjs';

@@ -21,7 +21,7 @@ function rawNum(v, name) {
 
 function snap(o, fields) {
   const keys = Object.keys(o);
-  const vals = {};
+  const vals = Object.create(null); // 프로토타입 오염(Object.prototype.centerE 등)이 통과하지 않게
   for (const f of fields) if (hasOwn(o, f)) vals[f] = o[f];
   return { keys, vals };
 }
@@ -55,8 +55,8 @@ export function checkFallbackOpts(opts) {
   const minSpanM = vals.minSpanM !== undefined ? vals.minSpanM : TOWER_FALLBACK_LIMITS.minSpanM;
   const marginPx = vals.marginPx !== undefined ? vals.marginPx : TOWER_FALLBACK_LIMITS.marginPx;
 
-  if (!Number.isFinite(minSpanM) || minSpanM <= 0) {
-    throw new RangeError('opts.minSpanM 은 유한한 양수여야 한다');
+  if (!Number.isFinite(minSpanM) || minSpanM < TOWER_FALLBACK_LIMITS.minMetersPerPx) {
+    throw new RangeError(`opts.minSpanM 은 유한하고 ${TOWER_FALLBACK_LIMITS.minMetersPerPx} 이상이어야 한다`);
   }
   if (!Number.isFinite(marginPx) || marginPx < 0) {
     throw new RangeError('opts.marginPx 는 유한한 음이 아닌 수여야 한다');
@@ -89,7 +89,12 @@ export function checkView(view) {
   const centerN = checkFinite(vals.centerN, 'view.centerN');
   const metersPerPx = checkFinite(vals.metersPerPx, 'view.metersPerPx');
 
-  if (metersPerPx <= 0) throw new RangeError('view.metersPerPx 는 양수여야 한다');
+  if (Math.abs(centerE) > TOWER_FALLBACK_LIMITS.maxAbsEnuM || Math.abs(centerN) > TOWER_FALLBACK_LIMITS.maxAbsEnuM) {
+    throw new RangeError(`view.centerE, view.centerN 의 절댓값은 ${TOWER_FALLBACK_LIMITS.maxAbsEnuM} 이하여야 한다`);
+  }
+  if (metersPerPx < TOWER_FALLBACK_LIMITS.minMetersPerPx) {
+    throw new RangeError(`view.metersPerPx 는 ${TOWER_FALLBACK_LIMITS.minMetersPerPx} 이상이어야 한다`);
+  }
 
   return { centerE, centerN, metersPerPx };
 }
@@ -105,20 +110,19 @@ export function checkAvailable(v) {
 
 export function checkEnuRange(x) {
   if (isArr(x)) {
-    // 배열 형식: 드론·탐지 목록
+    // 배열 형식: 드론·탐지 목록. 1순회: 형식 전부, 2순회: 범위(형식 위반이 항상 먼저 던져진다)
     for (let i = 0; i < x.length; i++) {
       const item = x[i];
       if (!isObj(item)) throw new TypeError(`배열[${i}] 는 객체여야 한다`);
       const enu = item.enu;
       if (!isArr(enu)) throw new TypeError(`배열[${i}].enu 는 배열이어야 한다`);
       if (enu.length !== 3) throw new TypeError(`배열[${i}].enu 는 성분 3개여야 한다`);
-
-      // enu[0] = e, enu[1] = n 검사
-      const e = enu[0];
-      const n = enu[1];
-      if (typeof e !== 'number') throw new TypeError(`배열[${i}].enu[0] 는 숫자여야 한다`);
-      if (typeof n !== 'number') throw new TypeError(`배열[${i}].enu[1] 는 숫자여야 한다`);
-
+      if (typeof enu[0] !== 'number') throw new TypeError(`배열[${i}].enu[0] 는 숫자여야 한다`);
+      if (typeof enu[1] !== 'number') throw new TypeError(`배열[${i}].enu[1] 는 숫자여야 한다`);
+    }
+    for (let i = 0; i < x.length; i++) {
+      const e = x[i].enu[0];
+      const n = x[i].enu[1];
       if (!Number.isFinite(e) || !Number.isFinite(n)) throw new RangeError(`배열[${i}].enu 의 e,n 은 유한해야 한다`);
       if (Math.abs(e) > TOWER_FALLBACK_LIMITS.maxAbsEnuM || Math.abs(n) > TOWER_FALLBACK_LIMITS.maxAbsEnuM) {
         throw new RangeError(`배열[${i}].enu 의 |e|,|n| 은 ${TOWER_FALLBACK_LIMITS.maxAbsEnuM} 이하여야 한다`);
