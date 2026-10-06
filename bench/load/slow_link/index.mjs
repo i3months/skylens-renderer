@@ -29,15 +29,13 @@ function simulateClient(id, scenario, random) {
     const gap = MIN_GAP_MS + random() * (MAX_GAP_MS - MIN_GAP_MS);
     let t = wantMs;
     while (pending.length > 0 && pending[0].deliverMs <= t) queued -= pending.shift().size;
-    // Backpressure: wait for the oldest payloads to finish until the new one fits.
-    let paused = false;
+    // Backpressure: wait for the oldest payloads to finish until the new one fits. deliverMs is strictly
+    // increasing along the FIFO, so once the loop ends every remaining entry is still undelivered at t.
     while (queued + size > QUEUE_LIMIT_BYTES && pending.length > 0) {
       const head = pending.shift();
       queued -= head.size;
       t = Math.max(t, head.deliverMs);
-      paused = true;
     }
-    if (paused) while (pending.length > 0 && pending[0].deliverMs <= t) queued -= pending.shift().size;
     if (t >= closeMs) { dropped += size; break; }
     const deliverMs = Math.max(t, linkFreeMs) + size / rate;
     linkFreeMs = deliverMs;
