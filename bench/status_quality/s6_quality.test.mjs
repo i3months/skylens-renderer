@@ -1,7 +1,7 @@
-// T13.T: S6 송출 구성에서 구간 바이트와 현황판 8시점 SSIM 을 같은 구성으로 함께 단언한다(SPEC §4.1, 결정 0050).
+// T13.T: S6 송출 구성에서 구간 바이트와 현황판 8시점 SSIM 을 같은 구성으로 함께 단언한다(SPEC §4.1, 결정 0065).
 // S6 구간당 문턱 3,000,000 B 는 SPEC 수치 그대로고, S9-현황판 임시 하한 0.65 는 사람 결정(2026-10-06)의 하한이다.
 // 감독이 S9-현황판 값을 고정하면 이 파일의 0.65 를 그 값으로 올린다(낮추지 않는다).
-// 측정 경로: 구간당 250만 점 합성, CPU 참조 래스터러(WebGL 제외), 장면 flat_boxes 시드 1·320x180·8시점. 약 30 s.
+// 측정 경로: 구간당 250만 점 합성, CPU 참조 래스터러(WebGL 제외), 장면 flat_boxes 시드 1·320x180·8시점. 약 60 s(변이 시험 2회 포함).
 // `node --test bench/status_quality/s6_quality.test.mjs`
 import test from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,5 +1,7 @@
 // 구간 송출 바이트 예산(T13.B, SPEC S6 구간당 ≤ 3 MB). 새로 작성한 코드이며 외부 코드를 차용하지 않았다.
 //
+// (이 머리 주석의 배분·솎기 설명은 기본값 기준이다. S6 송출 구성은 낮은 수준 2% 보장 + 블루노이즈이며 결정 0065 를 본다.)
+//
 // 한 구간의 4수준 송출 바이트 합이 maxBytes 를 넘으면 수준마다 원본 점의 부분집합만 보낸다(점 예산).
 //   - 점을 새로 만들거나 옮기거나 메우지 않는다. 고른 점의 위치·법선·색은 원본 그대로다(RULES §1.2, renderer_basis §7-3).
 //   - 수준 사이 관계를 가정하지 않는다: 각 수준은 자기 점군에서 따로 고른다(낮은 수준이 높은 수준의 부분집합일 필요 없음).
@@ -94,6 +96,8 @@ export function levelPointTargets(counts, total) {
  * @returns {(counts:number[], total:number) => number[]}
  */
 export function makeFloorAllocate(frac) {
+  const fr = Array.isArray(frac) ? frac : [frac];
+  if (fr.length < 1 || !fr.every((x) => Number.isFinite(x) && x >= 0 && x <= 1)) throw new RangeError('frac 는 [0, 1] 유한수 또는 그 배열(길이 1 이상)');
   return (counts, total) => {
     if (!Array.isArray(counts) || counts.length < 1 || !counts.every((c) => Number.isInteger(c) && c >= 1)) throw new RangeError('counts 는 1 이상 정수 배열');
     if (!Number.isInteger(total) || total < counts.length) throw new RangeError(`total 은 수준 수 이상 정수: ${total}`);
