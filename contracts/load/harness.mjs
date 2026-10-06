@@ -37,6 +37,11 @@ import { LEVEL_COUNT } from '../asset/index.mjs';
 
 export const EVENT_KINDS = ['connect', 'bytes', 'level', 'first_frame', 'close'];
 
+const KIND_KEYS = {
+  connect: [], first_frame: [], close: [], bytes: ['bytes', 'latencyMs'], level: ['level'],
+};
+const COMMON_KEYS = ['id', 'tMs', 'kind'];
+
 /** Returns violation strings for one event; empty means valid. */
 export function validateEvent(e, clients) {
   const isInt = Number.isInteger;
@@ -50,11 +55,16 @@ export function validateEvent(e, clients) {
     if (!(Number.isFinite(e.latencyMs) && e.latencyMs >= 0)) errs.push('bad latencyMs');
   }
   if (e.kind === 'level' && !(isInt(e.level) && e.level >= 0 && e.level < LEVEL_COUNT)) errs.push('bad level');
+  if (EVENT_KINDS.includes(e.kind)) {
+    const allowed = new Set([...COMMON_KEYS, ...KIND_KEYS[e.kind]]);
+    for (const k of Object.keys(e)) if (!allowed.has(k)) errs.push(`unexpected key ${k}`);
+  }
   return errs;
 }
 
 /** Shared deterministic PRNG (mulberry32) so every module draws the same way from a seed. */
 export function rng(seed) {
+  if (!(Number.isInteger(seed) && seed >= 0 && seed <= 0xffffffff)) throw new RangeError('seed must be an integer in 0..2^32-1');
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
