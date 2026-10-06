@@ -101,17 +101,28 @@ export function checkBurstInvariants(arrivals, shown, scenario) {
     const s = shownById[id];
     if (a.length === 0) errs.push(`client ${id}: no burst arrivals`);
     else {
-      // Burst contract: every level 0..burstLevels-1 arrives, all of them at one tMs. At most burstLevels + 1 messages per client.
-      const present = new Set(a.map((e) => e.level));
+      // Burst contract: every level 0..burstLevels-1 arrives, all of them at one tMs. A level arriving twice at one instant is reported (duplicates are never part of the contract).
+      const present = new Set();
+      const instants = new Set();
+      const seen = new Set();
+      for (const { tMs, level } of a) {
+        present.add(level);
+        instants.add(tMs);
+        const key = `${tMs}:${level}`;
+        if (seen.has(key)) errs.push(`client ${id}: level ${level} arrived more than once at ${tMs}ms`);
+        seen.add(key);
+      }
       for (let k = 0; k < scenario.burstLevels; k++) {
         if (!present.has(k)) errs.push(`client ${id}: burst level ${k} missing`);
       }
-      if (new Set(a.map((e) => e.tMs)).size > 1) errs.push(`client ${id}: burst levels not at one instant`);
+      if (instants.size > 1) errs.push(`client ${id}: burst levels not at one instant`);
     }
     if (a.length > 0 && s.length === 0) {
       errs.push(`client ${id}: levels arrived but never shown`);
       continue;
     }
+    const firstArrival = new Map();
+    for (const e of a) if (!firstArrival.has(e.level)) firstArrival.set(e.level, e);
     const times = [...new Set([...a, ...s].map((e) => e.tMs))].sort((x, y) => x - y);
     const arrived = new Set();
     let maxArrived = -1;
@@ -130,7 +141,7 @@ export function checkBurstInvariants(arrivals, shown, scenario) {
       if (now.length > 1) errs.push(`client ${id}: shown ${now.length} times at ${t}ms`);
       for (const e of now) {
         if (!arrived.has(e.level)) {
-          const later = a.find((x) => x.level === e.level);
+          const later = firstArrival.get(e.level);
           errs.push(later
             ? `client ${id}: level ${e.level} shown at ${t}ms before it arrived at ${later.tMs}ms`
             : `client ${id}: level ${e.level} at ${t}ms never arrived`);
