@@ -8,7 +8,7 @@ import { validateResult } from '../../../contracts/load/index.mjs';
 import { simulateClients, countOpenConnections } from '../clients/index.mjs';
 import { simulateSlowLink } from '../slow_link/index.mjs';
 import { showFromArrivals, checkBurstInvariants, burstArrivals } from '../burst/index.mjs';
-import { createStatsSampler } from '../server_stats/index.mjs';
+import { createStatsSampler, checkServerSamples } from '../server_stats/index.mjs';
 import { perClientFromEvents, unreachableClients } from '../per_client/index.mjs';
 import { firstFrameStats, firstFrameViolations } from '../first_frame/index.mjs';
 import { bandwidthStats } from '../bandwidth/index.mjs';
@@ -59,12 +59,13 @@ export function runScenario(scenario, opts = {}) {
   violations.push(...validateResult(result).map((v) => `${scenario.name}: ${v}`));
   // The 3 s limit is a regression threshold of the mock harness (SPEC S5 value); slow_link only reports.
   if (scenario.kind !== 'slow_link') violations.push(...checkThresholds(records, thresholds).map((v) => `${scenario.name}: ${v}`));
-  const clock = statsClock ?? {};
+  // Simulated clock with a simulated CPU source (both injected); the real server verdict is a [local] follow-up (T16.12 / T17).
   let tickMs = 0;
-  const sampler = createStatsSampler({ now: () => tickMs, ...clock });
+  const sampler = createStatsSampler({ now: () => tickMs, cpuUsage: () => ({ user: 0, system: 0 }), ...statsClock });
   for (let t = 1; t <= scenario.durationS; t++) { tickMs = t * 1000; sampler.tick(); }
   const serverSamples = sampler.samples();
   if (serverSamples.length < scenario.durationS) violations.push(`${scenario.name}: ${serverSamples.length} server samples, expected ${scenario.durationS}`);
+  violations.push(...checkServerSamples(serverSamples).map((v) => `${scenario.name}: ${v}`));
   return { result, violations, serverSamples };
 }
 
