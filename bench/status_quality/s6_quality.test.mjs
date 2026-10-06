@@ -1,6 +1,6 @@
 // T13.T: S6 송출 구성에서 구간 바이트와 현황판 8시점 SSIM 을 같은 구성으로 함께 단언한다(SPEC §4.1, 결정 0065).
-// S6 구간당 문턱 3,000,000 B 는 SPEC 수치 그대로고, S9-현황판 임시 하한 0.65 는 사람 결정(2026-10-06)의 하한이다.
-// 감독이 S9-현황판 값을 고정하면 이 파일의 0.65 를 그 값으로 올린다(낮추지 않는다).
+// S6 구간당 문턱 3,000,000 B 는 SPEC 수치 그대로고, S9-현황판 값을 감독이 2026-10-06 SPEC §4.1 로 0.75 고정했다.
+// 최고 수준 도착 전(수준 0..2 만 있는 화면)의 SSIM 은 진단으로만 출력한다(SPEC 에 문턱 없음).
 // 측정 경로: 구간당 250만 점 합성, CPU 참조 래스터러(WebGL 제외), 장면 flat_boxes 시드 1·320x180·8시점.
 // 두 방식으로 잰다: (가) levels 장면에서 예산에 맞춘 최고 수준 비율을 flat_boxes 에 이식(연구 결과 D 방식, 바이트와 SSIM 의 점군이 다르다),
 // (나) flat_boxes 자체를 4수준으로 만들어 예산에 맞춘 점군(바이트와 SSIM 이 같은 점군). SSIM 은 정상 상태(최고 수준 도착 후) 기준이고,
@@ -12,7 +12,7 @@ import { evaluateThinner, evaluateFlatBoxesBudget } from './tune.mjs';
 import { levelPointTargets, createSpatialThinner } from '../../server/scheduler/segment_budget/index.mjs';
 
 const S6_BYTES = 3_000_000;
-const MIN_SSIM = 0.65;
+const MIN_SSIM = 0.75;
 const f4 = (x) => x.toFixed(4);
 
 const r = await evaluateThinner({ count: 2500000 });
