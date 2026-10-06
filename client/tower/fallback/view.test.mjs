@@ -119,10 +119,12 @@ test('view: 작은 크기에서 점이 보이고 축척이 크기에 단조(여�
   }
 });
 
-test('view: 계약 하한 미만이거나 비유한 결과는 RangeError', () => {
+test('view: 하한 미만 span 은 metersPerPx 하한으로 고정(던지지 않음)', () => {
   const size = { width: 800, height: 600 };
-  assert.throws(() => fitView([[0, 0]], size, { minSpanM: 5e-324, marginPx: 16 }), RangeError);
-  assert.throws(() => fitView([[0, 0]], size, { minSpanM: 1e-9, marginPx: 16 }), RangeError);
+  for (const minSpanM of [5e-324, 1e-9]) {
+    const v = fitView([[0, 0]], size, { minSpanM, marginPx: 16 });
+    assert.equal(v.metersPerPx, TOWER_FALLBACK_LIMITS.minMetersPerPx);
+  }
   const ok = fitView([[0, 0]], size, { minSpanM: TOWER_FALLBACK_LIMITS.minMetersPerPx * 568, marginPx: 16 });
   assert.ok(Number.isFinite(ok.metersPerPx) && ok.metersPerPx > 0);
 });

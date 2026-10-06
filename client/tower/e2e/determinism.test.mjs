@@ -76,7 +76,7 @@ test('기대값(손계산 + 회귀 고정 구분): 모드·held·드론 마커·
   // 난수 없이 손으로 정한 10프레임(dt 0.1 s): 프레임 0 에서 ArrowUp 을 누른 채 유지, 드론 2기, 프레임 1 에서 (0,0) 도착
   const frames = Array.from({ length: 10 }, () => ({ dtSec: 0.1 }));
   frames[0].keys = { down: ['ArrowUp'] };
-  frames[0].drones = [{ id: 'a', enu: [10, 50, 30] }, { id: 'b', enu: [-20, 80, 35] }];
+  frames[0].drones = [{ id: 'a', enu: [10, 50, 30], yaw: 0 }, { id: 'b', enu: [-20, 80, 35], yaw: 0 }];
   frames[1].arrivedTiles = [[0, 0]];
   frames[5].available = false;
   frames[8].available = true;
