@@ -134,10 +134,12 @@ test('정확히 같은 위치의 중복점만 남으면 수락 0 패스 한 번 
   const st = t.stats();
   assert.equal(st.radii[st.radii.length - 1], 0);
   assert.equal(st.passEnd[st.passEnd.length - 1], 7200);
-  // 격자라 정상으로 생기는 몫(사본 없는 60×60 에서 n−1 까지)에 같은 위치 중복 때문에 생기는 한 번만 더한다.
+  // 기준선도 같은 구현이라 상대 비교만 하면 둘이 같이 늘 때 상쇄된다: 60×60 격자의 수락 0 패스 수를 절대값으로 박는다
+  // (사본 없는 격자 3, 같은 위치 사본이 있으면 일괄 수락 앞의 한 번이 더해져 4).
   const base = createThinner(g);
   base.select(60 * 60 - 1);
-  assert.equal(st.zeroPasses, base.stats().zeroPasses + 1, `수락 0 패스 ${st.zeroPasses}, 사본 없는 격자 ${base.stats().zeroPasses}`);
+  assert.equal(base.stats().zeroPasses, 3, `사본 없는 격자 수락 0 패스 ${base.stats().zeroPasses}`);
+  assert.equal(st.zeroPasses, 4, `사본 격자 수락 0 패스 ${st.zeroPasses}`);
   assert.ok(st.maxConsecutiveZeroPasses <= 1);
 });
 
@@ -150,8 +152,8 @@ test(`shrink 는 (0, ${MAX_SHRINK}]: 1 에 가까운 값은 RangeError, 상한�
   const n = p.length / 3;
   assert.equal(new Set(t.select(n - 1)).size, n - 1);
   const st = t.stats();
-  // 벽시계 대신 패스 수 상한: d* 로 한 번에 내리므로 shrink 0.99 라도 패스가 수십 번을 넘지 않는다(실측 18, 수락 0 패스 8).
-  assert.ok(st.passes <= 40, `shrink ${MAX_SHRINK} 기록 패스 ${st.passes} > 40`);
+  // 패스 수 대신 연속 수락 0 패스로 막는다: d* 로 한 번에 내리므로 수락 0 패스가 연달아 생기지 않는다(rJump 가 없으면 연달아 생긴다).
+  assert.ok(st.maxConsecutiveZeroPasses <= 1, `연속 수락 0 패스 최대 ${st.maxConsecutiveZeroPasses}`);
   assert.ok(st.zeroPasses <= st.passes, `수락 0 ${st.zeroPasses} 기록 ${st.passes}`);
 });
 
