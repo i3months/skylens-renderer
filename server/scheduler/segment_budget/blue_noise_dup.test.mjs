@@ -84,6 +84,7 @@ test('근접 중복 평면(400×400 + x+3 µm 사본): 중복 때문에 생기�
   assert.ok(st.zeroPasses <= baseZero + 1, `수락 0 패스 ${st.zeroPasses}, 사본 없는 평면 ${baseZero}`);
   // 수락 0 패스는 연달아 생기지 않는다: 기록된 패스(수락 있음) 수 이하.
   assert.ok(st.zeroPasses <= st.passes, `수락 0 ${st.zeroPasses} > 기록 패스 ${st.passes}`);
+  assert.ok(st.maxConsecutiveZeroPasses <= 1, `연속 수락 0 패스 최대 ${st.maxConsecutiveZeroPasses}`);
   // 벽시계는 비율로만 본다(이 컨테이너 실측: 수정 전 약 4.7배, 수정 후 약 0.7~0.85배).
   assert.ok(b.ms <= 2 * a.ms, `사본 평면 ${b.ms.toFixed(0)} ms > 2 × 사본 없는 평면 ${a.ms.toFixed(0)} ms`);
 
@@ -107,6 +108,7 @@ test('무작위 근접 중복(고정 시드, 사본은 원본에서 µm 규모�
   assert.equal(new Set(sel).size, k);
   const st = t.stats();
   assert.ok(st.zeroPasses <= st.passes, `수락 0 ${st.zeroPasses} 기록 ${st.passes}`);
+  assert.ok(st.maxConsecutiveZeroPasses <= 1, `연속 수락 0 패스 최대 ${st.maxConsecutiveZeroPasses}`);
   // 수정 전에는 반경이 0.9 배씩 µm 규모까지 내려가며 수락 0 패스가 42번 생겼다(수정 후 5번: 사본 거리가 5~15 µm 로 제각각이라
   // d* 로 내린 뒤 다시 shrink 하는 사이에 가끔 생긴다).
   assert.ok(st.zeroPasses <= 8, `수락 0 패스 ${st.zeroPasses}`);
@@ -132,7 +134,11 @@ test('정확히 같은 위치의 중복점만 남으면 수락 0 패스 한 번 
   const st = t.stats();
   assert.equal(st.radii[st.radii.length - 1], 0);
   assert.equal(st.passEnd[st.passEnd.length - 1], 7200);
-  assert.ok(st.zeroPasses <= st.passes);
+  // 격자라 정상으로 생기는 몫(사본 없는 60×60 에서 n−1 까지)에 같은 위치 중복 때문에 생기는 한 번만 더한다.
+  const base = createThinner(g);
+  base.select(60 * 60 - 1);
+  assert.equal(st.zeroPasses, base.stats().zeroPasses + 1, `수락 0 패스 ${st.zeroPasses}, 사본 없는 격자 ${base.stats().zeroPasses}`);
+  assert.ok(st.maxConsecutiveZeroPasses <= 1);
 });
 
 test(`shrink 는 (0, ${MAX_SHRINK}]: 1 에 가까운 값은 RangeError, 상한값은 끝난다`, () => {
