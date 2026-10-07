@@ -7,7 +7,7 @@ test('대응표 자기 일관성: 모듈 9개, 모듈·fn 중복 없음', () => 
   assert.deepEqual(mods, ['buildings', 'chase', 'drape', 'e2e', 'fallback', 'input', 'overlay', 'streaming', 'terrain']);
   for (const r of CONTROLVIEW_METHOD_MAP) {
     assert.equal(typeof r.fn, 'string');
-    assert.equal(r.origin, 'estimated');
+    assert.equal(typeof r.origin, 'string');
   }
   assert.equal(new Set(CONTROLVIEW_METHOD_MAP.map((r) => r.fn)).size, 9);
   for (const bad of ['nope', undefined, '../x', Object.create(null)]) assert.throws(() => controlviewModulePath(bad), RangeError);
@@ -23,6 +23,73 @@ test('대응표 자기 일관성: 모듈 9개, 모듈·fn 중복 없음', () => 
   // CONTROLVIEW_LIMITS 는 동결됨
   assert.equal(Object.isFrozen(CONTROLVIEW_LIMITS), true);
   assert.deepEqual({ ...CONTROLVIEW_LIMITS }, { bundleBytes: 300_000, initialBytes: 15_000_000, segmentBytes: 3_000_000 });
+});
+
+test('원본 대조 T15.0L: skylens towerViewer.ts 공개 메서드 목록 (commit 0122bd4)', () => {
+  // skylens 원본 공개 메서드 목록 (TowerViewer class, 라인 145-811)
+  // 커밋: 0122bd4 (C:\Users\wayso\work_local\skylens)
+  const ORIGINAL_METHODS = [
+    { name: 'constructor', lines: '204-267' },
+    { name: 'setDisplay', lines: '293-297' },
+    { name: 'display', lines: '299-301', kind: 'getter' },
+    { name: 'aerialAvailable', lines: '304-306', kind: 'getter' },
+    { name: 'addStreamedTerrain', lines: '420-441' },
+    { name: 'addSurroundBuildings', lines: '448-498' },
+    { name: 'setRoute', lines: '586-638' },
+    { name: 'debugTopDown', lines: '653-664' },
+    { name: 'debugScene', lines: '668-670' },
+    { name: 'debugRoute', lines: '674-686' },
+    { name: 'update', lines: '734-752' },
+    { name: 'resize', lines: '789-795' },
+    { name: 'dispose', lines: '797-810' },
+  ];
+
+  // e2e 모듈이 모든 공개 메서드를 커버하는지 확인
+  const e2eRow = CONTROLVIEW_METHOD_MAP.find((r) => r.module === 'e2e');
+  assert.ok(e2eRow, 'e2e 행이 존재해야 함');
+  assert.equal(e2eRow.origin, 'checked', 'e2e 행은 checked 상태여야 함');
+
+  // 모든 메서드 이름이 source 필드에 포함되는지 확인
+  for (const method of ORIGINAL_METHODS) {
+    assert.ok(
+      e2eRow.source.includes(method.name),
+      `e2e source에 '${method.name}' 포함되어야 함: ${e2eRow.source}`
+    );
+  }
+
+  console.log('✓ 원본 메서드 13개 모두 e2e 대응표 행에 포함됨');
+});
+
+test('원본 대조 T15.0L: 대응표 행의 origin 상태 (checked vs estimated)', () => {
+  const estimatedRows = CONTROLVIEW_METHOD_MAP.filter((r) => r.origin === 'estimated');
+
+  // estimated 행이 있으면 그것이 왜인지 기록
+  if (estimatedRows.length > 0) {
+    console.log('추정(estimated) 행 목록:');
+    for (const row of estimatedRows) {
+      console.log(`  - ${row.module} (${row.role}): ${row.source}`);
+      if (row.module === 'input') {
+        console.log('    → 대조 결과: towerViewer.ts에서 키 입력 처리 코드를 찾을 수 없음');
+        console.log('      input 모듈은 로컬 클라이언트 입력 처리로, 뷰어 클래스가 아닌 별도 모듈에서 구현됨');
+      }
+      if (row.module === 'fallback') {
+        console.log('    → 신규 기능(새로 추가됨)');
+      }
+    }
+  }
+
+  // checked 행만 있고 estimated는 input과 fallback만 있어야 함
+  const checkedCount = CONTROLVIEW_METHOD_MAP.filter((r) => r.origin === 'checked').length;
+  assert.equal(checkedCount, 7, '7개 행이 checked 상태여야 함 (terrain, drape, buildings, chase, overlay, streaming, e2e)');
+
+  for (const row of estimatedRows) {
+    assert.ok(
+      ['input', 'fallback'].includes(row.module),
+      `estimated는 input 또는 fallback만 가능: ${row.module}`
+    );
+  }
+
+  console.log(`✓ 7개 행 checked, 2개 행 estimated (input·fallback)`);
 });
 
 test('isDrapeAligned: 이동량 모르는 local 블록이 있으면 통과가 아니다', () => {
