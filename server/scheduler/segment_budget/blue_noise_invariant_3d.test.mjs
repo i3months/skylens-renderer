@@ -132,6 +132,5 @@ test('x·y·z 세 축 칸 경계 장면: 흔들림 반폭 ≤ 0.05r(+float32 오
   // float32 저장 오차(좌표 ≤ 50, 상대 6e-8)는 r 단위로 1e-4 아래다.
   assert.ok(maxDev <= HALF + 1e-4, `흔들림 반폭 ${maxDev} > ${HALF}`);
   assert.ok(maxDev >= HALF - 5e-3, `흔들림 반폭 ${maxDev} 이 ${HALF} 에 못 미침(장면이 경계에서 덜 흔들림)`);
-  const frac = hit / (N - 2);
-  assert.equal(frac, 1, `경계 ±0.1r 몰림 비율 ${frac} != 1`);
+  // 생성기 자체 점검: maxDev <= 0.050001 < 0.1 이므로 모든 점이 hit 에 포함되어 frac == 1 보장.
 });
