@@ -67,13 +67,14 @@ test('index: keyDown → releaseAll → step 뒤 위치 불변', () => {
   assert.deepEqual(inp.pose().pos, [0, 0, 10]);
 });
 
-test('index: opts 범위 위반은 RangeError', () => {
-  assert.throws(() => createTowerInput({ maxDtSec: -1 }), RangeError);
-  assert.throws(() => createTowerInput({ maxDtSec: 0 }), RangeError);
-  assert.throws(() => createTowerInput({ minAltM: 10, maxAltM: 5 }), RangeError);
-  assert.throws(() => createTowerInput({ speedMps: -1 }), RangeError);
-  assert.throws(() => createTowerInput({ yawRateRad: -0.1 }), RangeError);
-  assert.throws(() => createTowerInput({ altRateMps: -5 }), RangeError);
+test('index: opts 범위 위반은 RangeError (검사 출처 state.mjs 의 메시지까지 고정)', () => {
+  // 검사는 state.mjs 한 곳에만 있다. 그 검사를 지우면 메시지가 달라지거나 던지지 않아 여기서 실패한다.
+  assert.throws(() => createTowerInput({ maxDtSec: -1 }), { name: 'RangeError', message: /maxDtSec/ });
+  assert.throws(() => createTowerInput({ maxDtSec: 0 }), { name: 'RangeError', message: /maxDtSec/ });
+  assert.throws(() => createTowerInput({ minAltM: 10, maxAltM: 5 }), { name: 'RangeError', message: /minAltM 은 maxAltM/ });
+  assert.throws(() => createTowerInput({ speedMps: -1 }), { name: 'RangeError', message: /speedMps/ });
+  assert.throws(() => createTowerInput({ yawRateRad: -0.1 }), { name: 'RangeError', message: /yawRateRad/ });
+  assert.throws(() => createTowerInput({ altRateMps: -5 }), { name: 'RangeError', message: /altRateMps/ });
   // 경계값(minAltM = maxAltM)은 허용한다.
   assert.doesNotThrow(() => createTowerInput({ minAltM: 5, maxAltM: 5 }));
 });
