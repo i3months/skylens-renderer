@@ -6,7 +6,15 @@ import { evaluateFlatBoxesBudget } from './tune.mjs';
 import { levelPointTargets, createSpatialThinner } from '../../server/scheduler/segment_budget/index.mjs';
 
 const THRESHOLD = 0.75;
-const seeds = process.argv.length > 2 ? process.argv.slice(2).map(Number) : [1, 2, 3, 4, 5, 6];
+const args = process.argv.slice(2);
+// 시드 인자는 0 이상 정수만 받는다(NaN·abc·-1·1.5·빈 문자열 거부). 머리줄을 찍기 전에 사용법을 내고 종료 코드 2 로 끝낸다.
+const bad = args.filter((a) => !/^\d+$/.test(a) || !Number.isSafeInteger(Number(a)));
+if (bad.length > 0) {
+  console.error(`잘못된 시드 인자: ${bad.map((a) => JSON.stringify(a)).join(', ')}`);
+  console.error('사용: node bench/status_quality/seed_table.mjs [시드...]  (시드는 0 이상 정수, 생략하면 1..6)');
+  process.exit(2);
+}
+const seeds = args.length > 0 ? args.map(Number) : [1, 2, 3, 4, 5, 6];
 console.log('시드 | 구간 B | 최소 SSIM | 평균 SSIM | 0.75 이상 | 솎기 변이 SSIM | 솎기 차이 | 배분 변이 SSIM | 배분 차이');
 for (const s of seeds) {
   const r = await evaluateFlatBoxesBudget({ count: 2500000, sceneSeed: s, levels: [3] });

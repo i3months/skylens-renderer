@@ -136,6 +136,10 @@ test('정확히 같은 위치의 중복점만 남으면 수락 0 패스 한 번 
   assert.equal(st.passEnd[st.passEnd.length - 1], 7200);
   // 기준선도 같은 구현이라 상대 비교만 하면 둘이 같이 늘 때 상쇄된다: 60×60 격자의 수락 0 패스 수를 절대값으로 박는다
   // (사본 없는 격자 3, 같은 위치 사본이 있으면 일괄 수락 앞의 한 번이 더해져 4).
+  // 3 의 근거(반경열을 찍어 본 값): 1 cm 격자에서 수락이 갈리는 거리는 1, √2, 2, √5 … cm 이고, 반경이 0.9 배씩 내려오다
+  // 수락 0 패스가 나는 곳은 세 격자 거리 √5(반경 2.45 에서), √2(반경 1.79 에서), 1(반경 1.15 에서) 직전이다. 그 밖의 반경은 수락이 있다.
+  // 기준: 3 은 rJump 가 수락 0 패스마다 적용될 때의 값이다. rJump 를 인스턴스마다 첫 수락 0 패스에서만 쓰고 이후 건너뛰는 변이는
+  // 사본 없는 격자가 6 이 되어 아래 첫 단언에서 실패한다(변이로 확인).
   const base = createThinner(g);
   base.select(60 * 60 - 1);
   assert.equal(base.stats().zeroPasses, 3, `사본 없는 격자 수락 0 패스 ${base.stats().zeroPasses}`);
@@ -152,7 +156,11 @@ test(`shrink 는 (0, ${MAX_SHRINK}]: 1 에 가까운 값은 RangeError, 상한�
   const n = p.length / 3;
   assert.equal(new Set(t.select(n - 1)).size, n - 1);
   const st = t.stats();
-  // 패스 수 대신 연속 수락 0 패스로 막는다: d* 로 한 번에 내리므로 수락 0 패스가 연달아 생기지 않는다(rJump 가 없으면 연달아 생긴다).
+  // 패스 수 상한(passes <= 40)과 연속 수락 0 패스로 막는다: d* 로 한 번에 내리므로 수락 0 패스가 연달아 생기지 않는다(rJump 가 없으면 연달아 생긴다).
+  // 측정은 passes 17, 수락 0 패스 8. 수락 > 0 패스 뒤에 반경을 줄이지 않는 변이는 같은 반경에서 수락 0 패스를 한 번 더 내고
+  // d* 로 건너뛰므로 passes 는 17 그대로이고 수락 0 패스만 16 으로 는다: passes 상한으로는 못 잡고 zeroPasses <= 12 가 잡는다.
+  assert.ok(st.passes <= 40, `패스 ${st.passes}`);
+  assert.ok(st.zeroPasses <= 12, `수락 0 패스 ${st.zeroPasses}`);
   assert.ok(st.maxConsecutiveZeroPasses <= 1, `연속 수락 0 패스 최대 ${st.maxConsecutiveZeroPasses}`);
   assert.ok(st.zeroPasses <= st.passes, `수락 0 ${st.zeroPasses} 기록 ${st.passes}`);
 });
