@@ -17,7 +17,7 @@ export const CONTROLVIEW_METHOD_MAP = Object.freeze([
   { role: '지형 그리기(8시점 SSIM ≥ 0.95)', source: 'towerViewer.ts:204,220-228,420-441 (constructor 지형 메시·addStreamedTerrain)', module: 'terrain', fn: 'createTerrainLayer', origin: 'checked' },
   { role: '드레이프 그리기(정합 ≤ 1 px)', source: 'towerViewer.ts:220-240,318-330 (constructor/applyMode 위성 드레이프)', module: 'drape', fn: 'createDrapeLayer', origin: 'checked' },
   { role: '건물 그리기(3옵션 전환, 재요청 없음)', source: 'towerViewer.ts:293-301,304-306,343-356,448-498 (setDisplay·display·aerialAvailable·applyMode·addSurroundBuildings)', module: 'buildings', fn: 'createBuildingsLayer', origin: 'checked' },
-  { role: '방향키 조향·Q/E 고도 로컬 처리', source: 'towerViewer.ts (키 입력)', module: 'input', fn: 'createTowerInput', origin: 'estimated' },
+  { role: '방향키 조향·Q/E 고도 로컬 처리', source: 'drones/manualControl.ts:13-28·pathFollower.ts:130-143 (키 입력, towerViewer.ts 밖; 속도 상수 다름)', module: 'input', fn: 'createTowerInput', origin: 'estimated' },
   { role: '추적 카메라(기존 감쇠 의미)', source: 'towerViewer.ts:734-752,769-787 (update·updateChaseCamera)', module: 'chase', fn: 'createChaseCamera', origin: 'checked' },
   { role: '드론·경로·탐지 마커(ENU 일치 ≤ 1 cm)', source: 'towerViewer.ts:504-560,563-574,586-638,674-686,734-752 (ensureRig·pruneRigs·setRoute·debugRoute·update)', module: 'overlay', fn: 'createTowerOverlay', origin: 'checked' },
   { role: '시점 이동에 따른 조각 요청', source: 'towerViewer.ts:420-441,448-498,789-795 (addStreamedTerrain·addSurroundBuildings·resize)', module: 'streaming', fn: 'createTowerStreaming', origin: 'checked' },

@@ -25,71 +25,41 @@ test('대응표 자기 일관성: 모듈 9개, 모듈·fn 중복 없음', () => 
   assert.deepEqual({ ...CONTROLVIEW_LIMITS }, { bundleBytes: 300_000, initialBytes: 15_000_000, segmentBytes: 3_000_000 });
 });
 
-test('원본 대조 T15.0L: skylens towerViewer.ts 공개 메서드 목록 (commit 0122bd4)', () => {
-  // skylens 원본 공개 메서드 목록 (TowerViewer class, 라인 145-811)
-  // 커밋: 0122bd4 (C:\Users\wayso\work_local\skylens)
-  const ORIGINAL_METHODS = [
-    { name: 'constructor', lines: '204-267' },
-    { name: 'setDisplay', lines: '293-297' },
-    { name: 'display', lines: '299-301', kind: 'getter' },
-    { name: 'aerialAvailable', lines: '304-306', kind: 'getter' },
-    { name: 'addStreamedTerrain', lines: '420-441' },
-    { name: 'addSurroundBuildings', lines: '448-498' },
-    { name: 'setRoute', lines: '586-638' },
-    { name: 'debugTopDown', lines: '653-664' },
-    { name: 'debugScene', lines: '668-670' },
-    { name: 'debugRoute', lines: '674-686' },
-    { name: 'update', lines: '734-752' },
-    { name: 'resize', lines: '789-795' },
-    { name: 'dispose', lines: '797-810' },
-  ];
+// T15.0L: skylens 원본(NET-Challenge-S13/skylens 0122bd4) src/skylens_core/controlview/towerViewer.ts
+// TowerViewer 클래스(:146-811)의 공개 멤버. private 멤버는 뺐다.
+const ORIGINAL_PUBLIC = [
+  'constructor', // :204-267
+  'setDisplay', // :293-297
+  'display', // :299-301 getter
+  'aerialAvailable', // :304-306 getter
+  'addStreamedTerrain', // :420-441
+  'addSurroundBuildings', // :448-498
+  'setRoute', // :586-638
+  'debugTopDown', // :653-664
+  'debugScene', // :668-670
+  'debugRoute', // :674-686
+  'update', // :734-752
+  'resize', // :789-795
+  'dispose', // :797-810
+];
 
-  // e2e 모듈이 모든 공개 메서드를 커버하는지 확인
-  const e2eRow = CONTROLVIEW_METHOD_MAP.find((r) => r.module === 'e2e');
-  assert.ok(e2eRow, 'e2e 행이 존재해야 함');
-  assert.equal(e2eRow.origin, 'checked', 'e2e 행은 checked 상태여야 함');
-
-  // 모든 메서드 이름이 source 필드에 포함되는지 확인
-  for (const method of ORIGINAL_METHODS) {
-    assert.ok(
-      e2eRow.source.includes(method.name),
-      `e2e source에 '${method.name}' 포함되어야 함: ${e2eRow.source}`
-    );
-  }
-
-  console.log('✓ 원본 메서드 13개 모두 e2e 대응표 행에 포함됨');
+test('원본 대조 T15.0L: 조립 행 source 가 원본 공개 멤버를 정확히 그 목록대로 나열한다', () => {
+  const e2e = CONTROLVIEW_METHOD_MAP.find((r) => r.module === 'e2e');
+  assert.ok(e2e);
+  assert.equal(e2e.origin, 'checked');
+  const listed = /\(([^)]*)\)\s*$/.exec(e2e.source)[1].split('·');
+  assert.deepEqual(listed, ORIGINAL_PUBLIC);
 });
 
-test('원본 대조 T15.0L: 대응표 행의 origin 상태 (checked vs estimated)', () => {
-  const estimatedRows = CONTROLVIEW_METHOD_MAP.filter((r) => r.origin === 'estimated');
-
-  // estimated 행이 있으면 그것이 왜인지 기록
-  if (estimatedRows.length > 0) {
-    console.log('추정(estimated) 행 목록:');
-    for (const row of estimatedRows) {
-      console.log(`  - ${row.module} (${row.role}): ${row.source}`);
-      if (row.module === 'input') {
-        console.log('    → 대조 결과: towerViewer.ts에서 키 입력 처리 코드를 찾을 수 없음');
-        console.log('      input 모듈은 로컬 클라이언트 입력 처리로, 뷰어 클래스가 아닌 별도 모듈에서 구현됨');
-      }
-      if (row.module === 'fallback') {
-        console.log('    → 신규 기능(새로 추가됨)');
-      }
-    }
+test('원본 대조 T15.0L: checked 행은 원본 줄을 대고, estimated 는 input·fallback 만 남는다', () => {
+  for (const r of CONTROLVIEW_METHOD_MAP) {
+    if (r.origin === 'checked') assert.match(r.source, /^towerViewer\.ts:\d/, r.module);
   }
-
-  // checked 행만 있고 estimated는 input과 fallback만 있어야 함
-  const checkedCount = CONTROLVIEW_METHOD_MAP.filter((r) => r.origin === 'checked').length;
-  assert.equal(checkedCount, 7, '7개 행이 checked 상태여야 함 (terrain, drape, buildings, chase, overlay, streaming, e2e)');
-
-  for (const row of estimatedRows) {
-    assert.ok(
-      ['input', 'fallback'].includes(row.module),
-      `estimated는 input 또는 fallback만 가능: ${row.module}`
-    );
-  }
-
-  console.log(`✓ 7개 행 checked, 2개 행 estimated (input·fallback)`);
+  const estimated = CONTROLVIEW_METHOD_MAP.filter((r) => r.origin === 'estimated').map((r) => r.module);
+  // input: 원본 키 입력은 towerViewer.ts 가 아니라 drones/manualControl.ts:13-28·pathFollower.ts:130-143 에 있고,
+  // 속도 상수가 다르다(원본 manualSpeed 8.0·manualYawRate 0.95, shared/viewer/config.ts:71·75). 결정 전까지 estimated.
+  // fallback: 원본에 없는 신규.
+  assert.deepEqual(estimated, ['input', 'fallback']);
 });
 
 test('isDrapeAligned: 이동량 모르는 local 블록이 있으면 통과가 아니다', () => {
