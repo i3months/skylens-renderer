@@ -3,6 +3,7 @@
 // shrink 상한·결정성·최소 거리 불변식·F-587 두 기준(수락 0 패스에서 남은 점을 쏟지 않음, 기록된 패스는 모두 수락이 있음)도 본다.
 // 입력은 모두 고정 격자 또는 고정 시드다.
 import { test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import v8 from 'node:v8';
 import vm from 'node:vm';
@@ -141,26 +142,37 @@ test(`shrink 는 (0, ${MAX_SHRINK}]: 1 에 가까운 값은 RangeError, 상한�
   }
   const t = createBlueNoiseThinner(p, null, { shrink: MAX_SHRINK });
   const n = p.length / 3;
-  const t0 = performance.now();
   assert.equal(new Set(t.select(n - 1)).size, n - 1);
-  const ms = performance.now() - t0;
-  assert.ok(ms < 20000, `shrink ${MAX_SHRINK} select(n−1) ${ms.toFixed(0)} ms`);
   const st = t.stats();
+  // 벽시계 대신 패스 수 상한: d* 로 한 번에 내리므로 shrink 0.99 라도 패스가 수십 번을 넘지 않는다(실측 18, 수락 0 패스 8).
+  assert.ok(st.passes <= 40, `shrink ${MAX_SHRINK} 기록 패스 ${st.passes} > 40`);
   assert.ok(st.zeroPasses <= st.passes, `수락 0 ${st.zeroPasses} 기록 ${st.passes}`);
 });
 
-test('select 뒤에는 칸 해시 표를 상주시키지 않는다(점당 상주 ≈ 37 B + 보관 결과)', () => {
+/** gc 뒤 arrayBuffers 를 잰다: 해제가 비동기로 끝나므로 더 줄지 않을 때까지(최대 5회) gc + 20 ms 대기를 되풀이한다. */
+async function settledArrayBuffers(gc) {
+  let prev = Infinity;
+  let cur = process.memoryUsage().arrayBuffers;
+  for (let i = 0; i < 5; i++) {
+    gc();
+    await sleep(20);
+    cur = process.memoryUsage().arrayBuffers;
+    if (cur >= prev) break;
+    prev = cur;
+  }
+  return cur;
+}
+
+test('select 뒤에는 칸 해시 표를 상주시키지 않는다(점당 상주 ≈ 37 B + 보관 결과)', async () => {
   // --expose-gc 없이 돌려도 쓸 수 있게 플래그를 켜고 새 문맥에서 gc 를 꺼낸다.
   v8.setFlagsFromString('--expose-gc');
   const gc = vm.runInNewContext('gc');
   const p = plane(400, 400, true);
   const n = p.length / 3;
-  gc();
-  const m0 = process.memoryUsage().arrayBuffers;
+  const m0 = await settledArrayBuffers(gc);
   const t = createThinner(p);
   t.select(Math.floor(0.5 * n));
-  gc();
-  const m1 = process.memoryUsage().arrayBuffers;
+  const m1 = await settledArrayBuffers(gc);
   const perPoint = (m1 - m0) / n;
   assert.ok(perPoint < 37 + 2 * 4 * 0.5 + 4, `점당 ${perPoint.toFixed(1)} B`);
   assert.ok(t.select(10).length === 10);
