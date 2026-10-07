@@ -4,7 +4,10 @@
 //   origin: 이 사례의 기대값을 정하는 원본 코드 줄. 모든 사례에 있다.
 //           기대값은 그 줄의 논리에서 손으로 끌어냈다(우리 구현을 돌려 얻지 않았다).
 //           같은 줄을 옮긴 기준 모형(origin.mjs)이 기대값과 같은지 시험이 따로 본다.
-// 수준 번호: 우리 0..3 = 원본 1..4(ladder.ts:L8-L9, L41-L43). final 은 원본 level >= top(4)(orchestrator.ts:L343).
+// 수준 번호: 우리 0..3 = 원본 1..4(ladder.ts:L8-L9, L41-L43). final 은 원본 level >= top(orchestrator.ts:L343).
+// top: 원본 top 은 설정한 사다리 길이(ladder.ts:L49-L51)이고 원본 기본은 3칸(config.ts:L97 '1000,7000,30000')이다.
+//   이 대조표는 SKYLENS_CORE_LEVEL_STEPS=250,1000,3500,7000 4칸 가정(top 4)이며 기본 설정의 기대가 아니다.
+//   기본 3칸에서는 우리 수준 2 가 final 이 되어 L(2) 사례들의 final:false 가 달라진다(MISMATCHES 'final 판정').
 // arrivals: [segmentId, level] 를 도착 순서대로 나열한다(조각은 싣지 않는다).
 // registered: (선택) 도착 전에 expect 로 "없음" 등록해 두는 구간 번호 목록.
 // expect: 마지막 도착 뒤 구간별 { level, final, missing }. 도착하지 않은 구간은 level -1, missing true.
@@ -23,7 +26,7 @@ const REPLACE = O('splatScene.ts:L154-L158');
 const SKIP = O('splatScene.ts:L156 (level > prev.level 일 때만 교체)');
 const BY_SEGMENT = O('splatScene.ts:L74, L154, L171 (구간 번호 키 Map)');
 const ABSENT = O('splatScene.ts:L154, L163-L171, L266-L271 (도착 전 구간은 키가 없다)');
-const FINAL = O('splatScene.ts:L160; orchestrator.ts:L343 (final = level >= top)');
+const FINAL = O('splatScene.ts:L160; orchestrator.ts:L343 (final = level >= top, 4칸 가정 top 4)');
 
 export const CASES = Object.freeze([
   {
@@ -208,7 +211,7 @@ export const CASES = Object.freeze([
   },
   {
     name: '재연결 재전송: 이미 가진 수준은 무시하고 더 높은 최신 수준만 교체한다',
-    source: O('serverSource.ts:L136-L143 (재연결해도 상태를 비우지 않는다); boards.ts:L135-L137, L149 (재전송은 구간마다 최신, 내려가지 않는다)'),
+    source: O('statusViewer.ts:L524-L525 (SplatScene 은 처음 한 번만 만든다); serverSource.ts:L136-L143 (down()·재연결 예약뿐, 상태를 비우지 않는 근거는 위 statusViewer 줄); boards.ts:L135-L137, L149 (재전송은 구간마다 최신, 내려가지 않는다)'),
     origin: `${SKIP}; ${REPLACE}`,
     arrivals: [[0, 1], [1, 0], [0, 1], [1, 2]],
     expect: { 0: L(1), 1: L(2) },
@@ -230,9 +233,30 @@ export const CASES = Object.freeze([
  */
 export const MISMATCHES = Object.freeze([
   {
+    name: 'final 판정: 원본 chunk.final 은 level >= 설정 top(기본 3칸이면 top 3), 우리는 level === 3 고정',
+    origin: O('orchestrator.ts:L343 (final = level >= top); ladder.ts:L49-L51 (top = 사다리 길이); config.ts:L97 (기본 1000,7000,30000, 3칸)'),
+    ours: 'server/levels/state/index.mjs final = (level === 3), 사다리 칸 수와 무관',
+    // 원본 기본 3칸이면 우리 수준 2(원본 3)가 final 이고 노출 목표가 1.0 이 된다. 우리는 final:false.
+    ourLevel: 2,
+  },
+  {
     name: '구간 번호 2^30 이상: 원본은 받고(상한 없음) 우리 기계는 RangeError 로 거절한다',
     origin: O('segmenter.ts:L134-L137 (Math.floor(arcM / segmentMeters), 상한 없음); protocol.ts:L176 (segment: number)'),
     ours: 'contracts/levels/index.mjs assertSegmentId: 0 이상 SEGMENT_ID_LIMIT(2^30) 미만',
     segmentId: 2 ** 30,
+  },
+]);
+
+/**
+ * 원본 모형(origin.mjs)이 옮기지 않은 것(T10.10L 후속). 대조표의 reveal 기대는 이 둘이 없는 경우만 뜻한다.
+ */
+export const NOT_MODELED = Object.freeze([
+  {
+    name: '슬랩 접힘 생략: 원본 노출 목표는 coreSegment % regionCount 슬랩 단위, 모형은 구간 단위',
+    origin: O('splatReveal.ts:L41, L77 (setFrame 전 regionCount = 1 이면 모든 구간이 한 슬랩으로 접힌다)'),
+  },
+  {
+    name: 'float32 저장 생략: 원본 pending 은 Float32Array 라 0.95 가 0.949999988 로 저장, 모형은 float64',
+    origin: O('splatReveal.ts:L40, L79 (new Float32Array(MAX_REGIONS))'),
   },
 ]);

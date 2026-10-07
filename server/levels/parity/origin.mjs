@@ -3,10 +3,14 @@
 // 대조표 기대값이 원본 동작과 같은지 따로 확인하는 데만 쓴다. 제품 기계(server/levels/state)를 부르지 않는다.
 //
 // 수준 번호 대응: 원본 수준은 사다리의 1부터 센 자리(ladder.ts:L8-L9, L41-L43), 우리 수준은 0..3.
-//   원본 = 우리 + 1. 4수준 사다리(250·1,000·3,500·7,000)에서 top = 4(ladder.ts:L49-L51).
+//   원본 = 우리 + 1. 원본 top 은 설정한 사다리 길이다(ladder.ts:L49-L51). 원본 기본 사다리는 3칸
+//   '1000,7000,30000'(config.ts:L97)이라 기본 top 은 3 이다. 이 대조표는 SKYLENS_CORE_LEVEL_STEPS=
+//   250,1000,3500,7000 으로 띄운 4칸 코어를 가정해 top = 4 로 둔다(기본 top 이 아니다).
+//   top 이 다르면 final 판정이 달라지므로 replayOrigin 은 { top } 을 받는다(기본 4, 3칸 확인용).
 //   final 깃발은 송신 쪽에서 level >= top 으로 붙는다(orchestrator.ts:L343).
 
 export const ORIGIN_COMMIT = '0122bd4';
+// 4칸 사다리 가정값. 원본 기본은 3칸(config.ts:L97)이라 top 3 이다.
 export const ORIGIN_TOP = 4;
 
 /** 우리 수준(0..3) → 원본 수준(1..4). */
@@ -24,14 +28,17 @@ export function alphaForLevel(level, final) {
  * SplatScene.noteChunk + SplatReveal.noteArrival 의 pending 갱신을 옮긴 모형.
  * arrivals 는 [segment, 우리 수준] 목록. 반환은 우리 수준 번호로 되돌린 구간별 상태와 원본 카운터.
  */
-export function replayOrigin(arrivals) {
+export function replayOrigin(arrivals, { top = ORIGIN_TOP } = {}) {
   let chunks = 0; // splatScene.ts:L69 _chunks
   let refined = 0; // splatScene.ts:L70 _refined
   const bySegment = new Map(); // splatScene.ts:L74
-  const pending = new Map(); // splatReveal.ts:L40 (구간별, 슬랩 접힘 % regionCount 는 빼고 구간 단위로 둔다)
+  // splatReveal.ts:L40 pending. 원본은 슬랩(coreSegment % regionCount, L77) 단위 Float32Array 인데
+  // 이 모형은 슬랩 접힘을 생략해 구간 단위 Map 에 float64 로 둔다(setFrame 전 regionCount = 1, L41).
+  // 생략한 두 가지는 cases.mjs NOT_MODELED 에 이름을 적어 두었다.
+  const pending = new Map();
   for (const [segment, ourLevel] of arrivals) {
     const level = toOrigin(ourLevel);
-    const final = level >= ORIGIN_TOP; // orchestrator.ts:L343
+    const final = level >= top; // orchestrator.ts:L343
     // splatScene.ts:L152-L172
     chunks += 1;
     const prev = bySegment.get(segment);
@@ -44,7 +51,9 @@ export function replayOrigin(arrivals) {
     } else {
       bySegment.set(segment, { segment, level, final });
     }
-    // splatReveal.ts:L76-L80 (statusViewer.ts:L551-L552 가 매 도착마다 둘 다 부른다)
+    // splatReveal.ts:L76-L80. statusViewer.ts:L551-L552 가 도착마다 noteChunk 를 부르고 noteArrival 은
+    // this.splatReveal?. 로 부른다. SplatReveal 은 splatCapable && recon 일 때만 만들어진다
+    // (statusViewer.ts:L524-L526 조건). 이 모형은 그 조건이 참인 경우만 옮긴 것이다.
     const target = alphaForLevel(level, final);
     if (target > (pending.get(segment) ?? 0)) pending.set(segment, target);
   }
