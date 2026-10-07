@@ -34,6 +34,6 @@ test('뷰포트 검사', () => {
 
 test('측정 문턱 상수는 SPEC 수치다', () => {
   assert.equal(STATUS_BANDWIDTH_LIMITS.initialBytes, 15_000_000);
-  assert.equal(STATUS_BANDWIDTH_LIMITS.perSegmentBytes, 3_000_000);
+  assert.equal(STATUS_BANDWIDTH_LIMITS.perSegmentBytes, undefined); // 구간 상한 폐지(관제탑 3 MB 는 별개)
   assert.equal(STATUS_QUALITY_MIN_SSIM, 0.95);
 });

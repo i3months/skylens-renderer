@@ -114,6 +114,6 @@ export function enuToScene(p) {
   return [p[0], p[2], -p[1] === 0 ? 0 : -p[1]];
 }
 
-/** SPEC S6 의 MB 는 10^6 B 이다(bench/proto 의 고정 값과 같다). */
-export const STATUS_BANDWIDTH_LIMITS = Object.freeze({ initialBytes: 15_000_000, perSegmentBytes: 3_000_000 });
+/** SPEC S6 의 MB 는 10^6 B 이다(bench/proto 의 고정 값과 같다). 현황판 구간당 상한은 T13.HQ 에서 폐지됐다(관제탑 3 MB 는 별개). */
+export const STATUS_BANDWIDTH_LIMITS = Object.freeze({ initialBytes: 15_000_000 });
 export const STATUS_QUALITY_MIN_SSIM = 0.95;

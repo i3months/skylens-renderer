@@ -1,7 +1,6 @@
 {
  "limits": {
-  "initialBytes": 15000000,
-  "perSegmentBytes": 3000000
+  "initialBytes": 15000000
  },
  "s6Config": {
   "codec": 1

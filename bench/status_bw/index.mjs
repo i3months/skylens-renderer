@@ -14,10 +14,10 @@ import { encodeMessage } from '../../server/proto/codec/index.mjs';
 import { encodeFrame, OPCODES } from '../../server/ws/frame/index.mjs';
 import { encodeChunk } from '../../server/codec/chunk/index.mjs';
 import { packCloudPieces } from '../proto/measure.mjs';
-import { INITIAL_BUDGET_BYTES, SEGMENT_BUDGET_BYTES } from '../proto/index.mjs';
+import { INITIAL_BUDGET_BYTES } from '../proto/index.mjs';
 
-// S6 문턱(10^6 B 기준). bench/proto 의 고정 상수를 그대로 쓴다.
-export const STATUS_BW_LIMITS = Object.freeze({ initialBytes: INITIAL_BUDGET_BYTES, perSegmentBytes: SEGMENT_BUDGET_BYTES });
+// 초기 문턱(10^6 B 기준)만 둔다. 현황판 구간당 상한은 T13.HQ 에서 폐지됐다(관제탑 3 MB 는 별개).
+export const STATUS_BW_LIMITS = Object.freeze({ initialBytes: INITIAL_BUDGET_BYTES });
 
 // S6 송출 구성(T13.HQ): 무손실 codec 1 로 원본 점 전부를 보낸다. 구간 바이트 예산·솎기 없음.
 export const S6_SEND_CONFIG = Object.freeze({ codec: 1 });
