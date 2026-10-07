@@ -83,7 +83,7 @@ test('ArrowUp → step(0.2) → render 가 같은 프레임에서 step 이전 re
   near(pos[2], START[2], 'z 불변');
   const j = judge(r, [0, 1.6, 0]);
   assert.ok(j.changed, 'step 후 render 가 step 전과 달라야 한다');
-  assert.ok(j.tOk, `Δt ${JSON.stringify(j.dt)} 가 −R·[0,2,0] ${JSON.stringify(j.want)} 와 같아야 한다`);
+  assert.ok(j.tOk, `Δt ${JSON.stringify(j.dt)} 가 −R·[0,1.6,0] ${JSON.stringify(j.want)} 와 같아야 한다`);
   // 실제로 1.6 m 만큼 변했다(0 이 아님).
   const len = Math.hypot(...j.dt);
   assert.ok(len > 1.59 && len < 1.61, `|Δt| = ${len}`);
