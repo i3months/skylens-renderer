@@ -7,7 +7,7 @@ test('대응표 자기 일관성: 모듈 9개, 모듈·fn 중복 없음', () => 
   assert.deepEqual(mods, ['buildings', 'chase', 'drape', 'e2e', 'fallback', 'input', 'overlay', 'streaming', 'terrain']);
   for (const r of CONTROLVIEW_METHOD_MAP) {
     assert.equal(typeof r.fn, 'string');
-    assert.equal(typeof r.origin, 'string');
+    assert.ok(['checked', 'estimated'].includes(r.origin), `${r.module}: ${r.origin}`);
   }
   assert.equal(new Set(CONTROLVIEW_METHOD_MAP.map((r) => r.fn)).size, 9);
   for (const bad of ['nope', undefined, '../x', Object.create(null)]) assert.throws(() => controlviewModulePath(bad), RangeError);
@@ -27,6 +27,7 @@ test('대응표 자기 일관성: 모듈 9개, 모듈·fn 중복 없음', () => 
 
 // T15.0L: skylens 원본(NET-Challenge-S13/skylens 0122bd4) src/skylens_core/controlview/towerViewer.ts
 // TowerViewer 클래스(:146-811)의 공개 멤버. private 멤버는 뺐다.
+// 주의: 줄 번호(주석)는 사람이 원본을 열어 대조한 결과이고 이 시험이 자동 검증하지 않는다. 시험이 고정하는 것은 멤버 이름 목록과 행 인용의 파일·줄 범위 문자열뿐이다.
 const ORIGINAL_PUBLIC = [
   'constructor', // :204-267
   'setDisplay', // :293-297
@@ -51,15 +52,21 @@ test('원본 대조 T15.0L: 조립 행 source 가 원본 공개 멤버를 정확
   assert.deepEqual(listed, ORIGINAL_PUBLIC);
 });
 
-test('원본 대조 T15.0L: checked 행은 원본 줄을 대고, estimated 는 input·fallback 만 남는다', () => {
+test('원본 대조 T15.0L: checked 행은 원본 줄을 대고, estimated 는 input·streaming·fallback 만 남는다', () => {
   for (const r of CONTROLVIEW_METHOD_MAP) {
     if (r.origin === 'checked') assert.match(r.source, /^towerViewer\.ts:\d/, r.module);
   }
   const estimated = CONTROLVIEW_METHOD_MAP.filter((r) => r.origin === 'estimated').map((r) => r.module);
-  // input: 원본 키 입력은 towerViewer.ts 가 아니라 drones/manualControl.ts:13-28·pathFollower.ts:130-143 에 있고,
-  // 속도 상수가 다르다(원본 manualSpeed 8.0·manualYawRate 0.95, shared/viewer/config.ts:71·75). 결정 전까지 estimated.
+  // input: 원본 키 입력은 towerViewer.ts 가 아니라 drones/manualControl.ts:13-28·pathFollower.ts:130-144 에 있고,
+  // 속도 상수가 다르다(원본 manualSpeed 8.0·manualAltitudeSpeed 5.0·manualYawRate 0.95, shared/viewer/config.ts:71·73·75). 결정 전까지 estimated.
+  // streaming: 원본 요청 로직은 shared/viewer/sources/streamSource.ts:23-36,85,99 에 있고 상수가 다르다
+  //   (원본 LOAD_RADIUS 34·EVICT_RADIUS 74.8·MAX_CONCURRENT 2·TICK_MS 900, 우리 maxDistM 1500·maxInflight 16·타이머 없음).
   // fallback: 원본에 없는 신규.
-  assert.deepEqual(estimated, ['input', 'fallback']);
+  assert.deepEqual(estimated, ['input', 'streaming', 'fallback']);
+  const streaming = CONTROLVIEW_METHOD_MAP.find((r) => r.module === 'streaming');
+  assert.match(streaming.source, /streamSource\.ts:23-36,85,99/);
+  const input = CONTROLVIEW_METHOD_MAP.find((r) => r.module === 'input');
+  assert.match(input.source, /pathFollower\.ts:130-144/);
 });
 
 test('isDrapeAligned: 이동량 모르는 local 블록이 있으면 통과가 아니다', () => {
