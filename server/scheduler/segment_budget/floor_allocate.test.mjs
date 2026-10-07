@@ -62,7 +62,7 @@ test('total = 수준 수일 때 각 수준 최소 1 점(Math.max(1, …) 하한)
   const input170 = [10, 20, 40, 100];
   const result170 = makeFloorAllocate(S6_LOW_LEVEL_FLOOR)(input170, 170);
   assert.deepEqual(result170, [10, 20, 40, 100]);
-  assert.notEqual(result170, input170); // 참조 반환 방지(:18 과 같은 성질), 인덱스 108 조기 반환은 성능 지름길(삭제·>=→> 는 등가 변이)
+  assert.notEqual(result170, input170); // 참조 반환 방지(:18 과 같은 성질), `total >= sum` 조기 반환은 성능 지름길(삭제·>=→> 는 등가 변이)
   assert.deepEqual(makeFloorAllocate(S6_LOW_LEVEL_FLOOR)([10, 20, 40, 100], 4), [1, 1, 1, 1]);
   assert.deepEqual(makeFloorAllocate(0)([10, 20, 40, 100], 4), [1, 1, 1, 1]);
   assert.deepEqual(makeFloorAllocate(0)([10, 20, 40, 100], 50), [1, 1, 1, 47]);
