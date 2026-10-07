@@ -59,6 +59,7 @@ test('작은 counts 에서 total 4..합 전 범위: 각 ≥ 1, 원본 이하, �
 });
 
 test('total = 수준 수일 때 각 수준 최소 1 점(Math.max(1, …) 하한), 또는 total ≥ sum 일 때 원본 비율', () => {
+  assert.deepEqual(makeFloorAllocate(S6_LOW_LEVEL_FLOOR)([10, 20, 40, 100], 170), [10, 20, 40, 100]);
   assert.deepEqual(makeFloorAllocate(S6_LOW_LEVEL_FLOOR)([10, 20, 40, 100], 4), [1, 1, 1, 1]);
   assert.deepEqual(makeFloorAllocate(0)([10, 20, 40, 100], 4), [1, 1, 1, 1]);
   assert.deepEqual(makeFloorAllocate(0)([10, 20, 40, 100], 50), [1, 1, 1, 47]);

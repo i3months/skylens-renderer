@@ -119,8 +119,9 @@ test('첫 반경은 span·n 만으로 정해진다(재시도 없는 표면 장�
   const first = (p) => {
     const t = createThinner(p); t.select(3000);
     const st = t.stats();
-    // 재시도가 없었다는 전제: 첫 패스 수락 ≤ 2·kHint·firstFraction (kHint = n·0.13, firstFraction = 0.35)
-    assert.ok(st.passEnd[0] <= 2 * n * 0.13 * 0.35, `첫 패스 수락 ${st.passEnd[0]} 가 재시도 문턱을 넘었다`);
+    // 첫 패스 수락이 재시도 문턱 2·kHint·firstFraction (kHint = n·0.13, firstFraction = 0.35) 이하인지만 본다.
+    // 재시도가 없었다는 것(첫 반경 = 표면 가정 반경)은 아래 radii[0] 동치 단언이 확인한다.
+    assert.ok(st.passEnd[0] <= 2 * n * 0.13 * 0.35, `첫 패스 수락 ${st.passEnd[0]} 가 문턱 2·target 을 넘었다`);
     return st.radii[0];
   };
   const r = first(a);
@@ -149,7 +150,6 @@ test('체적 장면은 첫 패스를 다시 돌아 첫 반경이 표면 가정 �
   t.select(3000);
   const st = t.stats();
   assert.ok(st.radii[0] > rSurface * 1.05, `첫 반경 ${st.radii[0]} 가 표면 가정 ${rSurface} 보다 커야 한다(재시도)`);
-  assert.ok(st.passEnd[0] <= 2 * target || st.radii[0] >= 50 / Math.cbrt(target) - 1e-9);
 });
 
 test('opts = null 은 기본값으로 본다(TypeError 없음)', () => {

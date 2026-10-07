@@ -85,7 +85,8 @@ export const MAX_SHRINK = 0.99;
  *   kHint: 첫 반경을 정할 기준 점 수(n 을 넘으면 n 으로 줄인다, 기본 n·0.13, 결과가 첫 요청 순서에 좌우되지 않도록 생성 시 고정), 0 보다 큰 유한수
  *   범위를 벗어나거나 NaN 이면 RangeError.
  * @returns {{count:number, select(k:number): Uint32Array, stats():object}}
- *   stats(): { passes, radii, passEnd, zeroPasses(지금까지 돈 수락 0 패스 수, 기록하지 않은 패스) }
+ *   stats(): { passes, radii, passEnd, zeroPasses(지금까지 돈 수락 0 패스 수, 기록하지 않은 패스),
+ *   maxConsecutiveZeroPasses(수락 0 패스가 연달아 생긴 최대 횟수), cacheSize(보관 중인 결과 수, 최대 2) }
  *
  * 수명·비용(실측: node 22, 4 vCPU 컨테이너, ArrayBuffer 사용량 기준):
  *   상주 — 반환한 객체는 버릴 때까지 positions 와 별도로 점당 37 B(방문 순서 좌표 Float64 ×3, 모턴 순·방문 순·수락 순 Uint32 ×3,
@@ -254,7 +255,7 @@ export function createBlueNoiseThinner(positions, _attrs, opts = {}) {
       if (rCur < span * 1e-9) { takeRest(); break; }
       if (runPass(rCur) > 0) { radii.push(rCur); passEnd.push(total); zeroRun = 0; }
       else {
-        // 수락 0: 남은 점 가운데 수락점에서 가장 먼 점(거리 d*)이 다음 패스에서 반드시 수락되도록 반경을 d* 바로 아래로 내린다.
+        // 수락 0: 남은 점 가운데 수락점에서 가장 먼 점(거리 d*)을 기준으로 반경을 d* 바로 아래로 내린다. 다음 패스에서는 d* 점 또는 그 앞 점이 반드시 수락된다.
         // d* = 0(남은 점이 모두 수락점과 같은 위치)이면 다음 반복에서 takeRest 로 간다.
         zeroPasses++;
         if (++zeroRun > maxConsecutiveZeroPasses) maxConsecutiveZeroPasses = zeroRun;
