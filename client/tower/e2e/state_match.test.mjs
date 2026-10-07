@@ -41,6 +41,8 @@ const quatEq = (got, want) => Array.isArray(got) && got.length === 4 &&
 //   yaw π/2 이면 오른쪽 (0,−1,0), 앞 (3/√10, 0, −1/√10), 아래 (−1/√10, 0, −3/√10).
 const PHI = -Math.atan(1 / 3);
 const S10 = Math.sqrt(10);
+// 손계산 표는 속도 10 m/s·선회 1 rad/s 로 계산했다. 기본값(원본 8.0·0.95)은 contracts/controlview 시험이 단언하므로 여기서는 값을 고정한다.
+const HAND_INPUT = { speedMps: 10, yawRateRad: 1 };
 const R2 = Math.SQRT1_2;
 // 투영(overlay 계약): X_c = (rel·오른쪽, rel·아래, rel·앞), u = f·X_c.x/X_c.z + w/2, v = f·X_c.y/X_c.z + h/2, f = (h/2)/tan(fovY/2).
 // 아래 시험들은 f 가 깔끔해지도록 fovY 를 고른다: fovY = π/2 → f = h/2, fovY = 2·atan(1/2) → f = h.
@@ -146,7 +148,7 @@ test('e2e: 전진·회전·고도 키 녹화의 프레임별 위치(ENU)가 손�
     { mode: 'live', camPos: [X2, Y2, 1], quat: Q25, fovY: 0.9 },
     { mode: 'live', camPos: [X2, Y2, 1], quat: Q25, fovY: 0.9 },
   ];
-  const view = createControlView();
+  const view = createControlView({ input: HAND_INPUT });
   assertMatch(replayRecording(view, rec, { width: 160, height: 120 }), table);
 });
 
@@ -178,7 +180,7 @@ test('e2e: 드론 추적 녹화의 프레임별 카메라 위치가 손계산과
     { mode: 'live', camPos: [0, 0, 1], quat: qYP(0, -0.3), fovY: 0.9, overlayDrones: 1 },
     { mode: 'live', camPos: [0, 470, 30], quat: qYP(0, PHI), fovY: 0.9, overlayDrones: 1 },
   ];
-  const view = createControlView();
+  const view = createControlView({ input: HAND_INPUT });
   assertMatch(replayRecording(view, rec, { width: 160, height: 120 }), table);
 });
 
@@ -199,7 +201,7 @@ test('e2e: 서버 불가 구간은 fallback 프레임이고 3D 층 결과를 내
     { mode: 'fallback', banner: TOWER_FALLBACK_BANNER, fbDrones: [['d1', 106, 73.5]], fbDetections: [['det1', 126, 58.5]], fbPaths: [] },
     { mode: 'live', banner: null, fbDrones: [], fbDetections: [], fbPaths: [], inflightCount: 2, heldCount: 0, overlayDrones: 1 },
   ];
-  const view = createControlView({ streaming: { maxInflight: 2 } });
+  const view = createControlView({ input: HAND_INPUT, streaming: { maxInflight: 2 } });
   const snaps = replayRecording(view, rec, { width: 232, height: 132 });
   assertMatch(snaps, table);
   // 폴백 프레임에는 3D 층 필드가 없다(null)
@@ -265,7 +267,7 @@ test('e2e: 같은 녹화를 두 번 재생하면 JSON 으로 같다', () => {
 
 test('e2e: step·데이터가 던지면 상태 불변', () => {
   const size = { width: 160, height: 120 };
-  const view = createControlView({ streaming: { maxInflight: 2 } });
+  const view = createControlView({ input: HAND_INPUT, streaming: { maxInflight: 2 } });
   view.keyDown('ArrowUp');
   view.step(0.25, size);
   view.setDrones([{ id: 'd1', enu: [100, 200, 50], yaw: 0 }]);
@@ -280,7 +282,7 @@ test('e2e: step·데이터가 던지면 상태 불변', () => {
   assert.equal(JSON.stringify(view.snapshot(size)), before);
   // 추적 목표 갱신 뒤 streaming.update 가 던지는 프레임: 입력은 바로 아래를 봐서 타일이 적지만, 추적 카메라는 거의 수평이라
   // 30 km 시야의 needed 가 maxTilesPerUpdate 를 넘는다 → 입력·추적 모두 되돌린다
-  const far = createControlView({ input: { pitchRad: -Math.PI / 2 }, streaming: { maxDistM: 30000 } });
+  const far = createControlView({ input: { ...HAND_INPUT, pitchRad: -Math.PI / 2 }, streaming: { maxDistM: 30000 } });
   far.step(0.25, size);
   far.keyDown('ArrowUp');
   // 방위가 도착한 적 없는 첫 드론은 추적하지 않으므로(계약 tracking) 방위를 함께 준다
@@ -302,7 +304,7 @@ test('e2e: 알 수 없는 opts 키는 RangeError', () => {
 // 손계산이 쉬운 자세: 입력 카메라는 pitch 0·fovY π/2(f = h/2), 추적 카메라는 fovY 2·atan(1/2)(f = h)·감쇠 a = 1/2.
 // 입력 yaw ψ·pitch 0 의 카메라 축(ENU): 오른쪽 (cos ψ, −sin ψ, 0), 아래 (0,0,−1), 앞 (sin ψ, cos ψ, 0).
 // quat: qYP(ψ, 0) = (−√½·cos(ψ/2), √½·sin(ψ/2), −√½·sin(ψ/2), √½·cos(ψ/2)). ψ = 0 이면 (−√½, 0, 0, √½)(x 축 −90°).
-const INPUT_FLAT = { pitchRad: 0, fovYRad: FOV_HALF };
+const INPUT_FLAT = { ...HAND_INPUT, pitchRad: 0, fovYRad: FOV_HALF };
 const CHASE_EASY = { tauSec: TAU_HALF, fovYRad: FOV_FULL };
 
 test('e2e: 같은 프레임의 뗌+누름은 누름으로 끝난다(녹화 재생 순서: up 다음 down)', () => {
@@ -395,7 +397,7 @@ test('e2e: 추적 중 step 이 던지면 입력·추적을 되돌리고 다음 �
   // S1F1: p = (30,0,40000). 카메라 (30,−30,40010). 데이터 드론 없음 → 오버레이 드론 없음.
   // S1F2: 목표 해제 → 입력 카메라. 던진 프레임의 전진은 없었으므로 ↑ 는 S1F0·S1F1·S1F2 세 번 → y = 7.5
   const size = { width: 160, height: 120 };
-  const view = createControlView({ input: { pitchRad: -Math.PI / 2 }, chase: CHASE_EASY, streaming: { maxDistM: 30000 } });
+  const view = createControlView({ input: { ...HAND_INPUT, pitchRad: -Math.PI / 2 }, chase: CHASE_EASY, streaming: { maxDistM: 30000 } });
   const s0 = replayRecording(view, [
     { dtSec: 0.25, drones: [{ id: 'z', enu: [0, 0, 40000], yaw: 0 }] },
     { dtSec: 0.25, drones: [{ id: 'z', enu: [40, 0, 40000], yaw: 0 }] },
@@ -458,7 +460,7 @@ test('e2e: removePath 는 overlay·fallback 양쪽에서 빼고, 조립 층이 �
   //     d9: rel (0,60,−10): X_c = (0, (−60+30)/√10, (180+10)/√10) → u = 116, v = 66 − 132·30/190 = 66 − 396/19
   //     k2: rel (10,40,−60): X_c = (10, (−40+180)/√10, (120+60)/√10) → u = 116 + 22√10/3, v = 66 + 132·140/180 = 66 + 308/3(≥ 132 → visible false)
   const size = { width: 232, height: 132 };
-  const view = createControlView({ chase: CHASE_EASY });
+  const view = createControlView({ input: HAND_INPUT, chase: CHASE_EASY });
   const D1 = { id: 'd1', enu: [100, 200, 50], yaw: 0 }, K1 = { id: 'k1', enu: [120, 230, 30] };
   const h0 = replayRecording(view, [{
     dtSec: 0.25, drones: [D1], detections: [K1],
@@ -508,7 +510,7 @@ test('e2e: removePath 는 overlay·fallback 양쪽에서 빼고, 조립 층이 �
 // 한정: 이 시험은 경계 표본(위 목록)만 검사한다. 경계 밖 임의 입력의 포함 관계는 보장하지 않는다.
 test('e2e: 폴백이 받는 경계 입력을 오버레이 쪽 검사가 단독으로 거부하지 않는다(오버레이 검사 ⊆ 폴백 검사)', () => {
   const size = { width: 200, height: 100 };
-  const view = createControlView();
+  const view = createControlView({ input: HAND_INPUT });
   const id64 = '\u{1F6E9}'.repeat(64); // 코드포인트 64 개(UTF-16 128 단위)
   const drones = [
     { id: id64, enu: [1e6, -1e6, 0], yaw: -1e9 },
