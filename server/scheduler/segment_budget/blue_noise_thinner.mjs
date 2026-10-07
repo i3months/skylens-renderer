@@ -155,6 +155,8 @@ export function createBlueNoiseThinner(positions, _attrs, opts = {}) {
   let total = 0;
   let table = null;
   let zeroPasses = 0;
+  let zeroRun = 0; // 지금 이어지는 수락 0 패스 수
+  let maxConsecutiveZeroPasses = 0; // 연달아 돈 수락 0 패스의 최대(수락 있는 패스가 끼면 끊긴다)
   let lastDStar = 0; // 마지막 runPass 가 수락 0 이었을 때: 남은 점의 가장 가까운 수락점 거리 최댓값 d*
   let lastVisited = 0; // 마지막 runPass 가 훑은 방문 칸 수(중간에 멈췄으면 그 자리까지)
 
@@ -248,11 +250,12 @@ export function createBlueNoiseThinner(positions, _attrs, opts = {}) {
       rCur = Math.min(rCur * shrink, rJump);
       rJump = Infinity;
       if (rCur < span * 1e-9) { takeRest(); break; }
-      if (runPass(rCur) > 0) { radii.push(rCur); passEnd.push(total); }
+      if (runPass(rCur) > 0) { radii.push(rCur); passEnd.push(total); zeroRun = 0; }
       else {
         // 수락 0: 남은 점 가운데 수락점에서 가장 먼 점(거리 d*)이 다음 패스에서 반드시 수락되도록 반경을 d* 바로 아래로 내린다.
         // d* = 0(남은 점이 모두 수락점과 같은 위치)이면 다음 반복에서 takeRest 로 간다.
         zeroPasses++;
+        if (++zeroRun > maxConsecutiveZeroPasses) maxConsecutiveZeroPasses = zeroRun;
         rJump = lastDStar * (1 - 1e-9);
       }
     }
@@ -264,7 +267,7 @@ export function createBlueNoiseThinner(positions, _attrs, opts = {}) {
   const cache = new Map();
   return {
     count: n,
-    stats: () => ({ passes: radii.length, radii: radii.slice(), passEnd: passEnd.slice(), zeroPasses, cacheSize: cache.size }),
+    stats: () => ({ passes: radii.length, radii: radii.slice(), passEnd: passEnd.slice(), zeroPasses, maxConsecutiveZeroPasses, cacheSize: cache.size }),
     select(k) {
       if (!Number.isInteger(k) || k < 0) throw new RangeError(`k 는 0 이상 정수: ${k}`);
       prepare();
