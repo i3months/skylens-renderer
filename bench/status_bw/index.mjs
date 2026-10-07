@@ -13,6 +13,8 @@ import { generate as generateLevels, levelCloud } from '../../fixtures/scenes/le
 import { encodeMessage } from '../../server/proto/codec/index.mjs';
 import { encodeFrame, OPCODES } from '../../server/ws/frame/index.mjs';
 import { encodeChunk } from '../../server/codec/chunk/index.mjs';
+import { decodeChunkClient } from '../../client/codec/index.mjs';
+import { readHeaderClient } from '../../client/asset/index.mjs';
 import { packCloudPieces } from '../proto/measure.mjs';
 import { INITIAL_BUDGET_BYTES } from '../proto/index.mjs';
 
@@ -21,6 +23,9 @@ export const STATUS_BW_LIMITS = Object.freeze({ initialBytes: INITIAL_BUDGET_BYT
 
 // S6 송출 구성(T13.HQ): 무손실 codec 1 로 원본 점 전부를 보낸다. 구간 바이트 예산·솎기 없음.
 export const S6_SEND_CONFIG = Object.freeze({ codec: 1 });
+
+// 실제로 보낸 조각(codec 0 은 .skla, codec 1 은 SKLC1)의 머리 점 수. codec 1 은 클라이언트 복호기로 풀어 읽는다(원본 점 수를 되읽지 않는다).
+const sentPoints = (chunk, codec) => (codec === 1 ? decodeChunkClient(chunk).header.pointCount : readHeaderClient(chunk).pointCount);
 
 const frameLen = (msg) => encodeFrame(OPCODES.BINARY, encodeMessage(msg)).length;
 
@@ -46,10 +51,14 @@ export function measureStatusBandwidth(opts = {}) {
       const cloud = levelCloud(scene, segmentId, level);
       const pieces = packCloudPieces(cloud, { segmentId, level });
       const firstPieceSeq = pieceSeq;
-      let pieceBytes = 0;
-      for (const p of pieces) pieceBytes += frameLen({ type: 'PIECE', pieceSeq: pieceSeq++, key: p.key, chunk: codec === 1 ? encodeChunk(p.skla) : p.skla });
+      let pieceBytes = 0, sentCount = 0;
+      for (const p of pieces) {
+        const chunk = codec === 1 ? encodeChunk(p.skla) : p.skla;
+        sentCount += sentPoints(chunk, codec);
+        pieceBytes += frameLen({ type: 'PIECE', pieceSeq: pieceSeq++, key: p.key, chunk });
+      }
       const arrivedBytes = frameLen({ type: 'LEVEL_ARRIVED', segmentId, level, pieceCount: pieces.length, firstPieceSeq });
-      levels.push({ level, points: cloud.count, sourcePoints: cloud.count, pieces: pieces.length, pieceBytes, arrivedBytes, frameBytes: pieceBytes + arrivedBytes });
+      levels.push({ level, points: sentCount, sourcePoints: cloud.count, pieces: pieces.length, pieceBytes, arrivedBytes, frameBytes: pieceBytes + arrivedBytes });
     }
     rows.push({
       segmentId,
