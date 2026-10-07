@@ -9,7 +9,7 @@
 //     패스 p 의 수락점(수락 순서 = 대략 모턴 순)에서 등간격으로 모자란 수만큼 뽑는다 → 덜 뽑힌 자리가 공간에 고르게 흩어진다.
 //   - 수락 0 인 패스는 기록하지 않고 반경만 더 줄인다(격자·양자화 좌표에서는 반경이 줄어도 실제 조건이 같아 수락 0 인 패스가 정상으로 생긴다).
 //     수락 0 패스에서는 수락점 집합이 패스 동안 바뀌지 않으므로, 거절점마다 가장 가까운 수락점 거리를 구해 그 최댓값 d* 를 정확히 안다.
-//     다음 반경은 min(r·shrink, d*·(1 − 1e-9)) 이다. d* 를 이룬 점은 그 반경에서 반드시 수락되므로 수락 0 패스는 연달아 생기지 않는다
+//     다음 반경은 min(r·shrink, d*·(1 − 1e-9)) 이다. 그 반경에서는 d* 점이 수락되거나 그 전에 다른 점이 수락되므로 수락 0 패스는 연달아 생기지 않는다
 //     (수락점과 아주 가까운 근접 중복점이 남아도 반경을 그 거리 아래로 한 번에 내린다, F-593).
 //     남은 점을 방문 순서로 한꺼번에 받는 마지막 패스(반경 0)는 반경이 span·1e-9 아래로 내려갔을 때(d* = 0, 즉 남은 점이 모두 수락점과
 //     같은 위치인 경우 포함)만 만든다.
@@ -82,7 +82,7 @@ export const MAX_SHRINK = 0.99;
  * @param {{seed?:number, shrink?:number, firstFraction?:number, kHint?:number}} [opts]
  *   shrink: 패스마다 반경에 곱하는 비, (0, MAX_SHRINK = 0.99]
  *   firstFraction: 첫 패스가 수락할 kHint 의 비율, (0, 1]
- *   kHint: 첫 반경을 정할 기준 점 수(기본 n·0.13, 결과가 첫 요청 순서에 좌우되지 않도록 생성 시 고정), 0 보다 큰 유한수
+ *   kHint: 첫 반경을 정할 기준 점 수(n 을 넘으면 n 으로 줄인다, 기본 n·0.13, 결과가 첫 요청 순서에 좌우되지 않도록 생성 시 고정), 0 보다 큰 유한수
  *   범위를 벗어나거나 NaN 이면 RangeError.
  * @returns {{count:number, select(k:number): Uint32Array, stats():object}}
  *   stats(): { passes, radii, passEnd, zeroPasses(지금까지 돈 수락 0 패스 수, 기록하지 않은 패스) }
@@ -97,6 +97,7 @@ export const MAX_SHRINK = 0.99;
  * 결과는 최근 2개 k 만 보관한다(같은 k 를 다시 물으면 사본만 만든다).
  */
 export function createBlueNoiseThinner(positions, _attrs, opts = {}) {
+  opts = opts ?? {}; // null 도 기본값으로 본다(기본 매개변수는 undefined 만 덮는다)
   if (!(positions instanceof Float32Array) || positions.length % 3 !== 0) throw new TypeError('positions 는 길이 3n 의 Float32Array');
   const n = positions.length / 3;
   const seed = opts.seed ?? 0x2545f491;
@@ -105,7 +106,8 @@ export function createBlueNoiseThinner(positions, _attrs, opts = {}) {
   if (!(shrink > 0 && shrink <= MAX_SHRINK)) throw new RangeError(`shrink 는 (0, ${MAX_SHRINK}]: ${shrink}`);
   if (!(firstFraction > 0 && firstFraction <= 1)) throw new RangeError(`firstFraction 은 (0, 1]: ${firstFraction}`);
   if (opts.kHint !== undefined && !(opts.kHint > 0 && Number.isFinite(opts.kHint))) throw new RangeError(`kHint 는 0 보다 큰 유한수: ${opts.kHint}`);
-  const kHint = Math.max(1, Math.round(opts.kHint ?? n * 0.13));
+  // kHint 는 n 을 넘길 필요가 없다(넘으면 첫 반경이 0 에 가까워 칸 좌표가 Int32 를 넘고 패스가 끝없이 길어진다).
+  const kHint = Math.min(Math.max(1, n), Math.max(1, Math.round(opts.kHint ?? n * 0.13)));
 
   let order = null; // 모턴 순 원본 색인
   let visit = null; // 방문 칸 j → 원본 색인
@@ -230,7 +232,7 @@ export function createBlueNoiseThinner(positions, _attrs, opts = {}) {
       // 그 2배를 넘게 수락하면 반경을 키워 다시 돈다. 수락 수 ∝ r^-d(d = 2..3)로 보고 d = 3 쪽으로 키우며, 체적 가정 반경에서 멈춘다.
       const target = kHint * firstFraction;
       const rVol = span / Math.cbrt(target);
-      let r = span / Math.sqrt(target);
+      let r = Math.max(span / Math.sqrt(target), span * 1e-9); // 하한: 칸 좌표 floor(좌표/r) ≤ 1e9 라 Int32 안
       for (;;) {
         // 체적 가정 반경보다 작으면 2배를 넘는 순간 멈춘다(어차피 다시 돈다).
         const got = runPass(r, r < rVol ? 2 * target : Infinity);
