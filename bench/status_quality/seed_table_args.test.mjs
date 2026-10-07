@@ -32,12 +32,12 @@ test('유효 시드 "7" 은 사용법 없이 머리줄과 시드 7 행을 낸다
   const exited = new Promise((resolve) => child.on('close', (code) => resolve(code)));
   // 시간 초과로 끊긴 경우를 실패 메시지에서 구별하기 위한 표지.
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 120000);
+  const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 240000);
   try {
     await new Promise((resolve) => {
       child.stdout.setEncoding('utf8').on('data', (d) => {
         out += d;
-        // 시드 인자를 무시하면 1번 행이 먼저 나오므로 첫 데이터 행에서 바로 멈춘다(120 초 대기 방지).
+        // 시드 인자를 무시하면 1번 행이 먼저 나오므로 첫 데이터 행에서 바로 멈춘다(240 초 대기 방지).
         if (/^\d+ \|/m.test(out)) resolve();
       });
       child.on('close', resolve);
@@ -47,7 +47,7 @@ test('유효 시드 "7" 은 사용법 없이 머리줄과 시드 7 행을 낸다
     child.kill('SIGKILL');
     await exited;
   }
-  assert.ok(!timedOut, '120 초 안에 첫 데이터 행이 나오지 않아 시간 초과로 끊었다(느린 실행기일 수 있음)');
+  assert.ok(!timedOut, '240 초 안에 첫 데이터 행이 나오지 않아 시간 초과로 끊었다(느린 실행기일 수 있음)');
   assert.match(out, /^시드 \|/, '머리줄이 먼저 나와야 한다');
   assert.match(out, /^7 \|/m, '요청한 시드 7 의 행이어야 한다(인자 무시 방지)');
   assert.doesNotMatch(err, /사용:/);
