@@ -13,7 +13,7 @@ export const ORIGIN_COMMIT = '0122bd4';
 // 4칸 사다리 가정값. 원본 기본은 3칸(config.ts:L97)이라 top 3 이다.
 export const ORIGIN_TOP = 4;
 
-/** 우리 수준(0..3) → 원본 수준(1..4). */
+/** 우리 수준 → 원본 수준(1..top, 4칸 가정이면 1..4). */
 export const toOrigin = (level) => level + 1;
 
 /** 원본 alphaForLevel: splatReveal.ts:L26-L31 (0122bd4). 원본 수준 번호를 받는다. */
@@ -29,11 +29,13 @@ export function alphaForLevel(level, final) {
  * arrivals 는 [segment, 우리 수준] 목록. 반환은 우리 수준 번호로 되돌린 구간별 상태와 원본 카운터.
  */
 export function replayOrigin(arrivals, { top = ORIGIN_TOP } = {}) {
+  // top 이 정수·1 이상이 아니면 final 판정이 무의미해지므로(null 이면 전부 final, NaN 이면 영영 아님) 거부한다.
+  if (!Number.isInteger(top) || top < 1) throw new RangeError(`top 은 1 이상의 정수여야 한다: ${top}`);
   let chunks = 0; // splatScene.ts:L69 _chunks
   let refined = 0; // splatScene.ts:L70 _refined
   const bySegment = new Map(); // splatScene.ts:L74
   // splatReveal.ts:L40 pending. 원본은 슬랩(coreSegment % regionCount, L77) 단위 Float32Array 인데
-  // 이 모형은 슬랩 접힘을 생략해 구간 단위 Map 에 float64 로 둔다(setFrame 전 regionCount = 1, L41).
+  // 이 모형은 슬랩 접힘을 생략해 구간 단위 Map 에 float64 로 둔다(원본은 setFrame(statusViewer.ts:L545)으로 regionCount = boundaries+1(splatReveal.ts:L63-L65)이 정해진 뒤 도착을 받고, 구간 번호 ≥ regionCount 는 접힌다).
   // 생략한 두 가지는 cases.mjs NOT_MODELED 에 이름을 적어 두었다.
   const pending = new Map();
   for (const [segment, ourLevel] of arrivals) {
