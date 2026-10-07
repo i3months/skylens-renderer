@@ -38,7 +38,7 @@ test('state: 고도는 [minAltM, maxAltM] 로 잘린다', () => {
 test('뒤로는 앞의 반대 방향', () => {
   const s = createPoseState({ pos: [0, 0, 50], yaw: 0, maxDtSec: 1 });
   s.step(0.5, hold({ back: true }));
-  near(s.pose().pos[1], -5);
+  near(s.pose().pos[1], -4);
 });
 
 test('방위 회전: 오른쪽 키는 +, 왼쪽 키는 −', () => {

@@ -3,8 +3,8 @@
 // 이 파일은 서명·자료형·대응표와 순수 판정 한 개(isDrapeAligned)만 가진다. 구현은 client/tower/<모듈>/index.mjs.
 //
 // 원본 대조 표시: 대응표는 원본(NET-Challenge-S13/skylens 0122bd4)과 대조를 마쳤다(T15.0L). source 열의 줄 번호는 그 체크아웃을 연 사람 대조 결과다.
-// origin 'checked' 는 원본 줄을 대고 메서드 이름·인자를 맞춘 행이다. 'estimated' 는 input·streaming·fallback 세 행뿐이다:
-//   input = 원본 키 입력이 towerViewer.ts 밖(manualControl.ts·pathFollower.ts)에 있고 속도 상수가 다르다.
+// origin 'checked' 는 원본 줄을 대고 메서드 이름·인자를 맞춘 행이다. 'estimated' 는 streaming·fallback 두 행뿐이다:
+//   input = 원본 키 입력이 towerViewer.ts 밖(manualControl.ts·pathFollower.ts)에 있다. 속도 상수는 원본과 같게 맞췄다(T15.I) — 'checked'.
 //   streaming = 원본 요청 로직이 towerViewer.ts 밖(shared/viewer/sources/streamSource.ts)에 있고 반경·동시성·주기 상수가 다르다.
 //   fallback = 원본에 없는 신규.
 //
@@ -20,7 +20,7 @@ export const CONTROLVIEW_METHOD_MAP = Object.freeze([
   { role: '지형 그리기(8시점 SSIM ≥ 0.95)', source: 'towerViewer.ts:204,220-228,420-441 (constructor 지형 메시·addStreamedTerrain)', module: 'terrain', fn: 'createTerrainLayer', origin: 'checked' },
   { role: '드레이프 그리기(정합 ≤ 1 px)', source: 'towerViewer.ts:220-240,318-330 (constructor/applyMode 위성 드레이프)', module: 'drape', fn: 'createDrapeLayer', origin: 'checked' },
   { role: '건물 그리기(3옵션 전환, 재요청 없음)', source: 'towerViewer.ts:293-301,304-306,343-356,448-498 (setDisplay·display·aerialAvailable·applyMode·addSurroundBuildings)', module: 'buildings', fn: 'createBuildingsLayer', origin: 'checked' },
-  { role: '방향키 조향·Q/E 고도 로컬 처리', source: 'drones/manualControl.ts:13-28·pathFollower.ts:130-144 (키 입력, towerViewer.ts 밖; 속도 상수 다름)', module: 'input', fn: 'createTowerInput', origin: 'estimated' },
+  { role: '방향키 조향·Q/E 고도 로컬 처리', source: 'drones/manualControl.ts:13-28·pathFollower.ts:130-144 (키 입력, towerViewer.ts 밖; 상수는 shared/viewer/config.ts:71·73·75 와 같음)', module: 'input', fn: 'createTowerInput', origin: 'checked' },
   { role: '추적 카메라(기존 감쇠 의미)', source: 'towerViewer.ts:734-752,769-787 (update·updateChaseCamera)', module: 'chase', fn: 'createChaseCamera', origin: 'checked' },
   { role: '드론·경로·탐지 마커(ENU 일치 ≤ 1 cm)', source: 'towerViewer.ts:504-560,563-574,586-638,674-686,734-752 (ensureRig·pruneRigs·setRoute·debugRoute·update)', module: 'overlay', fn: 'createTowerOverlay', origin: 'checked' },
   { role: '시점 이동에 따른 조각 요청', source: 'shared/viewer/sources/streamSource.ts:23-36,85,99 (LOAD_RADIUS 34·EVICT_RADIUS 74.8·MAX_CONCURRENT 2·TICK_MS 900; 85·99 가 addStreamedTerrain·addSurroundBuildings 호출; 요청 상수 다름, towerViewer.ts 밖)', module: 'streaming', fn: 'createTowerStreaming', origin: 'estimated' },

@@ -58,7 +58,8 @@ function makeRecording(seed) {
 }
 
 // 입력 층 초기 위치를 고정해 손계산이 되게 한다(타일 (0,0) 한가운데, 고도 50 m, 북향).
-const newView = () => createControlView({ input: { pos: [32, 32, 50], yaw: 0 } });
+// 손계산 표는 속도 10 m/s·선회 1 rad/s 로 계산했다(기본값은 원본 8.0·0.95, 계약 시험이 단언).
+const newView = () => createControlView({ input: { pos: [32, 32, 50], yaw: 0, speedMps: 10, yawRateRad: 1 } });
 
 test('같은 녹화를 새 view 두 개로 재생하면 Snapshot[] 이 JSON 으로 완전히 같다', () => {
   const rec = makeRecording(20240615);

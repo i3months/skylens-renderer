@@ -33,10 +33,10 @@ test('index: 네트워크·타이머를 쓰지 않는다', () => {
 });
 
 test('index: dt 상한과 반대 키 상쇄', () => {
-  // dt 0.5 s 는 상한 0.25 s 로 잘린다: y = 10 * 0.25 = 2.5.
+  // dt 0.5 s 는 상한 0.25 s 로 잘린다: y = 8 * 0.25 = 2.
   const a = createTowerInput({ pos: [0, 0, 10], yaw: 0 });
   a.keyDown('ArrowUp');
-  near(a.step(0.5).pos[1], 2.5);
+  near(a.step(0.5).pos[1], 2);
   // 좌우 동시면 방위 불변.
   const b = createTowerInput({ pos: [0, 0, 10], yaw: 0.3 });
   b.keyDown('ArrowLeft');

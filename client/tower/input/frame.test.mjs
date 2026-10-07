@@ -73,20 +73,20 @@ function judge(r, moved) {
   return { changed, tOk, dt, want };
 }
 
-test('ArrowUp → step(0.2) → render 가 같은 프레임에서 step 이전 render 와 달라지고 t 가 2 m 앞만큼 변한다', () => {
+test('ArrowUp → step(0.2) → render 가 같은 프레임에서 step 이전 render 와 달라지고 t 가 1.6 m 앞만큼 변한다', () => {
   const rig = makeRig();
   const r = frame(rig, 'ArrowUp', 0.2, 'ok');
   assert.ok(nonEmpty(r.before) && nonEmpty(r.after), '합성 지형이 화면에 그려져야 한다');
   const pos = rig.input.pose().pos;
   near(pos[0], START[0], 'x 불변');
-  near(pos[1], START[1] + 2, 'y 는 speed 10 m/s × 0.2 s = 2 m 북쪽으로');
+  near(pos[1], START[1] + 1.6, 'y 는 speed 8 m/s × 0.2 s = 1.6 m 북쪽으로');
   near(pos[2], START[2], 'z 불변');
-  const j = judge(r, [0, 2, 0]);
+  const j = judge(r, [0, 1.6, 0]);
   assert.ok(j.changed, 'step 후 render 가 step 전과 달라야 한다');
   assert.ok(j.tOk, `Δt ${JSON.stringify(j.dt)} 가 −R·[0,2,0] ${JSON.stringify(j.want)} 와 같아야 한다`);
-  // 실제로 2 m 만큼 변했다(0 이 아님).
+  // 실제로 1.6 m 만큼 변했다(0 이 아님).
   const len = Math.hypot(...j.dt);
-  assert.ok(len > 1.99 && len < 2.01, `|Δt| = ${len}`);
+  assert.ok(len > 1.59 && len < 1.61, `|Δt| = ${len}`);
   // 앞으로 다가감(Δt[2] < 0), 동서 이동 없음(|Δt[0]| ≈ 0)
   assert.ok(j.dt[2] < 0, `Δt[2] = ${j.dt[2]} 는 음수여야 함(앞으로 다가감)`);
   assert.ok(Math.abs(j.dt[0]) <= EPS, `|Δt[0]| = ${Math.abs(j.dt[0])} 는 거의 0이어야 함`);
@@ -95,7 +95,7 @@ test('ArrowUp → step(0.2) → render 가 같은 프레임에서 step 이전 re
 test('변이: step 을 render 뒤에 호출하면 (1)의 판정이 실패한다(영상 동일, t 불변)', () => {
   const rig = makeRig();
   const r = frame(rig, 'ArrowUp', 0.2, 'late');
-  const j = judge(r, [0, 2, 0]);
+  const j = judge(r, [0, 1.6, 0]);
   assert.equal(j.changed, false, '늦게 step 하면 render 가 step 전과 같다');
   assert.equal(j.tOk, false, '늦게 step 하면 t 가 이동량만큼 변하지 않았다');
   // 한 프레임 뒤에야 반영된다(그래서 같은 프레임 동기 호출이 계약이다).

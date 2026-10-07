@@ -2,7 +2,7 @@
 // 방향키 조향·Q/E 고도는 서버 왕복 없이 로컬에서 처리한다(결정 0001: 경로 B). 이 층은 네트워크·타이머를 쓰지 않는다.
 // 좌표: GeoAnchor 기준 ENU(x=동, y=북, z=위), 1 unit = 1 m. 방위 yaw: 0 = 북(+y), 시계 방향(동쪽 쪽)이 +, rad.
 // 원본 대조 완료(0122bd4, T15.0L): 키 입력은 drones/manualControl.ts:13-28·pathFollower.ts:130-144 에 있고 속도 상수가 다르다
-// (원본 manualSpeed 8.0·manualAltitudeSpeed 5.0·manualYawRate 0.95, shared/viewer/config.ts:71·73·75). 그래서 origin 은 'estimated'. 값은 모두 opts 로 바꿀 수 있다.
+// (원본 manualSpeed 8.0·manualAltitudeSpeed 5.0·manualYawRate 0.95, shared/viewer/config.ts:71·73·75). 기본값을 원본 값에 맞췄다(T15.I, 2026-10-07 사람 결정). 값은 모두 opts 로 바꿀 수 있다.
 // 원칙: 입력은 같은 프레임 안에 카메라에 반영된다(keyDown → step(dt) → camera() 가 한 프레임 안의 동기 호출이고 await·타이머가 없다).
 
 /** 키(KeyboardEvent.code 기준)와 동작. 같은 축의 반대 키가 함께 눌리면 서로 상쇄(0). */
@@ -12,7 +12,7 @@ export const TOWER_INPUT_KEYS = Object.freeze({
 
 /** 기본 값. 속도 단위는 초당. */
 export const TOWER_INPUT_DEFAULTS = Object.freeze({
-  yawRateRad: 1.0, speedMps: 10, altRateMps: 5, minAltM: 1, maxAltM: 500, pitchRad: -0.3, fovYRad: 0.9, maxDtSec: 0.25,
+  yawRateRad: 0.95, speedMps: 8.0, altRateMps: 5, minAltM: 1, maxAltM: 500, pitchRad: -0.3, fovYRad: 0.9, maxDtSec: 0.25,
 });
 
 /** 입력 층 서명. */
