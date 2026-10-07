@@ -120,6 +120,13 @@ describe('원본 카운터·노출과 서버 기계 대응', () => {
   }
 });
 
+describe('replayOrigin 인자 검사', () => {
+  test('top 이 정수·1 이상이 아니면 RangeError', () => {
+    for (const top of [NaN, null, 0, -1, 1.5, '4']) assert.throws(() => replayOrigin([], { top }), RangeError, String(top));
+    assert.doesNotThrow(() => replayOrigin([], { top: 1 }));
+  });
+});
+
 describe('원본과 어긋나는 점(제품 코드는 고치지 않고 기록만)', () => {
   test('불일치 기록은 2건 이상이고 모두 이름·원본 줄·우리 쪽을 적는다', () => {
     assert.ok(MISMATCHES.length >= 2);
@@ -133,6 +140,7 @@ describe('원본과 어긋나는 점(제품 코드는 고치지 않고 기록만
 
   test('현재 동작 고정: final 판정 — 원본 3칸(top 3)이면 우리 수준 2 가 final, 우리 기계는 아니다', () => {
     const x = MISMATCHES.find((m) => m.ourLevel !== undefined);
+    assert.ok(x, 'ourLevel 을 가진 불일치 항목이 있어야 한다');
     const arrivals = [[0, x.ourLevel]];
     // 4칸 가정(top 4)에서는 원본도 final 아님, 알파 0.95. 기록된 대조표의 기대다.
     const four = replayOrigin(arrivals);
@@ -149,7 +157,8 @@ describe('원본과 어긋나는 점(제품 코드는 고치지 않고 기록만
   });
 
   const limit = MISMATCHES.find((m) => m.segmentId !== undefined);
-  test(`현재 동작 고정: ${limit.name}`, () => {
+  test(`현재 동작 고정: ${limit?.name}`, () => {
+    assert.ok(limit, 'segmentId 를 가진 불일치 항목이 있어야 한다');
     // 원본은 구간 번호 상한이 없다(segmenter.ts:L134-L137, Math.floor 만). 모형에 상한을 넣으면 아래가 실패한다.
     for (const id of [limit.segmentId, 2 ** 31, Number.MAX_SAFE_INTEGER]) {
       const o = replayOrigin([[id, 0], [id, 1]]);

@@ -13,6 +13,7 @@ function finiteNum(v, name) {
   return v;
 }
 
+// 부호·범위 검사의 단일 출처. index.mjs 의 createTowerInput 은 이 검사를 그대로 통과시킨다(index.test.mjs 가 고정).
 function checkOpts(opts) {
   if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) throw new TypeError('opts 는 객체여야 한다');
   const c = { ...TOWER_INPUT_DEFAULTS };

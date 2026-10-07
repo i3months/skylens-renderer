@@ -58,17 +58,18 @@ test('원본 대조 T15.0L: checked 행은 원본 줄을 대고, estimated 는 s
   }
   const estimated = CONTROLVIEW_METHOD_MAP.filter((r) => r.origin === 'estimated').map((r) => r.module);
   // input: 원본 키 입력은 towerViewer.ts 가 아니라 drones/manualControl.ts:13-28·pathFollower.ts:130-144 에 있고,
-  // 상수는 원본 manualSpeed 8.0·manualAltitudeSpeed 5.0·manualYawRate 0.95(shared/viewer/config.ts:71·73·75)와 같게 맞췄다(T15.I) → checked.
-  // streaming: 원본 요청 로직은 shared/viewer/sources/streamSource.ts:23-36,85,99 에 있고 상수가 다르다
-  //   (원본 LOAD_RADIUS 34·EVICT_RADIUS 74.8·MAX_CONCURRENT 2·TICK_MS 900, 우리 maxDistM 1500·maxInflight 16·타이머 없음).
+  // 숫자는 원본 manualSpeed 8.0·manualAltitudeSpeed 5.0·manualYawRate 0.95(src/shared/viewer/config.ts:71·73·75)에 맞췄다(원본 값은 world units/s, 장면 축척 s 의존, 숫자만 맞춤, SPEC 2026-10-07 ②) → checked.
+  // streaming: 원본 요청 로직은 shared/viewer/sources/streamSource.ts:23-36,85,99 에 있고 단위·기준이 다르다
+  //   (원본 LOAD_RADIUS 34(world units, 장면 축척 의존)·EVICT_RADIUS 74.8·MAX_CONCURRENT 2·TICK_MS 900, 우리 maxDistM 1500·maxInflight 16·타이머 없음).
   // fallback: 원본에 없는 신규.
   assert.deepEqual(estimated, ['streaming', 'fallback']);
   const streaming = CONTROLVIEW_METHOD_MAP.find((r) => r.module === 'streaming');
   assert.match(streaming.source, /streamSource\.ts:23-36,85,99/);
   const input = CONTROLVIEW_METHOD_MAP.find((r) => r.module === 'input');
-  assert.match(input.source, /pathFollower\.ts:130-144/);
+  assert.match(input.source, /^drones\/manualControl\.ts:13-28·pathFollower\.ts:130-144 /);
+  assert.match(input.source, /config\.ts:71·73·75/);
   assert.equal(input.origin, 'checked');
-  // 원본 상수(0122bd4 shared/viewer/config.ts:71·73·75)와 같다
+  // 원본 숫자(0122bd4 src/shared/viewer/config.ts:71·73·75, 단위는 world units/s)와 같다(숫자만)
   assert.equal(TOWER_INPUT_DEFAULTS.speedMps, 8.0);
   assert.equal(TOWER_INPUT_DEFAULTS.yawRateRad, 0.95);
   assert.equal(TOWER_INPUT_DEFAULTS.altRateMps, 5);

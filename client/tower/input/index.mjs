@@ -30,6 +30,8 @@ function checkOpts(opts) {
       throw new RangeError(`${k} 는 유한한 수여야 한다`);
     }
   }
+  // 부호·범위 검사(maxDtSec>0, 속도류>=0, minAltM<=maxAltM 등)는 state.mjs 의 checkOpts 에만 둔다(단일 출처).
+  // createPoseState 가 던지는 RangeError 가 그대로 전파된다. 여기에 같은 검사를 다시 두지 않는다.
   return opts;
 }
 

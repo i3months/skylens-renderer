@@ -4,7 +4,7 @@
 //   origin: 이 사례의 기대값을 정하는 원본 코드 줄. 모든 사례에 있다.
 //           기대값은 그 줄의 논리에서 손으로 끌어냈다(우리 구현을 돌려 얻지 않았다).
 //           같은 줄을 옮긴 기준 모형(origin.mjs)이 기대값과 같은지 시험이 따로 본다.
-// 수준 번호: 우리 0..3 = 원본 1..4(ladder.ts:L8-L9, L41-L43). final 은 원본 level >= top(orchestrator.ts:L343).
+// 수준 번호: 우리 0..3 = 원본 1..4(4칸 가정일 때만, 원본은 1..top)(ladder.ts:L8-L9, L41-L43). final 은 원본 level >= top(orchestrator.ts:L343).
 // top: 원본 top 은 설정한 사다리 길이(ladder.ts:L49-L51)이고 원본 기본은 3칸(config.ts:L97 '1000,7000,30000')이다.
 //   이 대조표는 SKYLENS_CORE_LEVEL_STEPS=250,1000,3500,7000 4칸 가정(top 4)이며 기본 설정의 기대가 아니다.
 //   기본 3칸에서는 우리 수준 2 가 final 이 되어 L(2) 사례들의 final:false 가 달라진다(MISMATCHES 'final 판정').
@@ -253,7 +253,7 @@ export const MISMATCHES = Object.freeze([
 export const NOT_MODELED = Object.freeze([
   {
     name: '슬랩 접힘 생략: 원본 노출 목표는 coreSegment % regionCount 슬랩 단위, 모형은 구간 단위',
-    origin: O('splatReveal.ts:L41, L77 (setFrame 전 regionCount = 1 이면 모든 구간이 한 슬랩으로 접힌다)'),
+    origin: O('splatReveal.ts:L41, L77 (setFrame(statusViewer.ts:L545)으로 regionCount = boundaries+1(splatReveal.ts:L63-L65)이 정해진 뒤 도착을 받는다. 구간 번호 ≥ regionCount 는 접힌다)'),
   },
   {
     name: 'float32 저장 생략: 원본 pending 은 Float32Array 라 0.95 가 0.949999988 로 저장, 모형은 float64',

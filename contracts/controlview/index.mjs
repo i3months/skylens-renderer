@@ -3,9 +3,10 @@
 // 이 파일은 서명·자료형·대응표와 순수 판정 한 개(isDrapeAligned)만 가진다. 구현은 client/tower/<모듈>/index.mjs.
 //
 // 원본 대조 표시: 대응표는 원본(NET-Challenge-S13/skylens 0122bd4)과 대조를 마쳤다(T15.0L). source 열의 줄 번호는 그 체크아웃을 연 사람 대조 결과다.
-// origin 'checked' 는 원본 줄을 대고 메서드 이름·인자를 맞춘 행이다. 'estimated' 는 streaming·fallback 두 행뿐이다:
-//   input = 원본 키 입력이 towerViewer.ts 밖(manualControl.ts·pathFollower.ts)에 있다. 속도 상수는 원본과 같게 맞췄다(T15.I) — 'checked'.
-//   streaming = 원본 요청 로직이 towerViewer.ts 밖(shared/viewer/sources/streamSource.ts)에 있고 반경·동시성·주기 상수가 다르다.
+// origin 'checked' 는 원본 줄을 대고 메서드 이름·인자를 맞춘 행이다(동작 동일 보증이 아니다: input 적분은 중간 방위 이동(client/tower/input/state.mjs:70)이라
+// 원본의 회전 뒤 이동(pathFollower.ts:130-144)과 다르고, 이 차이는 SPEC 2026-10-07 ② 가 수용했다). 'estimated' 는 streaming·fallback 두 행뿐이다:
+//   input = 원본 키 입력이 towerViewer.ts 밖(manualControl.ts·pathFollower.ts)에 있다. 원본 속도 값은 world units/s(장면 축척 s 의존)이고 숫자만 맞췄다(T15.I, SPEC 2026-10-07 ②) — 'checked'.
+//   streaming = 원본 요청 로직이 towerViewer.ts 밖(shared/viewer/sources/streamSource.ts)에 있고 반경(world units)·동시성·주기의 단위·기준이 다르다.
 //   fallback = 원본에 없는 신규.
 //
 // 좌표: GeoAnchor 기준 ENU(x=동, y=북, z=위), 1 unit = 1 m. 카메라: contracts/raster 규약(X_c = R·X_w + t).
@@ -20,10 +21,10 @@ export const CONTROLVIEW_METHOD_MAP = Object.freeze([
   { role: '지형 그리기(8시점 SSIM ≥ 0.95)', source: 'towerViewer.ts:204,220-228,420-441 (constructor 지형 메시·addStreamedTerrain)', module: 'terrain', fn: 'createTerrainLayer', origin: 'checked' },
   { role: '드레이프 그리기(정합 ≤ 1 px)', source: 'towerViewer.ts:220-240,318-330 (constructor/applyMode 위성 드레이프)', module: 'drape', fn: 'createDrapeLayer', origin: 'checked' },
   { role: '건물 그리기(3옵션 전환, 재요청 없음)', source: 'towerViewer.ts:293-301,304-306,343-356,448-498 (setDisplay·display·aerialAvailable·applyMode·addSurroundBuildings)', module: 'buildings', fn: 'createBuildingsLayer', origin: 'checked' },
-  { role: '방향키 조향·Q/E 고도 로컬 처리', source: 'drones/manualControl.ts:13-28·pathFollower.ts:130-144 (키 입력, towerViewer.ts 밖; 상수는 shared/viewer/config.ts:71·73·75 와 같음)', module: 'input', fn: 'createTowerInput', origin: 'checked' },
+  { role: '방향키 조향·Q/E 고도 로컬 처리', source: 'drones/manualControl.ts:13-28·pathFollower.ts:130-144 (키 입력, towerViewer.ts 밖; 원본 값은 world units/s(장면 축척 s 의존), 숫자만 맞춤(SPEC 2026-10-07 ②): src/shared/viewer/config.ts:71·73·75)', module: 'input', fn: 'createTowerInput', origin: 'checked' },
   { role: '추적 카메라(기존 감쇠 의미)', source: 'towerViewer.ts:734-752,769-787 (update·updateChaseCamera)', module: 'chase', fn: 'createChaseCamera', origin: 'checked' },
   { role: '드론·경로·탐지 마커(ENU 일치 ≤ 1 cm)', source: 'towerViewer.ts:504-560,563-574,586-638,674-686,734-752 (ensureRig·pruneRigs·setRoute·debugRoute·update)', module: 'overlay', fn: 'createTowerOverlay', origin: 'checked' },
-  { role: '시점 이동에 따른 조각 요청', source: 'shared/viewer/sources/streamSource.ts:23-36,85,99 (LOAD_RADIUS 34·EVICT_RADIUS 74.8·MAX_CONCURRENT 2·TICK_MS 900; 85·99 가 addStreamedTerrain·addSurroundBuildings 호출; 요청 상수 다름, towerViewer.ts 밖)', module: 'streaming', fn: 'createTowerStreaming', origin: 'estimated' },
+  { role: '시점 이동에 따른 조각 요청', source: 'shared/viewer/sources/streamSource.ts:23-36,85,99 (LOAD_RADIUS 34·EVICT_RADIUS 74.8 는 world units(장면 축척 의존)·MAX_CONCURRENT 2·TICK_MS 900; 85·99 가 addStreamedTerrain·addSurroundBuildings 호출; 시작 skylens_core/control.ts:238; 단위·기준 다름, 기준: 드론 위치(원본) 대 시야(우리), towerViewer.ts 밖)', module: 'streaming', fn: 'createTowerStreaming', origin: 'estimated' },
   { role: '폴백(2D 지도, 확정(SPEC §5, 사람 결정 2026-10-06))', source: '(신규)', module: 'fallback', fn: 'createTowerFallback', origin: 'estimated' },
   { role: '조립(어댑터 본체)', source: 'towerViewer.ts:204-267,293-297,299-301,304-306,420-441,448-498,586-638,653-664,668-670,674-686,734-752,789-795,797-810 (constructor·setDisplay·display·aerialAvailable·addStreamedTerrain·addSurroundBuildings·setRoute·debugTopDown·debugScene·debugRoute·update·resize·dispose)', module: 'e2e', fn: 'createControlView', origin: 'checked' },
 ]);
