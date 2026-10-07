@@ -5,13 +5,14 @@
 //   (ii) 솎기만 모턴 등간격(createSpatialThinner)으로 되돌림, 배분은 채택안 그대로.
 //   (i)+(ii) 동시 되돌림은 이전 채택안이고 그 최소 SSIM 0.5974 를 사실로 고정한다.
 // 문턱의 근거(측정값에 사후로 맞추지 않는다): flat_boxes 시드 1..6 에서 위 네 구성의 최소 SSIM 을 쟀다.
-//   채택안 최소 SSIM 의 시드 간 평균 0.7423, 표본 표준편차 0.0304 이지만 이 산포는 장면 난이도(시드마다 점 배치가 다름)에서
-//   오고 변이 구성도 같은 만큼 같이 움직인다. 변이 효과의 잡음은 같은 시드 안의 짝 차이(채택안 − 변이)의 시드 간 산포다.
-//   그 표본 표준편차 σ 로 문턱 = 2σ 를 쓴다(아래 SEED_DIFFS 에서 시험이 직접 계산). 차이가 문턱 이상이면 시드를 바꿔도 우연한 흔들림이 아니다.
+//   이 시험은 시드 1 한 점에서 도는 결정적 시험이라 확률적 잡음이 없다. 그래서 '2σ 이면 우연이 아니다' 식의 유의성 주장은 하지 않는다.
+//   시드 간 짝 차이(채택안 − 변이)의 산포 σ 는 측정 잡음이 아니라 장면(점 배치)에 따른 변이 효과의 이질성이다.
+//   문턱 = 평균 − kσ (시드 간 효과의 하한 추정). k=2 는 측정 전에 정한 관용값이고 측정에 맞춰 고르지 않았다.
+//   채택안이 변이와 같아지는 퇴행이 나면 차이가 0 근처로 떨어져 이 하한을 못 넘는다. 시드 1 의 차이는 시드 6조 모두와 마찬가지로 하한보다 크다.
 // 시드별 짝 차이(채택안 − 변이, 시드 1..6):
 const SEED_DIFFS = {
-  thin: [0.0186, 0.0306, 0.0228, 0.0279, 0.0373, 0.0239], // 솎기만 모턴 등간격: 평균 0.0269, σ 0.0066 → 문턱 0.0132
-  alloc: [0.0793, 0.0886, 0.0665, 0.0890, 0.0989, 0.0641], // 배분만 원본 비례: 평균 0.0811, σ 0.0137 → 문턱 0.0275
+  thin: [0.0186, 0.0306, 0.0228, 0.0279, 0.0373, 0.0239], // 솎기만 모턴 등간격: 평균 0.0269, σ 0.0066 → 문턱 0.0137
+  alloc: [0.0793, 0.0886, 0.0665, 0.0890, 0.0989, 0.0641], // 배분만 원본 비례: 평균 0.0811, σ 0.0137 → 문턱 0.0536
 };
 // 시험 시간: 4구성(수준 3 만 그림). `node --test bench/status_quality/s6_fb_mutation.test.mjs`
 import test from 'node:test';
@@ -25,7 +26,8 @@ const PREV_MIN_SSIM = 0.5974; // 이전 채택안(원본 비례 배분 + 모턴 
 const K = 2;
 const f4 = (x) => x.toFixed(4);
 const sigma = (a) => { const m = a.reduce((s, x) => s + x, 0) / a.length; return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / (a.length - 1)); };
-const THRESH = { thin: K * sigma(SEED_DIFFS.thin), alloc: K * sigma(SEED_DIFFS.alloc) };
+const mean = (a) => a.reduce((s, x) => s + x, 0) / a.length;
+const THRESH = { thin: mean(SEED_DIFFS.thin) - K * sigma(SEED_DIFFS.thin), alloc: mean(SEED_DIFFS.alloc) - K * sigma(SEED_DIFFS.alloc) };
 
 const opts = { count: 2500000, sceneSeed: 1, levels: [3] };
 const top = (x) => x.levels[0];
@@ -40,14 +42,14 @@ test('채택안 고정: 최소 SSIM 0.7579(±0.0005), 구간 ≤ 3,000,000 B', (
   assert.ok(base.thinned && base.bytes <= S6_BYTES);
 });
 
-test('변이 (i): 배분만 원본 비례로 되돌리면 최소 SSIM 이 2σ(시드 짝 차이) 이상 낮다', (t) => {
+test('변이 (i): 배분만 원본 비례로 되돌리면 최소 SSIM 이 시드 간 효과 하한(평균 − 2σ) 이상 낮다', (t) => {
   const d = top(base).ssimMin - top(mutAlloc).ssimMin;
   t.diagnostic(`배분 변이 ${f4(top(mutAlloc).ssimMin)}, 차이 ${f4(d)}, 문턱 ${f4(THRESH.alloc)}, 점 ${mutAlloc.levelPoints.join('/')}, ${mutAlloc.bytes} B`);
   assert.ok(mutAlloc.bytes <= S6_BYTES);
   assert.ok(d >= THRESH.alloc, `차이 ${d} < 문턱 ${THRESH.alloc}`);
 });
 
-test('변이 (ii): 솎기만 모턴 등간격으로 되돌리면 최소 SSIM 이 2σ(시드 짝 차이) 이상 낮다', (t) => {
+test('변이 (ii): 솎기만 모턴 등간격으로 되돌리면 최소 SSIM 이 시드 간 효과 하한(평균 − 2σ) 이상 낮다', (t) => {
   const d = top(base).ssimMin - top(mutThin).ssimMin;
   t.diagnostic(`솎기 변이 ${f4(top(mutThin).ssimMin)}, 차이 ${f4(d)}, 문턱 ${f4(THRESH.thin)}, 점 ${mutThin.levelPoints.join('/')}, ${mutThin.bytes} B`);
   assert.ok(mutThin.bytes <= S6_BYTES);
@@ -60,9 +62,9 @@ test('이전 채택안(배분·솎기 둘 다 되돌림) 최소 SSIM 0.5974 고�
   assert.ok(prev.bytes <= S6_BYTES);
 });
 
-test('문턱 자체의 타당성: 시드 6조 모두에서 짝 차이가 양수이고 문턱은 시드 평균 차이보다 낮다', () => {
+test('상수 일관성: 시드 6조 모두 짝 차이가 양수이고 모든 시드의 차이가 문턱(평균 − 2σ) 이상이다', () => {
   for (const key of ['thin', 'alloc']) {
     assert.ok(SEED_DIFFS[key].every((d) => d > 0));
-    assert.ok(THRESH[key] < SEED_DIFFS[key].reduce((s, x) => s + x, 0) / SEED_DIFFS[key].length);
+    assert.ok(SEED_DIFFS[key].every((d) => d >= THRESH[key]));
   }
 });
