@@ -92,7 +92,8 @@ function ladder(cloud) {
  * flat_boxes 원본 점 전부(4수준 사다리)를 S6 송출 경로로 보냈을 때의 바이트와, 고른 수준만 그린 8시점 SSIM.
  * 수준 3(최고 수준 = 원본 점 전부)이 정상 상태 화면이다.
  * @param {{count?:number, sceneSeed?:number, levels?:number[], pointSizeScale?:number, bwOnly?:boolean}} [opts]
- *   count: 최고 수준 점 수(기본 2,500,000 = SPEC 규모). sceneSeed: flat_boxes 시드(기본 1). levels: SSIM 을 잴 수준(기본 [3]).
+ *   count: 최고 수준 점 수(기본 2,500,000 = SPEC 규모). sceneSeed: 장면 시드(기본 1). levels: SSIM 을 잴 수준(기본 [3]).
+ *   variant: 'flat_boxes'(기본) | 'depth_noise' | 'buildings' (T13.HQ 계약 — 하위 작업 3 이 구현, 알 수 없는 값은 RangeError).
  * @returns {Promise<{bytes:number, levelPoints:number[], levelBytes:number[],
  *   levels:{level:number, points:number, ssimMin:number, ssimMean:number, ssims:number[], sentMean:number}[]}>}
  */
