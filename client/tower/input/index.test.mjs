@@ -66,3 +66,20 @@ test('index: keyDown → releaseAll → step 뒤 위치 불변', () => {
   assert.deepEqual(p.pos, [0, 0, 10]);
   assert.deepEqual(inp.pose().pos, [0, 0, 10]);
 });
+
+test('index: opts 범위 위반은 RangeError', () => {
+  assert.throws(() => createTowerInput({ maxDtSec: -1 }), RangeError);
+  assert.throws(() => createTowerInput({ maxDtSec: 0 }), RangeError);
+  assert.throws(() => createTowerInput({ minAltM: 10, maxAltM: 5 }), RangeError);
+  assert.throws(() => createTowerInput({ speedMps: -1 }), RangeError);
+  assert.throws(() => createTowerInput({ yawRateRad: -0.1 }), RangeError);
+  assert.throws(() => createTowerInput({ altRateMps: -5 }), RangeError);
+  // 경계값(minAltM = maxAltM)은 허용한다.
+  assert.doesNotThrow(() => createTowerInput({ minAltM: 5, maxAltM: 5 }));
+});
+
+test('index: 기본값 ArrowRight step(0.2) → yaw 0.19 (기본 선회율 0.95)', () => {
+  const inp = createTowerInput({ pos: [0, 0, 10], yaw: 0 });
+  inp.keyDown('ArrowRight');
+  near(inp.step(0.2).yaw, 0.19);
+});
