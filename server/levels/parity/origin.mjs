@@ -1,4 +1,5 @@
 // skylens 원본(NET-Challenge-S13/skylens 0122bd4) 클라이언트 도착 기록을 줄 단위로 옮긴 기준 모형(T10.10L).
+// 출처·라이선스: NET-Challenge-S13/skylens (MIT License, Copyright (c) 2026 마당을 나온 드론 @ 넷챌린지 캠프 시즌 13).
 // 대조표 기대값이 원본 동작과 같은지 따로 확인하는 데만 쓴다. 제품 기계(server/levels/state)를 부르지 않는다.
 //
 // 수준 번호 대응: 원본 수준은 사다리의 1부터 센 자리(ladder.ts:L8-L9, L41-L43), 우리 수준은 0..3.
