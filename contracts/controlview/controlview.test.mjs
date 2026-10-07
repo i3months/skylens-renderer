@@ -7,7 +7,7 @@ test('대응표 자기 일관성: 모듈 9개, 모듈·fn 중복 없음', () => 
   assert.deepEqual(mods, ['buildings', 'chase', 'drape', 'e2e', 'fallback', 'input', 'overlay', 'streaming', 'terrain']);
   for (const r of CONTROLVIEW_METHOD_MAP) {
     assert.equal(typeof r.fn, 'string');
-    assert.equal(r.origin, 'estimated');
+    assert.equal(typeof r.origin, 'string');
   }
   assert.equal(new Set(CONTROLVIEW_METHOD_MAP.map((r) => r.fn)).size, 9);
   for (const bad of ['nope', undefined, '../x', Object.create(null)]) assert.throws(() => controlviewModulePath(bad), RangeError);
@@ -23,6 +23,43 @@ test('대응표 자기 일관성: 모듈 9개, 모듈·fn 중복 없음', () => 
   // CONTROLVIEW_LIMITS 는 동결됨
   assert.equal(Object.isFrozen(CONTROLVIEW_LIMITS), true);
   assert.deepEqual({ ...CONTROLVIEW_LIMITS }, { bundleBytes: 300_000, initialBytes: 15_000_000, segmentBytes: 3_000_000 });
+});
+
+// T15.0L: skylens 원본(NET-Challenge-S13/skylens 0122bd4) src/skylens_core/controlview/towerViewer.ts
+// TowerViewer 클래스(:146-811)의 공개 멤버. private 멤버는 뺐다.
+const ORIGINAL_PUBLIC = [
+  'constructor', // :204-267
+  'setDisplay', // :293-297
+  'display', // :299-301 getter
+  'aerialAvailable', // :304-306 getter
+  'addStreamedTerrain', // :420-441
+  'addSurroundBuildings', // :448-498
+  'setRoute', // :586-638
+  'debugTopDown', // :653-664
+  'debugScene', // :668-670
+  'debugRoute', // :674-686
+  'update', // :734-752
+  'resize', // :789-795
+  'dispose', // :797-810
+];
+
+test('원본 대조 T15.0L: 조립 행 source 가 원본 공개 멤버를 정확히 그 목록대로 나열한다', () => {
+  const e2e = CONTROLVIEW_METHOD_MAP.find((r) => r.module === 'e2e');
+  assert.ok(e2e);
+  assert.equal(e2e.origin, 'checked');
+  const listed = /\(([^)]*)\)\s*$/.exec(e2e.source)[1].split('·');
+  assert.deepEqual(listed, ORIGINAL_PUBLIC);
+});
+
+test('원본 대조 T15.0L: checked 행은 원본 줄을 대고, estimated 는 input·fallback 만 남는다', () => {
+  for (const r of CONTROLVIEW_METHOD_MAP) {
+    if (r.origin === 'checked') assert.match(r.source, /^towerViewer\.ts:\d/, r.module);
+  }
+  const estimated = CONTROLVIEW_METHOD_MAP.filter((r) => r.origin === 'estimated').map((r) => r.module);
+  // input: 원본 키 입력은 towerViewer.ts 가 아니라 drones/manualControl.ts:13-28·pathFollower.ts:130-143 에 있고,
+  // 속도 상수가 다르다(원본 manualSpeed 8.0·manualYawRate 0.95, shared/viewer/config.ts:71·75). 결정 전까지 estimated.
+  // fallback: 원본에 없는 신규.
+  assert.deepEqual(estimated, ['input', 'fallback']);
 });
 
 test('isDrapeAligned: 이동량 모르는 local 블록이 있으면 통과가 아니다', () => {
