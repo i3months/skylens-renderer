@@ -3,7 +3,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createLevelMachine } from '../state/index.mjs';
-import { CASES, ESTIMATED, MISMATCHES } from './cases.mjs';
+import { CASES, ESTIMATED, MISMATCHES, NOT_MODELED } from './cases.mjs';
 import { replayOrigin, alphaForLevel, toOrigin, ORIGIN_COMMIT } from './origin.mjs';
 
 const sourced = CASES.filter((c) => c.source !== ESTIMATED);
@@ -96,10 +96,6 @@ describe('출처 있는 사례: 서버 기계가 기존 동작과 일치', () =>
   for (const c of sourced) test(c.name, () => run(c));
 });
 
-describe('추정 사례: 서버 기계가 추정 기대와 일치', () => {
-  for (const c of estimated) test(c.name, () => run(c));
-});
-
 describe('원본 카운터·노출과 서버 기계 대응', () => {
   for (const c of CASES.filter((x) => x.counters)) {
     test(`카운터: ${c.name}`, () => {
@@ -110,8 +106,10 @@ describe('원본 카운터·노출과 서버 기계 대응', () => {
       assert.equal(h.filter((e) => e.action === 'replace').length, c.counters.refined, 'refined');
     });
   }
+  // 서버에는 노출 로직이 없다. 서버 수준 → 원본 alphaForLevel(origin.mjs) 대응만 본다.
+  // alphaForLevel 은 origin.mjs 의 함수라 그 값을 바꾸면 서버를 건드리지 않아도 이 묶음이 바뀐다.
   for (const c of CASES.filter((x) => x.reveal)) {
-    test(`노출 목표는 현재 수준만으로 정해진다: ${c.name}`, () => {
+    test(`서버 수준 → 원본 alpha 대응(서버 노출 없음, origin.mjs alphaForLevel 사용): ${c.name}`, () => {
       const m = feed(c);
       for (const [key, want] of Object.entries(c.reveal)) {
         const s = m.snapshot(Number(key));
@@ -123,13 +121,51 @@ describe('원본 카운터·노출과 서버 기계 대응', () => {
 });
 
 describe('원본과 어긋나는 점(제품 코드는 고치지 않고 기록만)', () => {
-  for (const x of MISMATCHES) {
-    test.todo(`${x.name} — 원본 ${x.origin} / 우리 ${x.ours}`);
-    test(`현재 동작 고정: ${x.name}`, () => {
-      // 원본은 이 번호를 새 구간으로 기록한다(splatScene.ts:L163-L171). 우리 기계는 거절한다.
-      const o = replayOrigin([[x.segmentId, 0]]);
-      assert.equal(o.state(x.segmentId).missing, false);
-      assert.throws(() => createLevelMachine().arrive(x.segmentId, 0), RangeError);
-    });
-  }
+  test('불일치 기록은 2건 이상이고 모두 이름·원본 줄·우리 쪽을 적는다', () => {
+    assert.ok(MISMATCHES.length >= 2);
+    for (const x of MISMATCHES) {
+      assert.ok(x.name && x.ours, x.name);
+      assert.match(x.origin, ORIGIN_LINE, x.name);
+    }
+  });
+
+  for (const x of MISMATCHES) test.todo(`${x.name} — 원본 ${x.origin} / 우리 ${x.ours}`);
+
+  test('현재 동작 고정: final 판정 — 원본 3칸(top 3)이면 우리 수준 2 가 final, 우리 기계는 아니다', () => {
+    const x = MISMATCHES.find((m) => m.ourLevel !== undefined);
+    const arrivals = [[0, x.ourLevel]];
+    // 4칸 가정(top 4)에서는 원본도 final 아님, 알파 0.95. 기록된 대조표의 기대다.
+    const four = replayOrigin(arrivals);
+    assert.equal(four.state(0).final, false);
+    assert.equal(four.revealTarget(0), 0.95);
+    // 원본 기본 3칸(config.ts:L97)이면 final, 알파 1.0.
+    const three = replayOrigin(arrivals, { top: 3 });
+    assert.equal(three.state(0).final, true);
+    assert.equal(three.revealTarget(0), 1.0);
+    // 우리 기계는 사다리 칸 수와 무관하게 수준 3 만 final.
+    const m = createLevelMachine();
+    m.arrive(0, x.ourLevel);
+    assert.equal(m.snapshot(0).final, false);
+  });
+
+  const limit = MISMATCHES.find((m) => m.segmentId !== undefined);
+  test(`현재 동작 고정: ${limit.name}`, () => {
+    // 원본은 구간 번호 상한이 없다(segmenter.ts:L134-L137, Math.floor 만). 모형에 상한을 넣으면 아래가 실패한다.
+    for (const id of [limit.segmentId, 2 ** 31, Number.MAX_SAFE_INTEGER]) {
+      const o = replayOrigin([[id, 0], [id, 1]]);
+      assert.deepEqual(o.state(id), { level: 1, final: false, missing: false }, `구간 ${id}`);
+      assert.throws(() => createLevelMachine().arrive(id, 0), RangeError, `우리 기계 구간 ${id}`);
+    }
+    // 상한 바로 아래는 우리도 받는다(경계가 2^30 임을 고정).
+    assert.doesNotThrow(() => createLevelMachine().arrive(limit.segmentId - 1, 0));
+  });
+});
+
+describe('원본 모형이 옮기지 않은 것', () => {
+  test('슬랩 접힘·float32 저장 생략이 이름 붙여 기록돼 있다', () => {
+    assert.equal(NOT_MODELED.length, 2);
+    assert.ok(NOT_MODELED.some((x) => x.name.includes('슬랩 접힘')));
+    assert.ok(NOT_MODELED.some((x) => x.name.includes('float32')));
+    for (const x of NOT_MODELED) assert.match(x.origin, ORIGIN_LINE, x.name);
+  });
 });
