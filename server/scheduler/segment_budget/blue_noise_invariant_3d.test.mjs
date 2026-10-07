@@ -24,11 +24,18 @@ function volumeScene(n) {
   return p;
 }
 
-// 세 축 모두에서 반경 r 의 칸 경계(좌표 = m·r, 최소점 기준) 양쪽 0.05r 안에 점을 몬 장면(±0.1r 안에 거의 전부 든다).
-// 첫 패스 반경은 span·n 만으로 정해지지 않고 장면의 수락 수 어림(est)에 따라 바뀌므로, 탐침 반경으로 만든 장면의 실제 radii 는
-// 탐침 값과 다르다(반경 → 장면 → 반경 사상은 조각마다 상수라 단순 반복은 순환한다). 그래서 장면을 만든 뒤 그 장면의 실제 radii 를
-// 다시 읽고, 그 값으로 다시 만든 장면의 radii 가 상대 1e-6 안에서 같아지는 고정점을 찾는다. 몰 반경 배율을 조금씩 바꿔 가며 찾고,
-// 끝내 못 찾으면 시험이 실패한다. 칸 개수(칸 경계 m 의 범위)는 탐침 반경에서 한 번만 정해 장면이 배율에 연속이게 한다.
+// 세 축 모두에서 반경 r 의 칸 경계(좌표 = m·r, 최소점 기준)에서 ±HALF·r 안에 점을 몬 장면(흔들림 반폭 HALF = 0.05r).
+// 점 i 는 반경 CORNER_RADII[i % 4] 의 칸 경계에 몰고, 칸 번호는 1..CORNER_CELLS[i % 4] 에서 고른다.
+// (참고: 0.125 는 이전 ±0.2r 흔들림에서 ±0.1r 안에 드는 비율 0.5³ 이었다. ±0.1r 이 물리적으로 불가한 것이 아니며,
+//  지금 ±0.05r 흔들림에서는 ±0.1r 안 비율이 1.0 이다.)
+const HALF = 0.05;
+
+// 고정점 반경·칸 수. 실시간 솎기로 탐색해 얻은 값을 상수로 박았다(솎기를 바꿔도 이 장면은 변하지 않아야 불변식이 돈다).
+// 장면의 실제 radii 가 이 반경과 같아지는 고정점(첫 패스 반경이 장면의 수락 수 어림에 따라 바뀌므로 반경 → 장면 → 반경 사상의 고정점)이며,
+// 실시간 솎기와의 일치는 아래 별도 시험('고정점 상수 대조')에서 확인한다.
+const CORNER_RADII = [3.3332902384566028, 2.9999612146109427, 2.6999650931498484, 2.4299685838348637];
+const CORNER_CELLS = [13, 15, 17, 19];
+
 function actualRadii(p) {
   const t = createThinner(p);
   t.select(3000);
@@ -39,7 +46,7 @@ function cornerSceneFor(n, radii, cells) {
   const rnd = lcg(99);
   const p = new Float32Array(3 * n);
   p.set([0, 0, 0, SPAN, SPAN, SPAN], 0);
-  const near = (k) => (1 + Math.floor(rnd() * cells[k])) * radii[k] + (rnd() - 0.5) * 0.1 * radii[k];
+  const near = (k) => (1 + Math.floor(rnd() * cells[k])) * radii[k] + (rnd() - 0.5) * 2 * HALF * radii[k];
   for (let i = 2; i < n; i++) {
     const k = i % radii.length;
     p[3 * i] = near(k); p[3 * i + 1] = near(k); p[3 * i + 2] = near(k);
@@ -47,21 +54,11 @@ function cornerSceneFor(n, radii, cells) {
   return p;
 }
 
-function cornerScene(n) {
-  const probe = actualRadii(volumeScene(n));
-  assert.equal(probe.length, 4, '탐침 장면에서 양의 반경이 4 개 필요');
-  const cells = probe.map((r) => Math.floor((SPAN - 1) / r));
-  const ratio = probe.map((r) => r / probe[0]);
-  // 배율 0.94 부터 2e-4 씩 올리며 첫 고정점을 찾는다.
-  for (let i = 0; i < 400; i++) {
-    const x = probe[0] * (0.94 + i * 2e-4);
-    const guess = actualRadii(cornerSceneFor(n, ratio.map((q) => q * x), cells));
-    if (guess.length !== 4) continue;
-    const p = cornerSceneFor(n, guess, cells);
-    const actual = actualRadii(p);
-    if (actual.length === 4 && actual.every((r, j) => Math.abs(r - guess[j]) <= 1e-6 * guess[j])) return { p, radii: guess };
-  }
-  assert.fail('장면의 실제 radii 가 몰아 둔 반경과 같아지는 고정점을 찾지 못했다');
+// 상수로 만든 코너 장면(모듈 수준 캐시: 한 번만 만든다).
+let cornerCache = null;
+function cornerScene() {
+  cornerCache ??= cornerSceneFor(N, CORNER_RADII, CORNER_CELLS);
+  return cornerCache;
 }
 
 // 가장 가까운 두 점의 거리(x 정렬 뒤 쓸기).
@@ -81,7 +78,7 @@ function minDistFast(p, sel) {
 
 // 불변식(기존 시험과 같은 형태): k 가 패스 끝 누적 수면 출력이 패스 0..j 전체라 최소 거리 ≥ radii[j],
 // 그 밖의 k 는 출력 모든 점이 반경 radii[p](p = k 를 처음 넘는 패스) 이상으로 수락됐다. eps 는 span 의 1e-9 배.
-for (const [name, make] of [['[0,50]³ 균일 체적', () => volumeScene(N)], ['x·y·z 세 축 칸 경계', () => cornerScene(N).p]]) {
+for (const [name, make] of [['[0,50]³ 균일 체적', () => volumeScene(N)], ['x·y·z 세 축 칸 경계', () => cornerScene()]]) {
   test(`3D 최소 거리 불변식 (${name}): 완결 패스와 임의 k 에서 거리 ≥ 그 패스 반경 − eps`, () => {
     const p = make();
     const t = createThinner(p);
@@ -105,24 +102,36 @@ for (const [name, make] of [['[0,50]³ 균일 체적', () => volumeScene(N)], ['
   });
 }
 
-test('x·y·z 세 축 칸 경계 장면: 실제 radii[0..3] 가 탐침 값과 상대 1e-6 안, 경계 ±0.1r 몰림 비율 > 0.8', () => {
-  const { p, radii } = cornerScene(N);
-  const actual = actualRadii(p);
+// 실시간 솎기와 상수 대조: 탐침 장면의 칸 수·상수 반경으로 만든 장면의 실제 radii 가 상수와 상대 1e-6 안.
+test('고정점 상수 대조: 탐침 장면 칸 수 = 상수, 코너 장면의 실제 radii[0..3] 가 상수와 상대 1e-6 안', () => {
+  const probe = actualRadii(volumeScene(N));
+  assert.equal(probe.length, 4, '탐침 장면에서 양의 반경이 4 개 필요');
+  assert.deepEqual(probe.map((r) => Math.floor((SPAN - 1) / r)), CORNER_CELLS);
+  const actual = actualRadii(cornerScene());
   assert.equal(actual.length, 4);
   for (let i = 0; i < 4; i++) {
-    assert.ok(Math.abs(actual[i] - radii[i]) <= 1e-6 * radii[i], `radii[${i}] 실제 ${actual[i]} 탐침 ${radii[i]}`);
+    assert.ok(Math.abs(actual[i] - CORNER_RADII[i]) <= 1e-6 * CORNER_RADII[i], `radii[${i}] 실제 ${actual[i]} 상수 ${CORNER_RADII[i]}`);
   }
-  // 점 i 는 반경 radii[i % 4] 로 몰았다. 세 좌표 모두 가장 가까운 칸 경계(m·r)와의 거리가 0.1r 이하인 점의 비율.
+});
+
+test('x·y·z 세 축 칸 경계 장면: 흔들림 반폭 ≤ 0.05r(+float32 오차), 경계 ±0.1r 몰림 비율 1.0', () => {
+  const p = cornerScene();
+  // 점 i 는 반경 CORNER_RADII[i % 4] 로 몰았다. 세 좌표의 가장 가까운 칸 경계(m·r)와의 거리 중 최댓값(r 단위)을 점마다 구한다.
+  let maxDev = 0;
   let hit = 0;
   for (let i = 2; i < N; i++) {
-    const r = actual[i % 4];
-    let all = true;
+    const r = CORNER_RADII[i % 4];
+    let dev = 0;
     for (let a = 0; a < 3; a++) {
       const c = p[3 * i + a] / r;
-      if (Math.abs(c - Math.round(c)) > 0.1) all = false;
+      dev = Math.max(dev, Math.abs(c - Math.round(c)));
     }
-    if (all) hit++;
+    if (dev > maxDev) maxDev = dev;
+    if (dev <= 0.1) hit++;
   }
+  // float32 저장 오차(좌표 ≤ 50, 상대 6e-8)는 r 단위로 1e-4 아래다.
+  assert.ok(maxDev <= HALF + 1e-4, `흔들림 반폭 ${maxDev} > ${HALF}`);
+  assert.ok(maxDev >= HALF - 5e-3, `흔들림 반폭 ${maxDev} 이 ${HALF} 에 못 미침(장면이 경계에서 덜 흔들림)`);
   const frac = hit / (N - 2);
-  assert.ok(frac > 0.8, `경계 몰림 비율 ${frac} <= 0.8`);
+  assert.equal(frac, 1, `경계 ±0.1r 몰림 비율 ${frac} != 1`);
 });
