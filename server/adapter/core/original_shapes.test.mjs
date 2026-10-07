@@ -6,9 +6,10 @@
 //   SplatAlign      src/shared/protocol.ts:164-170 {anchor: Gps|null, position[3], rotation[4](쿼터니언), scale[3]}
 //   SegmentStatus   src/shared/protocol.ts:211-219 {index, level(0 = 대기·처리 중), levels, steps, label}
 //   ServerStatus    src/shared/protocol.ts:252-261 {kind:'server-status', ..., segments: SegmentStatus[]}
+//   실측 로그      src/skylens_core/server/README.md:161-190 (§4.3, 사다리 250,1000,3500 의 관측 순서)
 //   chunk 생성      src/skylens_core/server/orchestrator.ts:336-345 (id `seg${segment}-l${level}`, final = level >= top)
 //   수준 번호       src/skylens_core/server/ladder.ts:8-9, 41-43 (1부터 세는 사다리 칸 번호, 스텝 수가 아니다)
-//   송출            src/skylens_core/server/index.ts:80 (onChunk → distributor.broadcast), distributor.ts:185-194 (Envelope 로 감쌈)
+//   송출            src/skylens_core/server/index.ts:80 (onChunk → distributor.broadcast), distributor.ts:134-143 wrap (Envelope 로 감쌈)
 //   늦은 뷰어 재생  src/skylens_core/server/index.ts:133-148, store.ts:200-207 (구간마다 최신 chunk 하나, 구간 오름차순)
 //   받는 쪽 규칙    src/skylens_client/statusview/splatScene.ts:152-172 (구간마다 최고 수준만, 높은 수준이 교체)
 //                   src/skylens_client/server/boards.ts:145-150 (재생 캐시: level >= 이전 이면 갈아끼움)
@@ -53,7 +54,7 @@ function splatChunk(ladderSteps, segment, level, kib) {
   };
 }
 
-/** distributor.ts:185-194 가 감싸는 Envelope. */
+/** distributor.ts:134-143 wrap 이 감싸는 Envelope. */
 function envelope(seq, payload) {
   return { seq, originTs: 1_700_000_000_000 + seq, from: 'core', payload };
 }
@@ -131,8 +132,9 @@ test('README §4.3 실측 순서(구간 2 정제 중 구간 3 수준 1)를 원�
     assert.equal(snap.level, s.level - 1, `구간 ${segment} 수준`);
     assert.equal(snap.final, s.final, `구간 ${segment} final`);
   }
-  assert.equal(want.get(2).final, true);
-  assert.equal(want.get(3).final, false);
+  // 기대값(want)이 아니라 어댑터 상태를 직접 단언한다: 구간 2 는 수준 4 에서 final, 구간 3 은 수준 1 이라 final 아님.
+  assert.equal(machine.snapshot(2).final, true);
+  assert.equal(machine.snapshot(3).final, false);
 });
 
 test('늦게 붙은 뷰어 재생(구간마다 최신 chunk 하나, 구간 오름차순)은 중간 수준 없이 바로 그 수준으로 놓인다', () => {
@@ -143,6 +145,9 @@ test('늦게 붙은 뷰어 재생(구간마다 최신 chunk 하나, 구간 오�
   assert.deepEqual(machine.segments(), [0, 1, 2]);
   assert.deepEqual([0, 1, 2].map((s) => machine.snapshot(s).level), [3, 2, 0]);
   assert.equal(machine.snapshot(0).final, true);
+  // 구간 1(수준 2 색인, 칸 번호 3)은 꼭대기가 아니므로 final 이 아니다. 구간 2(수준 1)도 마찬가지.
+  assert.equal(machine.snapshot(1).final, false);
+  assert.equal(machine.snapshot(2).final, false);
 });
 
 test('같은 chunk 가 다시 와도(재연결 재생) 상태는 그대로다', () => {
@@ -196,11 +201,27 @@ test('원본 모양을 변환 없이 넣으면 어댑터는 받지 않는다(변
 
 // ── 불일치(고치지 않음, 보고) ─────────────────────────────────────────
 test.todo('불일치: 원본 level 은 1부터 세는 사다리 칸 번호(ladder.ts:8-9), 우리는 0..3 LEVEL_STEPS 색인 — 변환 계층이 steps 로 매핑해야 한다');
-test.todo('불일치: 원본 기본 사다리 1000,7000,30000(config.ts:97, 3칸) — 30000 은 LEVEL_STEPS 에 없고 칸 수도 다르다. 녹화는 SKYLENS_CORE_LEVEL_STEPS=250,1000,3500,7000 로');
-test.todo('불일치: 원본 final 은 chunk 에 실린 값(level >= top, orchestrator.ts:343) — 우리는 level === FINAL_LEVEL(3) 고정. 3칸 사다리(README §4.3 250,1000,3500)의 L3 final 을 우리는 final 로 보지 않는다');
+test('현재 불일치 고정: 원본 기본 사다리 1000,7000,30000(config.ts:97, 3칸)은 LEVEL_STEPS 와 맞지 않는다', () => {
+  // 녹화는 SKYLENS_CORE_LEVEL_STEPS=250,1000,3500,7000 로 띄워야 한다. 기본 사다리의 30000 칸은 변환 불가.
+  const DEFAULT_LADDER = [1000, 7000, 30000];
+  assert.equal(LEVEL_STEPS.includes(30000), false);
+  assert.notEqual(DEFAULT_LADDER.length, LEVEL_STEPS.length);
+  assert.throws(() => bridgeChunk(splatChunk(DEFAULT_LADDER, 0, 3, 1)), RangeError);
+});
+test('현재 불일치 고정: 3칸 사다리(README §4.3 250,1000,3500)의 꼭대기 chunk 는 원본에서 final 이지만 어댑터는 final 로 보지 않는다', () => {
+  // 원본 final 은 chunk 에 실린 값(level >= top, orchestrator.ts:343). 우리는 level === FINAL_LEVEL(3) 고정이다.
+  const LADDER3 = [250, 1000, 3500];
+  const c = splatChunk(LADDER3, 2, 3, 3362);
+  assert.equal(c.final, true);
+  const { machine, adapter } = rig();
+  adapter.handle(bridgeChunk(c));
+  assert.equal(machine.snapshot(2).level, 2);
+  assert.equal(machine.snapshot(2).final, false); // 고쳐지면 이 단언이 깨지고, 그때 이 시험을 true 로 바꾼다
+});
 test.todo('불일치: 원본은 조각 bytes 가 아니라 url(PLY 파일 하나)+bytes(크기)를 보낸다(protocol.ts:185-186) — PLY 받기·.skla 조각 자르기·PieceKey(lod/chunkIndex/tile) 부여가 없다');
 test.todo('불일치: 원본 align(GPS anchor, position, rotation 쿼터니언 xyzw, scale; protocol.ts:164-170)은 어댑터 이벤트에 자리가 없다(배치 정보 유실)');
 test.todo('불일치: 원본에는 segment_expected 이벤트가 없다 — 구간은 드론이 들어갈 때 생기고(ingest.ts:247-256) server-status(주기 하트비트) segments 에 level 0 으로만 보인다');
+test.todo('불일치: 서버 status 하트비트(index.ts:296-300)는 주기마다 같은 level 0 구간을 다시 싣는다 — bridge 가 매 틱 segment_expected 를 만들면 MISSING 이 매 틱 나간다(중복 억제는 변환 계층 몫)');
 test.todo('불일치: 원본 Envelope.seq(송신자 단조 증가)·originTs(ms)를 어댑터가 보지 않는다 — 빈칸·순서 검사는 변환 계층 몫');
 
 // 위 상수가 실제로 이 파일의 가정과 맞는지(계약이 바뀌면 이 파일을 다시 봐야 한다).
