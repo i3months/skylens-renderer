@@ -3,7 +3,7 @@
 // 이 파일 안의 숫자 리터럴이며 측정값에 맞춰 바꾸지 않는다. 구간 바이트는 출력만 한다(문턱 없음).
 // 측정 경로는 s6_quality.test.mjs 와 같다(컬링+LOD 선택 → 64 m 타일 조각 → codec 1 → 클라이언트 복호 → CPU 참조 래스터러, 320x180).
 // 장면별 고정 시점 8곳과 점 수 상한은 variants.mjs 에 있다.
-//   depth_noise: 250만 점(SPEC 규모). 자식 하나가 3 개 동시 실행에서 약 160~190 s 걸려 기본은 시드 1·2 만 단언하고,
+//   depth_noise: 250만 점(SPEC 규모). 자식 하나가 3 개 동시 실행에서 약 160~190 s 걸리지만 시드 1..6 모두 단언한다.
 //   buildings: 생성기가 건물마다 지붕 점 1개만 내고 건물 수 상한이 49,284(밑면 8 m 제약)라 그 최대 점 수로 잰다. 시드 1..6 모두 단언.
 // 시드마다 별도 자식 프로세스(tune_cli.mjs, 인자 [점수, 시드, 변형])를 run_seeds.mjs 의 runSeeds 로 병렬 실행한다.
 // `node --test bench/status_quality/s6_quality_hard.test.mjs`
