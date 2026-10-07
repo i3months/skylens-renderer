@@ -110,7 +110,7 @@ test('첫 반경은 span·n 만으로 정해진다(재시도 없는 표면 장�
   const c = straddleScene(n);
   // 두 겹 표면(y = 0, 25): 첫 패스 수락이 약 1.24·target 이라 재시도 문턱이 1.24배 아래로 내려가면 재시도가 생겨 잡힌다.
   // 문턱이 2배에서 위로 벗어나는 쪽은 아래 재시도 문턱 시험이 잡는다: 세 겹(1.79배)·네 겹(2.32배)은 문턱이 (1.79, 2.32)배 밖으로 나가는 변이를,
-  // 한 쌍 장면(1.94배·2.05배)은 문턱이 (1.94, 2.05)배 밖으로 나가는 변이를 잡는다(측정값, 같은 시험의 주석 참조).
+  // 한 쌍 장면(1762/910배·1862/910배)은 문턱이 [1762/910, 1862/910)배 밖으로 나가는 변이를 잡는다(측정값, 같은 시험의 주석 참조).
   const d = new Float32Array(3 * n);
   { let s = 3; const rnd = () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
     for (let i = 0; i < n; i++) { d[3 * i] = 50 * rnd(); d[3 * i + 1] = (i % 2) * 25; d[3 * i + 2] = 50 * rnd(); } }
@@ -164,9 +164,9 @@ test('재시도 문턱 2·target: 세 겹(수락 1.79·target)은 재시도 없�
 });
 
 // 세 겹 장면(y = 0, 50/3, 100/3 세 층)에 네 번째 층(y = 50)을 점의 q % 만 얹은 장면. 재시도 없이 돈 첫 패스(표면 가정 반경) 수락을 target 배수로 본 실측(고정 시드 3):
-// q = 1 → 1.94, q = 2 → 2.05 (문턱을 끈 사본으로 잰 값: 세 겹 1.79, 네 겹 2.32 사이를 메운다. 시드 1..200 범위: q=1 는 1.915~1.985, q=2 는 2.014~2.089 감독 미확인).
-// 그래서 재시도 문턱을 1.94·target 으로 내리면 q = 1 이 재시도되어 실패하고, 2.05·target 으로 올리면 q = 2 가 재시도되지 않아 실패한다.
-// 이 시험과 위 시험을 합치면 문턱이 (1.94, 2.05)·target 안에 있는 변이만 살아남는다(실제 문턱 2 는 그 안이라 원본은 통과한다).
+// q = 1 → 1762/910 ≈ 1.9363, q = 2 → 1862/910 ≈ 2.0462 (수락 1762·1862 를 target 910 으로 나눈 값, 반올림하지 않음. 문턱을 끈 사본으로 잰 값: 세 겹 1.79, 네 겹 2.32 사이를 메운다. 시드 1..200 범위: q=1 는 1.915~1.985, q=2 는 2.014~2.089 감독 미확인).
+// 그래서 재시도 문턱을 1762/910·target 보다 낮게(예: 1.93·target) 내리면 q = 1 이 재시도되어 실패하고, 1862/910·target 이상으로(예: 2.05·target) 올리면 q = 2 가 재시도되지 않아 실패한다.
+// 이 시험과 위 시험을 합치면 문턱이 [1762/910, 1862/910)·target = [1.9363, 2.0462)·target 안에 있는 변이만 살아남는다(실제 문턱 2 는 그 안이라 원본은 통과한다. 1.94 는 구간 안이라 살아남는다).
 function partialLayers(n, q) {
   const d = new Float32Array(3 * n);
   let s = 3;
@@ -179,18 +179,18 @@ function partialLayers(n, q) {
   return d;
 }
 
-test('재시도 문턱 2·target 양쪽 근방(고정 시드 3 실측 1.94, 2.05): 수락 1.94·target 은 재시도 없음, 2.05·target 은 재시도', () => {
+test('재시도 문턱 2·target 양쪽 근방(고정 시드 3 실측 ≈1.936·≈2.046): 수락 ≈1.936·target 은 재시도 없음, ≈2.046·target 은 재시도', () => {
   const n = 20000;
   const target = n * 0.13 * 0.35;
   const rSurface = 50 / Math.sqrt(target);
   const tBelow = createThinner(partialLayers(n, 1)); tBelow.select(3000);
   const below = tBelow.stats();
-  assert.equal(below.radii[0], rSurface, '수락 1.94·target 은 문턱 2·target 아래라 재시도 없이 표면 가정 반경');
-  // 하한 1.84 (3배 중첩 1.79 + 여유 0.05) 는 3배·4배 중첩(1.79·2.32) 사이에서 문턱이 그보다 낮으면 재시도됨을 확인한다. 고정 시드 3 실측 1.94, 시드 1..200 범위 q=1 는 1.915~1.985 (감독 미확인).
+  assert.equal(below.radii[0], rSurface, '수락 ≈1.936·target 은 문턱 2·target 아래라 재시도 없이 표면 가정 반경');
+  // 1.84 는 도출한 경계가 아니라 '이 장면이 문턱 바로 아래에 있다' 를 확인하는 느슨한 하한이다(위 :158 의 1.7 과 같은 성격). 문턱 변이 판별은 위 radii 동치 단언(재시도 여부)이 한다. 고정 시드 3 실측 1762/910 ≈ 1.9363, 시드 1..200 범위 q=1 는 1.915~1.985 (감독 미확인).
   assert.ok(below.passEnd[0] > 1.84 * target, `첫 패스 수락 ${below.passEnd[0]} (${below.passEnd[0] / target}·target)`); // 상한 2·target 은 불변식 재확인, 변이 판별 아님
   const tAbove = createThinner(partialLayers(n, 2)); tAbove.select(3000);
   const above = tAbove.stats();
-  assert.ok(above.radii[0] > rSurface * 1.05, `수락 2.05·target 은 문턱을 넘어 재시도되어야 한다: 첫 반경 ${above.radii[0]} 표면 가정 ${rSurface}`);
+  assert.ok(above.radii[0] > rSurface * 1.05, `수락 ≈2.046·target 은 문턱을 넘어 재시도되어야 한다: 첫 반경 ${above.radii[0]} 표면 가정 ${rSurface}`);
   assert.ok(above.passEnd[0] >= target, `재시도 뒤 첫 패스 수락 ${above.passEnd[0]}`); // 상한 2·target 은 불변식 재확인, 변이 판별 아님
 });
 
@@ -234,7 +234,7 @@ test('체적 장면 재시도 상한: 점이 적어 목표 수락에 못 미쳐�
   // 점이 적어 rVol 에서도 수락이 target 에 못 미친다: 반경은 rVol 에 정확히 닿고(상한을 0.9·rVol 로 낮추면 실패) 수락은 target 아래다.
   assert.ok(Math.abs(st.radii[0] / rVol - 1) <= 1e-9, `첫 반경 ${st.radii[0]} 가 rVol ${rVol} 에 닿아야 한다`);
   // 시드 5 여유 42 vs 45.5 target. 일부 시드(예: 95)는 수락이 target 을 넘을 수 있다(변이 판별용 아님).
-  assert.ok(st.passEnd[0] < target, `첫 패스 수락 ${st.passEnd[0]} 가 target ${target} 아래여야 이 시험이 상한 시험이 된다`);
+  assert.ok(st.passEnd[0] < target, `첫 패스 수락 ${st.passEnd[0]} 가 target ${target} 아래여야 이 시험이 상한 시험이 된다(전제 위반 — 장면·시드 재선정)`);
 });
 
 test('opts = null 은 기본값으로 본다(TypeError 없음)', () => {
