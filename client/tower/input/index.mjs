@@ -30,14 +30,8 @@ function checkOpts(opts) {
       throw new RangeError(`${k} 는 유한한 수여야 한다`);
     }
   }
-  // 범위 검사: 시간 역행·뒤집힌 고도 구간을 만들 값은 RangeError.
-  const cfg = { ...TOWER_INPUT_DEFAULTS };
-  for (const k of Object.keys(TOWER_INPUT_DEFAULTS)) if (opts[k] !== undefined) cfg[k] = opts[k];
-  if (cfg.maxDtSec <= 0) throw new RangeError('maxDtSec 는 0 보다 커야 한다');
-  for (const k of ['yawRateRad', 'speedMps', 'altRateMps']) {
-    if (cfg[k] < 0) throw new RangeError(`${k} 는 0 이상이어야 한다`);
-  }
-  if (cfg.minAltM > cfg.maxAltM) throw new RangeError('minAltM 은 maxAltM 이하여야 한다');
+  // 부호·범위 검사(maxDtSec>0, 속도류>=0, minAltM<=maxAltM 등)는 state.mjs 의 checkOpts 에만 둔다(단일 출처).
+  // createPoseState 가 던지는 RangeError 가 그대로 전파된다. 여기에 같은 검사를 다시 두지 않는다.
   return opts;
 }
 
