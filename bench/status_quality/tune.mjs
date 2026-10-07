@@ -44,15 +44,23 @@ export function s6PathBytes(cloud, { segmentId = 0, level = 3 } = {}) {
 }
 
 // 기준 렌더(솎기 전 원본 flat_boxes) 캐시: 같은 장면·점 수를 여러 구성으로 잴 때 다시 그리지 않는다.
+// 시드·점 수별로 계속 쌓이면 메모리가 늘므로 최근 사용한 SCENE_CACHE_MAX 개만 보관한다(Map 삽입 순서 = 오래된 순, 적중 시 맨 뒤로 옮긴다).
+export const SCENE_CACHE_MAX = 2;
 const sceneCache = new Map();
+/** 시험용: 현재 보관 중인 장면 수와 키(오래된 순). */
+export function sceneCacheKeys() { return [...sceneCache.keys()]; }
 function scene(seed, count) {
   const key = `${seed}:${count}`;
   let e = sceneCache.get(key);
-  if (!e) {
+  if (e) {
+    sceneCache.delete(key);
+    sceneCache.set(key, e);
+  } else {
     const { cloud } = generate({ seed, count });
     const cams = VIEWPOINTS.map((vp) => viewpointToCamera({ eye: vp.eye, target: vp.target, up: vp.up, width: W, height: H, fov_y_deg: vp.fov_y_deg }));
     e = { cloud, cams, refs: cams.map((cam) => renderPoints(cam, cloud, { pointSizeM: POINT_SIZE_M }).color) };
     sceneCache.set(key, e);
+    while (sceneCache.size > SCENE_CACHE_MAX) sceneCache.delete(sceneCache.keys().next().value);
   }
   return e;
 }

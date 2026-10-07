@@ -58,7 +58,7 @@ test('작은 counts 에서 total 4..합 전 범위: 각 ≥ 1, 원본 이하, �
   }
 });
 
-test('최소 예산(total = 수준 수)은 수준마다 정확히 1 점(Math.max(1, …) 하한)', () => {
+test('total = 수준 수일 때 각 수준 최소 1 점(Math.max(1, …) 하한), 또는 total ≥ sum 일 때 원본 비율', () => {
   assert.deepEqual(makeFloorAllocate(S6_LOW_LEVEL_FLOOR)([10, 20, 40, 100], 4), [1, 1, 1, 1]);
   assert.deepEqual(makeFloorAllocate(0)([10, 20, 40, 100], 4), [1, 1, 1, 1]);
   assert.deepEqual(makeFloorAllocate(0)([10, 20, 40, 100], 50), [1, 1, 1, 47]);
@@ -75,6 +75,8 @@ test('보장 합 + 1 이상이면 보장 경로, 미만이면 축소 경로: 경
   assert.deepEqual(a(counts, 43752), [6250, 12500, 25000, 2]);
   // 축소: floor(6250·43749/43750)=6249, floor(12500·…)=12499, floor(25000·…)=24999, 최고 수준 1, 남는 1 점은 쓰지 않는다.
   assert.deepEqual(a(counts, 43750), [6249, 12499, 24999, 1]);
+  // 극한 축소 경로: 총 예산이 수준 수(4)일 때 모든 수준이 1 이상이어야 한다.
+  assert.deepEqual(a(counts, 4), [1, 1, 1, 1]);
 });
 
 test('total 이 늘 때 어느 수준의 점 수도 줄지 않는다(보장 경로·축소 경로 모두)', () => {

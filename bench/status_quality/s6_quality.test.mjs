@@ -1,6 +1,7 @@
 // T13.T: S6 송출 구성에서 구간 바이트와 현황판 8시점 SSIM 을 같은 구성으로 함께 단언한다(SPEC §4.1, 결정 0065).
-// S6 구간당 문턱 3,000,000 B 는 SPEC 수치 그대로고, S9-현황판 임시 하한 0.65 는 사람 결정(2026-10-06)의 하한이다.
-// 감독이 S9-현황판 값을 고정하면 이 파일의 0.65 를 그 값으로 올린다(낮추지 않는다).
+// S6 구간당 문턱 3,000,000 B 는 SPEC 수치 그대로고, S9-현황판 값을 감독이 2026-10-06 SPEC §4.1 로 0.75 고정했다.
+// 최고 수준 도착 전(수준 0..2 만 있는 화면)의 SSIM 은 진단으로만 출력한다(SPEC 에 문턱 없음).
+// 측정 장면 = flat_boxes 시드 1 고정, 시드 2..6 은 진단이며 이 파일은 단언하지 않는다(시드별 표: `node bench/status_quality/seed_table.mjs`).
 // 측정 경로: 구간당 250만 점 합성, CPU 참조 래스터러(WebGL 제외), 장면 flat_boxes 시드 1·320x180·8시점.
 // 두 방식으로 잰다: (가) levels 장면에서 예산에 맞춘 최고 수준 비율을 flat_boxes 에 이식(연구 결과 D 방식, 바이트와 SSIM 의 점군이 다르다),
 // (나) flat_boxes 자체를 4수준으로 만들어 예산에 맞춘 점군(바이트와 SSIM 이 같은 점군). SSIM 은 정상 상태(최고 수준 도착 후) 기준이고,
@@ -12,13 +13,13 @@ import { evaluateThinner, evaluateFlatBoxesBudget } from './tune.mjs';
 import { levelPointTargets, createSpatialThinner } from '../../server/scheduler/segment_budget/index.mjs';
 
 const S6_BYTES = 3_000_000;
-const MIN_SSIM = 0.65;
+const MIN_SSIM = 0.75;
 const f4 = (x) => x.toFixed(4);
 
 const r = await evaluateThinner({ count: 2500000 });
 const fb = await evaluateFlatBoxesBudget({ count: 2500000 });
 
-test('S6 구성 한 번의 측정(levels 비율 이식): 구간 ≤ 3,000,000 B 이고 8시점 최소 SSIM ≥ 0.65', (t) => {
+test('S6 구성 한 번의 측정(levels 비율 이식): 구간 ≤ 3,000,000 B 이고 8시점 최소 SSIM ≥ 0.75', (t) => {
   t.diagnostic(`구간 ${r.bytes} B, 수준별 점 ${r.levelPoints.join('/')}, 최고 수준 비율 ${r.ratio.toFixed(5)}, 최소 SSIM ${f4(r.ssimMin)}, 평균 ${f4(r.ssimMean)}`);
   // 바이트는 levels 장면 구간의 것이다. SSIM 을 잰 flat_boxes 점군 자체를 같은 S6 경로로 보내면 바이트가 다르다(예산 단언 대상 아님).
   t.diagnostic(`SSIM 대상 점군(flat_boxes 최고 수준 ${r.ssimTargetPoints} 점)의 S6 경로 바이트 ${r.ssimTargetBytes} B (최고 수준 하나만, 예산 ${S6_BYTES} B)`);
@@ -28,7 +29,7 @@ test('S6 구성 한 번의 측정(levels 비율 이식): 구간 ≤ 3,000,000 B 
   assert.ok(r.ssimMin >= MIN_SSIM, `최소 SSIM ${r.ssimMin}`);
 });
 
-test('flat_boxes 예산 맞춤: SSIM 을 잰 점군 자체의 4수준 S6 경로 바이트 ≤ 3,000,000 B 이고 최고 수준 8시점 최소 SSIM ≥ 0.65', (t) => {
+test('flat_boxes 예산 맞춤: SSIM 을 잰 점군 자체의 4수준 S6 경로 바이트 ≤ 3,000,000 B 이고 최고 수준 8시점 최소 SSIM ≥ 0.75', (t) => {
   const top = fb.levels.find((l) => l.level === 3);
   t.diagnostic(`flat_boxes 예산 맞춤: 구간 ${fb.bytes} B (수준별 ${fb.levelBytes.join('/')} B), 수준별 점 ${fb.levelPoints.join('/')}, 최소 SSIM ${f4(top.ssimMin)}, 평균 ${f4(top.ssimMean)}`);
   t.diagnostic(`최소 SSIM 두 값: levels 비율 이식 ${f4(r.ssimMin)}, flat_boxes 예산 맞춤 ${f4(top.ssimMin)}, 낮은 쪽 ${f4(Math.min(r.ssimMin, top.ssimMin))}`);

@@ -1,4 +1,4 @@
-// 폴백 화면 상태(임시, 사람 확인 전). SPEC §5 제안이며 확정 전이다. 계약: contracts/statusview 의 createFallbackController.
+// 폴백 화면 상태(확정(SPEC §5, 사람 결정 2026-10-06)). 계약: contracts/statusview 의 createFallbackController.
 // 연결이 끊겼거나 서버가 불가이거나 응답이 늦으면 폴백 상태를 돌려줄 뿐이다. 폴백에서도 도착하지 않은 것을 그리거나 채우지 않는다.
 // 시계·타이머 없음: timeout 은 호출자가 알려 준다.
 import { ERR_CODES } from '../../../contracts/proto/index.mjs';

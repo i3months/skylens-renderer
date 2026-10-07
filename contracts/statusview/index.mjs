@@ -26,7 +26,7 @@ export const STATUSVIEW_METHOD_MAP = Object.freeze([
   { role: '카메라 동기', source: 'cameraSync.ts', module: 'camera', fn: 'syncCamera', origin: 'estimated' },
   { role: '드론·마커 덧그리기', source: 'splatScene.ts 오버레이', module: 'overlay', fn: 'projectMarkers', origin: 'estimated' },
   { role: '"없음" 안내', source: 'statusview 도착 전 구간 표시', module: 'missing_ui', fn: 'missingNotices', origin: 'estimated' },
-  { role: '폴백 화면(SPEC §5 제안, 사람 확인 전 임시)', source: '(신규)', module: 'fallback', fn: 'createFallbackController', origin: 'estimated' },
+  { role: '폴백 화면(확정(SPEC §5, 사람 결정 2026-10-06))', source: '(신규)', module: 'fallback', fn: 'createFallbackController', origin: 'estimated' },
   { role: '조립(어댑터 본체)', source: 'splatScene.ts 공개 메서드 전체', module: 'e2e', fn: 'createStatusView', origin: 'estimated' },
 ]);
 

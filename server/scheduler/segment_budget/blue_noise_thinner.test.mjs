@@ -46,7 +46,8 @@ test('부분집합·색인 범위·중복 없음·정확히 k 개·모턴 순', 
   for (const k of [1, 2, 37, 1000, 2600, 9999, 19999]) {
     const sel = t.select(k);
     assert.ok(sel instanceof Uint32Array);
-    assert.equal(sel.length, k);
+    assert.equal(new Set(sel).size, k, `k=${k} 중복 색인`); // 길이는 new Uint32Array(k) 라 항상 k 이므로 서로 다른 색인 수로 본다
+    for (const s of sel) assert.ok(s < n, `k=${k} 범위 밖 색인 ${s}`);
     const seen = new Uint8Array(n);
     for (let j = 0; j < k; j++) {
       assert.ok(sel[j] < n);
@@ -72,8 +73,9 @@ test('k ≥ n 이면 전부(모턴 순), k = 0 이면 빈 배열, 잘못된 k �
 test('같은 점·한 점·퇴화 입력도 k 개를 돌려준다', () => {
   const same = new Float32Array(300).fill(1.25);
   const t = createThinner(same);
-  assert.equal(t.select(40).length, 40);
-  assert.equal(createThinner(new Float32Array([1, 2, 3])).select(1).length, 1);
+  assert.equal(new Set(t.select(40)).size, 40);
+  assert.ok(t.select(40).every((s) => s < 100));
+  assert.deepEqual([...createThinner(new Float32Array([1, 2, 3])).select(1)], [0]);
   const dup = scene(2000);
   const twice = new Float32Array(2 * dup.length);
   twice.set(dup); twice.set(dup, dup.length);
@@ -81,7 +83,9 @@ test('같은 점·한 점·퇴화 입력도 k 개를 돌려준다', () => {
 });
 
 // 칸 경계에 걸친 점이 많은 장면: 패스 반경 r_i 의 칸 경계 평면(x = m·r_i, 칸 좌표는 최소점 기준) 양쪽에 점을 몰아 둔다.
-// 첫 반경은 span·n 만으로 정해지므로 같은 n·span 의 탐침 장면에서 반경을 미리 읽을 수 있다(모서리 두 점으로 span 고정).
+// 재시도 없는 표면 장면(첫 패스 수락 ≤ 2·kHint·0.35)에서는 첫 반경이 span·n 만으로 정해지므로 같은 n·span 의 탐침 장면에서 반경을 미리 읽을 수 있다
+// (모서리 두 점으로 span 고정). 체적 장면은 첫 패스를 다시 돌아 반경이 점 배치에 좌우되므로 이 전제가 맞지 않는다.
+// 이 전제는 아래 '첫 반경은 ... 표면 장면' 시험이 단언하고, 체적 장면에서 깨진다는 것도 음성 시험으로 단언한다.
 function straddleScene(n) {
   const base = scene(n);
   base.set([0, 0, 0, 50, 0, 50], 0);
@@ -98,6 +102,79 @@ function straddleScene(n) {
   }
   return p;
 }
+
+test('첫 반경은 span·n 만으로 정해진다(재시도 없는 표면 장면 한정): 점 배치가 달라도 같다', () => {
+  const n = 20000;
+  const a = scene(n, 7);
+  const b = scene(n, 123);
+  const c = straddleScene(n);
+  // 두 겹 표면(y = 0, 25): 첫 패스 수락이 target 과 2·target 사이라 재시도 문턱(2·target)이 정확히 2배여야 재시도가 없다.
+  const d = new Float32Array(3 * n);
+  { let s = 3; const rnd = () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
+    for (let i = 0; i < n; i++) { d[3 * i] = 50 * rnd(); d[3 * i + 1] = (i % 2) * 25; d[3 * i + 2] = 50 * rnd(); } }
+  for (const q of [a, b, c]) q.set([0, 0, 0, 50, 0, 50], 0); // 모서리 두 점으로 span 고정
+  d.set([0, 0, 0, 50, 25, 50], 0);
+  const target = n * 0.13 * 0.35;
+  const rSurface = 50 / Math.sqrt(target); // 표면 가정 첫 반경(span = 50)
+  const first = (p) => {
+    const t = createThinner(p); t.select(3000);
+    const st = t.stats();
+    // 재시도가 없었다는 전제: 첫 패스 수락 ≤ 2·kHint·firstFraction (kHint = n·0.13, firstFraction = 0.35)
+    assert.ok(st.passEnd[0] <= 2 * n * 0.13 * 0.35, `첫 패스 수락 ${st.passEnd[0]} 가 재시도 문턱을 넘었다`);
+    return st.radii[0];
+  };
+  const r = first(a);
+  assert.ok(r > 0);
+  assert.equal(first(b), r);
+  assert.equal(first(c), r);
+  assert.equal(r, rSurface);
+  assert.equal(first(d), rSurface);
+  const td = createThinner(d); td.select(3000);
+  assert.ok(td.stats().passEnd[0] > target, '두 겹 장면의 첫 패스 수락이 target 을 넘어야 문턱 시험이 된다');
+});
+
+test('체적 장면은 첫 패스를 다시 돌아 첫 반경이 표면 가정 반경보다 커진다(위 전제가 체적에는 맞지 않는다)', () => {
+  const n = 20000;
+  const mk = (seed) => {
+    const p = new Float32Array(3 * n);
+    let s = seed;
+    const rnd = () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
+    for (let i = 0; i < 3 * n; i++) p[i] = 50 * rnd();
+    p.set([0, 0, 0, 50, 50, 50], 0);
+    return p;
+  };
+  const target = n * 0.13 * 0.35;
+  const rSurface = 50 / Math.sqrt(target); // span = 50
+  const t = createThinner(mk(5));
+  t.select(3000);
+  const st = t.stats();
+  assert.ok(st.radii[0] > rSurface * 1.05, `첫 반경 ${st.radii[0]} 가 표면 가정 ${rSurface} 보다 커야 한다(재시도)`);
+  assert.ok(st.passEnd[0] <= 2 * target || st.radii[0] >= 50 / Math.cbrt(target) - 1e-9);
+});
+
+test('opts = null 은 기본값으로 본다(TypeError 없음)', () => {
+  const p = scene(2000);
+  const t = createBlueNoiseThinner(p, undefined, null);
+  assert.equal(new Set(t.select(300)).size, 300);
+  assert.deepEqual(t.select(300), createBlueNoiseThinner(p).select(300));
+});
+
+test('kHint 가 n 보다 훨씬 커도(1e300) 빨리 끝나고 첫 반경이 span·1e-9 이상이다', () => {
+  const n = 5000;
+  const p = scene(n);
+  const t0 = Date.now();
+  const t = createBlueNoiseThinner(p, undefined, { kHint: 1e300 });
+  const sel = t.select(1000);
+  assert.ok(Date.now() - t0 < 5000, `느리다: ${Date.now() - t0} ms`);
+  assert.equal(new Set(sel).size, 1000);
+  const { radii } = t.stats();
+  assert.ok(radii[0] >= 50 * 1e-9, `첫 반경 ${radii[0]}`);
+  assert.ok(radii[0] < 50, `첫 반경 ${radii[0]}`);
+  // 칸 좌표 최댓값 span / r 이 Int32 안
+  assert.ok(50 / radii[0] < 2 ** 31);
+  for (const r of radii) assert.ok(r === 0 || 50 / r < 2 ** 31);
+  assert.deepEqual(sel, createBlueNoiseThinner(p, undefined, { kHint: n }).select(1000));
+});
 
 // 가장 가까운 두 점의 거리(x 정렬 뒤 쓸기, 현재 최소보다 x 가 멀어지면 중단).
 function minDistFast(p, sel) {
