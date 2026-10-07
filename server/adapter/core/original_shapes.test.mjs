@@ -212,6 +212,7 @@ test('현재 불일치 고정: 3칸 사다리(README §4.3 250,1000,3500)의 꼭
   // 원본 final 은 chunk 에 실린 값(level >= top, orchestrator.ts:343). 우리는 level === FINAL_LEVEL(3) 고정이다.
   const LADDER3 = [250, 1000, 3500];
   const c = splatChunk(LADDER3, 2, 3, 3362);
+  // 도우미 전제 확인(원본 orchestrator.ts:343 모양)
   assert.equal(c.final, true);
   const { machine, adapter } = rig();
   adapter.handle(bridgeChunk(c));
