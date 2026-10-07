@@ -10,7 +10,7 @@ const SCRIPT = fileURLToPath(new URL('./seed_table.mjs', import.meta.url));
 for (const bad of ['NaN', 'abc', '-1', '1.5', '', '1e3x', '1e3', '0x10', ' 1', '9007199254740993']) {
   test(`잘못된 시드 ${JSON.stringify(bad)} 는 사용법과 종료 코드 2`, () => {
     const r = spawnSync(process.execPath, [SCRIPT, bad], { encoding: 'utf8', timeout: 10000 });
-    assert.equal(r.status, 2);
+    assert.equal(r.status, 2, `signal=${r.signal} error=${r.error?.code}`);
     assert.match(r.stderr, /사용:/);
     assert.equal(r.stdout, '', '머리줄을 찍기 전에 끝나야 한다');
   });
@@ -18,7 +18,7 @@ for (const bad of ['NaN', 'abc', '-1', '1.5', '', '1e3x', '1e3', '0x10', ' 1', '
 
 test('유효 시드와 잘못된 시드가 섞이면 평가 없이 종료 코드 2', () => {
   const r = spawnSync(process.execPath, [SCRIPT, '1', 'abc'], { encoding: 'utf8', timeout: 10000 });
-  assert.equal(r.status, 2);
+  assert.equal(r.status, 2, `signal=${r.signal} error=${r.error?.code}`);
   assert.equal(r.stdout, '');
 });
 
@@ -37,7 +37,8 @@ test('유효 시드 "7" 은 사용법 없이 머리줄과 시드 7 행을 낸다
     await new Promise((resolve) => {
       child.stdout.setEncoding('utf8').on('data', (d) => {
         out += d;
-        if (/^7 \|/m.test(out)) resolve();
+        // 시드 인자를 무시하면 1번 행이 먼저 나오므로 첫 데이터 행에서 바로 멈춘다(120 초 대기 방지).
+        if (/^\d+ \|/m.test(out)) resolve();
       });
       child.on('close', resolve);
     });
@@ -46,7 +47,7 @@ test('유효 시드 "7" 은 사용법 없이 머리줄과 시드 7 행을 낸다
     child.kill('SIGKILL');
     await exited;
   }
-  assert.ok(!timedOut, '120 초 안에 시드 7 행이 나오지 않아 시간 초과로 끊었다(느린 실행기일 수 있음, 인자 무시 여부와 무관)');
+  assert.ok(!timedOut, '120 초 안에 첫 데이터 행이 나오지 않아 시간 초과로 끊었다(느린 실행기일 수 있음)');
   assert.match(out, /^시드 \|/, '머리줄이 먼저 나와야 한다');
   assert.match(out, /^7 \|/m, '요청한 시드 7 의 행이어야 한다(인자 무시 방지)');
   assert.doesNotMatch(err, /사용:/);
