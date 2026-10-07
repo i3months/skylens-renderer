@@ -3,34 +3,17 @@
 // 문턱은 이 파일 안의 숫자 리터럴이며 측정값에 맞춰 바꾸지 않는다. 구간 바이트는 출력만 한다(문턱 없음).
 // 측정 경로: flat_boxes 시드 1..6·구간당 250만 점(SPEC 규모)·320x180·8시점, 최고 수준(원본 점 전부)을
 //   컬링+LOD 선택 → 64 m 타일 조각 → codec 1 → 클라이언트 복호 → CPU 참조 래스터러(WebGL 제외).
+// SSIM 은 시점별 LOD 선택분(시점마다 컬링+LOD 로 고른 점)에 대한 값이다.
 // 시드마다 별도 자식 프로세스(tune_cli.mjs)로 병렬 측정한다. `node --test bench/status_quality/s6_quality.test.mjs`
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { availableParallelism } from 'node:os';
+import { runSeeds } from './run_seeds.mjs';
 
 const CLI = fileURLToPath(new URL('./tune_cli.mjs', import.meta.url));
 const SEEDS = [1, 2, 3, 4, 5, 6];
 
-// 동시 실행 수를 코어 수로 제한해 시드별 측정을 병렬로 돌린다.
-function runSeed(seed) {
-  return new Promise((resolve, reject) => {
-    execFile(process.execPath, [CLI, '2500000', String(seed)], { maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`시드 ${seed}: ${err.message}\n${stderr}`));
-      else resolve(JSON.parse(stdout.trim().split('\n').pop()));
-    });
-  });
-}
-async function runAll(seeds, limit) {
-  const out = new Map();
-  const queue = [...seeds];
-  await Promise.all(Array.from({ length: Math.min(limit, seeds.length) }, async () => {
-    while (queue.length > 0) { const s = queue.shift(); out.set(s, await runSeed(s)); }
-  }));
-  return out;
-}
-const results = await runAll(SEEDS, Math.max(1, availableParallelism()));
+const results = await runSeeds({ cli: CLI, argsFor: (seed) => ['2500000', String(seed)], seeds: SEEDS });
 
 for (const seed of SEEDS) {
   test(`flat_boxes 시드 ${seed}: 원본 점 전부(250만 점) 송출, 8시점 최소 SSIM ≥ 0.95`, (t) => {

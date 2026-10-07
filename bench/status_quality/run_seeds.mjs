@@ -15,6 +15,38 @@ export function defaultLimit() {
   return Math.max(1, Math.min(availableParallelism(), 3));
 }
 
-export async function runSeeds(_opts) {
-  throw new Error('run_seeds: 하위 작업 5 가 구현한다');
+// 출력 꼬리(마지막 몇 줄)만 잘라 오류 메시지에 담는다.
+function tail(text, n = 600) {
+  const t = String(text ?? '').trim();
+  return t.length > n ? '…' + t.slice(-n) : t;
+}
+
+function runOne(cli, args, seed, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, [cli, ...args], { maxBuffer: 1 << 24, timeout: timeoutMs }, (err, stdout, stderr) => {
+      const detail = `stdout 꼬리: ${tail(stdout)}\nstderr 꼬리: ${tail(stderr)}`;
+      if (err) {
+        const why = err.killed ? `시간 초과(${timeoutMs} ms)` : `비정상 종료(${err.code ?? err.signal})`;
+        reject(new Error(`시드 ${seed}: ${why}\n${detail}`));
+        return;
+      }
+      const last = String(stdout).trim().split('\n').pop();
+      if (!last) { reject(new Error(`시드 ${seed}: 빈 출력\n${detail}`)); return; }
+      try { resolve(JSON.parse(last)); }
+      catch (e) { reject(new Error(`시드 ${seed}: JSON 아님(${e.message})\n${detail}`)); }
+    });
+  });
+}
+
+export async function runSeeds({ cli, argsFor, seeds, limit = defaultLimit(), timeoutMs = 600000 }) {
+  const out = new Map();
+  const queue = [...seeds];
+  const width = Math.max(1, Math.min(limit, seeds.length));
+  await Promise.all(Array.from({ length: width }, async () => {
+    while (queue.length > 0) {
+      const seed = queue.shift();
+      out.set(seed, await runOne(cli, argsFor(seed), seed, timeoutMs));
+    }
+  }));
+  return out;
 }
